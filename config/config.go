@@ -12,6 +12,7 @@ import (
 type config struct {
 	moduleName string
 	envs       map[string]bool
+	path       string
 }
 
 func NewConfig(opts ...Option) (*config, error) {
@@ -66,7 +67,7 @@ func (cfg *config) LoadSettings(environment string, settings any) error {
 	viper.AddConfigPath(".")
 	// viper.AddConfigPath(env.ProjectRootPath)
 
-	configPath := fmt.Sprintf("%s.config", environment)
+	configPath := fmt.Sprintf("%s%s.config", cfg.path, environment)
 	viper.SetConfigName(configPath)
 
 	err := viper.ReadInConfig()

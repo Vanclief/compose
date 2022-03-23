@@ -30,3 +30,10 @@ func WithOptionalEnv(env string) Option {
 		return nil
 	})
 }
+
+func WithConfigPath(path string) Option {
+	return optionApplyFunc(func(cfg *config) error {
+		cfg.path = path
+		return nil
+	})
+}
