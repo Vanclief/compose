@@ -3,6 +3,7 @@ module github.com/vanclief/compose
 go 1.18
 
 require (
+	github.com/carlware/promtail-go v0.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.5.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect

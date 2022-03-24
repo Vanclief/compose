@@ -45,7 +45,8 @@ func (cfg *config) LoadEnvVariables(env any) error {
 			errMsg := fmt.Sprintf("Required env var %s is not set", envVar)
 			return ez.New(op, ez.EINVALID, errMsg, nil)
 		} else if value != "" {
-			vars[envVar] = value
+			key := strings.ReplaceAll(envVar, "_", "")
+			vars[key] = value
 		}
 	}
 
