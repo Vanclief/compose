@@ -15,7 +15,7 @@ Every single program uses configuration in the form of settings or env vars
   "name": "hi",
   "app": {
     "port": "3000",
-    "max_requests": 1.2
+    "maxRequests": 1.2
   }
 }
 
@@ -25,8 +25,8 @@ Every single program uses configuration in the form of settings or env vars
 **golang struct**:
 ```
 type AppSettings struct {
-	Port        string  `mapstucture:"port"`
-	MaxRequests float64 `mapstructure:"max_requests"`
+	Port        string  
+	MaxRequests float64 
 }
 
 // Settings contains the config.yml settings
@@ -37,3 +37,6 @@ type Settings struct {
 }
 
 ```
+
+**Note:** Avoid using underscores and stick to using camelCase. Instead of `max_requests` use `maxRequests`.
+

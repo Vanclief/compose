@@ -10,30 +10,30 @@ func (f optionApplyFunc) applyOption(c *config) error {
 	return f(c)
 }
 
-func WithModuleName(name string) Option {
-	return optionApplyFunc(func(cfg *config) error {
-		cfg.moduleName = name
-		return nil
-	})
-}
-
 func WithRequiredEnv(env string) Option {
 	return optionApplyFunc(func(cfg *config) error {
-		cfg.envs[env] = true
+		cfg.envars[env] = true
 		return nil
 	})
 }
 
 func WithOptionalEnv(env string) Option {
 	return optionApplyFunc(func(cfg *config) error {
-		cfg.envs[env] = false
+		cfg.envars[env] = false
 		return nil
 	})
 }
 
 func WithConfigPath(path string) Option {
 	return optionApplyFunc(func(cfg *config) error {
-		cfg.path = path
+		cfg.configPath = path
+		return nil
+	})
+}
+
+func WithEnvPath(path string) Option {
+	return optionApplyFunc(func(cfg *config) error {
+		cfg.envPath = path
 		return nil
 	})
 }

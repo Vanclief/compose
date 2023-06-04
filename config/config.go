@@ -2,24 +2,26 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"github.com/vanclief/ez"
 )
 
 type config struct {
-	moduleName string
-	envs       map[string]bool
-	path       string
+	envars     map[string]bool
+	configPath string
+	envPath    string
 }
 
 func NewConfig(opts ...Option) (*config, error) {
 	const op = "config.NewConfig"
 
 	c := &config{
-		envs: make(map[string]bool),
+		envars: make(map[string]bool),
 	}
 
 	for _, opt := range opts {
@@ -31,26 +33,60 @@ func NewConfig(opts ...Option) (*config, error) {
 	return c, nil
 }
 
-// LoadEnvVariables loads the environment variables into the struct
-func (cfg *config) LoadEnvVariables(env any) error {
-	const op = "config.LoadEnvVariables"
+// LoadEnv loads the environment variables into the struct
+func (cfg *config) LoadEnv(output any) error {
+	const op = "config.LoadEnv"
 
-	vars := make(map[string]interface{})
+	envMap := make(map[string]interface{})
 	viper.AutomaticEnv()
 
-	for envVar, required := range cfg.envs {
-		value := viper.GetString(envVar)
+	for envar, required := range cfg.envars {
+		value := viper.GetString(envar)
 
 		if value == "" && required {
-			errMsg := fmt.Sprintf("Required env var %s is not set", envVar)
+			errMsg := fmt.Sprintf("Required env var %s is not set", envar)
 			return ez.New(op, ez.EINVALID, errMsg, nil)
 		} else if value != "" {
-			key := strings.ReplaceAll(envVar, "_", "")
-			vars[key] = value
+			key := strings.ReplaceAll(envar, "_", "")
+			envMap[key] = value
 		}
 	}
 
-	mapstructure.Decode(vars, env)
+	err := mapstructure.Decode(envMap, output)
+	if err != nil {
+		return ez.Wrap(op, err)
+	}
+
+	return nil
+}
+
+// LoadEnvFromFile loads the environment variables into the struct
+func (cfg *config) LoadEnvFromFile(output any) error {
+	const op = "config.LoadEnvFromFile"
+
+	err := godotenv.Load(cfg.envPath)
+	if err != nil {
+		return ez.Wrap(op, err)
+	}
+
+	envMap := make(map[string]interface{})
+
+	for envar, required := range cfg.envars {
+		value := os.Getenv(envar)
+
+		if value == "" && required {
+			errMsg := fmt.Sprintf("Required env var %s is not set", envar)
+			return ez.New(op, ez.EINVALID, errMsg, nil)
+		} else if value != "" {
+			key := strings.ReplaceAll(envar, "_", "")
+			envMap[key] = value
+		}
+	}
+
+	err = mapstructure.Decode(envMap, output)
+	if err != nil {
+		return ez.Wrap(op, err)
+	}
 
 	return nil
 }
@@ -68,7 +104,7 @@ func (cfg *config) LoadSettings(environment string, settings any) error {
 	viper.AddConfigPath(".")
 	// viper.AddConfigPath(env.ProjectRootPath)
 
-	configPath := fmt.Sprintf("%s%s.config", cfg.path, environment)
+	configPath := fmt.Sprintf("%s%s.config", cfg.configPath, environment)
 	viper.SetConfigName(configPath)
 
 	err := viper.ReadInConfig()
@@ -84,21 +120,3 @@ func (cfg *config) LoadSettings(environment string, settings any) error {
 
 	return nil
 }
-
-// GetTestingEnvVariables returns env variables for testing
-// func GetTestingEnvVariables() *Env {
-// 	wd, err := os.Getwd()
-// 	if err != nil {
-// 		panic(err)
-// 	}
-
-// 	// Since we are loading configuration files from the root dir, when running from main package
-// 	// this is fine but for testing we need to find the root dir
-// 	dir := filepath.Dir(wd)
-
-// 	for dir[len(dir)-len(moduleName):] != moduleName {
-// 		dir = filepath.Dir(dir)
-// 	}
-
-// 	return &Env{ProjectRootPath: dir}
-// }
