@@ -1,4 +1,4 @@
-package config
+package configurator
 
 import (
 	"fmt"
@@ -11,16 +11,16 @@ import (
 	"github.com/vanclief/ez"
 )
 
-type config struct {
+type Configurator struct {
 	envars     map[string]bool
 	configPath string
 	envPath    string
 }
 
-func NewConfig(opts ...Option) (*config, error) {
-	const op = "config.NewConfig"
+func New(opts ...Option) (*Configurator, error) {
+	const op = "Configurator.New"
 
-	c := &config{
+	c := &Configurator{
 		envars: make(map[string]bool),
 	}
 
@@ -34,8 +34,8 @@ func NewConfig(opts ...Option) (*config, error) {
 }
 
 // LoadEnv loads the environment variables into the struct
-func (cfg *config) LoadEnv(output any) error {
-	const op = "config.LoadEnv"
+func (cfg *Configurator) LoadEnv(output any) error {
+	const op = "Configurator.LoadEnv"
 
 	envMap := make(map[string]interface{})
 	viper.AutomaticEnv()
@@ -61,8 +61,8 @@ func (cfg *config) LoadEnv(output any) error {
 }
 
 // LoadEnvFromFile loads the environment variables into the struct
-func (cfg *config) LoadEnvFromFile(output any) error {
-	const op = "config.LoadEnvFromFile"
+func (cfg *Configurator) LoadEnvFromFile(output any) error {
+	const op = "Configurator.LoadEnvFromFile"
 
 	err := godotenv.Load(cfg.envPath)
 	if err != nil {
@@ -91,8 +91,8 @@ func (cfg *config) LoadEnvFromFile(output any) error {
 	return nil
 }
 
-func (cfg *config) LoadSettings(environment string, settings any) error {
-	const op = "config.LoadSettings"
+func (cfg *Configurator) LoadSettings(environment string, settings any) error {
+	const op = "Configurator.LoadSettings"
 
 	if environment == "" {
 		return ez.New(op, ez.EINVALID, "Environment is not set", nil)
@@ -104,7 +104,7 @@ func (cfg *config) LoadSettings(environment string, settings any) error {
 	viper.AddConfigPath(".")
 	// viper.AddConfigPath(env.ProjectRootPath)
 
-	configPath := fmt.Sprintf("%s%s.config", cfg.configPath, environment)
+	configPath := fmt.Sprintf("%s%s.Configurator", cfg.configPath, environment)
 	viper.SetConfigName(configPath)
 
 	err := viper.ReadInConfig()
