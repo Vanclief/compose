@@ -104,7 +104,7 @@ func (cfg *Configurator) LoadSettings(environment string, settings any) error {
 	viper.AddConfigPath(".")
 	// viper.AddConfigPath(env.ProjectRootPath)
 
-	configPath := fmt.Sprintf("%s%s.Configurator", cfg.configPath, environment)
+	configPath := fmt.Sprintf("%s%s.config", cfg.configPath, environment)
 	viper.SetConfigName(configPath)
 
 	err := viper.ReadInConfig()
