@@ -42,10 +42,6 @@ func (p *SetupParams) Validate() error {
 		return ez.New(op, ez.EINVALID, "PromTailHost is required", nil)
 	}
 
-	if p.PromTailHost == "" {
-		return ez.New(op, ez.EINVALID, "PromTailHost is required", nil)
-	}
-
 	if p.PromTailUsername == "" {
 		return ez.New(op, ez.EINVALID, "PromTailUsername is required", nil)
 	}
