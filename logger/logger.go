@@ -23,13 +23,14 @@ type SetupParams struct {
 	PromTailLabels   string
 }
 
+const SECONDS_TIMEOUT_LOGS = 1
+
 func (p *SetupParams) Validate() error {
 	const op = "SetupParams.Validate"
 
 	if !p.PromTailEnabled {
 		return nil
 	}
-
 	if p.App == "" {
 		return ez.New(op, ez.EINVALID, "App is required", nil)
 	}
@@ -90,6 +91,10 @@ func setupPromTail(params SetupParams) (io.Writer, error) {
 			client.WithStreamConverter(
 				promtail.NewRawStreamConv(params.PromTailLabels, "="),
 			),
+		)
+
+		opts = append(opts,
+			client.WithWriteTimeout(SECONDS_TIMEOUT_LOGS),
 		)
 
 		promTail, err := client.NewSimpleClient(
