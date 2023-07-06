@@ -3,7 +3,7 @@ module github.com/vanclief/compose
 go 1.18
 
 require (
-	github.com/carlware/promtail-go v0.1.0
+	github.com/carlware/promtail-go v0.1.1
 	github.com/joho/godotenv v1.5.1
 	github.com/mitchellh/mapstructure v1.4.3
 	github.com/rs/zerolog v1.26.1
