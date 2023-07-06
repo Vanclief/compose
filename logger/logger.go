@@ -14,16 +14,17 @@ import (
 )
 
 type SetupParams struct {
-	App              string
-	Environment      string
-	PromTailEnabled  bool
-	PromTailHost     string
-	PromTailUsername string
-	PromTailPassword string
-	PromTailLabels   string
+	App               string
+	Environment       string
+	PromTailEnabled   bool
+	PromTailHost      string
+	PromTailUsername  string
+	PromTailPassword  string
+	PromTailLabels    string
+	PromTailTimeoutMS int
 }
 
-const SECONDS_TIMEOUT_LOGS = 1
+const DEFAULT_TIMEOUT_MS = 500
 
 func (p *SetupParams) Validate() error {
 	const op = "SetupParams.Validate"
@@ -49,6 +50,10 @@ func (p *SetupParams) Validate() error {
 
 	if p.PromTailPassword == "" {
 		return ez.New(op, ez.EINVALID, "PromTailPassword is required", nil)
+	}
+
+	if p.PromTailTimeoutMS == 0 {
+		p.PromTailTimeoutMS = DEFAULT_TIMEOUT_MS
 	}
 
 	return nil
@@ -94,7 +99,7 @@ func setupPromTail(params SetupParams) (io.Writer, error) {
 		)
 
 		opts = append(opts,
-			client.WithWriteTimeout(SECONDS_TIMEOUT_LOGS),
+			client.WithWriteTimeout(params.PromTailTimeoutMS),
 		)
 
 		promTail, err := client.NewSimpleClient(
