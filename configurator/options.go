@@ -12,14 +12,14 @@ func (f optionApplyFunc) applyOption(c *Configurator) error {
 
 func WithRequiredEnv(env string) Option {
 	return optionApplyFunc(func(cfg *Configurator) error {
-		cfg.envars[env] = true
+		cfg.envVars[env] = true
 		return nil
 	})
 }
 
 func WithOptionalEnv(env string) Option {
 	return optionApplyFunc(func(cfg *Configurator) error {
-		cfg.envars[env] = false
+		cfg.envVars[env] = false
 		return nil
 	})
 }
