@@ -9,7 +9,7 @@ import (
 	"github.com/vanclief/compose/interfaces/aws/s3"
 	"github.com/vanclief/compose/interfaces/aws/ses"
 	"github.com/vanclief/compose/interfaces/databases/postgres"
-	"github.com/vanclief/compose/logger"
+	"github.com/vanclief/compose/interfaces/logging"
 	"github.com/vanclief/ez"
 )
 
@@ -35,10 +35,10 @@ func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, c
 	return nil
 }
 
-func (c *BaseController) WithPromtailAndZerolog(params *logger.WithPromtailParams) error {
+func (c *BaseController) WithPromtailAndZerolog(params *logging.WithPromtailParams) error {
 	const op = "BaseController.WithPromtailAndZerolog"
 
-	err := logger.WithPromtailAndZerolog(params)
+	err := logging.WithPromtailAndZerolog(params)
 	if err != nil {
 		return ez.Wrap(op, err)
 	}

@@ -1,4 +1,4 @@
-package logger
+package logging
 
 import (
 	"io"
@@ -46,7 +46,7 @@ func (p WithPromtailParams) Validate() error {
 }
 
 func WithPromtailAndZerolog(params *WithPromtailParams) error {
-	const op = "Logger.Setup"
+	const op = "logging.WithPromtailAndZerolog"
 
 	// Setup PromTail
 	writer, err := attachPromtailToWriter(params)
@@ -70,7 +70,7 @@ func WithPromtailAndZerolog(params *WithPromtailParams) error {
 }
 
 func attachPromtailToWriter(params *WithPromtailParams) (io.Writer, error) {
-	const op = "Logger.setupPromtail"
+	const op = "logging.attachPromtailToWriter"
 
 	err := params.Validate()
 	if err != nil {
