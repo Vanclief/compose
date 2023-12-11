@@ -5,12 +5,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog/log"
-	"github.com/vanclief/compose/interfaces/rest/request"
+	"github.com/vanclief/compose/interfaces/rest/requests"
 	"github.com/vanclief/ez"
 )
 
 type RESTServer interface {
-	HandleRequest(request *request.Request) (interface{}, error)
+	HandleRequest(requests *requests.Request) (interface{}, error)
 }
 
 // BaseHandler is a struct with basic methods that should be extended to properly handle a HTTP Service.
@@ -22,49 +22,49 @@ func NewHandler(server RESTServer) *BaseHandler {
 	return &BaseHandler{server: server}
 }
 
-func (h *BaseHandler) StandardRequest(c echo.Context, op string, request *request.Request, body request.Body) error {
-	request.SetBody(body)
+func (h *BaseHandler) StandardRequest(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
+	requests.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(request)
+	response, managedError := h.server.HandleRequest(requests)
 	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+		return h.ManageError(c, op, requests, managedError)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *BaseHandler) BindedRequest(c echo.Context, op string, request *request.Request, body request.Body) error {
+func (h *BaseHandler) BindedRequest(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
 	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+		return h.ManageError(c, op, requests, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
 	}
 
-	request.SetBody(body)
+	requests.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(request)
+	response, managedError := h.server.HandleRequest(requests)
 	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+		return h.ManageError(c, op, requests, managedError)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, request *request.Request, body request.Body) error {
+func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
 	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+		return h.ManageError(c, op, requests, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
 	}
 
-	request.SetBody(body)
+	requests.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(request)
+	response, managedError := h.server.HandleRequest(requests)
 	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+		return h.ManageError(c, op, requests, managedError)
 	}
 
 	return c.XMLPretty(http.StatusOK, response, "  ")
 }
 
 // ManageError translates an error into the appropriate HTTP error code
-func (h *BaseHandler) ManageError(c echo.Context, op string, request *request.Request, managedError error) error {
+func (h *BaseHandler) ManageError(c echo.Context, op string, requests *requests.Request, managedError error) error {
 	code := ez.ErrorCode(managedError)
 	msg := ez.ErrorMessage(managedError)
 
@@ -72,16 +72,16 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request *request.Re
 		Str("op", op).
 		Str("code", code).
 		Str("managedError", ez.ErrorMessage(managedError)).
-		Str("request_id", request.ID).
-		Str("client", request.Client).
+		Str("request_id", requests.ID).
+		Str("client", requests.Client).
 		Msg("Handler.ManageError")
 
 	if code == ez.EINTERNAL {
-		log.Debug().Str("ID", request.ID).Interface("Body", request.Body).Msg("Internal Error")
+		log.Debug().Str("ID", requests.ID).Interface("Body", requests.Body).Msg("Internal Error")
 		errorStacktrace(managedError)
 	}
 
-	stdErr := StandardError{Code: code, Message: msg, RequestID: request.ID}
+	stdErr := StandardError{Code: code, Message: msg, RequestID: requests.ID}
 	return c.JSON(ez.ErrorToHTTPStatus(managedError), ErrorResponse{Error: stdErr})
 }
 
