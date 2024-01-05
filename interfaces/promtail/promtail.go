@@ -1,61 +1,40 @@
-package logging
+package promtail
 
 import (
+	"fmt"
 	"io"
 	"os"
 
 	"github.com/carlware/promtail-go"
 	"github.com/carlware/promtail-go/client"
-	validation "github.com/go-ozzo/ozzo-validation"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/ez"
 )
 
-type WithPromtailParams struct {
-	App               string
-	Environment       string
-	PromtailHost      string
-	PromtailUsername  string
-	PromtailPassword  string
-	PromtailLabels    string
-	PromtailEnabled   bool
-	PromtailTimeoutMS int
-}
-
-const DEFAULT_TIMEOUT_MS = 500
-
-func (p WithPromtailParams) Validate() error {
-	const op = "WithPromtailParams.Validate"
-
-	err := validation.ValidateStruct(&p,
-		validation.Field(&p.App, validation.Required),
-		validation.Field(&p.Environment, validation.Required),
-		validation.Field(&p.PromtailHost, validation.Required),
-		validation.Field(&p.PromtailUsername, validation.Required),
-	)
-	if err != nil {
-		return ez.New(op, ez.EINVALID, err.Error(), nil)
-	}
-
-	if p.PromtailTimeoutMS == 0 {
-		p.PromtailTimeoutMS = DEFAULT_TIMEOUT_MS
-	}
-
-	return nil
-}
-
-func WithPromtailAndZerolog(params *WithPromtailParams) error {
-	const op = "logging.WithPromtailAndZerolog"
+func WithZerolog(params *WithPromtailParams) error {
+	const op = "promtail.WithZeroLog"
 
 	// Setup PromTail
-	writer, err := attachPromtailToWriter(params)
+	writer, err := attachToWriter(params)
 	if err != nil {
 		return ez.Wrap(op, err)
 	}
 
 	// Setup the logger
-	WithZerolog(writer)
+	output := zerolog.ConsoleWriter{Out: writer}
+
+	output.FormatMessage = func(i interface{}) string {
+		_, ok := i.(string)
+		if ok {
+			return fmt.Sprintf("%-50s", i)
+		} else {
+			return ""
+		}
+	}
+
+	log.Logger = log.Output(output)
 
 	log.Info().
 		Str("App", params.App).
@@ -69,8 +48,8 @@ func WithPromtailAndZerolog(params *WithPromtailParams) error {
 	return nil
 }
 
-func attachPromtailToWriter(params *WithPromtailParams) (io.Writer, error) {
-	const op = "logging.attachPromtailToWriter"
+func attachToWriter(params *WithPromtailParams) (io.Writer, error) {
+	const op = "logging.attachToWriter"
 
 	err := params.Validate()
 	if err != nil {
