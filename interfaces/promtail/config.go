@@ -8,9 +8,10 @@ import (
 type Config struct {
 	App      string
 	Host     string
-	Timeout  int
 	Username string
 	Labels   string
+	Enabled  bool
+	Timeout  int
 }
 
 const DEFAULT_TIMEOUT_MS = 500
