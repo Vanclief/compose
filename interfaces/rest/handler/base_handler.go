@@ -64,36 +64,36 @@ func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, reques
 }
 
 // ManageError translates an error into the appropriate HTTP error code
-func (h *BaseHandler) ManageError(c echo.Context, op string, request *requests.Request, managedError error) error {
-	code := ez.ErrorCode(managedError)
-	msg := ez.ErrorMessage(managedError)
+func (h *BaseHandler) ManageError(c echo.Context, op string, request *requests.Request, err error) error {
+	code := ez.ErrorCode(err)
+	msg := ez.ErrorMessage(err)
 
 	log.Error().
 		Str("op", op).
 		Str("code", code).
-		Str("managedError", ez.ErrorMessage(managedError)).
+		Str("managedError", ez.ErrorMessage(err)).
 		Str("request_id", request.ID).
 		Str("client", request.Client).
 		Msg("Handler.ManageError")
 
 	if code == ez.EINTERNAL {
 		log.Debug().Str("ID", request.ID).Interface("Body", request.Body).Msg("Internal Error")
-		errorStacktrace(managedError)
+		LogErrorStacktrace(err)
 	}
 
 	stdErr := StandardError{Code: code, Message: msg, RequestID: request.ID}
-	return c.JSON(ez.ErrorToHTTPStatus(managedError), ErrorResponse{Error: stdErr})
+	return c.JSON(ez.ErrorToHTTPStatus(err), ErrorResponse{Error: stdErr})
 }
 
-func errorStacktrace(managedError error) {
-	if managedError == nil {
+func LogErrorStacktrace(err error) {
+	if err == nil {
 		return
-	} else if e, ok := managedError.(*ez.Error); ok {
+	} else if e, ok := err.(*ez.Error); ok {
 		log.Debug().Msg(e.String())
-		errorStacktrace(e.Err)
+		LogErrorStacktrace(e.Err)
 	} else if ok && e.Err != nil {
 		log.Debug().Msg(e.String())
 	} else {
-		log.Debug().Msg(managedError.Error())
+		log.Debug().Msg(err.Error())
 	}
 }
