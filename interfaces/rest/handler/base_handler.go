@@ -15,56 +15,56 @@ type RESTServer interface {
 
 // BaseHandler is a struct with basic methods that should be extended to properly handle a HTTP Service.
 type BaseHandler struct {
-	server RESTServer
+	Server RESTServer
 }
 
-func NewHandler(server RESTServer) *BaseHandler {
-	return &BaseHandler{server: server}
+func NewHandler(Server RESTServer) *BaseHandler {
+	return &BaseHandler{Server: Server}
 }
 
-func (h *BaseHandler) StandardRequest(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
-	requests.SetBody(body)
+func (h *BaseHandler) StandardRequest(c echo.Context, op string, request *requests.Request, body requests.Body) error {
+	request.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(requests)
+	response, managedError := h.Server.HandleRequest(request)
 	if managedError != nil {
-		return h.ManageError(c, op, requests, managedError)
+		return h.ManageError(c, op, request, managedError)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *BaseHandler) BindedRequest(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
+func (h *BaseHandler) BindedRequest(c echo.Context, op string, request *requests.Request, body requests.Body) error {
 	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, requests, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
 	}
 
-	requests.SetBody(body)
+	request.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(requests)
+	response, managedError := h.Server.HandleRequest(request)
 	if managedError != nil {
-		return h.ManageError(c, op, requests, managedError)
+		return h.ManageError(c, op, request, managedError)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, requests *requests.Request, body requests.Body) error {
+func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, request *requests.Request, body requests.Body) error {
 	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, requests, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
 	}
 
-	requests.SetBody(body)
+	request.SetBody(body)
 
-	response, managedError := h.server.HandleRequest(requests)
+	response, managedError := h.Server.HandleRequest(request)
 	if managedError != nil {
-		return h.ManageError(c, op, requests, managedError)
+		return h.ManageError(c, op, request, managedError)
 	}
 
 	return c.XMLPretty(http.StatusOK, response, "  ")
 }
 
 // ManageError translates an error into the appropriate HTTP error code
-func (h *BaseHandler) ManageError(c echo.Context, op string, requests *requests.Request, managedError error) error {
+func (h *BaseHandler) ManageError(c echo.Context, op string, request *requests.Request, managedError error) error {
 	code := ez.ErrorCode(managedError)
 	msg := ez.ErrorMessage(managedError)
 
@@ -72,16 +72,16 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, requests *requests.
 		Str("op", op).
 		Str("code", code).
 		Str("managedError", ez.ErrorMessage(managedError)).
-		Str("request_id", requests.ID).
-		Str("client", requests.Client).
+		Str("request_id", request.ID).
+		Str("client", request.Client).
 		Msg("Handler.ManageError")
 
 	if code == ez.EINTERNAL {
-		log.Debug().Str("ID", requests.ID).Interface("Body", requests.Body).Msg("Internal Error")
+		log.Debug().Str("ID", request.ID).Interface("Body", request.Body).Msg("Internal Error")
 		errorStacktrace(managedError)
 	}
 
-	stdErr := StandardError{Code: code, Message: msg, RequestID: requests.ID}
+	stdErr := StandardError{Code: code, Message: msg, RequestID: request.ID}
 	return c.JSON(ez.ErrorToHTTPStatus(managedError), ErrorResponse{Error: stdErr})
 }
 
