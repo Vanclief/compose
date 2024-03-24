@@ -4,11 +4,9 @@ import (
 	"os"
 
 	"github.com/rs/zerolog/log"
-	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/configurator"
 	"github.com/vanclief/compose/interfaces/aws/s3"
 	"github.com/vanclief/compose/interfaces/aws/ses"
-	"github.com/vanclief/compose/interfaces/databases/postgres"
 	"github.com/vanclief/compose/interfaces/promtail"
 	"github.com/vanclief/ez"
 )
@@ -44,27 +42,6 @@ func (c *BaseController) WithPromtailAndZerolog(params *promtail.WithPromtailPar
 	}
 
 	return nil
-}
-
-func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}) (*postgres.DB, error) {
-	const op = "BaseController.WithPostgres"
-
-	db, err := postgres.ConnectToDatabase(cfg)
-	if err != nil {
-		return nil, ez.Wrap(op, err)
-	}
-
-	if cfg.Verbose {
-		queryHook := bundebug.NewQueryHook(bundebug.WithVerbose(cfg.Verbose))
-		db.AddQueryHook(queryHook)
-	}
-
-	err = db.CreateTables(models)
-	if err != nil {
-		return nil, ez.Wrap(op, err)
-	}
-
-	return db, nil
 }
 
 func (c *BaseController) WithSES(cfg *ses.Config, AWSSecretKey string) (*ses.Client, error) {
