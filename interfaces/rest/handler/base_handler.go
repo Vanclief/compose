@@ -9,23 +9,23 @@ import (
 	"github.com/vanclief/ez"
 )
 
-type RESTServer interface {
+type App interface {
 	HandleRequest(requests *requests.Request) (interface{}, error)
 }
 
 // BaseHandler is a struct with basic methods that should be extended to properly handle a HTTP Service.
 type BaseHandler struct {
-	Server RESTServer
+	App App
 }
 
-func NewHandler(Server RESTServer) *BaseHandler {
-	return &BaseHandler{Server: Server}
+func NewHandler(App App) *BaseHandler {
+	return &BaseHandler{App: App}
 }
 
 func (h *BaseHandler) StandardRequest(c echo.Context, op string, request *requests.Request, body requests.Body) error {
 	request.SetBody(body)
 
-	response, managedError := h.Server.HandleRequest(request)
+	response, managedError := h.App.HandleRequest(request)
 	if managedError != nil {
 		return h.ManageError(c, op, request, managedError)
 	}
@@ -40,7 +40,7 @@ func (h *BaseHandler) BindedRequest(c echo.Context, op string, request *requests
 
 	request.SetBody(body)
 
-	response, managedError := h.Server.HandleRequest(request)
+	response, managedError := h.App.HandleRequest(request)
 	if managedError != nil {
 		return h.ManageError(c, op, request, managedError)
 	}
@@ -55,7 +55,7 @@ func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, reques
 
 	request.SetBody(body)
 
-	response, managedError := h.Server.HandleRequest(request)
+	response, managedError := h.App.HandleRequest(request)
 	if managedError != nil {
 		return h.ManageError(c, op, request, managedError)
 	}
