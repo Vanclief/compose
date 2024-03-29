@@ -20,7 +20,17 @@ type Request struct {
 	Cancel    context.CancelFunc
 }
 
-func New(header http.Header, ip string) *Request {
+// Option is a function that modifies the Request.
+type Option func(*Request)
+
+// WithTimeout returns an Option that sets the timeout for the request context.
+func WithTimeout(timeout time.Duration) Option {
+	return func(req *Request) {
+		req.Context, req.Cancel = context.WithTimeout(req.Context, timeout)
+	}
+}
+
+func New(header http.Header, ip string, opts ...Option) *Request {
 	id := uuid.New().String()
 
 	ctx := context.WithValue(context.Background(), "request-id", id)
