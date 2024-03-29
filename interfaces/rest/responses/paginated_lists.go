@@ -8,15 +8,15 @@ import (
 	"github.com/vanclief/ez"
 )
 
-type StandardList struct {
+type OffsetBasedList struct {
 	Hash       string `json:"hash"`
 	Limit      int    `json:"limit"`
 	Offset     int    `json:"offset"`
 	TotalCount int    `json:"total_count"`
 }
 
-func (r *StandardList) GenerateHash(data interface{}) error {
-	const op = "StandardList.GenerateHash"
+func (r *OffsetBasedList) GenerateHash(data interface{}) error {
+	const op = "OffsetBasedList.GenerateHash"
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -28,4 +28,9 @@ func (r *StandardList) GenerateHash(data interface{}) error {
 	r.Hash = hex.EncodeToString(hash[:])
 
 	return nil
+}
+
+type KeysetBasedList struct {
+	Limit      int `json:"limit"`
+	NextCursor int `json:"next_cursor"`
 }
