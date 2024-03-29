@@ -7,3 +7,9 @@ func WithExtensions(extensions []string) Option {
 		return db.CreateExtensions(extensions)
 	}
 }
+
+func WithRegistrableModels(models []interface{}) Option {
+	return func(db *DB) error {
+		return db.RegisterModels(models)
+	}
+}

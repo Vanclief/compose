@@ -25,6 +25,17 @@ func (db *DB) CreateTables(models []interface{}) error {
 	return nil
 }
 
+// RegisterModels - Registers many-to-many relationship
+func (db *DB) RegisterModels(models []interface{}) error {
+	const op = "database.RegisterModels"
+
+	for _, model := range models {
+		db.RegisterModel(model)
+	}
+
+	return nil
+}
+
 // ResetTables - Drops and recreates the database schema
 func (db *DB) ResetTables(models []interface{}) error {
 	const op = "database.ResetTables"

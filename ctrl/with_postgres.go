@@ -1,6 +1,7 @@
 package ctrl
 
 import (
+	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/interfaces/databases/postgres"
 	"github.com/vanclief/ez"
@@ -17,6 +18,7 @@ func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []i
 	if cfg.Verbose {
 		queryHook := bundebug.NewQueryHook(bundebug.WithVerbose(cfg.Verbose))
 		db.AddQueryHook(queryHook)
+		log.Info().Bool("Verbose", cfg.Verbose).Msg("Displaying database query logs")
 	}
 
 	for _, option := range options {
