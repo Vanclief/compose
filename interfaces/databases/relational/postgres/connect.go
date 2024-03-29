@@ -9,13 +9,14 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/vanclief/compose/interfaces/databases/relational"
 	"github.com/vanclief/ez"
 )
 
 // ConnectToDatabase - Creates a new connection to a PSQL database with
 // the given configuration.
-func ConnectToDatabase(cfg *ConnectionConfig) (*DB, error) {
-	const op = "database.ConnectToDatabase"
+func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
+	const op = "postgres.ConnectToDatabase"
 
 	sslmode := "disable"
 	if cfg.SSL {
@@ -49,5 +50,5 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*DB, error) {
 		return nil, ez.Wrap(op, err)
 	}
 
-	return &DB{DB: db}, nil
+	return &relational.DB{DB: db}, nil
 }

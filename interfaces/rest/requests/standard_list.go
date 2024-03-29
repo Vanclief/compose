@@ -5,16 +5,16 @@ import (
 	"slices"
 	"time"
 
-	"github.com/vanclief/compose/interfaces/databases/postgres"
+	"github.com/vanclief/compose/interfaces/databases/relational"
 	"github.com/vanclief/ez"
 )
 
 const MAX_PAGE_SIZE = 1000
 
 type StandardList struct {
-	Limit       int                   `json:"limit"`
-	Offset      int                   `json:"offset"`
-	DateFilters []postgres.DateFilter `json:"date_filters"` // TODO: Make this a DateFilter interface
+	Limit       int                     `json:"limit"`
+	Offset      int                     `json:"offset"`
+	DateFilters []relational.DateFilter `json:"date_filters"` // TODO: Make this a DateFilter interface
 }
 
 func (r *StandardList) Validate() error {

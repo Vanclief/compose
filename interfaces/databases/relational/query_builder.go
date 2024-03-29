@@ -1,4 +1,4 @@
-package postgres
+package relational
 
 import (
 	"context"

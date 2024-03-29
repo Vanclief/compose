@@ -4,11 +4,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+	"github.com/vanclief/compose/interfaces/databases/relational"
 )
 
 type TestSuite struct {
 	suite.Suite
-	db *DB
+	db *relational.DB
 }
 
 func (suite *TestSuite) SetupTest() {

@@ -1,4 +1,4 @@
-package postgres
+package relational
 
 type Option func(db *DB) error
 

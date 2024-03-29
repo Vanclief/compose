@@ -3,11 +3,12 @@ package ctrl
 import (
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
-	"github.com/vanclief/compose/interfaces/databases/postgres"
+	"github.com/vanclief/compose/interfaces/databases/relational"
+	"github.com/vanclief/compose/interfaces/databases/relational/postgres"
 	"github.com/vanclief/ez"
 )
 
-func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...postgres.Option) (*postgres.DB, error) {
+func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
 	const op = "BaseController.WithPostgres"
 
 	db, err := postgres.ConnectToDatabase(cfg)

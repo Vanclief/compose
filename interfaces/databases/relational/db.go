@@ -1,10 +1,16 @@
-package postgres
+package relational
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
+
+type DB struct {
+	*bun.DB
+}
 
 // CreateTables - Creates the database schema if it doesn't already exist
 func (db *DB) CreateTables(models []interface{}) error {
@@ -44,6 +50,24 @@ func (db *DB) ResetTables(models []interface{}) error {
 
 	for _, model := range models {
 		err := db.ResetModel(ctx, model)
+		if err != nil {
+			return ez.Wrap(op, err)
+		}
+	}
+
+	return nil
+}
+
+// CreateExtensions - Creates a database extension if it doesn't already exist
+func (db *DB) CreateExtensions(extensions []string) error {
+	const op = "database.CreateExtensions"
+
+	ctx := context.Background()
+
+	// TODO: Only works with PSQL
+	for _, extension := range extensions {
+		rawQuery := fmt.Sprintf(`CREATE EXTENSION IF NOT EXISTS "%s";`, extension)
+		_, err := db.NewRaw(rawQuery).Exec(ctx)
 		if err != nil {
 			return ez.Wrap(op, err)
 		}
