@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
@@ -111,11 +112,30 @@ func (db *DB) AddOffsetPagination(query *bun.SelectQuery, limit, offset int) *bu
 }
 
 func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, column string, lastValue interface{}) *bun.SelectQuery {
-	if column != "" && lastValue != nil {
-		return query.Limit(limit).Where(column+" < ?", lastValue)
+	if column == "" || lastValue == nil {
+		return query.Limit(limit)
 	}
 
-	return query.Limit(limit)
+	var zeroValue bool
+
+	switch v := lastValue.(type) {
+	case int, int8, int16, int32, int64:
+		zeroValue = v == 0
+	case float32, float64:
+		zeroValue = v == 0.0
+	case string:
+		zeroValue = v == ""
+	case bool:
+		zeroValue = !v
+	case uuid.UUID:
+		zeroValue = v == uuid.Nil
+	}
+
+	if zeroValue {
+		return query.Limit(limit)
+	}
+
+	return query.Limit(limit).Where(column+" < ?", lastValue)
 }
 
 type DateFilter struct {
