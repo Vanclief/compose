@@ -22,6 +22,7 @@ type StandardRequest struct {
 	ID      string
 	IP      string
 	Client  string
+	Header  http.Header
 	Body    Body
 	Context context.Context
 	Cancel  context.CancelFunc
@@ -47,6 +48,7 @@ func New(header http.Header, ip string, opts ...Option) Request {
 		ID:      id,
 		Client:  header.Get("Client"),
 		IP:      ip,
+		Header:  header,
 		Context: ctx,
 		Cancel:  cancel,
 	}

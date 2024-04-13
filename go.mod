@@ -7,7 +7,7 @@ require (
 	github.com/carlware/promtail-go v0.1.1
 	github.com/getsentry/sentry-go v0.27.0
 	github.com/go-ozzo/ozzo-validation v3.6.0+incompatible
-	github.com/google/uuid v1.4.0
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.11.3
 	github.com/mitchellh/mapstructure v1.4.3
