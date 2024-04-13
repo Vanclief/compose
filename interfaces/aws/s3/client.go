@@ -52,6 +52,7 @@ func NewClient(url, region, accessKey, secretKey, bucket string) (*Client, error
 		secretAccessKey: secretKey,
 		s3:              s3Client,
 		Bucket:          bucket,
+		URL:             fmt.Sprintf("https://%s.%s.cdn.%s", bucket, region, url),
 	}
 
 	return client, nil

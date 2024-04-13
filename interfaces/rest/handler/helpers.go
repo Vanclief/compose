@@ -8,10 +8,10 @@ import (
 	"github.com/vanclief/ez"
 )
 
-func GetParameterID(c echo.Context, name string) (int64, error) {
-	const op = "getParameterID"
+func (h *BaseHandler) GetParameterID(c echo.Context, name string) (int64, error) {
+	const op = "BaseHandler.GetParameterID"
 
-	idStr, err := GetParameterString(c, name)
+	idStr, err := h.GetParameterString(c, name)
 	if err != nil {
 		return 0, ez.Wrap(op, err)
 	}
@@ -24,8 +24,8 @@ func GetParameterID(c echo.Context, name string) (int64, error) {
 	return id, nil
 }
 
-func GetParameterString(c echo.Context, name string) (string, error) {
-	const op = "getParameterString"
+func (h *BaseHandler) GetParameterString(c echo.Context, name string) (string, error) {
+	const op = "BaseHandler.GetParameterString"
 
 	idStr := c.Param(name)
 	if idStr == "" {
@@ -35,8 +35,8 @@ func GetParameterString(c echo.Context, name string) (string, error) {
 	return idStr, nil
 }
 
-func GetQueryID(c echo.Context, value string) (int64, error) {
-	const op = "getQueryID"
+func (h *BaseHandler) GetQueryID(c echo.Context, value string) (int64, error) {
+	const op = "BaseHandler.GetQueryID"
 
 	idStr := c.QueryParam(value)
 	if idStr == "" {
@@ -52,8 +52,8 @@ func GetQueryID(c echo.Context, value string) (int64, error) {
 	return id, nil
 }
 
-func GetQueryParamsInt64(c echo.Context, key string) ([]int64, error) {
-	const op = "getQueryParamsInt64"
+func (h *BaseHandler) GetQueryParamsInt64(c echo.Context, key string) ([]int64, error) {
+	const op = "BaseHandler.GetQueryParamsInt64"
 
 	params := c.QueryParams()[key]
 
@@ -69,15 +69,19 @@ func GetQueryParamsInt64(c echo.Context, key string) ([]int64, error) {
 	return ints, nil
 }
 
-func GetListLimit(c echo.Context, defaultLimit int) int {
-	return GetNumericQueryParam(c, "limit", defaultLimit)
+func (h *BaseHandler) GetListLimit(c echo.Context, defaultLimit int) int {
+	return h.GetNumericQueryParam(c, "limit", defaultLimit)
 }
 
-func GetListOffest(c echo.Context, defaultOffset int) int {
-	return GetNumericQueryParam(c, "offset", defaultOffset)
+func (h *BaseHandler) GetListOffest(c echo.Context, defaultOffset int) int {
+	return h.GetNumericQueryParam(c, "offset", defaultOffset)
 }
 
-func GetNumericQueryParam(c echo.Context, param string, defaultValue int) int {
+func (h *BaseHandler) GetCursor(c echo.Context, defaultOffset int) int {
+	return h.GetNumericQueryParam(c, "cursor", defaultOffset)
+}
+
+func (h *BaseHandler) GetNumericQueryParam(c echo.Context, param string, defaultValue int) int {
 	str := c.QueryParam(param)
 	if str == "" {
 		return defaultValue
