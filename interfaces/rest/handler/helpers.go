@@ -77,10 +77,6 @@ func (h *BaseHandler) GetListOffest(c echo.Context, defaultOffset int) int {
 	return h.GetNumericQueryParam(c, "offset", defaultOffset)
 }
 
-func (h *BaseHandler) GetCursor(c echo.Context, defaultOffset int) int {
-	return h.GetNumericQueryParam(c, "cursor", defaultOffset)
-}
-
 func (h *BaseHandler) GetNumericQueryParam(c echo.Context, param string, defaultValue int) int {
 	str := c.QueryParam(param)
 	if str == "" {
