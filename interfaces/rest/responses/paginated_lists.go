@@ -31,6 +31,23 @@ func (r *OffsetBasedList) GenerateHash(data interface{}) error {
 }
 
 type KeysetBasedList struct {
-	Limit      int `json:"limit"`
-	NextCursor int `json:"next_cursor"`
+	Hash        string      `json:"hash"`
+	Limit       int         `json:"limit"`
+	LastValue   interface{} `json:"last_value"`
+	HasNextPage bool        `json:"has_next_page"`
+}
+
+func (r *KeysetBasedList) GenerateHash(data interface{}) error {
+	const op = "KeysetBasedList.GenerateHash"
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return ez.Wrap(op, err)
+	}
+
+	hash := sha256.Sum256(jsonData)
+
+	r.Hash = hex.EncodeToString(hash[:])
+
+	return nil
 }

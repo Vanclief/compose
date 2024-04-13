@@ -36,7 +36,7 @@ func (r *OffsetBasedList) ParseDatesToUnix(validDBColumns []string) error {
 
 type KeysetBasedList struct {
 	Limit       int                     `json:"limit"`
-	Cursor      int                     `json:"cursor"`
+	LastValue   interface{}             `json:"last_value"`
 	DateFilters []relational.DateFilter `json:"date_filters"`
 }
 

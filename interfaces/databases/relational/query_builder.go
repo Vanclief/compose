@@ -101,8 +101,21 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 	return query, queryArgs, nil
 }
 
+// TODO: Deprecate
 func (db *DB) AddLimitAndOffset(query *bun.SelectQuery, limit, offset int) *bun.SelectQuery {
 	return query.Limit(limit).Offset(offset)
+}
+
+func (db *DB) AddOffsetPagination(query *bun.SelectQuery, limit, offset int) *bun.SelectQuery {
+	return query.Limit(limit).Offset(offset)
+}
+
+func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, column string, lastValue interface{}) *bun.SelectQuery {
+	if column != "" && lastValue != nil {
+		return query.Limit(limit).Where(column+" < ?", lastValue)
+	}
+
+	return query.Limit(limit)
 }
 
 type DateFilter struct {
