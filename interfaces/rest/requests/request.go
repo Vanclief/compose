@@ -38,7 +38,7 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-func New(header http.Header, ip string, opts ...Option) Request {
+func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 	id := uuid.New().String()
 
 	ctx := context.WithValue(context.Background(), "request-id", id)
