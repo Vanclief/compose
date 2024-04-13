@@ -119,9 +119,19 @@ func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, column stri
 	var zeroValue bool
 
 	switch v := lastValue.(type) {
-	case int, int8, int16, int32, int64:
+	case int:
 		zeroValue = v == 0
-	case float32, float64:
+	case int8:
+		zeroValue = v == 0
+	case int16:
+		zeroValue = v == 0
+	case int32:
+		zeroValue = v == 0
+	case int64:
+		zeroValue = v == 0
+	case float32:
+		zeroValue = v == 0.0
+	case float64:
 		zeroValue = v == 0.0
 	case string:
 		zeroValue = v == ""
