@@ -24,8 +24,8 @@ func (r *OffsetBasedList) Validate() error {
 func (r *OffsetBasedList) ParseDatesToUnix(validDBColumns []string) error {
 	const op = "OffsetBasedList.ParseDateToUnix"
 
-	for _, dateFilter := range r.DateFilters {
-		err := dateFilter.ParseToUnix(validDBColumns)
+	for i := range r.DateFilters {
+		err := r.DateFilters[i].ParseToUnix(validDBColumns)
 		if err != nil {
 			return ez.Wrap(op, err)
 		}
@@ -47,8 +47,8 @@ func (r *KeysetBasedList) Validate() error {
 func (r *KeysetBasedList) ParseDatesToUnix(validDBColumns []string) error {
 	const op = "KeysetBasedList.ParseDateToUnix"
 
-	for _, dateFilter := range r.DateFilters {
-		err := dateFilter.ParseToUnix(validDBColumns)
+	for i := range r.DateFilters {
+		err := r.DateFilters[i].ParseToUnix(validDBColumns)
 		if err != nil {
 			return ez.Wrap(op, err)
 		}
