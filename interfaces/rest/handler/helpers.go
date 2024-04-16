@@ -18,7 +18,7 @@ func (h *BaseHandler) GetParameterID(c echo.Context, name string) (int64, error)
 
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return 0, ez.Wrap(op, err)
+		return 0, ez.New(op, ez.EINVALID, `Could not parse parameter to int`, err)
 	}
 
 	return id, nil
@@ -46,7 +46,7 @@ func (h *BaseHandler) GetQueryID(c echo.Context, value string) (int64, error) {
 
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return 0, ez.Wrap(op, err)
+		return 0, ez.New(op, ez.EINVALID, `Could not parse query to int`, err)
 	}
 
 	return id, nil
@@ -61,7 +61,7 @@ func (h *BaseHandler) GetQueryParamsInt64(c echo.Context, key string) ([]int64, 
 	for _, param := range params {
 		id, err := strconv.ParseInt(param, 10, 64)
 		if err != nil {
-			return nil, ez.Wrap(op, err)
+			return nil, ez.New(op, ez.EINVALID, `Could not query params to int`, err)
 		}
 		ints = append(ints, id)
 	}
