@@ -12,8 +12,10 @@ type Request interface {
 	GetID() string
 	GetIP() string
 	GetClient() string
+	GetHeader() http.Header
 	GetBody() Body
 	SetBody(Body)
+	GetCreatedAt() time.Time
 	GetContext() context.Context
 	SetContext(context.Context)
 }
@@ -70,12 +72,20 @@ func (r *StandardRequest) GetClient() string {
 	return r.Client
 }
 
+func (r *StandardRequest) GetHeader() http.Header {
+	return r.Header
+}
+
 func (r *StandardRequest) GetBody() Body {
 	return r.Body
 }
 
 func (r *StandardRequest) GetContext() context.Context {
 	return r.Context
+}
+
+func (r *StandardRequest) GetCreatedAt() time.Time {
+	return r.CreatedAt
 }
 
 func (r *StandardRequest) SetBody(body Body) {
