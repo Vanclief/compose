@@ -19,13 +19,14 @@ type Request interface {
 }
 
 type StandardRequest struct {
-	ID      string
-	IP      string
-	Client  string
-	Header  http.Header
-	Body    Body
-	Context context.Context
-	Cancel  context.CancelFunc
+	ID        string
+	IP        string
+	Client    string
+	Header    http.Header
+	Body      Body
+	CreatedAt time.Time
+	Context   context.Context
+	Cancel    context.CancelFunc
 }
 
 // Option is a function that modifies the Request.
@@ -45,12 +46,13 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 
 	request := &StandardRequest{
-		ID:      id,
-		Client:  header.Get("Client"),
-		IP:      ip,
-		Header:  header,
-		Context: ctx,
-		Cancel:  cancel,
+		ID:        id,
+		Client:    header.Get("Client"),
+		IP:        ip,
+		Header:    header,
+		Context:   ctx,
+		CreatedAt: time.Now(),
+		Cancel:    cancel,
 	}
 
 	return request
