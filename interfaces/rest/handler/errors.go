@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"time"
+
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/compose/interfaces/rest/requests"
@@ -13,15 +15,17 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Re
 	msg := ez.ErrorMessage(err)
 
 	log.Error().
-		Str("op", op).
-		Str("code", code).
-		Str("managedError", ez.ErrorMessage(err)).
-		Str("request_id", request.GetID()).
-		Str("client", request.GetClient()).
-		Msg("Handler.ManageError")
+		Str("id", request.GetID()).
+		Type("body_type", request.GetBody()).
+		Str("latency", time.Since(request.GetCreatedAt()).String()).
+		Str("error_code", code).
+		Str("error_message", ez.ErrorMessage(err)).
+		Str("request_client", request.GetClient()).
+		Str("request_ip", request.GetIP()).
+		Interface("request_json", request.GetBody()).
+		Msg("Request Error")
 
 	if code == ez.EINTERNAL {
-		log.Debug().Str("ID", request.GetID()).Interface("Body", request.GetBody()).Msg("Internal Error")
 		LogErrorStacktrace(err)
 		h.reportErrorToSentry(c, request, err)
 	}
