@@ -1,5 +1,8 @@
 # compose
 
+**Warning: This package is still in development and things keep changing
+so things may break.**
+
 A collection of opinionated modules created for building golang applications
 quicker while keeping best practices.
 

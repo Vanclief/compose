@@ -5,7 +5,10 @@ import (
 	"github.com/vanclief/ez"
 )
 
-const MAX_PAGE_SIZE = 1000
+const (
+	MAX_PAGE_SIZE = 1000
+	DEFAULT_LIMIT = 50
+)
 
 type OffsetBasedList struct {
 	Limit       int                     `json:"limit"`
@@ -16,6 +19,8 @@ type OffsetBasedList struct {
 func (r *OffsetBasedList) Validate() error {
 	if r.Limit-r.Offset > MAX_PAGE_SIZE {
 		return ez.New("OffsetBasedList.Validate", ez.EINVALID, "Page size must be less than 1000", nil)
+	} else if r.Limit == 0 {
+		r.Limit = DEFAULT_LIMIT
 	}
 
 	return nil
@@ -36,11 +41,17 @@ func (r *OffsetBasedList) ParseDatesToUnix(validDBColumns []string) error {
 
 type KeysetBasedList struct {
 	Limit       int                     `json:"limit"`
-	LastValue   interface{}             `json:"last_value"`
+	Cursor      string                  `json:"cursor"`
 	DateFilters []relational.DateFilter `json:"date_filters"`
 }
 
 func (r *KeysetBasedList) Validate() error {
+	if r.Limit > MAX_PAGE_SIZE {
+		return ez.New("KeysetBasedList.Validate", ez.EINVALID, "Page size must be less than 1000", nil)
+	} else if r.Limit == 0 {
+		r.Limit = DEFAULT_LIMIT
+	}
+
 	return nil
 }
 

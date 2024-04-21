@@ -3,10 +3,7 @@ package relational
 import (
 	"context"
 	"fmt"
-	"slices"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
@@ -100,109 +97,6 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 	}
 
 	return query, queryArgs, nil
-}
-
-// TODO: Deprecate
-func (db *DB) AddLimitAndOffset(query *bun.SelectQuery, limit, offset int) *bun.SelectQuery {
-	return query.Limit(limit).Offset(offset)
-}
-
-func (db *DB) AddOffsetPagination(query *bun.SelectQuery, limit, offset int) *bun.SelectQuery {
-	return query.Limit(limit).Offset(offset)
-}
-
-func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, column string, lastValue interface{}) *bun.SelectQuery {
-	if column == "" || lastValue == nil {
-		return query.Limit(limit)
-	}
-
-	var zeroValue bool
-
-	switch v := lastValue.(type) {
-	case int:
-		zeroValue = v == 0
-	case int8:
-		zeroValue = v == 0
-	case int16:
-		zeroValue = v == 0
-	case int32:
-		zeroValue = v == 0
-	case int64:
-		zeroValue = v == 0
-	case float32:
-		zeroValue = v == 0.0
-	case float64:
-		zeroValue = v == 0.0
-	case string:
-		zeroValue = v == ""
-	case bool:
-		zeroValue = !v
-	case uuid.UUID:
-		zeroValue = v == uuid.Nil
-	}
-
-	if zeroValue {
-		return query.Limit(limit)
-	}
-
-	return query.Limit(limit).Where(column+" < ?", lastValue)
-}
-
-type DateFilter struct {
-	DateColumn   string `json:"date_column"`
-	FromDate     string `json:"from_date"`
-	ToDate       string `json:"to_date"`
-	FromDateUnix int64  `json:"-"`
-	ToDateUnix   int64  `json:"-"`
-}
-
-func (db *DB) AddDateFilters(query *bun.SelectQuery, filters []DateFilter) *bun.SelectQuery {
-	for _, filter := range filters {
-		if filter.DateColumn != "" {
-			if filter.FromDateUnix != 0 {
-				query = query.
-					Where(fmt.Sprintf("%s >= ?", filter.DateColumn), filter.FromDateUnix)
-			}
-
-			if filter.ToDateUnix != 0 {
-				query = query.
-					Where(fmt.Sprintf("%s <= ?", filter.DateColumn), filter.ToDateUnix)
-			}
-		}
-	}
-
-	return query
-}
-
-func (df *DateFilter) ParseToUnix(validDBColumns []string) error {
-	const op = "DateFilter.ParseToUnix"
-
-	if df.DateColumn == "" {
-		return nil
-	} else if !slices.Contains(validDBColumns, df.DateColumn) {
-		msg := fmt.Sprintf("%s is not a valid date filter", df.DateColumn)
-		return ez.New(op, ez.EINVALID, msg, nil)
-	}
-
-	if df.FromDate != "" {
-		fromDate, err := time.Parse(time.RFC3339, df.FromDate)
-		if err != nil {
-			return ez.Wrap(op, err)
-		}
-
-		df.FromDateUnix = fromDate.Unix()
-	}
-
-	if df.ToDate != "" {
-		toDate, err := time.Parse(time.RFC3339, df.ToDate)
-		if err != nil {
-			return ez.Wrap(op, err)
-		}
-
-		df.ToDateUnix = toDate.Unix()
-	}
-
-	return nil
 }
 
 type Operator struct {
