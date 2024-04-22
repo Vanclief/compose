@@ -17,6 +17,7 @@ func (db *DB) QueryCount(ctx context.Context, model interface{}, query string, c
 
 type ConditionGroup struct {
 	Conditions []Condition
+	LogOp      LogicalOperator
 }
 
 type Condition struct {
@@ -39,11 +40,16 @@ func (db *DB) QueryBuilder(groups []ConditionGroup) (query string, queryArgs []i
 			continue
 		}
 
+		// Default to using an AND
+		if groups[i].LogOp == (LogicalOperator{}) {
+			groups[i].LogOp = AndOperator
+		}
+
 		if query == "" {
 			query = fmt.Sprintf("(%s)", groupQuery)
 			queryArgs = groupQueryArgs
 		} else {
-			query = fmt.Sprintf("%s AND (%s)", query, groupQuery)
+			query = fmt.Sprintf("%s %s (%s)", query, groups[i].LogOp, groupQuery)
 			queryArgs = append(queryArgs, groupQueryArgs...)
 		}
 	}

@@ -3,6 +3,7 @@ package relational
 import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
+	"github.com/vanclief/ez"
 )
 
 // TODO: Deprecate
@@ -14,31 +15,23 @@ func (db *DB) AddOffsetPagination(query *bun.SelectQuery, limit, offset int) *bu
 	return query.Limit(limit).Offset(offset)
 }
 
-type KeysetCursor struct {
-	Column string
-	Value  interface{}
-}
+func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, cursors ...ConditionGroup) (*bun.SelectQuery, error) {
+	const op = "DB.AddKeysetPagination"
 
-func (db *DB) AddKeysetPagination(query *bun.SelectQuery, limit int, cursors ...KeysetCursor) *bun.SelectQuery {
-	if len(cursors) == 0 {
-		return query.Limit(limit)
-	}
-
-	setCursor := false
-
-	for _, cursor := range cursors {
-		if cursor.Column != "" && hasValue(cursor.Value) {
-			query = query.Where(cursor.Column+" < ?", cursor.Value)
-			setCursor = true
-		}
-	}
-
-	if setCursor {
-		// We want to query + 1 to know if there are more pages
+	if limit > 0 {
 		query = query.Limit(limit + 1)
 	}
 
-	return query
+	if len(cursors) == 0 {
+		return query, nil
+	}
+
+	queryStr, queryArgs, err := db.QueryBuilder(cursors)
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	return query.Where(queryStr, queryArgs...), nil
 }
 
 func hasValue(i interface{}) bool {
