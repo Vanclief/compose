@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/vanclief/ez"
 )
@@ -19,6 +20,23 @@ func (h *BaseHandler) GetParameterID(c echo.Context, name string) (int64, error)
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		return 0, ez.New(op, ez.EINVALID, `Could not parse parameter to int`, err)
+	}
+
+	return id, nil
+}
+
+func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, error) {
+	const op = "getParameterID"
+
+	idStr := c.Param(name)
+	if idStr == "" {
+		return uuid.Nil, ez.New(op, ez.EINVALID, `Resource ID is required`, nil)
+	}
+
+	// parse strign to uuid
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return uuid.Nil, ez.Wrap(op, err)
 	}
 
 	return id, nil
