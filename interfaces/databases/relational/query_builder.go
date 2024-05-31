@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
@@ -86,6 +87,12 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 				}
 				queryArgs = append(queryArgs, parsedVal)
 			}
+
+		case uuid.UUID:
+			if arg != uuid.Nil {
+				query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
+				queryArgs = append(queryArgs, c.Value)
+			}
 		case bool:
 			query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
 			queryArgs = append(queryArgs, c.Value)
@@ -98,7 +105,7 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 			}
 
 		default:
-			return "", nil, ez.New(op, ez.EINVALID, "Invalid exact query type", nil)
+			return "", nil, ez.New(op, ez.EINVALID, "Query value type is not supported", nil)
 		}
 	}
 
