@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DEFAULT_TIMEOUT = 15 * time.Second
+
 type Request interface {
 	GetID() string
 	GetIP() string
@@ -37,7 +39,7 @@ type Option func(*StandardRequest)
 // WithTimeout returns an Option that sets the timeout for the request context.
 func WithTimeout(timeout time.Duration) Option {
 	return func(req *StandardRequest) {
-		req.Context, req.Cancel = context.WithTimeout(req.Context, timeout)
+		req.Context, req.Cancel = context.WithTimeout(context.WithoutCancel(req.Context), timeout)
 	}
 }
 
@@ -45,7 +47,7 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 	id := uuid.New().String()
 
 	ctx := context.WithValue(context.Background(), "request-id", id)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
 
 	request := &StandardRequest{
 		ID:        id,
@@ -55,6 +57,11 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 		Context:   ctx,
 		CreatedAt: time.Now(),
 		Cancel:    cancel,
+	}
+
+	// Apply each Option to the new request
+	for _, opt := range opts {
+		opt(request)
 	}
 
 	return request
