@@ -14,6 +14,11 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 
 	ctx := context.Background()
 
+	if len(migrations.Sorted()) == 0 {
+		log.Info().Msg("No pending migrations to run")
+		return nil
+	}
+
 	migrator := migrate.NewMigrator(db.DB, migrations)
 	err := migrator.Init(ctx)
 	if err != nil {
@@ -27,13 +32,14 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 
 	if group.IsZero() {
 		log.Info().Msg("No pending migrations to run")
-	} else {
-		for _, migration := range group.Migrations {
-			log.Info().
-				Str("ID", migration.Name).
-				Str("Name", migration.Comment).
-				Msg("Ran migration")
-		}
+		return nil
+	}
+
+	for _, migration := range group.Migrations {
+		log.Warn().
+			Str("ID", migration.Name).
+			Str("Name", migration.Comment).
+			Msg("Executed migration")
 	}
 
 	return nil
@@ -58,13 +64,14 @@ func (db *DB) RollbackLastMigration(migrations *migrate.Migrations) error {
 
 	if group.IsZero() {
 		log.Info().Msg("No migrations to roll back")
-	} else {
-		for _, migration := range group.Migrations {
-			log.Info().
-				Str("ID", migration.Name).
-				Str("Name", migration.Comment).
-				Msg("Rolled back migration")
-		}
+		return nil
+	}
+
+	for _, migration := range group.Migrations {
+		log.Warn().
+			Str("ID", migration.Name).
+			Str("Name", migration.Comment).
+			Msg("Reverted migration")
 	}
 
 	return nil
