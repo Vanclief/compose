@@ -27,6 +27,13 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 
 	group, err := migrator.Migrate(ctx)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to apply migration")
+
+		// If the migration was not successful, we rollback the migration
+		rollbackErr := db.RollbackLastMigration(migrations)
+		if rollbackErr != nil {
+			log.Error().Err(rollbackErr).Msg("Failed to rollback migration")
+		}
 		return ez.Wrap(op, err)
 	}
 
