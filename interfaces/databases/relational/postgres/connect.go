@@ -32,7 +32,7 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		Msg("Connecting to Postgres Database")
 
 	dsn := fmt.Sprintf(
-		"postgres://%s:%s@%s/%s?sslmode=%s",
+		"postgres://%s:%s@%s/%s?sslmode=%s&timeout=30s",
 		cfg.Username,
 		cfg.Password,
 		cfg.Host,
