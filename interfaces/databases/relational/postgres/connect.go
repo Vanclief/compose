@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun"
@@ -29,6 +30,21 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		statementTimeout = cfg.StatementTimeout
 	}
 
+	dialTimeout := DEFAULT_DIAL_TIMEOUT
+	if cfg.DialTimeout != 0 {
+		dialTimeout = cfg.DialTimeout
+	}
+
+	readTimeout := DEFAULT_READ_TIMEOUT
+	if cfg.ReadTimeout != 0 {
+		readTimeout = cfg.ReadTimeout
+	}
+
+	writeTimeout := DEFAULT_WRITE_TIMEOUT
+	if cfg.WriteTimeout != 0 {
+		writeTimeout = cfg.WriteTimeout
+	}
+
 	log.Info().
 		Str("Host", cfg.Host).
 		Str("Username", cfg.Username).
@@ -49,6 +65,9 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 
 	sqldb := sql.OpenDB(pgdriver.NewConnector(
 		pgdriver.WithDSN(dsn),
+		pgdriver.WithDialTimeout(time.Duration(dialTimeout)*time.Millisecond),
+		pgdriver.WithReadTimeout(time.Duration(readTimeout)*time.Millisecond),
+		pgdriver.WithWriteTimeout(time.Duration(writeTimeout)*time.Millisecond),
 		pgdriver.WithConnParams(map[string]interface{}{
 			"statement_timeout": strconv.Itoa(statementTimeout),
 		}),
