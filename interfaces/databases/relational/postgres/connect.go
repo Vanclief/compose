@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun"
@@ -23,16 +24,22 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		sslmode = "require"
 	}
 
+	statementTimeout := DEFAULT_STATEMENT_TIMEOUT
+	if cfg.StatementTimeout != 0 {
+		statementTimeout = cfg.StatementTimeout
+	}
+
 	log.Info().
 		Str("Host", cfg.Host).
 		Str("Username", cfg.Username).
 		Str("Database", cfg.Database).
 		Bool("SSL", cfg.SSL).
 		Bool("Verbose", cfg.Verbose).
+		Int("Statement Timeout", statementTimeout).
 		Msg("Connecting to Postgres Database")
 
 	dsn := fmt.Sprintf(
-		"postgres://%s:%s@%s/%s?sslmode=%s&timeout=30s",
+		"postgres://%s:%s@%s/%s?sslmode=%s",
 		cfg.Username,
 		cfg.Password,
 		cfg.Host,
@@ -40,7 +47,12 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		sslmode,
 	)
 
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	sqldb := sql.OpenDB(pgdriver.NewConnector(
+		pgdriver.WithDSN(dsn),
+		pgdriver.WithConnParams(map[string]interface{}{
+			"statement_timeout": strconv.Itoa(statementTimeout),
+		}),
+	))
 	db := bun.NewDB(sqldb, pgdialect.New())
 
 	ctx := context.Background()
