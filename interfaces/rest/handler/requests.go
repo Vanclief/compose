@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -8,45 +10,55 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// TODO: Rename this to JSONResponse
-func (h *BaseHandler) StandardRequest(c echo.Context, op string, request requests.Request, body requests.Body) error {
+// handleEchoError extracts the clean error message from Echo's error type
+func (h *BaseHandler) handleEchoError(c echo.Context, op string, request requests.Request, err error) error {
+	var echoErr *echo.HTTPError
+	if errors.As(err, &echoErr) {
+		msg := ""
+		if m, ok := echoErr.Message.(string); ok {
+			msg = m
+		} else {
+			msg = fmt.Sprintf("%v", echoErr.Message)
+		}
+		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, msg, err))
+	}
+	return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, err.Error(), err))
+}
+
+func (h *BaseHandler) JSONResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
 	request.SetBody(body)
 
-	response, managedError := h.App.HandleRequest(request)
-	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+	response, err := h.App.HandleRequest(request)
+	if err != nil {
+		return h.ManageError(c, op, request, err)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-// TODO: Rename this to BindedJSONResponse
-func (h *BaseHandler) BindedRequest(c echo.Context, op string, request requests.Request, body requests.Body) error {
-	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+func (h *BaseHandler) BindedJSONResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
+	if err := c.Bind(body); err != nil {
+		return h.handleEchoError(c, op, request, err)
 	}
-
 	request.SetBody(body)
 
-	response, managedError := h.App.HandleRequest(request)
-	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+	response, err := h.App.HandleRequest(request)
+	if err != nil {
+		return h.ManageError(c, op, request, err)
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-// TODO: Rename this to BindedXMLResponse
-func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
-	if managedError := c.Bind(body); managedError != nil {
-		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, managedError.Error(), managedError))
+func (h *BaseHandler) BindedXMLResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
+	if err := c.Bind(body); err != nil {
+		return h.handleEchoError(c, op, request, err)
 	}
-
 	request.SetBody(body)
 
-	response, managedError := h.App.HandleRequest(request)
-	if managedError != nil {
-		return h.ManageError(c, op, request, managedError)
+	response, err := h.App.HandleRequest(request)
+	if err != nil {
+		return h.ManageError(c, op, request, err)
 	}
 
 	return c.XMLPretty(http.StatusOK, response, "  ")
@@ -68,4 +80,19 @@ func (h *BaseHandler) BlobResponse(c echo.Context, op string, request requests.R
 	c.Response().Header().Set("Content-Type", contentType)
 
 	return c.Blob(http.StatusOK, "application/pdf", bytes)
+}
+
+// TODO: Deprecate
+func (h *BaseHandler) StandardRequest(c echo.Context, op string, request requests.Request, body requests.Body) error {
+	return h.JSONResponse(c, op, request, body)
+}
+
+// TODO: Deprecate
+func (h *BaseHandler) BindedRequest(c echo.Context, op string, request requests.Request, body requests.Body) error {
+	return h.BindedJSONResponse(c, op, request, body)
+}
+
+// TODO: Deprecate
+func (h *BaseHandler) BindedRequestXMLResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
+	return h.BindedXMLResponse(c, op, request, body)
 }
