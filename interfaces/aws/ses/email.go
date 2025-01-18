@@ -2,6 +2,7 @@ package ses
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -50,7 +51,7 @@ func (c *Client) SendEmail(recipient, subject, htmlBody string) (*ses.SendEmailO
 				Data:    aws.String(subject),
 			},
 		},
-		Source: aws.String(c.EmailSender),
+		Source: aws.String(c.getSenderAddress()),
 	}
 
 	res, err := svc.SendEmail(payload)
@@ -80,7 +81,7 @@ func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, at
 	}
 
 	msg := gomail.NewMessage()
-	msg.SetHeader("From", c.EmailSender)
+	msg.SetHeader("From", c.getSenderAddress())
 	msg.SetHeader("To", recipient)
 	msg.SetHeader("Subject", subject)
 	msg.SetBody("text/html", htmlBody)
@@ -111,4 +112,11 @@ func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, at
 	}
 
 	return svc.SendRawEmail(input)
+}
+
+func (c *Client) getSenderAddress() string {
+	if c.SenderName == "" {
+		return c.EmailSender
+	}
+	return fmt.Sprintf("%s <%s>", c.SenderName, c.EmailSender)
 }

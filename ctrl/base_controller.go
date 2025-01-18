@@ -59,6 +59,7 @@ func (c *BaseController) WithSES(cfg *ses.Config, AWSSecretKey string) (*ses.Cli
 	}
 
 	sesClient.SetEmailSender(cfg.EmailSender)
+	sesClient.SetSenderName(cfg.SenderName)
 	sesClient.SetPushNotificationARN(cfg.PushNotificationARN)
 
 	return sesClient, nil

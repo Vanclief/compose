@@ -12,6 +12,7 @@ type Client struct {
 	AccessKeyID         string
 	SecretAccessKey     string
 	EmailSender         string
+	SenderName          string
 	PushNotificationARN string
 }
 
@@ -38,6 +39,10 @@ func NewClient(region, accessKey, secretKey string) (*Client, error) {
 
 func (c *Client) SetEmailSender(emailSender string) {
 	c.EmailSender = emailSender
+}
+
+func (c *Client) SetSenderName(senderName string) {
+	c.SenderName = senderName
 }
 
 func (c *Client) SetPushNotificationARN(arn string) {
