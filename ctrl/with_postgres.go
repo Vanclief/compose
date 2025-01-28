@@ -4,7 +4,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/interfaces/databases/relational"
-	"github.com/vanclief/compose/interfaces/databases/relational/postgres"
+	"github.com/vanclief/compose/interfaces/databases/relational/drivers/postgres"
 	"github.com/vanclief/ez"
 )
 
