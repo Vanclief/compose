@@ -1,11 +1,9 @@
 package ses
 
 import (
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/vanclief/ez"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sns"
 )
 
@@ -13,16 +11,10 @@ import (
 func (c *Client) SendSMS(phoneNumber string, message string) (string, error) {
 	const op = "Client.SendSMS"
 
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(c.Region),
-		Credentials: credentials.NewStaticCredentials(c.AccessKeyID, c.SecretAccessKey, ""),
-	},
-	)
+	svc, err := c.getSNSService()
 	if err != nil {
 		return "", ez.Wrap(op, err)
 	}
-
-	svc := sns.New(sess)
 
 	params := &sns.PublishInput{
 		PhoneNumber: aws.String(phoneNumber),
@@ -30,6 +22,16 @@ func (c *Client) SendSMS(phoneNumber string, message string) (string, error) {
 	}
 
 	resp, err := svc.Publish(params)
+	if err != nil && isSessionError(err) {
+		// Refresh session
+		if refreshErr := c.initSession(); refreshErr != nil {
+			return "", ez.Wrap(op, err) // Return original error if refresh fails
+		}
+
+		// Try once more with refreshed session
+		resp, err = svc.Publish(params)
+	}
+
 	if err != nil {
 		return "", ez.Wrap(op, err)
 	}

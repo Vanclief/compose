@@ -52,15 +52,18 @@ func (c *BaseController) WithSES(cfg *ses.Config, AWSSecretKey string) (*ses.Cli
 		Str("PushNotificationARN", cfg.PushNotificationARN).
 		Msg("Creating SES Client")
 
-	sesClient, err := ses.NewClient(cfg.Region, cfg.AccessKeyID, AWSSecretKey)
+	sesClient, err := ses.NewClient(
+		cfg.Region,
+		cfg.AccessKeyID,
+		AWSSecretKey,
+		ses.WithEmailSender(cfg.EmailSender),
+		ses.WithSenderName(cfg.SenderName),
+		ses.WithPushNotificationARN(cfg.PushNotificationARN),
+	)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to setup AWS Client")
 		os.Exit(1)
 	}
-
-	sesClient.SetEmailSender(cfg.EmailSender)
-	sesClient.SetSenderName(cfg.SenderName)
-	sesClient.SetPushNotificationARN(cfg.PushNotificationARN)
 
 	return sesClient, nil
 }

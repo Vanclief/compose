@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/vanclief/ez"
 	"gopkg.in/gomail.v2"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ses"
 )
 
@@ -18,16 +16,11 @@ import (
 func (c *Client) SendEmail(recipient, subject, htmlBody string) (*ses.SendEmailOutput, error) {
 	const op = "Client.SendEmail"
 
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(c.Region),
-		Credentials: credentials.NewStaticCredentials(c.AccessKeyID, c.SecretAccessKey, ""),
-	},
-	)
+	svc, err := c.getSESService()
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
 
-	svc := ses.New(sess)
 	payload := &ses.SendEmailInput{
 		Destination: &ses.Destination{
 			CcAddresses: []*string{},
@@ -55,6 +48,16 @@ func (c *Client) SendEmail(recipient, subject, htmlBody string) (*ses.SendEmailO
 	}
 
 	res, err := svc.SendEmail(payload)
+	if err != nil && isSessionError(err) {
+		// Refresh session
+		if refreshErr := c.initSession(); refreshErr != nil {
+			return nil, ez.Wrap(op, err) // Return original error if refresh fails
+		}
+
+		// Try once more with refreshed session
+		return svc.SendEmail(payload)
+	}
+
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -72,10 +75,7 @@ type Attachment struct {
 func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, attachments []Attachment) (*ses.SendRawEmailOutput, error) {
 	const op = "Client.SendEmailWithAttachment"
 
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(c.Region),
-		Credentials: credentials.NewStaticCredentials(c.AccessKeyID, c.SecretAccessKey, ""),
-	})
+	svc, err := c.getSESService()
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -105,14 +105,28 @@ func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, at
 		return nil, ez.Wrap(op, err)
 	}
 
-	svc := ses.New(sess)
 	input := &ses.SendRawEmailInput{
 		RawMessage: &ses.RawMessage{
 			Data: rawEmail.Bytes(),
 		},
 	}
 
-	return svc.SendRawEmail(input)
+	output, err := svc.SendRawEmail(input)
+	if err != nil && isSessionError(err) {
+		// Refresh session
+		if refreshErr := c.initSession(); refreshErr != nil {
+			return nil, ez.Wrap(op, err) // Return original error if refresh fails
+		}
+
+		// Try once more with refreshed session
+		return svc.SendRawEmail(input)
+	}
+
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	return output, nil
 }
 
 func (c *Client) getSenderAddress() string {

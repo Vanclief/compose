@@ -25,7 +25,7 @@ type TestConfig struct {
 	SES Config ` mapstucture:"ses"`
 }
 
-func newTestClient() (*Client, *EnvVars) {
+func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars) {
 	opts := []configurator.Option{}
 	opts = append(opts, configurator.WithRequiredEnv("ENVIRONMENT"))
 	opts = append(opts, configurator.WithRequiredEnv("AWS_SECRET_KEY"))
@@ -51,7 +51,7 @@ func newTestClient() (*Client, *EnvVars) {
 		panic(err)
 	}
 
-	sesClient, err := NewClient(testConfig.SES.Region, testConfig.SES.AccessKeyID, env.AWSSecretKey)
+	sesClient, err := NewClient(testConfig.SES.Region, testConfig.SES.AccessKeyID, env.AWSSecretKey, sesOpts...)
 	if err != nil {
 		panic(err)
 	}
@@ -62,11 +62,9 @@ func newTestClient() (*Client, *EnvVars) {
 func (suite *TestSuite) SetupTest() {
 	var env *EnvVars
 
-	suite.client, env = newTestClient()
+	suite.client, env = newTestClient(WithEmailSender(env.TestEmail))
 	suite.testEmail = env.TestEmail
 	suite.testPhoneNumber = env.TestPhoneNumber
-
-	suite.client.SetEmailSender(env.TestEmail)
 }
 
 func TestSuiteRun(t *testing.T) {
