@@ -86,7 +86,8 @@ func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, at
 	msg.SetHeader("Subject", subject)
 	msg.SetBody("text/html", htmlBody)
 
-	for _, attachment := range attachments {
+	for i := range attachments {
+		attachment := attachments[i]
 		msg.Attach(attachment.Filename,
 			gomail.SetCopyFunc(func(w io.Writer) error {
 				_, err := w.Write(attachment.Data)
