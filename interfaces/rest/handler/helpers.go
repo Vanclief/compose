@@ -9,7 +9,24 @@ import (
 	"github.com/vanclief/ez"
 )
 
+// TODO: Deprecate this, it assumed the ID was aways an int64, which is not the case anymore
 func (h *BaseHandler) GetParameterID(c echo.Context, name string) (int64, error) {
+	const op = "BaseHandler.GetParameterID"
+
+	idStr, err := h.GetParameterString(c, name)
+	if err != nil {
+		return 0, ez.Wrap(op, err)
+	}
+
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return 0, ez.New(op, ez.EINVALID, `Could not parse parameter to int`, err)
+	}
+
+	return id, nil
+}
+
+func (h *BaseHandler) GetParameterInt64(c echo.Context, name string) (int64, error) {
 	const op = "BaseHandler.GetParameterID"
 
 	idStr, err := h.GetParameterString(c, name)
@@ -30,7 +47,8 @@ func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, 
 
 	idStr := c.Param(name)
 	if idStr == "" {
-		return uuid.Nil, ez.New(op, ez.EINVALID, `Resource ID is required`, nil)
+		errMsg := fmt.Sprintf("Parameter %s is required", name)
+		return uuid.Nil, ez.New(op, ez.EINVALID, errMsg, nil)
 	}
 
 	// parse strign to uuid
@@ -47,7 +65,8 @@ func (h *BaseHandler) GetParameterString(c echo.Context, name string) (string, e
 
 	idStr := c.Param(name)
 	if idStr == "" {
-		return "", ez.New(op, ez.EINVALID, `Resource ID is required`, nil)
+		errMsg := fmt.Sprintf("Parameter %s is required", name)
+		return "", ez.New(op, ez.EINVALID, errMsg, nil)
 	}
 
 	return idStr, nil
@@ -58,7 +77,7 @@ func (h *BaseHandler) GetQueryID(c echo.Context, value string) (int64, error) {
 
 	idStr := c.QueryParam(value)
 	if idStr == "" {
-		errMsg := fmt.Sprintf("%s is required", value)
+		errMsg := fmt.Sprintf("Query param %s is required", value)
 		return 0, ez.New(op, ez.EINVALID, errMsg, nil)
 	}
 
