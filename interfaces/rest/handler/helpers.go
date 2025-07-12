@@ -9,88 +9,73 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// TODO: Deprecate this, it assumed the ID was aways an int64, which is not the case anymore
-func (h *BaseHandler) GetParameterID(c echo.Context, name string) (int64, error) {
-	const op = "BaseHandler.GetParameterID"
-
-	idStr, err := h.GetParameterString(c, name)
-	if err != nil {
-		return 0, ez.Wrap(op, err)
-	}
-
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return 0, ez.New(op, ez.EINVALID, `Could not parse parameter to int`, err)
-	}
-
-	return id, nil
-}
-
-func (h *BaseHandler) GetParameterInt64(c echo.Context, name string) (int64, error) {
-	const op = "BaseHandler.GetParameterID"
-
-	idStr, err := h.GetParameterString(c, name)
-	if err != nil {
-		return 0, ez.Wrap(op, err)
-	}
-
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return 0, ez.New(op, ez.EINVALID, `Could not parse parameter to int`, err)
-	}
-
-	return id, nil
-}
-
-func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, error) {
-	const op = "getParameterID"
-
-	idStr := c.Param(name)
-	if idStr == "" {
-		errMsg := fmt.Sprintf("Parameter %s is required", name)
-		return uuid.Nil, ez.New(op, ez.EINVALID, errMsg, nil)
-	}
-
-	// parse strign to uuid
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		return uuid.Nil, ez.Wrap(op, err)
-	}
-
-	return id, nil
-}
-
+// Parameters
 func (h *BaseHandler) GetParameterString(c echo.Context, name string) (string, error) {
 	const op = "BaseHandler.GetParameterString"
 
-	idStr := c.Param(name)
-	if idStr == "" {
+	paramStr := c.Param(name)
+	if paramStr == "" {
 		errMsg := fmt.Sprintf("Parameter %s is required", name)
 		return "", ez.New(op, ez.EINVALID, errMsg, nil)
 	}
 
-	return idStr, nil
+	return paramStr, nil
 }
 
-func (h *BaseHandler) GetQueryID(c echo.Context, value string) (int64, error) {
-	const op = "BaseHandler.GetQueryID"
+func (h *BaseHandler) GetParameterInt64(c echo.Context, name string) (int64, error) {
+	const op = "BaseHandler.GetParameterInt64"
 
-	idStr := c.QueryParam(value)
-	if idStr == "" {
-		errMsg := fmt.Sprintf("Query param %s is required", value)
-		return 0, ez.New(op, ez.EINVALID, errMsg, nil)
+	int64Str, err := h.GetParameterString(c, name)
+	if err != nil {
+		return 0, ez.Wrap(op, err)
 	}
 
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	int64, err := strconv.ParseInt(int64Str, 10, 64)
 	if err != nil {
-		return 0, ez.New(op, ez.EINVALID, `Could not parse query to int`, err)
+		return 0, ez.New(op, ez.EINVALID, "Could not parse parameter to int", err)
+	}
+
+	return int64, nil
+}
+
+func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, error) {
+	const op = "BaseHandler.GetParameterUUID"
+
+	uuidStr, err := h.GetParameterString(c, name)
+	if err != nil {
+		return uuid.Nil, ez.Wrap(op, err)
+	}
+
+	// parse string to uuid
+	id, err := uuid.Parse(uuidStr)
+	if err != nil {
+		return uuid.Nil, ez.New(op, ez.EINVALID, "Could not parse parameter to UUID", err)
 	}
 
 	return id, nil
 }
 
-func (h *BaseHandler) GetQueryParamsInt64(c echo.Context, key string) ([]int64, error) {
-	const op = "BaseHandler.GetQueryParamsInt64"
+// QueryParams
+
+func (h *BaseHandler) GetQueryParamInt64(c echo.Context, value string) (int64, error) {
+	const op = "BaseHandler.GetQueryParamInt64"
+
+	int64Str := c.QueryParam(value)
+	if int64Str == "" {
+		errMsg := fmt.Sprintf("Query param %s is required", value)
+		return 0, ez.New(op, ez.EINVALID, errMsg, nil)
+	}
+
+	int64, err := strconv.ParseInt(int64Str, 10, 64)
+	if err != nil {
+		return 0, ez.New(op, ez.EINVALID, "Could not parse query param to int", err)
+	}
+
+	return int64, nil
+}
+
+func (h *BaseHandler) GetQueryParamInt64s(c echo.Context, key string) ([]int64, error) {
+	const op = "BaseHandler.GetQueryParamInt64s"
 
 	params := c.QueryParams()[key]
 
@@ -98,7 +83,7 @@ func (h *BaseHandler) GetQueryParamsInt64(c echo.Context, key string) ([]int64, 
 	for _, param := range params {
 		id, err := strconv.ParseInt(param, 10, 64)
 		if err != nil {
-			return nil, ez.New(op, ez.EINVALID, `Could not query params to int`, err)
+			return nil, ez.New(op, ez.EINVALID, "Could not parse query params to int", err)
 		}
 		ints = append(ints, id)
 	}
@@ -110,7 +95,7 @@ func (h *BaseHandler) GetListLimit(c echo.Context, defaultLimit int) int {
 	return h.GetNumericQueryParam(c, "limit", defaultLimit)
 }
 
-func (h *BaseHandler) GetListOffest(c echo.Context, defaultOffset int) int {
+func (h *BaseHandler) GetListOffset(c echo.Context, defaultOffset int) int {
 	return h.GetNumericQueryParam(c, "offset", defaultOffset)
 }
 
@@ -122,6 +107,10 @@ func (h *BaseHandler) GetNumericQueryParam(c echo.Context, param string, default
 
 	value, err := strconv.Atoi(str)
 	if err != nil {
+		return defaultValue
+	}
+
+	if value < 0 {
 		return defaultValue
 	}
 
