@@ -20,7 +20,7 @@ Most applications have many components in common:
 - Authentication
 - Role management
 
-In the spirit of keeping it [DRY](https://en.wikipedia.org/wiki/Don%27t_repeat_yourself), this package standarizes everything so we can use the same components on every application.
+In the spirit of keeping it [DRY](https://en.wikipedia.org/wiki/Don%27t_repeat_yourself), this package standardizes everything so we can use the same components on every application.
 
 ## Instalation
 
