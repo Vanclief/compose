@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -89,6 +90,28 @@ func (h *BaseHandler) GetQueryParamInt64s(c echo.Context, key string) ([]int64, 
 	}
 
 	return ints, nil
+}
+
+// GetQueryParamTime parses a required query param as RFC3339/RFC3339Nano
+func (h *BaseHandler) GetQueryParamTime(c echo.Context, key string) (time.Time, error) {
+	const op = "BaseHandler.GetQueryParamTime"
+
+	dateStr := c.QueryParam(key)
+	if dateStr == "" {
+		errMsg := fmt.Sprintf("Query param %s is required", key)
+		return time.Time{}, ez.New(op, ez.EINVALID, errMsg, nil)
+	}
+
+	t, err := time.Parse(time.RFC3339, dateStr)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, dateStr)
+		if err != nil {
+			errMsg := fmt.Sprintf("Could not parse %s as RFC3339/RFC3339Nano", key)
+			return time.Time{}, ez.New(op, ez.EINVALID, errMsg, err)
+		}
+	}
+
+	return t, nil
 }
 
 func (h *BaseHandler) GetListLimit(c echo.Context, defaultLimit int) int {
