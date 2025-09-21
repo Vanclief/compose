@@ -27,7 +27,7 @@ In the spirit of keeping it [DRY](https://en.wikipedia.org/wiki/Don%27t_repeat_y
 ---
 
 ```
-go get -u github.com/Vanclief/compose
+go get -u github.com/vanclief/compose
 ```
 
 ## Usage
