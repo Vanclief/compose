@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/vanclief/compose/components/logger"
 	"github.com/vanclief/ez"
 )
 
@@ -25,46 +25,50 @@ type (
 // It also supports one-shot jobs and prevents concurrent runs of the same logical task (by ID).
 // For each distinct id, only one instance may run at the same time.
 type Scheduler struct {
-	tick        time.Duration          // e.g., 15m, 10m, 5m
-	granularity int                    // minutes per tick
-	mu          sync.RWMutex           // protects slots
-	slots       map[int][]scheduledJob // key: minute-of-hour (0..59)
-	running     map[string]struct{}    // tracks in-flight job IDs
-	runMu       sync.Mutex             // protects running
-	wg          sync.WaitGroup         // tracks all spawned jobs
+	tick            time.Duration          // e.g., 15m, 10m, 5m
+	granularity     int                    // minutes per tick
+	mu              sync.RWMutex           // protects slots
+	slots           map[int][]scheduledJob // key: minute-of-hour (0..59)
+	running         map[string]struct{}    // tracks in-flight job IDs
+	runMu           sync.Mutex             // protects running
+	wg              sync.WaitGroup         // tracks all spawned jobs
+	log             logger.Logger
+	shutdownTimeout time.Duration
+	jobTimeout      time.Duration
 }
 
-// TODO: Make this configurable via New options
-const (
-	// SHUTDOWN_TIMEOUT is the max time to wait for running jobs on shutdown.
-	SHUTDOWN_TIMEOUT = 60 * time.Second
-	// DEFAULT_JOB_TIMEOUT is the maximum duration a job will run without its own deadline.
-	DEFAULT_JOB_TIMEOUT = time.Hour
-)
-
 // New creates a Scheduler that fires every tick duration.
-func New(tick time.Duration) (*Scheduler, error) {
+func New(tick time.Duration, opts ...Option) (*Scheduler, error) {
 	const op = "scheduler.New"
 
 	if tick <= 0 || tick%time.Minute != 0 {
 		return nil, ez.New(op, ez.EINVALID, "tick must be a positive multiple of 1 minute", nil)
 	}
+
 	gran := int(tick / time.Minute)
 	if 60%gran != 0 {
-		return nil, ez.New(op, ez.EINVALID,
-			fmt.Sprintf("tick must divide 60 minutes evenly, got %dmin", gran), nil)
+		errMsg := fmt.Sprintf("tick must divide 60 minutes evenly, got %dmin", gran)
+		return nil, ez.New(op, ez.EINVALID, errMsg, nil)
 	}
 
 	s := &Scheduler{
-		tick:        tick,
-		granularity: gran,
-		slots:       make(map[int][]scheduledJob),
-		running:     make(map[string]struct{}),
+		tick:            tick,
+		granularity:     gran,
+		slots:           make(map[int][]scheduledJob),
+		running:         make(map[string]struct{}),
+		log:             logger.Noop{},
+		shutdownTimeout: DefaultShutdownTimeout,
+		jobTimeout:      DefaultJobTimeout,
 	}
 
 	// initialize valid slots
 	for m := 0; m < 60; m += gran {
 		s.slots[m] = nil
+	}
+
+	// apply options
+	for _, o := range opts {
+		o(s)
 	}
 
 	return s, nil
@@ -156,8 +160,8 @@ func (s *Scheduler) waitForJobs() {
 
 	select {
 	case <-done:
-	case <-time.After(SHUTDOWN_TIMEOUT):
-		log.Warn().Msg("Scheduler: timed out waiting for jobs to finish")
+	case <-time.After(s.shutdownTimeout):
+		s.log.Warn().Msg("Scheduler: timed out waiting for jobs to finish")
 	}
 }
 
@@ -175,7 +179,7 @@ func (s *Scheduler) runJobs(ctx context.Context, now time.Time) {
 	for _, sj := range scheduledJobs {
 		wasSpawned := s.spawnJob(ctx, sj.id, sj.job)
 		if !wasSpawned {
-			log.Debug().Str("job_id", sj.id).Msg("Job already running or invalid, skipping")
+			s.log.Debug().Str("job_id", sj.id).Msg("Job already running or invalid, skipping")
 		}
 	}
 }
@@ -203,22 +207,22 @@ func (s *Scheduler) spawnJob(ctx context.Context, id string, job Job) bool {
 	jobCtx := ctx
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		jobCtx, cancel = context.WithTimeout(ctx, DEFAULT_JOB_TIMEOUT)
+		jobCtx, cancel = context.WithTimeout(ctx, s.jobTimeout)
 	} else {
 		cancel = func() {}
 	}
 
 	go func() {
-		log.Info().Str("job_id", id).Time("start", start).Msg("Scheduler job started")
+		s.log.Info().Str("job_id", id).Time("start", start).Msg("Scheduler job started")
 		defer s.wg.Done()
 		defer cancel()
 		defer func() {
 			// panic recovery
 			if r := recover(); r != nil {
-				log.Error().
-					Str("start", start.Format(time.RFC3339)).
-					Dur("dur", time.Since(start)).
-					Interface("panic", r).
+				s.log.Error().
+					Time("start", start).
+					Dur("duration", time.Since(start)).
+					Any("panic", r).
 					Bytes("stack", debug.Stack()).
 					Msg("Scheduler job panic")
 			}
@@ -226,7 +230,7 @@ func (s *Scheduler) spawnJob(ctx context.Context, id string, job Job) bool {
 			s.runMu.Lock()
 			delete(s.running, id)
 			s.runMu.Unlock()
-			log.Info().Str("job_id", id).Time("end", time.Now()).Int64("duration_ms", time.Since(start).Milliseconds()).Msg("Scheduler job finished")
+			s.log.Info().Str("job_id", id).Time("end", time.Now()).Dur("duration", time.Since(start)).Msg("Scheduler job finished")
 		}()
 		job(jobCtx)
 	}()
@@ -250,12 +254,14 @@ func (s *Scheduler) nextAligned(t time.Time) time.Time {
 	return t.Add(wait)
 }
 
+func ShouldRunLocalHour(tz string, hour int) bool { return ShouldRunLocalNow(tz, hour, 0) }
+
 // ShouldRunLocalNow returns true if the local time in tzName matches hour:minute exactly.
-func ShouldRunLocalNow(tzName string, hour int) bool {
-	loc, err := time.LoadLocation(tzName)
+func ShouldRunLocalNow(tz string, hour, minute int) bool {
+	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return false
 	}
 	now := time.Now().In(loc)
-	return now.Hour() == hour
+	return now.Hour() == hour && now.Minute() == minute
 }
