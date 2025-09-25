@@ -1,6 +1,6 @@
 module github.com/vanclief/compose
 
-go 1.18
+go 1.24
 
 require (
 	github.com/aws/aws-sdk-go v1.48.14
