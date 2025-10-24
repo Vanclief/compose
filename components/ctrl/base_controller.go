@@ -1,8 +1,11 @@
 package ctrl
 
 import (
+	"fmt"
+	"io"
 	"os"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/compose/components/configurator"
 	"github.com/vanclief/compose/integrations/aws/s3"
@@ -13,6 +16,7 @@ import (
 
 type BaseController struct {
 	Environment string
+	logWriter   io.Writer
 }
 
 func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, configOpts ...configurator.Option) error {
@@ -33,13 +37,41 @@ func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, c
 	return nil
 }
 
-func (c *BaseController) WithPromtailAndZerolog(params *promtail.WithPromtailParams) error {
-	const op = "BaseController.WithPromtailAndZerolog"
+func (c *BaseController) WithZerolog() {
+	writer := c.logWriter
+	if writer == nil {
+		writer = os.Stdout
+	}
 
-	err := promtail.WithZerolog(params)
+	output := zerolog.ConsoleWriter{Out: writer}
+	output.FormatMessage = func(i interface{}) string {
+		if msg, ok := i.(string); ok {
+			return fmt.Sprintf("%-50s", msg)
+		}
+		return ""
+	}
+
+	log.Logger = log.Output(output)
+}
+
+func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error {
+	const op = "BaseController.WithPromtail"
+
+	writer, err := promtail.NewWriter(params)
 	if err != nil {
 		return ez.Wrap(op, err)
 	}
+
+	c.logWriter = writer
+	log.Logger = log.Output(writer)
+	log.Info().
+		Str("App", params.App).
+		Str("Environment", params.Environment).
+		Str("Host", params.PromtailHost).
+		Str("Username", params.PromtailUsername).
+		Int("Timeout MS", params.PromtailTimeoutMS).
+		Bool("Enabled", params.PromtailEnabled).
+		Msg("Promtail Config")
 
 	return nil
 }

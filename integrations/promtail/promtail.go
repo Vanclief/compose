@@ -17,7 +17,7 @@ func WithZerolog(params *WithPromtailParams) error {
 	const op = "promtail.WithZeroLog"
 
 	// Setup PromTail
-	writer, err := attachToWriter(params)
+	writer, err := NewWriter(params)
 	if err != nil {
 		return ez.Wrap(op, err)
 	}
@@ -48,8 +48,8 @@ func WithZerolog(params *WithPromtailParams) error {
 	return nil
 }
 
-func attachToWriter(params *WithPromtailParams) (io.Writer, error) {
-	const op = "logging.attachToWriter"
+func NewWriter(params *WithPromtailParams) (io.Writer, error) {
+	const op = "promtail.NewWriter"
 
 	err := params.Validate()
 	if err != nil {
