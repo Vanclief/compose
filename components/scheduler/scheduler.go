@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vanclief/compose/components/logger"
@@ -35,6 +36,8 @@ type Scheduler struct {
 	log             logger.Logger
 	shutdownTimeout time.Duration
 	jobTimeout      time.Duration
+	activeJobs      int64
+	idledCh         chan struct{}
 }
 
 // New creates a Scheduler that fires every tick duration.
@@ -59,6 +62,7 @@ func New(tick time.Duration, opts ...Option) (*Scheduler, error) {
 		log:             logger.Noop{},
 		shutdownTimeout: DefaultShutdownTimeout,
 		jobTimeout:      DefaultJobTimeout,
+		idledCh:         make(chan struct{}, 1),
 	}
 
 	// initialize valid slots
@@ -117,6 +121,17 @@ func (s *Scheduler) AddMany(id string, slots []int, job Job) error {
 // Returns true if the job was started, false if skipped because it's already running or invalid.
 func (s *Scheduler) RunOnce(ctx context.Context, id string, job Job) bool {
 	return s.spawnJob(ctx, id, job)
+}
+
+// Idled returns a channel that receives a value whenever the scheduler drains all current jobs.
+// Consumers should check Active() after receiving since new jobs may already have started.
+func (s *Scheduler) Idled() <-chan struct{} {
+	return s.idledCh
+}
+
+// Active returns the number of currently running jobs.
+func (s *Scheduler) Active() int64 {
+	return atomic.LoadInt64(&s.activeJobs)
 }
 
 // Start blocks until ctx is canceled. It aligns to the next tick boundary,
@@ -200,6 +215,7 @@ func (s *Scheduler) spawnJob(ctx context.Context, id string, job Job) bool {
 	s.running[id] = struct{}{}
 	s.runMu.Unlock()
 
+	atomic.AddInt64(&s.activeJobs, 1)
 	s.wg.Add(1)
 	start := time.Now()
 
@@ -231,6 +247,14 @@ func (s *Scheduler) spawnJob(ctx context.Context, id string, job Job) bool {
 			delete(s.running, id)
 			s.runMu.Unlock()
 			s.log.Info().Str("job_id", id).Time("end", time.Now()).Dur("duration", time.Since(start)).Msg("Scheduler job finished")
+			if atomic.AddInt64(&s.activeJobs, -1) == 0 {
+				if ch := s.idledCh; ch != nil {
+					select {
+					case ch <- struct{}{}:
+					default:
+					}
+				}
+			}
 		}()
 		job(jobCtx)
 	}()
