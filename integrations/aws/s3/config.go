@@ -5,4 +5,5 @@ type Config struct {
 	Region      string
 	AccessKeyID string
 	Bucket      string
+	FilePrefix  string
 }
