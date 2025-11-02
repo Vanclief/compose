@@ -278,10 +278,12 @@ func (s *Scheduler) nextAligned(t time.Time) time.Time {
 	return t.Add(wait)
 }
 
-func ShouldRunLocalHour(tz string, hour int) bool { return ShouldRunLocalNow(tz, hour, 0) }
+func ShouldRunLocalHour(tz string, hour int) bool {
+	return ShouldRunLocalTime(tz, hour, 0)
+}
 
-// ShouldRunLocalNow returns true if the local time in tzName matches hour:minute exactly.
-func ShouldRunLocalNow(tz string, hour, minute int) bool {
+// ShouldRunLocalTime returns true if the local time in tzName matches hour:minute exactly.
+func ShouldRunLocalTime(tz string, hour, minute int) bool {
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return false
