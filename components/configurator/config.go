@@ -134,7 +134,7 @@ func (cfg *Configurator) LoadConfiguration(output any) error {
 	err := viper.ReadInConfig()
 	if err != nil {
 		errMsg := fmt.Sprintf("Config file with path %s.json not found", configPath)
-		return ez.New(op, ez.EINVALID, errMsg, err)
+		return ez.New(op, ez.ENOTFOUND, errMsg, err)
 	}
 
 	err = viper.Unmarshal(&output)
