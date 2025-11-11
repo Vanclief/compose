@@ -126,14 +126,14 @@ func (cfg *Configurator) LoadConfiguration(output any) error {
 	environment := strings.ToLower(cfg.Environment)
 
 	viper.SetConfigType("json")
-	viper.AddConfigPath(".")
+	viper.AddConfigPath(cfg.configPath)
 
-	configPath := fmt.Sprintf("%s%s.config", cfg.configPath, environment)
-	viper.SetConfigName(configPath)
+	fileName := fmt.Sprintf("%s.config", environment)
+	viper.SetConfigName(fileName)
 
 	err := viper.ReadInConfig()
 	if err != nil {
-		errMsg := fmt.Sprintf("Config file with path %s.json not found", configPath)
+		errMsg := fmt.Sprintf("Config file with path %s/%s.json not found", cfg.configPath, fileName)
 		return ez.New(op, ez.ENOTFOUND, errMsg, err)
 	}
 
