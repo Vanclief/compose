@@ -35,6 +35,27 @@ func (c *Client) UploadFile(input *s3.PutObjectInput) (*s3.PutObjectOutput, erro
 	return res, nil
 }
 
+func (c *Client) CopyFile(input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+	const op = "Client.CopyFile"
+
+	input.Bucket = aws.String(c.Bucket)
+	if input.CopySource == nil || *input.CopySource == "" {
+		return nil, ez.New(op, ez.EINVALID, "CopySource is required", nil)
+	}
+
+	// Keeps existing metadata
+	if input.MetadataDirective == nil {
+		input.MetadataDirective = aws.String(s3.MetadataDirectiveCopy)
+	}
+
+	res, err := c.s3.CopyObject(input)
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	return res, nil
+}
+
 func (c *Client) DeleteFile(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	const op = "Client.DeleteFile"
 
