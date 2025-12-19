@@ -1,6 +1,7 @@
 package ses
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -51,7 +52,7 @@ func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars) {
 		panic(err)
 	}
 
-	sesClient, err := NewClient(testConfig.SES.Region, testConfig.SES.AccessKeyID, env.AWSSecretKey, sesOpts...)
+	sesClient, err := NewClient(context.Background(), testConfig.SES.Region, testConfig.SES.AccessKeyID, env.AWSSecretKey, sesOpts...)
 	if err != nil {
 		panic(err)
 	}
@@ -62,7 +63,8 @@ func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars) {
 func (suite *TestSuite) SetupTest() {
 	var env *EnvVars
 
-	suite.client, env = newTestClient(WithEmailSender(env.TestEmail))
+	suite.client, env = newTestClient()
+	suite.client.EmailSender = env.TestEmail
 	suite.testEmail = env.TestEmail
 	suite.testPhoneNumber = env.TestPhoneNumber
 }

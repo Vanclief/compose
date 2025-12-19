@@ -1,20 +1,27 @@
 package s3
 
 import (
+	"context"
+	"errors"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/vanclief/ez"
 )
 
-func (c *Client) ListFiles(input *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
+func (c *Client) ListFiles(ctx context.Context, input *s3.ListObjectsInput) (*s3.ListObjectsOutput, error) {
 	const op = "Client.ListFiles"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 
-	objects, err := c.s3.ListObjects(input)
+	objects, err := c.s3.ListObjects(ctx, input)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -22,12 +29,16 @@ func (c *Client) ListFiles(input *s3.ListObjectsInput) (*s3.ListObjectsOutput, e
 	return objects, nil
 }
 
-func (c *Client) UploadFile(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+func (c *Client) UploadFile(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
 	const op = "Client.UploadFile"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 
-	res, err := c.s3.PutObject(input)
+	res, err := c.s3.PutObject(ctx, input)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -35,8 +46,12 @@ func (c *Client) UploadFile(input *s3.PutObjectInput) (*s3.PutObjectOutput, erro
 	return res, nil
 }
 
-func (c *Client) CopyFile(input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+func (c *Client) CopyFile(ctx context.Context, input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
 	const op = "Client.CopyFile"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 	if input.CopySource == nil || *input.CopySource == "" {
@@ -44,11 +59,11 @@ func (c *Client) CopyFile(input *s3.CopyObjectInput) (*s3.CopyObjectOutput, erro
 	}
 
 	// Keeps existing metadata
-	if input.MetadataDirective == nil {
-		input.MetadataDirective = aws.String(s3.MetadataDirectiveCopy)
+	if input.MetadataDirective == "" {
+		input.MetadataDirective = types.MetadataDirectiveCopy
 	}
 
-	res, err := c.s3.CopyObject(input)
+	res, err := c.s3.CopyObject(ctx, input)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -56,12 +71,16 @@ func (c *Client) CopyFile(input *s3.CopyObjectInput) (*s3.CopyObjectOutput, erro
 	return res, nil
 }
 
-func (c *Client) DeleteFile(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+func (c *Client) DeleteFile(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	const op = "Client.DeleteFile"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 
-	result, err := c.s3.DeleteObject(input)
+	result, err := c.s3.DeleteObject(ctx, input)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -69,18 +88,20 @@ func (c *Client) DeleteFile(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput
 	return result, nil
 }
 
-func (c *Client) FileExists(input *s3.HeadObjectInput) (bool, error) {
+func (c *Client) FileExists(ctx context.Context, input *s3.HeadObjectInput) (bool, error) {
 	const op = "Client.FileExists"
+
+	if input == nil {
+		return false, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 
-	_, err := c.s3.HeadObject(input)
+	_, err := c.s3.HeadObject(ctx, input)
 	if err != nil {
-		awsErr, ok := err.(awserr.Error)
-		if ok {
-			if awsErr.Code() == s3.ErrCodeNoSuchKey || awsErr.Code() == "NotFound" {
-				return false, nil
-			}
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound") {
+			return false, nil
 		}
 		return false, ez.Wrap(op, err)
 	}
@@ -88,17 +109,21 @@ func (c *Client) FileExists(input *s3.HeadObjectInput) (bool, error) {
 	return true, nil
 }
 
-func (c *Client) GetPrivateURL(input *s3.GetObjectInput) (string, error) {
+func (c *Client) GetPrivateURL(ctx context.Context, input *s3.GetObjectInput) (string, error) {
 	const op = "Client.GetPrivateURL"
+
+	if input == nil {
+		return "", ez.New(op, ez.EINVALID, "input is required", nil)
+	}
 
 	input.Bucket = aws.String(c.Bucket)
 
-	req, _ := c.s3.GetObjectRequest(input)
-
-	urlStr, err := req.Presign(1440 * time.Minute)
+	req, err := c.presign.PresignGetObject(ctx, input, func(opts *s3.PresignOptions) {
+		opts.Expires = 1440 * time.Minute
+	})
 	if err != nil {
 		return "", ez.Wrap(op, err)
 	}
 
-	return urlStr, nil
+	return req.URL, nil
 }

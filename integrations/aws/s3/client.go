@@ -1,12 +1,13 @@
 package s3
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/vanclief/ez"
 )
 
@@ -16,11 +17,12 @@ type Client struct {
 	Bucket          string
 	AccessKeyID     string
 	secretAccessKey string
-	s3              *s3.S3
+	s3              *s3.Client
+	presign         *s3.PresignClient
 	URL             string
 }
 
-func NewClient(url, region, accessKey, secretKey, bucket string) (*Client, error) {
+func NewClient(ctx context.Context, url, region, accessKey, secretKey, bucket string) (*Client, error) {
 	const op = "s3.NewClient"
 
 	if region == "" {
@@ -33,24 +35,25 @@ func NewClient(url, region, accessKey, secretKey, bucket string) (*Client, error
 
 	endpoint := fmt.Sprintf("https://%s.%s", region, url)
 
-	s3Config := &aws.Config{
-		Credentials: credentials.NewStaticCredentials(accessKey, secretKey, ""),
-		Endpoint:    &endpoint,
-		Region:      aws.String(region),
-	}
-
-	newSession, err := session.NewSession(s3Config)
+	awsCfg, err := config.LoadDefaultConfig(
+		ctx,
+		config.WithRegion(region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
 
-	s3Client := s3.New(newSession)
+	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+	})
 
 	client := &Client{
 		Region:          region,
 		AccessKeyID:     accessKey,
 		secretAccessKey: secretKey,
 		s3:              s3Client,
+		presign:         s3.NewPresignClient(s3Client),
 		Bucket:          bucket,
 		URL:             fmt.Sprintf("https://%s.%s.cdn.%s", bucket, region, url),
 	}

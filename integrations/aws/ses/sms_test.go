@@ -1,6 +1,8 @@
 package ses
 
 import (
+	"context"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,7 +17,7 @@ func (suite *TestSuite) TestSendSMS() {
 		phoneNumber: suite.testPhoneNumber,
 	}
 
-	msg, err := suite.client.SendSMS(m.phoneNumber, m.message)
+	msg, err := suite.client.SendSMS(context.Background(), m.phoneNumber, m.message)
 	suite.NotNil(msg)
 	suite.Nil(err)
 	assert.NoError(suite.T(), err, "error sending SMS")

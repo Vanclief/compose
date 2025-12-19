@@ -1,15 +1,17 @@
 package ses
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ses"
-	"github.com/aws/aws-sdk-go/service/sns"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/smithy-go"
 	"github.com/vanclief/ez"
 )
 
@@ -29,9 +31,9 @@ type Client struct {
 	PushNotificationARN string
 
 	// Session management
-	awsSession    *session.Session
-	sesSvc        *ses.SES
-	snsSvc        *sns.SNS
+	awsConfig     aws.Config
+	sesSvc        *ses.Client
+	snsSvc        *sns.Client
 	sessionExpiry time.Time
 	sessionTTL    int64
 	refreshTTL    int64
@@ -39,7 +41,7 @@ type Client struct {
 }
 
 // NewClient creates and returns a new AWS Client from configuration
-func NewClient(region, accessKey, secretKey string, opts ...ClientOption) (*Client, error) {
+func NewClient(ctx context.Context, region, accessKey, secretKey string, opts ...ClientOption) (*Client, error) {
 	const op = "aws.NewClient"
 
 	if region == "" {
@@ -64,7 +66,7 @@ func NewClient(region, accessKey, secretKey string, opts ...ClientOption) (*Clie
 	}
 
 	// Initialize sessions
-	if err := client.initSession(); err != nil {
+	if err := client.initSession(ctx); err != nil {
 		return nil, ez.Wrap(op, err)
 	}
 
@@ -72,27 +74,26 @@ func NewClient(region, accessKey, secretKey string, opts ...ClientOption) (*Clie
 }
 
 // initSession initializes the AWS session and services
-func (c *Client) initSession() error {
+func (c *Client) initSession(ctx context.Context) error {
 	const op = "Client.initSession"
 
 	c.sessionMutex.Lock()
 	defer c.sessionMutex.Unlock()
 
-	// Create new AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(c.Region),
-		Credentials: credentials.NewStaticCredentials(c.AccessKeyID, c.SecretAccessKey, ""),
-	})
+	awsCfg, err := config.LoadDefaultConfig(
+		ctx,
+		config.WithRegion(c.Region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.SecretAccessKey, "")),
+	)
 	if err != nil {
 		return ez.Wrap(op, err)
 	}
 
-	// Store the AWS session
-	c.awsSession = sess
+	c.awsConfig = awsCfg
 
-	// Initialize SES and SNS services from the same session
-	c.sesSvc = ses.New(sess)
-	c.snsSvc = sns.New(sess)
+	// Initialize SES and SNS services from the same config
+	c.sesSvc = ses.NewFromConfig(awsCfg)
+	c.snsSvc = sns.NewFromConfig(awsCfg)
 
 	// Set expiry time
 	c.sessionExpiry = time.Now().Add(time.Duration(c.sessionTTL) * time.Second)
@@ -101,16 +102,18 @@ func (c *Client) initSession() error {
 }
 
 // ensureValidSession checks if the session is valid and refreshes it if needed
-func (c *Client) ensureValidSession() error {
+func (c *Client) ensureValidSession(ctx context.Context) error {
 	const op = "Client.ensureValidSession"
 
 	c.sessionMutex.RLock()
-	sessionValid := c.awsSession != nil && time.Until(c.sessionExpiry) > time.Duration(c.refreshTTL)*time.Second
+	sessionValid := c.sesSvc != nil &&
+		c.snsSvc != nil &&
+		time.Until(c.sessionExpiry) > time.Duration(c.refreshTTL)*time.Second
 	c.sessionMutex.RUnlock()
 
 	// Refresh session if it's nil or about to expire
 	if !sessionValid {
-		if err := c.initSession(); err != nil {
+		if err := c.initSession(ctx); err != nil {
 			return ez.Wrap(op, err)
 		}
 	}
@@ -124,14 +127,13 @@ func isSessionError(err error) bool {
 		return false
 	}
 
-	// Check if it's an AWS error
-	awsErr, ok := err.(awserr.Error)
-	if !ok {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
 		return false
 	}
 
 	// Common session-related error codes
-	switch awsErr.Code() {
+	switch apiErr.ErrorCode() {
 	case
 		"ExpiredToken",                // Token has expired
 		"UnrecognizedClientException", // Session issue
@@ -144,16 +146,16 @@ func isSessionError(err error) bool {
 }
 
 // getSESService returns the SES service, ensuring a valid session
-func (c *Client) getSESService() (*ses.SES, error) {
-	if err := c.ensureValidSession(); err != nil {
+func (c *Client) getSESService(ctx context.Context) (*ses.Client, error) {
+	if err := c.ensureValidSession(ctx); err != nil {
 		return nil, err
 	}
 	return c.sesSvc, nil
 }
 
 // getSNSService returns the SNS service, ensuring a valid session
-func (c *Client) getSNSService() (*sns.SNS, error) {
-	if err := c.ensureValidSession(); err != nil {
+func (c *Client) getSNSService(ctx context.Context) (*sns.Client, error) {
+	if err := c.ensureValidSession(ctx); err != nil {
 		return nil, err
 	}
 	return c.snsSvc, nil

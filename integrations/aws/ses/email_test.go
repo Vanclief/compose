@@ -1,6 +1,8 @@
 package ses
 
 import (
+	"context"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -20,7 +22,7 @@ func (suite *TestSuite) TestSendEmail() {
 		htmlBody:  `<h1>Hello World</h1>`,
 	}
 
-	msg, err := suite.client.SendEmail(e.recipient, e.subject, e.htmlBody)
+	msg, err := suite.client.SendEmail(context.Background(), e.recipient, e.subject, e.htmlBody)
 	suite.NotNil(msg)
 	suite.Nil(err)
 	assert.NoError(suite.T(), err, "error sending email")

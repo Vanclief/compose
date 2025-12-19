@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -45,7 +46,7 @@ func newTestClient() *Client {
 		panic(err)
 	}
 
-	s3Client, err := NewClient(testConfig.S3.URL, testConfig.S3.Region, testConfig.S3.AccessKeyID, env.S3SecretKey, testConfig.S3.Bucket)
+	s3Client, err := NewClient(context.Background(), testConfig.S3.URL, testConfig.S3.Region, testConfig.S3.AccessKeyID, env.S3SecretKey, testConfig.S3.Bucket)
 	if err != nil {
 		panic(err)
 	}

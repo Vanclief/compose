@@ -2,44 +2,44 @@ package ses
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 
 	"github.com/vanclief/ez"
 	"gopkg.in/gomail.v2"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ses"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	"github.com/aws/aws-sdk-go-v2/service/ses/types"
 )
 
 // SendEmail delivery an email utilizing the AWS SES service
-func (c *Client) SendEmail(recipient, subject, htmlBody string) (*ses.SendEmailOutput, error) {
+func (c *Client) SendEmail(ctx context.Context, recipient, subject, htmlBody string) (*ses.SendEmailOutput, error) {
 	const op = "Client.SendEmail"
 
-	svc, err := c.getSESService()
+	svc, err := c.getSESService(ctx)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
 
 	payload := &ses.SendEmailInput{
-		Destination: &ses.Destination{
-			CcAddresses: []*string{},
-			ToAddresses: []*string{
-				aws.String(recipient),
-			},
+		Destination: &types.Destination{
+			CcAddresses: []string{},
+			ToAddresses: []string{recipient},
 		},
-		Message: &ses.Message{
-			Body: &ses.Body{
-				Html: &ses.Content{
+		Message: &types.Message{
+			Body: &types.Body{
+				Html: &types.Content{
 					Charset: aws.String(charSet),
 					Data:    aws.String(htmlBody),
 				},
-				Text: &ses.Content{
+				Text: &types.Content{
 					Charset: aws.String(charSet),
 					Data:    aws.String(htmlBody),
 				},
 			},
-			Subject: &ses.Content{
+			Subject: &types.Content{
 				Charset: aws.String(charSet),
 				Data:    aws.String(subject),
 			},
@@ -47,15 +47,19 @@ func (c *Client) SendEmail(recipient, subject, htmlBody string) (*ses.SendEmailO
 		Source: aws.String(c.getSenderAddress()),
 	}
 
-	res, err := svc.SendEmail(payload)
+	res, err := svc.SendEmail(ctx, payload)
 	if err != nil && isSessionError(err) {
 		// Refresh session
-		if refreshErr := c.initSession(); refreshErr != nil {
+		if refreshErr := c.initSession(ctx); refreshErr != nil {
 			return nil, ez.Wrap(op, err) // Return original error if refresh fails
 		}
 
 		// Try once more with refreshed session
-		return svc.SendEmail(payload)
+		svc, svcErr := c.getSESService(ctx)
+		if svcErr != nil {
+			return nil, ez.Wrap(op, svcErr)
+		}
+		return svc.SendEmail(ctx, payload)
 	}
 
 	if err != nil {
@@ -72,10 +76,10 @@ type Attachment struct {
 }
 
 // SendEmailWithAttachment delivers an email with attachments using AWS SES
-func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, attachments []Attachment) (*ses.SendRawEmailOutput, error) {
+func (c *Client) SendEmailWithAttachment(ctx context.Context, recipient, subject, htmlBody string, attachments []Attachment) (*ses.SendRawEmailOutput, error) {
 	const op = "Client.SendEmailWithAttachment"
 
-	svc, err := c.getSESService()
+	svc, err := c.getSESService(ctx)
 	if err != nil {
 		return nil, ez.Wrap(op, err)
 	}
@@ -106,20 +110,22 @@ func (c *Client) SendEmailWithAttachment(recipient, subject, htmlBody string, at
 	}
 
 	input := &ses.SendRawEmailInput{
-		RawMessage: &ses.RawMessage{
-			Data: rawEmail.Bytes(),
-		},
+		RawMessage: &types.RawMessage{Data: rawEmail.Bytes()},
 	}
 
-	output, err := svc.SendRawEmail(input)
+	output, err := svc.SendRawEmail(ctx, input)
 	if err != nil && isSessionError(err) {
 		// Refresh session
-		if refreshErr := c.initSession(); refreshErr != nil {
+		if refreshErr := c.initSession(ctx); refreshErr != nil {
 			return nil, ez.Wrap(op, err) // Return original error if refresh fails
 		}
 
 		// Try once more with refreshed session
-		return svc.SendRawEmail(input)
+		svc, svcErr := c.getSESService(ctx)
+		if svcErr != nil {
+			return nil, ez.Wrap(op, svcErr)
+		}
+		return svc.SendRawEmail(ctx, input)
 	}
 
 	if err != nil {

@@ -1,14 +1,15 @@
 package s3
 
 import (
+	"context"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 func (suite *S3Suite) TestListBuckets() {
-	list, err := suite.client.ListBuckets()
+	list, err := suite.client.ListBuckets(context.Background())
 	suite.Nil(err)
 	suite.NotNil(list)
 }
@@ -16,7 +17,7 @@ func (suite *S3Suite) TestListBuckets() {
 func (suite *S3Suite) TestListFiles() {
 	input := s3.ListObjectsInput{}
 
-	list, err := suite.client.ListFiles(&input)
+	list, err := suite.client.ListFiles(context.Background(), &input)
 	// for _, obj := range objects.Contents {
 	// fmt.Println(aws.StringValue(obj.Key))
 	// }
@@ -33,7 +34,7 @@ func (suite *S3Suite) TestUploadFile() {
 		// },
 	}
 
-	upload, err := suite.client.UploadFile(&object)
+	upload, err := suite.client.UploadFile(context.Background(), &object)
 	suite.Nil(err)
 	suite.NotNil(upload)
 }
@@ -43,7 +44,7 @@ func (suite *S3Suite) TestDeleteFile() {
 		Key: aws.String("file.ext"),
 	}
 
-	delete, err := suite.client.DeleteFile(input)
+	delete, err := suite.client.DeleteFile(context.Background(), input)
 	suite.Nil(err)
 	suite.NotNil(delete)
 }
@@ -55,7 +56,7 @@ func (suite *S3Suite) TestFileExists() {
 		Body: strings.NewReader("This is a test file."),
 	}
 
-	_, err := suite.client.UploadFile(object)
+	_, err := suite.client.UploadFile(context.Background(), object)
 	suite.Nil(err)
 
 	// Now check if the file exists.
@@ -63,7 +64,7 @@ func (suite *S3Suite) TestFileExists() {
 		Key: aws.String("file_to_test.ext"),
 	}
 
-	exists, err := suite.client.FileExists(existsInput)
+	exists, err := suite.client.FileExists(context.Background(), existsInput)
 	suite.Nil(err)
 	suite.True(exists)
 
@@ -72,10 +73,10 @@ func (suite *S3Suite) TestFileExists() {
 		Key: aws.String("file_to_test.ext"),
 	}
 
-	_, err = suite.client.DeleteFile(deleteInput)
+	_, err = suite.client.DeleteFile(context.Background(), deleteInput)
 	suite.Nil(err)
 
-	exists, err = suite.client.FileExists(existsInput)
+	exists, err = suite.client.FileExists(context.Background(), existsInput)
 	suite.Nil(err)
 	suite.False(exists)
 }
@@ -85,7 +86,7 @@ func (suite *S3Suite) TestGetPrivateURL() {
 		Key: aws.String("file.ext"),
 	}
 
-	url, err := suite.client.GetPrivateURL(request)
+	url, err := suite.client.GetPrivateURL(context.Background(), request)
 	suite.Nil(err)
 	suite.NotNil(url)
 }
