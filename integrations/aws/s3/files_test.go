@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -79,6 +80,60 @@ func (suite *S3Suite) TestFileExists() {
 	exists, err = suite.client.FileExists(context.Background(), existsInput)
 	suite.Nil(err)
 	suite.False(exists)
+}
+
+func (suite *S3Suite) TestDownloadFile() {
+	ctx := context.Background()
+	key := "file_to_download.ext"
+	contents := "This is a download test file."
+
+	_, err := suite.client.UploadFile(ctx, &s3.PutObjectInput{
+		Key:  aws.String(key),
+		Body: strings.NewReader(contents),
+	})
+	suite.Nil(err)
+
+	output, err := suite.client.DownloadFile(ctx, &s3.GetObjectInput{
+		Key: aws.String(key),
+	})
+	suite.Nil(err)
+	suite.NotNil(output)
+	suite.NotNil(output.Body)
+
+	data, err := io.ReadAll(output.Body)
+	suite.Nil(err)
+	suite.Equal(contents, string(data))
+
+	err = output.Body.Close()
+	suite.Nil(err)
+
+	_, err = suite.client.DeleteFile(ctx, &s3.DeleteObjectInput{
+		Key: aws.String(key),
+	})
+	suite.Nil(err)
+}
+
+func (suite *S3Suite) TestDownloadBytes() {
+	ctx := context.Background()
+	key := "file_to_download_bytes.ext"
+	contents := "This is a download bytes test file."
+
+	_, err := suite.client.UploadFile(ctx, &s3.PutObjectInput{
+		Key:  aws.String(key),
+		Body: strings.NewReader(contents),
+	})
+	suite.Nil(err)
+
+	data, err := suite.client.DownloadBytes(ctx, &s3.GetObjectInput{
+		Key: aws.String(key),
+	})
+	suite.Nil(err)
+	suite.Equal(contents, string(data))
+
+	_, err = suite.client.DeleteFile(ctx, &s3.DeleteObjectInput{
+		Key: aws.String(key),
+	})
+	suite.Nil(err)
 }
 
 func (suite *S3Suite) TestGetPrivateURL() {

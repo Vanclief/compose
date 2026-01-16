@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -126,4 +127,47 @@ func (c *Client) GetPrivateURL(ctx context.Context, input *s3.GetObjectInput) (s
 	}
 
 	return req.URL, nil
+}
+
+func (c *Client) DownloadFile(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	const op = "Client.DownloadFile"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
+
+	input.Bucket = aws.String(c.Bucket)
+
+	res, err := c.s3.GetObject(ctx, input)
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	return res, nil
+}
+
+func (c *Client) DownloadBytes(ctx context.Context, input *s3.GetObjectInput) ([]byte, error) {
+	const op = "Client.DownloadBytes"
+
+	if input == nil {
+		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+	}
+
+	res, err := c.DownloadFile(ctx, input)
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	if res.Body == nil {
+		return nil, ez.New(op, ez.EINVALID, "object body is empty", nil)
+	}
+
+	defer res.Body.Close()
+
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, ez.Wrap(op, err)
+	}
+
+	return data, nil
 }
