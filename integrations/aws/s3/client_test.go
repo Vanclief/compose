@@ -46,7 +46,15 @@ func newTestClient() *Client {
 		panic(err)
 	}
 
-	s3Client, err := NewClient(context.Background(), testConfig.S3.URL, testConfig.S3.Region, testConfig.S3.AccessKeyID, env.S3SecretKey, testConfig.S3.Bucket)
+	s3Client, err := NewClient(
+		context.Background(),
+		testConfig.S3.Region,
+		testConfig.S3.AccessKeyID,
+		env.S3SecretKey,
+		testConfig.S3.Bucket,
+		WithDigitalOceanEndpoint(testConfig.S3.Region, testConfig.S3.URL),
+		WithDigitalOceanCDN(testConfig.S3.Bucket, testConfig.S3.Region, testConfig.S3.URL),
+	)
 	if err != nil {
 		panic(err)
 	}

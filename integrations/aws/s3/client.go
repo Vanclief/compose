@@ -2,7 +2,6 @@ package s3
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -13,16 +12,14 @@ import (
 
 // Client contains the DO configuration and methods
 type Client struct {
-	Region          string
-	Bucket          string
-	AccessKeyID     string
-	secretAccessKey string
-	s3              *s3.Client
-	presign         *s3.PresignClient
-	URL             string
+	Region    string
+	Bucket    string
+	s3        *s3.Client
+	presign   *s3.PresignClient
+	PublicURL string
 }
 
-func NewClient(ctx context.Context, url, region, accessKey, secretKey, bucket string) (*Client, error) {
+func NewClient(ctx context.Context, region, accessKey, secretKey, bucket string, opts ...ClientOption) (*Client, error) {
 	const op = "s3.NewClient"
 
 	if region == "" {
@@ -33,8 +30,6 @@ func NewClient(ctx context.Context, url, region, accessKey, secretKey, bucket st
 		return nil, ez.New(op, ez.EINVALID, "SecretKey cannot be empty", nil)
 	}
 
-	endpoint := fmt.Sprintf("https://%s.%s", region, url)
-
 	awsCfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(region),
@@ -44,18 +39,24 @@ func NewClient(ctx context.Context, url, region, accessKey, secretKey, bucket st
 		return nil, ez.Wrap(op, err)
 	}
 
+	// Apply opts
+	co := &clientOptions{}
+	for _, opt := range opts {
+		opt(co)
+	}
+
 	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
+		if co.baseEndpoint != "" {
+			o.BaseEndpoint = aws.String(co.baseEndpoint)
+		}
 	})
 
 	client := &Client{
-		Region:          region,
-		AccessKeyID:     accessKey,
-		secretAccessKey: secretKey,
-		s3:              s3Client,
-		presign:         s3.NewPresignClient(s3Client),
-		Bucket:          bucket,
-		URL:             fmt.Sprintf("https://%s.%s.cdn.%s", bucket, region, url),
+		Region:    region,
+		s3:        s3Client,
+		presign:   s3.NewPresignClient(s3Client),
+		Bucket:    bucket,
+		PublicURL: co.publicBaseURL,
 	}
 
 	return client, nil

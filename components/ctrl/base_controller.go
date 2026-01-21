@@ -102,14 +102,14 @@ func (c *BaseController) WithSES(ctx context.Context, cfg *ses.Config, AWSSecret
 	return sesClient, nil
 }
 
-func (c *BaseController) WithS3(ctx context.Context, cfg *s3.Config, S3SecretKey string) (*s3.Client, error) {
+func (c *BaseController) WithS3(ctx context.Context, cfg *s3.Config, S3SecretKey string, opts ...s3.ClientOption) (*s3.Client, error) {
 	log.Info().
 		Str("Host", cfg.Region).
 		Str("Bucket", cfg.Bucket).
 		Str("AccessKey", cfg.AccessKeyID).
 		Msg("Creating S3 Client")
 
-	s3Client, err := s3.NewClient(ctx, cfg.URL, cfg.Region, cfg.AccessKeyID, S3SecretKey, cfg.Bucket)
+	s3Client, err := s3.NewClient(ctx, cfg.Region, cfg.AccessKeyID, S3SecretKey, cfg.Bucket, opts...)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to setup S3 Client")
 		os.Exit(1)
