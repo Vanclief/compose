@@ -77,7 +77,5 @@ func (h *BaseHandler) BlobResponse(c echo.Context, op string, request requests.R
 		return h.ManageError(c, op, request, ez.New(op, ez.EINTERNAL, "HandleRequest response is not a byte slice", nil))
 	}
 
-	c.Response().Header().Set("Content-Type", contentType)
-
-	return c.Blob(http.StatusOK, "application/pdf", bytes)
+	return c.Blob(http.StatusOK, contentType, bytes)
 }
