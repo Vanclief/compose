@@ -2,9 +2,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/rs/zerolog/log"
+	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
 
@@ -26,8 +26,7 @@ func DeleteDatabase(cfg ConnectionConfig) error {
 	cfg.Database = databaseName
 
 	// Delete the database
-	query := fmt.Sprintf("DROP DATABASE %s", cfg.Database)
-	_, err = db.ExecContext(ctx, query)
+	_, err = db.ExecContext(ctx, "DROP DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
 		return ez.Wrap(op, err)
 	}

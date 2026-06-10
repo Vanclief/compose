@@ -22,12 +22,12 @@ func (db *DB) AddDateFilters(query *bun.SelectQuery, filters []DateFilter) *bun.
 		if filter.DateColumn != "" {
 			if filter.FromDateUnix != 0 {
 				query = query.
-					Where(fmt.Sprintf("%s >= ?", filter.DateColumn), filter.FromDateUnix)
+					Where("? >= ?", bun.Ident(filter.DateColumn), filter.FromDateUnix)
 			}
 
 			if filter.ToDateUnix != 0 {
 				query = query.
-					Where(fmt.Sprintf("%s <= ?", filter.DateColumn), filter.ToDateUnix)
+					Where("? <= ?", bun.Ident(filter.DateColumn), filter.ToDateUnix)
 			}
 		}
 	}

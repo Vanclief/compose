@@ -21,6 +21,10 @@ type ConditionGroup struct {
 	LogOp      LogicalOperator
 }
 
+// Condition values are only safe with trusted input: Column is interpolated
+// raw into SQL (to support expressions like CONCAT(...) or unaccent(...)), so
+// it must come from code, never from client input. Only Value is bound as a
+// parameter.
 type Condition struct {
 	Column     string
 	Comparison Operator
@@ -100,7 +104,7 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 		case []int64:
 			if len(arg) > 0 {
 				query += fmt.Sprintf(" %s %s IN (?)", c.LogOp.Value, bun.Ident(c.Column))
-				queryArgs = append(queryArgs, bun.In(c.Value))
+				queryArgs = append(queryArgs, bun.List(c.Value))
 
 			}
 

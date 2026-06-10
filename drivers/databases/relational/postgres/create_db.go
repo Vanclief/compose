@@ -2,9 +2,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/rs/zerolog/log"
+	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 )
 
@@ -25,8 +25,7 @@ func CreateDatabase(cfg ConnectionConfig) error {
 	ctx := context.Background()
 	cfg.Database = databaseName
 
-	query := fmt.Sprintf("CREATE DATABASE %s", cfg.Database)
-	_, err = db.ExecContext(ctx, query)
+	_, err = db.ExecContext(ctx, "CREATE DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
 		return ez.Wrap(op, err)
 	}

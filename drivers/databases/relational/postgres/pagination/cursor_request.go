@@ -13,7 +13,7 @@ import (
 type CursorRequest struct {
 	Limit  int            `json:"limit"`
 	Cursor string         `json:"cursor"`
-	Filter []query.Filter `json:"filters,omitempty"`
+	Filter []query.Filter `json:"-"` // Server-side only: Field and Comparison are interpolated into SQL and must never come from client input
 }
 
 func (r *CursorRequest) Validate() error {
@@ -69,7 +69,12 @@ func ApplyCursorToQuery[T Paginatable](query *bun.SelectQuery, r *CursorRequest,
 
 	// Apply any additional filter like date filters
 	for _, filter := range r.Filter {
-		query = query.Where(fmt.Sprintf("%s %s ?", filter.Field, filter.Comparison), filter.Value)
+		switch filter.Comparison {
+		case ">=", "<=":
+		default:
+			return nil, ez.New(op, ez.EINVALID, "Filter comparison must be >= or <=", nil)
+		}
+		query = query.Where("? "+filter.Comparison+" ?", bun.Ident(filter.Field), filter.Value)
 	}
 
 	// Order primarily by the sort field and then, if necessary, by the unique field as a tie-breaker.

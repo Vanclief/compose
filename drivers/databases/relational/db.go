@@ -2,7 +2,6 @@ package relational
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
@@ -66,8 +65,7 @@ func (db *DB) CreateExtensions(extensions []string) error {
 
 	// TODO: Only works with PSQL
 	for _, extension := range extensions {
-		rawQuery := fmt.Sprintf(`CREATE EXTENSION IF NOT EXISTS "%s";`, extension)
-		_, err := db.NewRaw(rawQuery).Exec(ctx)
+		_, err := db.NewRaw("CREATE EXTENSION IF NOT EXISTS ?", bun.Ident(extension)).Exec(ctx)
 		if err != nil {
 			return ez.Wrap(op, err)
 		}
