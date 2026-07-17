@@ -12,7 +12,6 @@ import (
 // ManageError translates an error into the appropriate HTTP error code
 func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Request, err error) error {
 	code := ez.ErrorCode(err)
-	msg := ez.ErrorMessage(err)
 
 	log.Error().
 		Str("id", request.GetID()).
@@ -30,8 +29,17 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Re
 		h.reportErrorToSentry(c, request, err)
 	}
 
-	stdErr := StandardError{Code: code, Message: msg, RequestID: request.GetID()}
-	return c.JSON(ez.ErrorToHTTPStatus(err), ErrorResponse{Error: stdErr})
+	status := ez.ErrorToHTTPStatus(err)
+
+	if h.ErrorTranslator != nil {
+		translated := h.ErrorTranslator(err, request)
+		if translated != nil {
+			err = translated
+		}
+	}
+
+	stdErr := StandardError{Code: code, Message: ez.ErrorMessage(err), RequestID: request.GetID()}
+	return c.JSON(status, ErrorResponse{Error: stdErr})
 }
 
 func LogErrorStacktrace(err error) {
