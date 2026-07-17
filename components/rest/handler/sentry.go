@@ -58,12 +58,6 @@ func breadcrumbStacktrace(scope *sentry.Scope, managedError error) {
 			Level:    sentry.LevelError,
 		}, 10)
 		breadcrumbStacktrace(scope, e.Err)
-	} else if ok && e.Err != nil {
-		scope.AddBreadcrumb(&sentry.Breadcrumb{
-			Category: e.Code,
-			Message:  e.String(),
-			Level:    sentry.LevelError,
-		}, 10)
 	} else {
 		scope.AddBreadcrumb(&sentry.Breadcrumb{
 			Message: managedError.Error(),

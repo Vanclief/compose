@@ -48,8 +48,6 @@ func LogErrorStacktrace(err error) {
 	} else if e, ok := err.(*ez.Error); ok {
 		log.Debug().Msg(e.String())
 		LogErrorStacktrace(e.Err)
-	} else if ok && e.Err != nil {
-		log.Debug().Msg(e.String())
 	} else {
 		log.Debug().Msg(err.Error())
 	}
