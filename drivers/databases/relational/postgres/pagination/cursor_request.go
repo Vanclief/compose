@@ -18,7 +18,7 @@ type CursorRequest struct {
 
 func (r *CursorRequest) Validate() error {
 	if r.Limit > MAX_PAGE_SIZE {
-		return ez.New("CursorRequest.Validate", ez.EINVALID, "Page size must be less than 1000", nil)
+		return ez.New(ez.EINVALID, "Page size must be less than 1000", nil)
 	} else if r.Limit == 0 {
 		r.Limit = DEFAULT_LIMIT
 	}
@@ -29,12 +29,10 @@ func (r *CursorRequest) Validate() error {
 // ApplyCursorToQuery adds cursor-based pagination to a bun query based on the Paginatable model.
 // The order parameter is of type OrderDirection, ensuring that only valid order directions are used.
 func ApplyCursorToQuery[T Paginatable](query *bun.SelectQuery, r *CursorRequest, model T, order OrderDirection) (*bun.SelectQuery, error) {
-	const op = "pagination.ApplyCursorToQueryModel"
-
 	// Validate the request parameters (i
 	err := r.Validate()
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	// Increment the limit by 1 to check for a next page
@@ -46,7 +44,7 @@ func ApplyCursorToQuery[T Paginatable](query *bun.SelectQuery, r *CursorRequest,
 	// Decode the cursor from the request
 	cursor, err := DecodeCursor(r.Cursor)
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	// Apply keyset pagination conditions based on the decoded cursor
@@ -72,7 +70,7 @@ func ApplyCursorToQuery[T Paginatable](query *bun.SelectQuery, r *CursorRequest,
 		switch filter.Comparison {
 		case ">=", "<=":
 		default:
-			return nil, ez.New(op, ez.EINVALID, "Filter comparison must be >= or <=", nil)
+			return nil, ez.New(ez.EINVALID, "Filter comparison must be >= or <=", nil)
 		}
 		query = query.Where("? "+filter.Comparison+" ?", bun.Ident(filter.Field), filter.Value)
 	}

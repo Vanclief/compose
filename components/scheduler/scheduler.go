@@ -42,16 +42,14 @@ type Scheduler struct {
 
 // New creates a Scheduler that fires every tick duration.
 func New(tick time.Duration, opts ...Option) (*Scheduler, error) {
-	const op = "scheduler.New"
-
 	if tick <= 0 || tick%time.Minute != 0 {
-		return nil, ez.New(op, ez.EINVALID, "tick must be a positive multiple of 1 minute", nil)
+		return nil, ez.New(ez.EINVALID, "tick must be a positive multiple of 1 minute", nil)
 	}
 
 	gran := int(tick / time.Minute)
 	if 60%gran != 0 {
 		errMsg := fmt.Sprintf("tick must divide 60 minutes evenly, got %dmin", gran)
-		return nil, ez.New(op, ez.EINVALID, errMsg, nil)
+		return nil, ez.New(ez.EINVALID, errMsg, nil)
 	}
 
 	s := &Scheduler{
@@ -81,24 +79,22 @@ func New(tick time.Duration, opts ...Option) (*Scheduler, error) {
 // Add registers a recurring job at the given slot (must be a multiple of granularity).
 // id must be unique for each logical task; concurrent duplicates will be skipped.
 func (s *Scheduler) Add(id string, slot int, job Job) error {
-	const op = "Scheduler.Add"
-
 	if id == "" {
-		return ez.New(op, ez.EINVALID, "job id cannot be empty", nil)
+		return ez.New(ez.EINVALID, "job id cannot be empty", nil)
 	}
 	if job == nil {
-		return ez.New(op, ez.EINVALID, "job cannot be nil", nil)
+		return ez.New(ez.EINVALID, "job cannot be nil", nil)
 	}
 	if slot < 0 || slot > 59 || slot%s.granularity != 0 {
 		errMsg := fmt.Sprintf("invalid slot %d for tick %dmin", slot, s.granularity)
-		return ez.New(op, ez.EINVALID, errMsg, nil)
+		return ez.New(ez.EINVALID, errMsg, nil)
 	}
 
 	s.mu.Lock()
 	for _, sj := range s.slots[slot] {
 		if sj.id == id {
 			s.mu.Unlock()
-			return ez.New(op, ez.ECONFLICT, "job with this id already exists in this slot", nil)
+			return ez.New(ez.ECONFLICT, "job with this id already exists in this slot", nil)
 		}
 	}
 

@@ -37,7 +37,7 @@ func TestValidateEmailRejectsTooManyRecipients(t *testing.T) {
 		recipients[i] = "recipient@example.com"
 	}
 
-	err := validateEmail("test", Email{
+	err := validateEmail(Email{
 		Recipients: recipients,
 		HTMLBody:   `<h1>Hello World</h1>`,
 	})

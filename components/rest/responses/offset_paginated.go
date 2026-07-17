@@ -16,11 +16,9 @@ type OffsetBasedList struct {
 }
 
 func (r *OffsetBasedList) GenerateHash(data interface{}) error {
-	const op = "OffsetBasedList.GenerateHash"
-
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	hash := sha256.Sum256(jsonData)

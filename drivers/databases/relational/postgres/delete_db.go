@@ -10,15 +10,13 @@ import (
 
 // DeleteDatabase - Deletes an existing database with the given configuration
 func DeleteDatabase(cfg ConnectionConfig) error {
-	const op = "database.DeleteDatabase"
-
 	databaseName := cfg.Database
 
 	cfg.Database = "postgres" // We need to connect to the default database
 
 	db, err := ConnectToDatabase(&cfg)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	// Create a new database
@@ -28,7 +26,7 @@ func DeleteDatabase(cfg ConnectionConfig) error {
 	// Delete the database
 	_, err = db.ExecContext(ctx, "DROP DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	log.Info().
@@ -41,7 +39,7 @@ func DeleteDatabase(cfg ConnectionConfig) error {
 
 	err = db.Close()
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	return nil

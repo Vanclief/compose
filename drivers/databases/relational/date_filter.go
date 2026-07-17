@@ -36,19 +36,17 @@ func (db *DB) AddDateFilters(query *bun.SelectQuery, filters []DateFilter) *bun.
 }
 
 func (df *DateFilter) ParseToUnix(validDBColumns []string) error {
-	const op = "DateFilter.ParseToUnix"
-
 	if df.DateColumn == "" {
 		return nil
 	} else if !slices.Contains(validDBColumns, df.DateColumn) {
 		msg := fmt.Sprintf("%s is not a valid date filter", df.DateColumn)
-		return ez.New(op, ez.EINVALID, msg, nil)
+		return ez.New(ez.EINVALID, msg, nil)
 	}
 
 	if df.FromDate != "" {
 		fromDate, err := time.Parse(time.RFC3339, df.FromDate)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 
 		df.FromDateUnix = fromDate.Unix()
@@ -57,7 +55,7 @@ func (df *DateFilter) ParseToUnix(validDBColumns []string) error {
 	if df.ToDate != "" {
 		toDate, err := time.Parse(time.RFC3339, df.ToDate)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 
 		df.ToDateUnix = toDate.Unix()

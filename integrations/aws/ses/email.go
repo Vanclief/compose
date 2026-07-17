@@ -33,9 +33,7 @@ type Attachment struct {
 
 // SendEmail delivers an email utilizing the AWS SES service
 func (c *Client) SendEmail(ctx context.Context, email Email) (string, error) {
-	const op = "Client.SendEmail"
-
-	err := validateEmail(op, email)
+	err := validateEmail(email)
 	if err != nil {
 		return "", err
 	}
@@ -47,34 +45,32 @@ func (c *Client) SendEmail(ctx context.Context, email Email) (string, error) {
 	return c.sendSimpleEmail(ctx, email)
 }
 
-func validateEmail(op string, email Email) error {
+func validateEmail(email Email) error {
 	if len(email.Recipients) == 0 {
-		return ez.New(op, ez.EINVALID, "recipients cannot be empty", nil)
+		return ez.New(ez.EINVALID, "recipients cannot be empty", nil)
 	}
 
 	if len(email.Recipients) > maxEmailRecipients {
-		return ez.New(op, ez.EINVALID, "recipients cannot exceed 50", nil)
+		return ez.New(ez.EINVALID, "recipients cannot exceed 50", nil)
 	}
 
 	for i := range email.Recipients {
 		if email.Recipients[i] == "" {
-			return ez.New(op, ez.EINVALID, "recipient cannot be empty", nil)
+			return ez.New(ez.EINVALID, "recipient cannot be empty", nil)
 		}
 	}
 
 	if email.HTMLBody == "" && email.TextBody == "" {
-		return ez.New(op, ez.EINVALID, "email body cannot be empty", nil)
+		return ez.New(ez.EINVALID, "email body cannot be empty", nil)
 	}
 
 	return nil
 }
 
 func (c *Client) sendSimpleEmail(ctx context.Context, email Email) (string, error) {
-	const op = "Client.sendSimpleEmail"
-
 	svc, err := c.getSESService(ctx)
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	payload := &ses.SendEmailInput{
@@ -98,20 +94,20 @@ func (c *Client) sendSimpleEmail(ctx context.Context, email Email) (string, erro
 		// Refresh session
 		err = c.initSession(ctx)
 		if err != nil {
-			return "", ez.Wrap(op, sendErr)
+			return "", ez.Wrap(sendErr)
 		}
 
 		// Try once more with refreshed session
 		svc, err = c.getSESService(ctx)
 		if err != nil {
-			return "", ez.Wrap(op, err)
+			return "", ez.Wrap(err)
 		}
 
 		res, err = svc.SendEmail(ctx, payload)
 	}
 
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	return aws.ToString(res.MessageId), nil
@@ -138,11 +134,9 @@ func buildEmailBody(email Email) *types.Body {
 }
 
 func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) {
-	const op = "Client.sendRawEmail"
-
 	svc, err := c.getSESService(ctx)
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	msg := gomail.NewMessage()
@@ -167,7 +161,7 @@ func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) 
 	var rawEmail bytes.Buffer
 	_, err = msg.WriteTo(&rawEmail)
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	input := &ses.SendRawEmailInput{
@@ -181,20 +175,20 @@ func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) 
 		// Refresh session
 		err = c.initSession(ctx)
 		if err != nil {
-			return "", ez.Wrap(op, sendErr)
+			return "", ez.Wrap(sendErr)
 		}
 
 		// Try once more with refreshed session
 		svc, err = c.getSESService(ctx)
 		if err != nil {
-			return "", ez.Wrap(op, err)
+			return "", ez.Wrap(err)
 		}
 
 		output, err = svc.SendRawEmail(ctx, input)
 	}
 
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	return aws.ToString(output.MessageId), nil

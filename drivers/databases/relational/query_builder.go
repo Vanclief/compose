@@ -33,12 +33,10 @@ type Condition struct {
 }
 
 func (db *DB) QueryBuilder(groups []ConditionGroup) (query string, queryArgs []interface{}, err error) {
-	const op = "DB.QueryBuilder"
-
 	for i := range groups {
 		groupQuery, groupQueryArgs, err := db.parseConditions(groups[i].Conditions)
 		if err != nil {
-			return "", nil, ez.Wrap(op, err)
+			return "", nil, ez.Wrap(err)
 		}
 
 		if groupQuery == "" {
@@ -63,10 +61,8 @@ func (db *DB) QueryBuilder(groups []ConditionGroup) (query string, queryArgs []i
 }
 
 func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs []interface{}, err error) {
-	const op = "DB.parseConditions"
-
 	if len(conditions) == 0 {
-		return "", nil, ez.New(op, ez.EINVALID, "Need at least 1 element", nil)
+		return "", nil, ez.New(ez.EINVALID, "Need at least 1 element", nil)
 	}
 
 	for i, c := range conditions {
@@ -109,7 +105,7 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 			}
 
 		default:
-			return "", nil, ez.New(op, ez.EINVALID, "Query value type is not supported", nil)
+			return "", nil, ez.New(ez.EINVALID, "Query value type is not supported", nil)
 		}
 	}
 

@@ -9,11 +9,9 @@ import (
 )
 
 func (c *Client) ListBuckets(ctx context.Context) ([]types.Bucket, error) {
-	const op = "Client.ListBuckets"
-
 	spaces, err := c.s3.ListBuckets(ctx, &s3.ListBucketsInput{})
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return spaces.Buckets, nil

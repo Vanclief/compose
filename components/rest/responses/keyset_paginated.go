@@ -16,8 +16,6 @@ type KeysetBasedList struct {
 }
 
 func (r *KeysetBasedList) FinalizeResponse(data interface{}, dataLength int) (int, error) {
-	const op = "KeysetBasedList.FinalizeResponse"
-
 	responseLength := dataLength
 
 	if responseLength == 0 {
@@ -36,7 +34,7 @@ func (r *KeysetBasedList) FinalizeResponse(data interface{}, dataLength int) (in
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return responseLength, ez.Wrap(op, err)
+		return responseLength, ez.Wrap(err)
 	}
 
 	hash := sha256.Sum256(jsonData)

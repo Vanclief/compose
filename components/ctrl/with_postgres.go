@@ -9,11 +9,9 @@ import (
 )
 
 func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
-	const op = "BaseController.WithPostgres"
-
 	db, err := postgres.ConnectToDatabase(cfg)
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	if cfg.Verbose {
@@ -24,13 +22,13 @@ func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []i
 
 	for _, option := range options {
 		if err := option(db); err != nil {
-			return nil, ez.Wrap(op, err)
+			return nil, ez.Wrap(err)
 		}
 	}
 
 	err = db.CreateTables(models)
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return db, nil

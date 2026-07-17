@@ -13,8 +13,6 @@ type DB struct {
 
 // CreateTables - Creates the database schema if it doesn't already exist
 func (db *DB) CreateTables(models []interface{}) error {
-	const op = "database.CreateTables"
-
 	ctx := context.Background()
 
 	for _, model := range models {
@@ -23,7 +21,7 @@ func (db *DB) CreateTables(models []interface{}) error {
 			IfNotExists().
 			Exec(ctx)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 	}
 
@@ -32,8 +30,6 @@ func (db *DB) CreateTables(models []interface{}) error {
 
 // RegisterModels - Registers many-to-many relationship
 func (db *DB) RegisterModels(models []interface{}) error {
-	const op = "database.RegisterModels"
-
 	for _, model := range models {
 		db.RegisterModel(model)
 	}
@@ -43,14 +39,12 @@ func (db *DB) RegisterModels(models []interface{}) error {
 
 // ResetTables - Drops and recreates the database schema
 func (db *DB) ResetTables(models []interface{}) error {
-	const op = "database.ResetTables"
-
 	ctx := context.Background()
 
 	for _, model := range models {
 		err := db.ResetModel(ctx, model)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 	}
 
@@ -59,15 +53,13 @@ func (db *DB) ResetTables(models []interface{}) error {
 
 // CreateExtensions - Creates a database extension if it doesn't already exist
 func (db *DB) CreateExtensions(extensions []string) error {
-	const op = "database.CreateExtensions"
-
 	ctx := context.Background()
 
 	// TODO: Only works with PSQL
 	for _, extension := range extensions {
 		_, err := db.NewRaw("CREATE EXTENSION IF NOT EXISTS ?", bun.Ident(extension)).Exec(ctx)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 	}
 

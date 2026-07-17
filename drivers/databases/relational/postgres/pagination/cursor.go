@@ -22,11 +22,9 @@ type Cursor struct {
 
 // EncodeCursor creates a base64 encoded cursor from a Cursor struct
 func EncodeCursor(c Cursor) (string, error) {
-	const op = "pagination.EncodeCursor"
-
 	jsonBytes, err := json.Marshal(c)
 	if err != nil {
-		return "", ez.New(op, ez.EINTERNAL, "failed to marshal cursor", err)
+		return "", ez.New(ez.EINTERNAL, "failed to marshal cursor", err)
 	}
 
 	return base64.URLEncoding.EncodeToString(jsonBytes), nil
@@ -34,21 +32,19 @@ func EncodeCursor(c Cursor) (string, error) {
 
 // DecodeCursor decodes a base64 encoded cursor string into a Cursor struct
 func DecodeCursor(encodedCursor string) (*Cursor, error) {
-	const op = "pagination.DecodeCursor"
-
 	if encodedCursor == "" {
 		return nil, nil
 	}
 
 	jsonBytes, err := base64.URLEncoding.DecodeString(encodedCursor)
 	if err != nil {
-		return nil, ez.New(op, ez.EINVALID, "invalid cursor format", err)
+		return nil, ez.New(ez.EINVALID, "invalid cursor format", err)
 	}
 
 	var cursor Cursor
 	err = json.Unmarshal(jsonBytes, &cursor)
 	if err != nil {
-		return nil, ez.New(op, ez.EINVALID, "invalid cursor data", err)
+		return nil, ez.New(ez.EINVALID, "invalid cursor data", err)
 	}
 
 	return &cursor, nil

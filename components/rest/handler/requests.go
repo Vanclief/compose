@@ -20,9 +20,9 @@ func (h *BaseHandler) handleEchoError(c echo.Context, op string, request request
 		} else {
 			msg = fmt.Sprintf("%v", echoErr.Message)
 		}
-		return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, msg, err))
+		return h.ManageError(c, op, request, ez.New(ez.EINVALID, msg, err))
 	}
-	return h.ManageError(c, op, request, ez.New(op, ez.EINVALID, err.Error(), err))
+	return h.ManageError(c, op, request, ez.New(ez.EINVALID, err.Error(), err))
 }
 
 func (h *BaseHandler) JSONResponse(c echo.Context, op string, request requests.Request, body requests.Body) error {
@@ -74,7 +74,7 @@ func (h *BaseHandler) BlobResponse(c echo.Context, op string, request requests.R
 
 	bytes, ok := response.([]byte)
 	if !ok {
-		return h.ManageError(c, op, request, ez.New(op, ez.EINTERNAL, "HandleRequest response is not a byte slice", nil))
+		return h.ManageError(c, op, request, ez.New(ez.EINTERNAL, "HandleRequest response is not a byte slice", nil))
 	}
 
 	return c.Blob(http.StatusOK, contentType, bytes)

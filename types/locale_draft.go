@@ -32,8 +32,6 @@ type Locale string
 
 // NewLocaleString creates a validated locale string
 func NewLocaleString(locale string) (Locale, error) {
-	const op = "NewLocaleString"
-
 	locale = strings.TrimSpace(locale)
 	if locale == "" {
 		return Locale(DEFAULT_LOCALE), nil
@@ -96,16 +94,14 @@ func (l Locale) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements json.Unmarshaler
 func (l *Locale) UnmarshalJSON(data []byte) error {
-	const op = "Locale.UnmarshalJSON"
-
 	var str string
 	if err := json.Unmarshal(data, &str); err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	validated, err := NewLocaleString(str)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	*l = validated

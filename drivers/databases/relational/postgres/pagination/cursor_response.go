@@ -23,8 +23,6 @@ func (r *CursorResponse) GetItems() interface{} {
 
 // BuildCursorResponse processes the query results and creates a paginated response
 func BuildCursorResponse[T Paginatable](items []T, limit int) (*CursorResponse, error) {
-	const op = "pagination.BuildCursorResponse"
-
 	hasNextPage := len(items) > limit
 	if hasNextPage {
 		items = items[:limit]
@@ -43,14 +41,14 @@ func BuildCursorResponse[T Paginatable](items []T, limit int) (*CursorResponse, 
 		var err error
 		nextCursor, err = EncodeCursor(cursor)
 		if err != nil {
-			return nil, ez.Wrap(op, err)
+			return nil, ez.Wrap(err)
 		}
 	}
 
 	// Calculate hash from items
 	jsonData, err := json.Marshal(items)
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	h := sha256.Sum256(jsonData)

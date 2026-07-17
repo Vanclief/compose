@@ -28,8 +28,6 @@ type WithPromtailParams struct {
 }
 
 func (p WithPromtailParams) Validate() error {
-	const op = "WithPromtailParams.Validate"
-
 	err := validation.ValidateStruct(&p,
 		validation.Field(&p.App, validation.Required),
 		validation.Field(&p.Environment, validation.Required),
@@ -37,7 +35,7 @@ func (p WithPromtailParams) Validate() error {
 		validation.Field(&p.PromtailUsername, validation.Required),
 	)
 	if err != nil {
-		return ez.New(op, ez.EINVALID, err.Error(), nil)
+		return ez.New(ez.EINVALID, err.Error(), nil)
 	}
 
 	if p.PromtailTimeoutMS == 0 {

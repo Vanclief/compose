@@ -24,8 +24,6 @@ func UnixSecondsNow() UnixSeconds {
 
 // UnixSecondsFromRFC3339 parses an RFC3339/RFC3339Nano string into Unix seconds
 func UnixSecondsFromRFC3339(dateString string) (UnixSeconds, error) {
-	const op = "UnixSecondsFromRFC3339"
-
 	date, err := time.Parse(time.RFC3339, dateString)
 	if err == nil {
 		return UnixSecondsFromTime(date), nil
@@ -33,7 +31,7 @@ func UnixSecondsFromRFC3339(dateString string) (UnixSeconds, error) {
 
 	date, err = time.Parse(time.RFC3339Nano, dateString)
 	if err != nil {
-		return 0, ez.New(op, ez.EINVALID, "invalid RFC3339 format", err)
+		return 0, ez.New(ez.EINVALID, "invalid RFC3339 format", err)
 	}
 
 	return UnixSeconds(date.Unix()), nil
@@ -54,12 +52,10 @@ func (us UnixSeconds) FormatDate() string {
 
 // FormatDateInTimezone returns dd/mm/yyyy rendered in the provided IANA timezone
 func (us UnixSeconds) FormatDateInTimezone(tz string) (string, error) {
-	const op = "UnixSeconds.FormatDateInTimezone"
-
 	location, err := time.LoadLocation(tz)
 	if err != nil {
 		errMsg := fmt.Sprintf("invalid timezone: %s", tz)
-		return "", ez.New(op, ez.EINVALID, errMsg, err)
+		return "", ez.New(ez.EINVALID, errMsg, err)
 	}
 
 	return us.Time().In(location).Format("02/01/2006"), nil
@@ -72,12 +68,10 @@ func (us UnixSeconds) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON accepts a JSON number (unix seconds)
 func (us *UnixSeconds) UnmarshalJSON(data []byte) error {
-	const op = "UnixSeconds.UnmarshalJSON"
-
 	var seconds int64
 	err := json.Unmarshal(data, &seconds)
 	if err != nil {
-		return ez.New(op, ez.EINVALID, "value must be a JSON number (unix seconds)", err)
+		return ez.New(ez.EINVALID, "value must be a JSON number (unix seconds)", err)
 	}
 
 	*us = UnixSeconds(seconds)

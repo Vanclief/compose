@@ -21,18 +21,16 @@ type BaseController struct {
 }
 
 func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, configOpts ...configurator.Option) error {
-	const op = "BaseController.LoadEnvVarsAndConfig"
-
 	cfg, err := configurator.New(configOpts...)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	c.Environment = cfg.Environment
 
 	err = cfg.LoadEnvVarsAndConfig(envVarsOutput, configOutput)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	return nil
@@ -56,11 +54,9 @@ func (c *BaseController) WithZerolog() {
 }
 
 func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error {
-	const op = "BaseController.WithPromtail"
-
 	writer, err := promtail.NewWriter(params)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	c.logWriter = writer

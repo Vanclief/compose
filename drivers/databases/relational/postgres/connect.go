@@ -18,8 +18,6 @@ import (
 // ConnectToDatabase - Creates a new connection to a PSQL database with
 // the given configuration.
 func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
-	const op = "postgres.ConnectToDatabase"
-
 	sslmode := "disable"
 	if cfg.SSL {
 		sslmode = "require"
@@ -78,7 +76,7 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 
 	_, err := db.ExecContext(ctx, "SELECT 1")
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return &relational.DB{DB: db}, nil

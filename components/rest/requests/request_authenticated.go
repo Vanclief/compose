@@ -11,8 +11,6 @@ type AuthenticatedRequest struct {
 }
 
 func (r StandardRequest) Authenticate() (*AuthenticatedRequest, error) {
-	const op = "StandardRequest.Authenticate"
-
 	authRequest := &AuthenticatedRequest{
 		StandardRequest: r,
 		APIKey:          r.Header.Get("API-KEY"),
@@ -20,9 +18,9 @@ func (r StandardRequest) Authenticate() (*AuthenticatedRequest, error) {
 	}
 
 	if authRequest.APIKey == "" {
-		return nil, ez.New(op, ez.EINVALID, "Request is missing API-KEY authentication header", nil)
+		return nil, ez.New(ez.EINVALID, "Request is missing API-KEY authentication header", nil)
 	} else if authRequest.APISecret == "" {
-		return nil, ez.New(op, ez.EINVALID, "Request is missing API-SECRET authentication header", nil)
+		return nil, ez.New(ez.EINVALID, "Request is missing API-SECRET authentication header", nil)
 	}
 
 	return authRequest, nil

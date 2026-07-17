@@ -10,11 +10,9 @@ import (
 
 // SendSMS Send SMS using AWS SNS
 func (c *Client) SendSMS(ctx context.Context, phoneNumber string, message string) (string, error) {
-	const op = "Client.SendSMS"
-
 	svc, err := c.getSNSService(ctx)
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	params := &sns.PublishInput{
@@ -26,20 +24,20 @@ func (c *Client) SendSMS(ctx context.Context, phoneNumber string, message string
 	if err != nil && isSessionError(err) {
 		// Refresh session
 		if refreshErr := c.initSession(ctx); refreshErr != nil {
-			return "", ez.Wrap(op, err) // Return original error if refresh fails
+			return "", ez.Wrap(err) // Return original error if refresh fails
 		}
 
 		// Try once more with refreshed session
 		svc, svcErr := c.getSNSService(ctx)
 		if svcErr != nil {
-			return "", ez.Wrap(op, svcErr)
+			return "", ez.Wrap(svcErr)
 		}
 
 		resp, err = svc.Publish(ctx, params)
 	}
 
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	return aws.ToString(resp.MessageId), nil

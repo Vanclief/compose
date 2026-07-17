@@ -25,11 +25,9 @@ func init() {
 
 // NewPhoneNumber validates and returns a PhoneNumber.
 func NewPhoneNumber(s string) (PhoneNumber, error) {
-	const op = "validate.NewPhoneNumber"
-
 	err := ValidatePhoneNumber(s)
 	if err != nil {
-		return "", ez.Wrap(op, err)
+		return "", ez.Wrap(err)
 	}
 
 	return PhoneNumber(s), nil
@@ -37,11 +35,9 @@ func NewPhoneNumber(s string) (PhoneNumber, error) {
 
 // Validate re-validates the value (useful after deserialization).
 func (p PhoneNumber) Validate() error {
-	const op = "validate.PhoneNumber.Validate"
-
 	err := ValidatePhoneNumber(string(p))
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 	return nil
 }
@@ -57,17 +53,15 @@ func (p PhoneNumber) MarshalJSON() ([]byte, error) {
 }
 
 func (p *PhoneNumber) UnmarshalJSON(b []byte) error {
-	const op = "validate.PhoneNumber.UnmarshalJSON"
-
 	var s string
 	err := json.Unmarshal(b, &s)
 	if err != nil {
-		return ez.New(op, ez.EINVALID, "invalid JSON for phone number", err)
+		return ez.New(ez.EINVALID, "invalid JSON for phone number", err)
 	}
 
 	v, err := NewPhoneNumber(s)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	*p = v
@@ -79,11 +73,9 @@ func (p PhoneNumber) MarshalText() ([]byte, error) {
 }
 
 func (p *PhoneNumber) UnmarshalText(text []byte) error {
-	const op = "validate.PhoneNumber.UnmarshalText"
-
 	v, err := NewPhoneNumber(string(text))
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	*p = v
@@ -97,17 +89,15 @@ func (p PhoneNumber) Value() (driver.Value, error) {
 }
 
 func (p *PhoneNumber) Scan(value any) error {
-	const op = "validate.PhoneNumber.Scan"
-
 	if value == nil {
-		return ez.New(op, ez.EINVALID, "phone number cannot be NULL", nil)
+		return ez.New(ez.EINVALID, "phone number cannot be NULL", nil)
 	}
 
 	switch v := value.(type) {
 	case string:
 		pn, err := NewPhoneNumber(v)
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 		*p = pn
 		return nil
@@ -115,33 +105,31 @@ func (p *PhoneNumber) Scan(value any) error {
 	case []byte:
 		pn, err := NewPhoneNumber(string(v))
 		if err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 		*p = pn
 		return nil
 
 	default:
 		msg := fmt.Sprintf("unsupported Scan type %T for PhoneNumber", value)
-		return ez.New(op, ez.EINVALID, msg, nil)
+		return ez.New(ez.EINVALID, msg, nil)
 	}
 }
 
 // --- reusable validator ---
 
 func ValidatePhoneNumber(s string) error {
-	const op = "validate.ValidatePhoneNumber"
-
 	if s == "" {
-		return ez.New(op, ez.EINVALID, "phone number is empty", nil)
+		return ez.New(ez.EINVALID, "phone number is empty", nil)
 	}
 
 	if phoneRegex == nil {
-		return ez.New(op, ez.EINTERNAL, "phone validator not initialized", nil)
+		return ez.New(ez.EINTERNAL, "phone validator not initialized", nil)
 	}
 
 	if !phoneRegex.MatchString(s) {
 		msg := fmt.Sprintf("the phone number %s is invalid", s)
-		return ez.New(op, ez.EINVALID, msg, nil)
+		return ez.New(ez.EINVALID, msg, nil)
 	}
 
 	return nil

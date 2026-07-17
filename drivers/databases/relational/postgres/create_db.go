@@ -10,15 +10,13 @@ import (
 
 // CreateDatabase - Creates a new database with the given configuration
 func CreateDatabase(cfg ConnectionConfig) error {
-	const op = "postgres.CreateDatabase"
-
 	databaseName := cfg.Database
 
 	cfg.Database = "postgres" // We need to connect to the default database
 
 	db, err := ConnectToDatabase(&cfg)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	// Create a new database
@@ -27,7 +25,7 @@ func CreateDatabase(cfg ConnectionConfig) error {
 
 	_, err = db.ExecContext(ctx, "CREATE DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	log.Info().
@@ -40,7 +38,7 @@ func CreateDatabase(cfg ConnectionConfig) error {
 
 	err = db.Close()
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	return nil

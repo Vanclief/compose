@@ -42,14 +42,12 @@ type Client struct {
 
 // NewClient creates and returns a new AWS Client from configuration
 func NewClient(ctx context.Context, region, accessKey, secretKey string, opts ...ClientOption) (*Client, error) {
-	const op = "aws.NewClient"
-
 	if region == "" {
-		return nil, ez.New(op, ez.EINVALID, "Region cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "Region cannot be empty", nil)
 	} else if accessKey == "" {
-		return nil, ez.New(op, ez.EINVALID, "AccessKey cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "AccessKey cannot be empty", nil)
 	} else if secretKey == "" {
-		return nil, ez.New(op, ez.EINVALID, "SecretKey cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "SecretKey cannot be empty", nil)
 	}
 
 	client := &Client{
@@ -67,7 +65,7 @@ func NewClient(ctx context.Context, region, accessKey, secretKey string, opts ..
 
 	// Initialize sessions
 	if err := client.initSession(ctx); err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return client, nil
@@ -75,8 +73,6 @@ func NewClient(ctx context.Context, region, accessKey, secretKey string, opts ..
 
 // initSession initializes the AWS session and services
 func (c *Client) initSession(ctx context.Context) error {
-	const op = "Client.initSession"
-
 	c.sessionMutex.Lock()
 	defer c.sessionMutex.Unlock()
 
@@ -86,7 +82,7 @@ func (c *Client) initSession(ctx context.Context) error {
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.SecretAccessKey, "")),
 	)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	c.awsConfig = awsCfg
@@ -103,8 +99,6 @@ func (c *Client) initSession(ctx context.Context) error {
 
 // ensureValidSession checks if the session is valid and refreshes it if needed
 func (c *Client) ensureValidSession(ctx context.Context) error {
-	const op = "Client.ensureValidSession"
-
 	c.sessionMutex.RLock()
 	sessionValid := c.sesSvc != nil &&
 		c.snsSvc != nil &&
@@ -114,7 +108,7 @@ func (c *Client) ensureValidSession(ctx context.Context) error {
 	// Refresh session if it's nil or about to expire
 	if !sessionValid {
 		if err := c.initSession(ctx); err != nil {
-			return ez.Wrap(op, err)
+			return ez.Wrap(err)
 		}
 	}
 

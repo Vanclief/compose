@@ -14,12 +14,10 @@ import (
 )
 
 func WithZerolog(params *WithPromtailParams) error {
-	const op = "promtail.WithZeroLog"
-
 	// Setup PromTail
 	writer, err := NewWriter(params)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	// Setup the logger
@@ -49,11 +47,9 @@ func WithZerolog(params *WithPromtailParams) error {
 }
 
 func NewWriter(params *WithPromtailParams) (io.Writer, error) {
-	const op = "promtail.NewWriter"
-
 	err := params.Validate()
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	if params.PromtailEnabled {
@@ -83,7 +79,7 @@ func NewWriter(params *WithPromtailParams) (io.Writer, error) {
 			opts...,
 		)
 		if err != nil {
-			return nil, ez.Wrap(op, err)
+			return nil, ez.Wrap(err)
 		}
 
 		return io.MultiWriter(os.Stdout, promtail), nil

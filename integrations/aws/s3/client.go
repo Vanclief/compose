@@ -20,14 +20,12 @@ type Client struct {
 }
 
 func NewClient(ctx context.Context, region, accessKey, secretKey, bucket string, opts ...ClientOption) (*Client, error) {
-	const op = "s3.NewClient"
-
 	if region == "" {
-		return nil, ez.New(op, ez.EINVALID, "Region cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "Region cannot be empty", nil)
 	} else if accessKey == "" {
-		return nil, ez.New(op, ez.EINVALID, "AccessKey cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "AccessKey cannot be empty", nil)
 	} else if secretKey == "" {
-		return nil, ez.New(op, ez.EINVALID, "SecretKey cannot be empty", nil)
+		return nil, ez.New(ez.EINVALID, "SecretKey cannot be empty", nil)
 	}
 
 	awsCfg, err := config.LoadDefaultConfig(
@@ -36,7 +34,7 @@ func NewClient(ctx context.Context, region, accessKey, secretKey, bucket string,
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	// Apply opts

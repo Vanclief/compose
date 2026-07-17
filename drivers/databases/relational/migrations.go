@@ -10,8 +10,6 @@ import (
 
 // RunMigrations - Executes all pending migrations
 func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
-	const op = "database.RunMigrations"
-
 	ctx := context.Background()
 
 	if len(migrations.Sorted()) == 0 {
@@ -22,7 +20,7 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 	migrator := migrate.NewMigrator(db.DB, migrations)
 	err := migrator.Init(ctx)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	group, err := migrator.Migrate(ctx)
@@ -34,7 +32,7 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 		if rollbackErr != nil {
 			log.Error().Err(rollbackErr).Msg("Failed to rollback migration")
 		}
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	if group.IsZero() {
@@ -54,19 +52,17 @@ func (db *DB) RunMigrations(migrations *migrate.Migrations) error {
 
 // RollbackLastMigration - Rollbacks the last migration
 func (db *DB) RollbackLastMigration(migrations *migrate.Migrations) error {
-	const op = "database.RollbackLastMigration"
-
 	ctx := context.Background()
 
 	migrator := migrate.NewMigrator(db.DB, migrations)
 	err := migrator.Init(ctx)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	group, err := migrator.Rollback(ctx)
 	if err != nil {
-		return ez.Wrap(op, err)
+		return ez.Wrap(err)
 	}
 
 	if group.IsZero() {

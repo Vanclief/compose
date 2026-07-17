@@ -11,11 +11,9 @@ var phoneRegex = regexp.MustCompile("\\+(9[976]\\d|8[987530]\\d|6[987]\\d|5[90]\
 
 // PhoneNumber checks if a phone number is valid
 func PhoneNumber(number string) error {
-	const op = "validate.PhoneNumber"
-
 	if !phoneRegex.MatchString(number) {
 		msg := fmt.Sprintf("The phone number %s is invalid", number)
-		return ez.New(op, ez.EINVALID, msg, nil)
+		return ez.New(ez.EINVALID, msg, nil)
 	}
 
 	return nil

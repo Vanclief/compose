@@ -15,13 +15,12 @@ type Filter struct {
 
 // Handler helper to convert date strings to filters
 func ParseDateToFilter(column, fromDate, toDate string) ([]Filter, error) {
-	const op = "query.ParseDateToFilter"
 	var filters []Filter
 
 	if fromDate != "" {
 		fromTimestamp, err := time.Parse(time.RFC3339, fromDate)
 		if err != nil {
-			return nil, ez.New(op, ez.EINVALID, "invalid from_date format", err)
+			return nil, ez.New(ez.EINVALID, "invalid from_date format", err)
 		}
 		filters = append(filters, Filter{
 			Field:      column,
@@ -33,7 +32,7 @@ func ParseDateToFilter(column, fromDate, toDate string) ([]Filter, error) {
 	if toDate != "" {
 		toTimestamp, err := time.Parse(time.RFC3339, toDate)
 		if err != nil {
-			return nil, ez.New(op, ez.EINVALID, "invalid to_date format", err)
+			return nil, ez.New(ez.EINVALID, "invalid to_date format", err)
 		}
 		// Set to end of day
 		toTimestamp = toTimestamp.Add(24*time.Hour - time.Second)

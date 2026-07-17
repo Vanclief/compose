@@ -22,10 +22,8 @@ type PresignedPostForm struct {
 }
 
 func (c *Client) PresignPutObject(ctx context.Context, input *s3.PutObjectInput, expires time.Duration) (*PresignedRequest, error) {
-	const op = "Client.PresignPutObject"
-
 	if input == nil {
-		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+		return nil, ez.New(ez.EINVALID, "input is required", nil)
 	}
 
 	input.Bucket = aws.String(c.Bucket)
@@ -36,7 +34,7 @@ func (c *Client) PresignPutObject(ctx context.Context, input *s3.PutObjectInput,
 		}
 	})
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return &PresignedRequest{
@@ -47,10 +45,8 @@ func (c *Client) PresignPutObject(ctx context.Context, input *s3.PutObjectInput,
 }
 
 func (c *Client) PresignPostObject(ctx context.Context, input *s3.PutObjectInput, expires time.Duration, conditions ...interface{}) (*PresignedPostForm, error) {
-	const op = "Client.PresignPostObject"
-
 	if input == nil {
-		return nil, ez.New(op, ez.EINVALID, "input is required", nil)
+		return nil, ez.New(ez.EINVALID, "input is required", nil)
 	}
 
 	input.Bucket = aws.String(c.Bucket)
@@ -64,7 +60,7 @@ func (c *Client) PresignPostObject(ctx context.Context, input *s3.PutObjectInput
 		}
 	})
 	if err != nil {
-		return nil, ez.Wrap(op, err)
+		return nil, ez.Wrap(err)
 	}
 
 	return &PresignedPostForm{
