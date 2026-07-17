@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vanclief/compose/types"
 )
 
 const DEFAULT_TIMEOUT = 15 * time.Second
@@ -20,6 +21,8 @@ type Request interface {
 	GetCreatedAt() time.Time
 	GetContext() context.Context
 	SetContext(context.Context)
+	GetLocale() string
+	SetLocale(string)
 }
 
 type StandardRequest struct {
@@ -31,6 +34,7 @@ type StandardRequest struct {
 	CreatedAt time.Time
 	Context   context.Context
 	Cancel    context.CancelFunc
+	Locale    string
 }
 
 // Option is a function that modifies the Request.
@@ -49,6 +53,8 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 	ctx := context.WithValue(context.Background(), "request-id", id)
 	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
 
+	locale, _ := types.NewLocaleString(header.Get("Accept-Language"))
+
 	request := &StandardRequest{
 		ID:        id,
 		Client:    header.Get("Client"),
@@ -57,6 +63,7 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 		Context:   ctx,
 		CreatedAt: time.Now(),
 		Cancel:    cancel,
+		Locale:    locale.String(),
 	}
 
 	// Apply each Option to the new request
@@ -101,6 +108,18 @@ func (r *StandardRequest) SetBody(body Body) {
 
 func (r *StandardRequest) SetContext(ctx context.Context) {
 	r.Context = ctx
+}
+
+// GetLocale returns the locale used to localize the response, e.g. "es-MX".
+// New negotiates it from the Accept-Language header, so it is always set.
+func (r *StandardRequest) GetLocale() string {
+	return r.Locale
+}
+
+// SetLocale overrides the negotiated locale, e.g. with an authenticated
+// user's saved preference.
+func (r *StandardRequest) SetLocale(locale string) {
+	r.Locale = locale
 }
 
 type Body interface {

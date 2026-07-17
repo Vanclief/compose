@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/vanclief/ez"
+	"golang.org/x/text/language"
 )
 
 // Language represents supported languages
@@ -30,31 +31,38 @@ func (l Language) IsValid() bool {
 // Locale is a string type with validation
 type Locale string
 
-// NewLocaleString creates a validated locale string
+// NewLocaleString creates a validated locale string from a single BCP 47 tag
+// ("es-MX") or a full Accept-Language header ("es-MX,es;q=0.9,en;q=0.8").
+// Tags are tried in the user's preference order: the first one with a
+// supported language wins, keeping its region when it has an explicit one.
+// Unsupported or malformed input falls back to DEFAULT_LOCALE instead of
+// returning an error.
 func NewLocaleString(locale string) (Locale, error) {
 	locale = strings.TrimSpace(locale)
 	if locale == "" {
-		return Locale(DEFAULT_LOCALE), nil
+		return DEFAULT_LOCALE, nil
 	}
 
-	// TODO: Currently I am avoiding returning errors and just returning a
-	// locale, ideally I would need to implement the BCP 47 standard and return
-	// whatever user locale they have and handle different locales in the app
-
-	parts := strings.Split(locale, "-")
-	if len(parts) < 1 {
-		// If it does not have a standard format, return the default locale
-		return Locale(DEFAULT_LOCALE), nil
+	tags, _, err := language.ParseAcceptLanguage(locale)
+	if err != nil {
+		return DEFAULT_LOCALE, nil
 	}
 
-	lang := Language(strings.ToLower(parts[0]))
-	if !lang.IsValid() {
-		// If the language is unsupported, return the default locale
-		return Locale(DEFAULT_LOCALE), nil
-	}
+	for _, tag := range tags {
+		base, _ := tag.Base()
 
-	if len(locale) == 2 {
-		switch Language(locale) {
+		lang := Language(base.String())
+		if !lang.IsValid() {
+			continue
+		}
+
+		// Only keep regions the user actually sent, not ones x/text inferred
+		region, confidence := tag.Region()
+		if confidence == language.Exact {
+			return Locale(fmt.Sprintf("%s-%s", lang, region)), nil
+		}
+
+		switch lang {
 		case English:
 			return Locale("en-US"), nil
 		case Spanish:
@@ -62,9 +70,7 @@ func NewLocaleString(locale string) (Locale, error) {
 		}
 	}
 
-	region := strings.ToUpper(parts[1])
-
-	return Locale(fmt.Sprintf("%s-%s", lang, region)), nil
+	return DEFAULT_LOCALE, nil
 }
 
 // Language returns the language part of the locale
