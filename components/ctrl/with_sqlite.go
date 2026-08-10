@@ -4,12 +4,14 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/drivers/databases/relational"
-	"github.com/vanclief/compose/drivers/databases/relational/postgres"
+	"github.com/vanclief/compose/drivers/databases/relational/sqlite"
 	"github.com/vanclief/ez"
 )
 
-func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
-	db, err := postgres.ConnectToDatabase(cfg)
+// WithSQLite - Opens a SQLite database and creates the schema from the
+// model structs if it doesn't already exist.
+func (c *BaseController) WithSQLite(cfg *sqlite.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
+	db, err := sqlite.ConnectToDatabase(cfg)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}

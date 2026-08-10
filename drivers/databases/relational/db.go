@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
 	"github.com/vanclief/ez"
 )
 
@@ -51,11 +52,20 @@ func (db *DB) ResetTables(models []interface{}) error {
 	return nil
 }
 
-// CreateExtensions - Creates a database extension if it doesn't already exist
+// CreateExtensions - Creates a database extension if it doesn't already
+// exist. Extensions are a Postgres concept, so requesting any on another
+// dialect is an error rather than a silent no-op.
 func (db *DB) CreateExtensions(extensions []string) error {
 	ctx := context.Background()
 
-	// TODO: Only works with PSQL
+	if len(extensions) == 0 {
+		return nil
+	}
+
+	if db.Dialect().Name() != dialect.PG {
+		return ez.New(ez.ENOTIMPLEMENTED, "Database extensions are only supported by PostgreSQL", nil)
+	}
+
 	for _, extension := range extensions {
 		_, err := db.NewRaw("CREATE EXTENSION IF NOT EXISTS ?", bun.Ident(extension)).Exec(ctx)
 		if err != nil {
