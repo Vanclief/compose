@@ -3,13 +3,17 @@ package ctrl
 import (
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
+	"github.com/uptrace/bun/migrate"
 	"github.com/vanclief/compose/drivers/databases/relational"
-	"github.com/vanclief/compose/drivers/databases/relational/postgres"
+	"github.com/vanclief/compose/drivers/databases/relational/sqlite"
 	"github.com/vanclief/ez"
 )
 
-func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
-	db, err := postgres.ConnectToDatabase(cfg)
+// WithSQLite - Opens a SQLite database and brings its schema up to date with
+// InitSchema (see drivers/databases/relational/MIGRATIONS.md for the schema
+// contract).
+func (c *BaseController) WithSQLite(cfg *sqlite.ConnectionConfig, models []interface{}, migrations *migrate.Migrations, options ...relational.Option) (*relational.DB, error) {
+	db, err := sqlite.ConnectToDatabase(cfg)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
@@ -28,7 +32,7 @@ func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []i
 		}
 	}
 
-	err = db.CreateTables(models)
+	err = db.InitSchema(models, migrations)
 	if err != nil {
 		db.Close() // nolint:errcheck // The initialization error is the one that matters
 		return nil, ez.Wrap(err)

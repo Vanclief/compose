@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
 	"github.com/vanclief/ez"
 )
 
@@ -13,10 +14,12 @@ type DB struct {
 
 // CreateTables - Creates the database schema if it doesn't already exist
 func (db *DB) CreateTables(models []interface{}) error {
-	ctx := context.Background()
+	return createTables(context.Background(), db.DB, models)
+}
 
+func createTables(ctx context.Context, idb bun.IDB, models []interface{}) error {
 	for _, model := range models {
-		_, err := db.NewCreateTable().
+		_, err := idb.NewCreateTable().
 			Model(model).
 			IfNotExists().
 			Exec(ctx)
@@ -51,11 +54,16 @@ func (db *DB) ResetTables(models []interface{}) error {
 	return nil
 }
 
-// CreateExtensions - Creates a database extension if it doesn't already exist
+// CreateExtensions - Creates a database extension if it doesn't already
+// exist. Extensions are a Postgres concept, so this is a no-op on any other
+// dialect.
 func (db *DB) CreateExtensions(extensions []string) error {
 	ctx := context.Background()
 
-	// TODO: Only works with PSQL
+	if db.Dialect().Name() != dialect.PG {
+		return nil
+	}
+
 	for _, extension := range extensions {
 		_, err := db.NewRaw("CREATE EXTENSION IF NOT EXISTS ?", bun.Ident(extension)).Exec(ctx)
 		if err != nil {
