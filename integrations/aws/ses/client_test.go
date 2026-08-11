@@ -2,6 +2,7 @@ package ses
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -26,7 +27,7 @@ type TestConfig struct {
 	SES Config ` mapstucture:"ses"`
 }
 
-func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars) {
+func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars, error) {
 	opts := []configurator.Option{}
 	opts = append(opts, configurator.WithRequiredEnv("ENVIRONMENT"))
 	opts = append(opts, configurator.WithRequiredEnv("AWS_SECRET_KEY"))
@@ -37,33 +38,43 @@ func newTestClient(sesOpts ...ClientOption) (*Client, *EnvVars) {
 
 	cfg, err := configurator.New(opts...)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
 	env := &EnvVars{}
 	err = cfg.LoadEnvVars(env)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
 	testConfig := &TestConfig{}
 	err = cfg.LoadConfiguration(testConfig)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
 	sesClient, err := NewClient(context.Background(), testConfig.SES.Region, testConfig.SES.AccessKeyID, env.AWSSecretKey, sesOpts...)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
-	return sesClient, env
+	return sesClient, env, nil
 }
 
 func (suite *TestSuite) SetupTest() {
-	var env *EnvVars
+	// Without AWS credentials the suite skips so `go test ./...` stays
+	// runnable on any machine. Setting COMPOSE_TEST_AWS turns missing
+	// credentials into a hard failure so regressions cannot hide behind skips.
+	client, env, err := newTestClient()
+	if err != nil {
+		if os.Getenv("COMPOSE_TEST_AWS") != "" {
+			suite.T().Fatalf("AWS testing is enabled but the SES client could not be created: %v", err)
+		}
 
-	suite.client, env = newTestClient()
+		suite.T().Skipf("AWS credentials are not available: %v", err)
+	}
+
+	suite.client = client
 	suite.client.EmailSender = env.TestEmail
 	suite.testEmail = env.TestEmail
 	suite.testPhoneNumber = env.TestPhoneNumber

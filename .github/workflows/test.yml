@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # Allows the release workflow to run this same suite as its gate
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: compose_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # PostgreSQL is provided above, so its tests must run instead of skip
+      COMPOSE_TEST_POSTGRES: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # The AWS integration tests skip themselves when credentials are absent,
+      # so the full suite is safe to run without AWS secrets
+      - name: Test
+        run: go test ./... -count=1 -race

@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -22,7 +23,7 @@ type TestConfig struct {
 	S3 Config ` mapstucture:"s3"`
 }
 
-func newTestClient() *Client {
+func newTestClient() (*Client, error) {
 	opts := []configurator.Option{}
 	opts = append(opts, configurator.WithRequiredEnv("ENVIRONMENT"))
 	opts = append(opts, configurator.WithRequiredEnv("S3_SECRET_KEY"))
@@ -31,22 +32,22 @@ func newTestClient() *Client {
 
 	cfg, err := configurator.New(opts...)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	env := &EnvVars{}
 	err = cfg.LoadEnvVars(env)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	testConfig := &TestConfig{}
 	err = cfg.LoadConfiguration(testConfig)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	s3Client, err := NewClient(
+	return NewClient(
 		context.Background(),
 		testConfig.S3.Region,
 		testConfig.S3.AccessKeyID,
@@ -55,15 +56,20 @@ func newTestClient() *Client {
 		WithDigitalOceanEndpoint(testConfig.S3.Region, testConfig.S3.URL),
 		WithDigitalOceanCDN(testConfig.S3.Bucket, testConfig.S3.Region, testConfig.S3.URL),
 	)
-	if err != nil {
-		panic(err)
-	}
-
-	return s3Client
 }
 
 func (suite *S3Suite) SetupTest() {
-	client := newTestClient()
+	// Without AWS credentials the suite skips so `go test ./...` stays
+	// runnable on any machine. Setting COMPOSE_TEST_AWS turns missing
+	// credentials into a hard failure so regressions cannot hide behind skips.
+	client, err := newTestClient()
+	if err != nil {
+		if os.Getenv("COMPOSE_TEST_AWS") != "" {
+			suite.T().Fatalf("AWS testing is enabled but the S3 client could not be created: %v", err)
+		}
+
+		suite.T().Skipf("AWS credentials are not available: %v", err)
+	}
 
 	suite.client = client
 }
