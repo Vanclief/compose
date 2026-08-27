@@ -47,12 +47,13 @@ func Marshal[Enum ~string](value Enum, allowed map[Enum]struct{}) ([]byte, error
 
 func Unmarshal[Enum ~string](b []byte, out *Enum, allowed map[Enum]struct{}) error {
 	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
+	err := json.Unmarshal(b, &s)
+	if err != nil {
+		return ez.New(ez.EINVALID, "invalid JSON for enum", err)
 	}
 
 	value := Enum(s)
-	err := Validate(value, allowed)
+	err = Validate(value, allowed)
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -69,31 +70,28 @@ func Value[Enum ~string](value Enum, allowed map[Enum]struct{}) (driver.Value, e
 	return string(value), nil
 }
 
+// Scan implements the database/sql Scanner contract for string-backed enums.
+// A SQL NULL (src == nil) scans as the zero value "" and is accepted only if allowed contains "".
 func Scan[Enum ~string](src any, out *Enum, allowed map[Enum]struct{}) error {
+	var s string
 	switch x := src.(type) {
+	case nil:
+		s = ""
 	case string:
-		value := Enum(x)
-
-		err := Validate(value, allowed)
-		if err != nil {
-			return ez.Wrap(err)
-		}
-
-		*out = value
-		return nil
+		s = x
 	case []byte:
-		s := string(x)
-		value := Enum(s)
-
-		err := Validate(value, allowed)
-		if err != nil {
-			return ez.Wrap(err)
-		}
-
-		*out = value
-		return nil
+		s = string(x)
 	default:
 		errMsg := fmt.Sprintf("unsupported SQL type: %T", src)
 		return ez.New(ez.EINVALID, errMsg, nil)
 	}
+
+	value := Enum(s)
+	err := Validate(value, allowed)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	*out = value
+	return nil
 }
