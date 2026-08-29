@@ -1,3 +1,11 @@
+// Package enums validates string-backed enums and adapts them to JSON and
+// database/sql.
+//
+// An enum that declares "" as a member is nullable: "" is its unset value,
+// stored as SQL NULL by Value and read back from NULL by Scan, accepted as ""
+// or null by Unmarshal, and emitted as "" by Marshal. Its database column must
+// allow NULL. An enum that does not declare "" rejects both "" and NULL
+// everywhere.
 package enums
 
 import (
@@ -62,11 +70,18 @@ func Unmarshal[Enum ~string](b []byte, out *Enum, allowed map[Enum]struct{}) err
 	return nil
 }
 
+// Value implements the database/sql/driver Valuer contract for string-backed enums.
+// The zero value "" is written as SQL NULL (the inverse of Scan) and is accepted only if allowed contains "".
 func Value[Enum ~string](value Enum, allowed map[Enum]struct{}) (driver.Value, error) {
 	err := Validate(value, allowed)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
+
+	if value == "" {
+		return nil, nil
+	}
+
 	return string(value), nil
 }
 

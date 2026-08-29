@@ -1,6 +1,9 @@
 package enums
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -95,6 +98,61 @@ func TestUnmarshal(t *testing.T) {
 			err := Unmarshal(tt.b, &out, tt.allowed)
 			checkResult(t, err, tt.wantErr, out, tt.want)
 		})
+	}
+}
+
+// TestUnmarshalKeepsJSONErrorInspectable pins that wrapping the JSON error
+// with ez does not hide it from errors.As (relies on ez >= v1.6.0 Unwrap).
+func TestUnmarshalKeepsJSONErrorInspectable(t *testing.T) {
+	out := unchanged
+	err := Unmarshal([]byte(`42`), &out, withoutEmpty)
+
+	var jsonErr *json.UnmarshalTypeError
+	if !errors.As(err, &jsonErr) {
+		t.Fatalf("errors.As could not find *json.UnmarshalTypeError in: %v", err)
+	}
+}
+
+func TestValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   color
+		allowed map[color]struct{}
+		want    driver.Value
+		wantErr string
+	}{
+		{name: "member", value: colorRed, allowed: withoutEmpty, want: "red"},
+		{name: "empty with empty member is NULL", value: colorNone, allowed: withEmpty, want: nil},
+		{name: "empty without empty member", value: colorNone, allowed: withoutEmpty, want: nil, wantErr: "invalid enum value"},
+		{name: "unknown", value: "nope", allowed: withoutEmpty, want: nil, wantErr: "invalid enum value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Value(tt.value, tt.allowed)
+			if got != tt.want {
+				t.Errorf("Value = %#v, want %#v", got, tt.want)
+			}
+			checkResult(t, err, tt.wantErr, unchanged, unchanged)
+		})
+	}
+}
+
+// TestScanValueRoundTripKeepsNull pins that a SQL NULL survives a read-then-write
+// unchanged: Scan(nil) yields "", and Value("") yields NULL again, not an empty SQL string.
+func TestScanValueRoundTripKeepsNull(t *testing.T) {
+	var out color
+	err := Scan(nil, &out, withEmpty)
+	if err != nil {
+		t.Fatalf("Scan(nil): %v", err)
+	}
+
+	got, err := Value(out, withEmpty)
+	if err != nil {
+		t.Fatalf("Value(%q): %v", out, err)
+	}
+	if got != nil {
+		t.Fatalf("round trip wrote %#v, want SQL NULL (nil)", got)
 	}
 }
 
