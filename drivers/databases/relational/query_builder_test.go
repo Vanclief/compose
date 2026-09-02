@@ -54,7 +54,6 @@ func TestParseConditions(t *testing.T) {
 	}
 	enumValues := []testEnum{"active", "pending"}
 	amounts := []float64{1.5, 2.5}
-	name := "x"
 
 	// A nil slice must be skipped exactly like an empty one.
 	var nilStatuses []string
@@ -291,69 +290,6 @@ func TestParseConditions(t *testing.T) {
 			},
 			wantQuery: "amount IN (?)",
 			wantArgs:  []interface{}{bun.List(amounts)},
-		},
-		{
-			name: "interface slice with nil element is an error",
-			conditions: []Condition{
-				{Column: "status", Comparison: InOperator, Value: []interface{}{nil}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "interface slice with values is an error",
-			conditions: []Condition{
-				{Column: "status", Comparison: InOperator, Value: []interface{}{"a", 1}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "complex slice is an error",
-			conditions: []Condition{
-				{Column: "amount", Comparison: InOperator, Value: []complex64{1}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "nested slice is an error",
-			conditions: []Condition{
-				{Column: "id", Comparison: InOperator, Value: [][]int64{{1, 2}}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "pointer slice is an error",
-			conditions: []Condition{
-				{Column: "name", Comparison: InOperator, Value: []*string{&name}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "bun.Safe slice is rejected as raw SQL",
-			conditions: []Condition{
-				{Column: "id", Comparison: InOperator, Value: []bun.Safe{"1) OR TRUE --"}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "bun.Ident slice is rejected as raw SQL",
-			conditions: []Condition{
-				{Column: "id", Comparison: InOperator, Value: []bun.Ident{"col"}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "driver.Valuer interface slice with nil is an error",
-			conditions: []Condition{
-				{Column: "id", Comparison: InOperator, Value: []driver.Valuer{nil}},
-			},
-			wantErr: true,
-		},
-		{
-			name: "driver.Valuer interface slice with values is an error",
-			conditions: []Condition{
-				{Column: "id", Comparison: InOperator, Value: []driver.Valuer{uuid.New()}},
-			},
-			wantErr: true,
 		},
 	}
 

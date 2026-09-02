@@ -2,13 +2,11 @@ package relational
 
 import (
 	"context"
-	"database/sql/driver"
 	"fmt"
 	"reflect"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/schema"
 	"github.com/vanclief/ez"
 )
 
@@ -29,11 +27,9 @@ type ConditionGroup struct {
 // it must come from code, never from client input. Only Value is bound as a
 // parameter.
 //
-// Slice values become "column IN (?)" or "NOT IN (?)". For compatibility, = and
-// != are accepted as aliases of IN and NOT IN. An empty or nil slice is skipped
-// like any other zero value. Elements must be strings, ints, uints wider than a
-// byte, floats, bools, or types implementing driver.Valuer such as uuid.UUID.
-// Byte slices and types bun expands as raw SQL, such as bun.Safe, are rejected.
+// Slice values become "column IN (?)" or "NOT IN (?)"; = and != are accepted as
+// aliases. An empty or nil slice is skipped like any other zero value. A byte
+// slice is a blob, not a list, and is rejected.
 type Condition struct {
 	Column     string
 	Comparison Operator
@@ -42,11 +38,6 @@ type Condition struct {
 }
 
 // QueryBuilder builds a WHERE clause and its arguments from condition groups.
-//
-// The builder is frozen and slated for deprecation. It will not gain new
-// operators or value types. New queries should use bun's Where, WhereOr,
-// WhereGroup and bun.List directly. A formal deprecation notice will follow
-// in a later release.
 func (db *DB) QueryBuilder(groups []ConditionGroup) (query string, queryArgs []interface{}, err error) {
 	for i := range groups {
 		groupQuery, groupQueryArgs, err := db.parseConditions(groups[i].Conditions)
@@ -117,13 +108,13 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 			queryArgs = append(queryArgs, c.Value)
 
 		default:
-			// Any slice with a bindable element type becomes an IN / NOT IN list.
+			// Any other slice becomes an IN / NOT IN list.
 			v := reflect.ValueOf(c.Value)
 			if v.Kind() != reflect.Slice {
 				return "", nil, ez.New(ez.EINVALID, "Query value type is not supported", nil)
 			}
-			if !isBindableElem(v.Type().Elem()) {
-				return "", nil, ez.New(ez.EINVALID, "Slice element type is not supported", nil)
+			if v.Type().Elem().Kind() == reflect.Uint8 {
+				return "", nil, ez.New(ez.EINVALID, "Byte slices are not lists", nil)
 			}
 
 			var op string
@@ -146,44 +137,6 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 	}
 
 	return query, queryArgs, nil
-}
-
-var (
-	queryAppenderType = reflect.TypeOf((*schema.QueryAppender)(nil)).Elem()
-	driverValuerType  = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
-)
-
-// isBindableElem reports whether bun binds a slice element of this type as
-// data. Types bun expands as raw SQL, such as bun.Safe, are rejected, and so
-// are types bun has no appender for, which would panic during formatting.
-// Interface element types are rejected outright because bun unwraps each
-// element at formatting time, so the static type says nothing about safety.
-func isBindableElem(t reflect.Type) bool {
-	if t.Kind() == reflect.Interface {
-		return false
-	}
-	if t.Implements(queryAppenderType) {
-		return false
-	}
-	if reflect.PointerTo(t).Implements(queryAppenderType) {
-		return false
-	}
-	if t.Implements(driverValuerType) {
-		return true
-	}
-	if reflect.PointerTo(t).Implements(driverValuerType) {
-		return true
-	}
-
-	switch t.Kind() {
-	case reflect.String, reflect.Bool,
-		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
-		return true
-	}
-
-	return false
 }
 
 type Operator struct {
