@@ -25,7 +25,7 @@ require (
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
 	github.com/uptrace/bun/driver/pgdriver v1.2.18
 	github.com/uptrace/bun/extra/bundebug v1.2.18
-	github.com/vanclief/ez v1.5.0
+	github.com/vanclief/ez v1.6.0
 	github.com/ziflex/lecho/v3 v3.5.0
 	golang.org/x/text v0.38.0
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
