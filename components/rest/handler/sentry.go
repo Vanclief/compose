@@ -20,6 +20,13 @@ func (h *BaseHandler) reportErrorToSentry(c echo.Context, request requests.Reque
 		// Set the request ID
 		scope.SetTag("Request ID", request.GetID())
 
+		// Only internal errors are bugs. Everything else that reaches here is a
+		// vendor outage, so downgrade it to a warning to let alert rules tell
+		// the two apart.
+		if ez.ErrorCode(managedError) != ez.EINTERNAL {
+			scope.SetLevel(sentry.LevelWarning)
+		}
+
 		// Add breadcrumbs
 		breadcrumbStacktrace(scope, managedError)
 
@@ -31,13 +38,16 @@ func (h *BaseHandler) reportErrorToSentry(c echo.Context, request requests.Reque
 		}
 
 		sentryUser := sentry.User{IPAddress: request.GetIP()}
-		if id, exists := user["id"].(string); exists {
+		id, exists := user["id"].(string)
+		if exists {
 			sentryUser.ID = id
 		}
-		if name, exists := user["name"].(string); exists {
+		name, exists := user["name"].(string)
+		if exists {
 			sentryUser.Name = name
 		}
-		if email, exists := user["email"].(string); exists {
+		email, exists := user["email"].(string)
+		if exists {
 			sentryUser.Email = email
 		}
 
@@ -51,17 +61,21 @@ func (h *BaseHandler) reportErrorToSentry(c echo.Context, request requests.Reque
 func breadcrumbStacktrace(scope *sentry.Scope, managedError error) {
 	if managedError == nil {
 		return
-	} else if e, ok := managedError.(*ez.Error); ok {
+	}
+
+	e, ok := managedError.(*ez.Error)
+	if ok {
 		scope.AddBreadcrumb(&sentry.Breadcrumb{
 			Category: e.Code,
 			Message:  e.String(),
 			Level:    sentry.LevelError,
 		}, 10)
 		breadcrumbStacktrace(scope, e.Err)
-	} else {
-		scope.AddBreadcrumb(&sentry.Breadcrumb{
-			Message: managedError.Error(),
-			Level:   sentry.LevelError,
-		}, 10)
+		return
 	}
+
+	scope.AddBreadcrumb(&sentry.Breadcrumb{
+		Message: managedError.Error(),
+		Level:   sentry.LevelError,
+	}, 10)
 }

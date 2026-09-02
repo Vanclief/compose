@@ -24,7 +24,9 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Re
 		Interface("request_json", request.GetBody()).
 		Msg("Request Error")
 
-	if code == ez.EINTERNAL {
+	// Internal errors are bugs. Timeouts and unavailability are usually a vendor
+	// outage, but still worth a Sentry event so someone notices.
+	if code == ez.EINTERNAL || code == ez.ETIMEOUT || code == ez.EUNAVAILABLE {
 		LogErrorStacktrace(err)
 		h.reportErrorToSentry(c, request, err)
 	}
@@ -45,10 +47,14 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Re
 func LogErrorStacktrace(err error) {
 	if err == nil {
 		return
-	} else if e, ok := err.(*ez.Error); ok {
+	}
+
+	e, ok := err.(*ez.Error)
+	if ok {
 		log.Debug().Msg(e.String())
 		LogErrorStacktrace(e.Err)
-	} else {
-		log.Debug().Msg(err.Error())
+		return
 	}
+
+	log.Debug().Msg(err.Error())
 }
