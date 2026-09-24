@@ -18,6 +18,13 @@ import (
 // ConnectToDatabase - Creates a new connection to a PSQL database with
 // the given configuration.
 func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
+	if cfg.MaxOpenConns < 0 {
+		return nil, ez.New(ez.EINVALID, "Max open connections cannot be negative", nil)
+	}
+	if cfg.MaxIdleConns < 0 {
+		return nil, ez.New(ez.EINVALID, "Max idle connections cannot be negative", nil)
+	}
+
 	sslmode := "disable"
 	if cfg.SSL {
 		sslmode = "require"
@@ -50,6 +57,8 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		Bool("SSL", cfg.SSL).
 		Bool("Verbose", cfg.Verbose).
 		Int("Statement Timeout", statementTimeout).
+		Int("Max Open Conns", cfg.MaxOpenConns).
+		Int("Max Idle Conns", cfg.MaxIdleConns).
 		Msg("Connecting to Postgres Database")
 
 	dsn := fmt.Sprintf(
@@ -70,6 +79,15 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 			"statement_timeout": strconv.Itoa(statementTimeout),
 		}),
 	))
+
+	if cfg.MaxOpenConns > 0 {
+		sqldb.SetMaxOpenConns(cfg.MaxOpenConns)
+	}
+
+	if cfg.MaxIdleConns > 0 {
+		sqldb.SetMaxIdleConns(cfg.MaxIdleConns)
+	}
+
 	db := bun.NewDB(sqldb, pgdialect.New())
 
 	ctx := context.Background()
