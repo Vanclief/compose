@@ -5,9 +5,11 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"github.com/uptrace/bun"
 	"github.com/vanclief/compose/drivers/databases/relational"
+	"github.com/vanclief/ez"
 )
 
 type TestSuite struct {
@@ -55,6 +57,47 @@ func (suite *TestSuite) TestConnectToDatabase() {
 	db, err := ConnectToDatabase(cfg)
 	suite.Nil(err)
 	suite.NotNil(db)
+}
+
+func (suite *TestSuite) TestConnectToDatabaseMaxOpenConns() {
+	cfg := &ConnectionConfig{
+		Username:     "postgres",
+		Password:     "",
+		Host:         "localhost:5432",
+		Database:     "compose_test",
+		MaxOpenConns: 3,
+		MaxIdleConns: 2,
+	}
+
+	db, err := ConnectToDatabase(cfg)
+	suite.Require().NoError(err)
+	defer db.Close() // nolint:errcheck
+
+	suite.Equal(3, db.Stats().MaxOpenConnections)
+}
+
+// The negative-value checks run outside the suite because they must not need
+// a database: SetupTest skips the whole suite when PostgreSQL is unreachable.
+// The host points at a closed port so a dial attempt would surface as a
+// connection error instead of EINVALID.
+func TestConnectToDatabaseRejectsNegativeMaxOpenConns(t *testing.T) {
+	db, err := ConnectToDatabase(&ConnectionConfig{
+		Host:         "127.0.0.1:1",
+		MaxOpenConns: -1,
+	})
+	assert.Error(t, err)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Nil(t, db)
+}
+
+func TestConnectToDatabaseRejectsNegativeMaxIdleConns(t *testing.T) {
+	db, err := ConnectToDatabase(&ConnectionConfig{
+		Host:         "127.0.0.1:1",
+		MaxIdleConns: -1,
+	})
+	assert.Error(t, err)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Nil(t, db)
 }
 
 type testRecord struct {

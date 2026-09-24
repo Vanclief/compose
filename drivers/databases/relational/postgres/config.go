@@ -18,4 +18,9 @@ type ConnectionConfig struct {
 	ReadTimeout      int    `mapstructure:"readTimeout"`
 	WriteTimeout     int    `mapstructure:"writeTimeout"`
 	StatementTimeout int    `mapstructure:"statementTimeout"`
+	// MaxOpenConns caps the connection pool. 0 leaves it unlimited (database/sql default).
+	// Set it below the server's max_connections with headroom for other clients.
+	MaxOpenConns int `mapstructure:"maxOpenConns"`
+	// MaxIdleConns caps idle connections kept in the pool. 0 keeps the database/sql default.
+	MaxIdleConns int `mapstructure:"maxIdleConns"`
 }
