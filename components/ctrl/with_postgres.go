@@ -1,6 +1,8 @@
 package ctrl
 
 import (
+	"context"
+
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/drivers/databases/relational"
@@ -8,7 +10,10 @@ import (
 	"github.com/vanclief/ez"
 )
 
-func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
+// WithPostgres - Connects to a Postgres database, runs the options, then
+// migrates it to the schema (see relational.Schema). Options must not
+// change the schema
+func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, schema relational.Schema, options ...relational.Option) (*relational.DB, error) {
 	db, err := postgres.ConnectToDatabase(cfg)
 	if err != nil {
 		return nil, ez.Wrap(err)
@@ -28,11 +33,17 @@ func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []i
 		}
 	}
 
-	err = db.CreateTables(models)
+	plan, err := db.Migrate(context.Background(), schema)
 	if err != nil {
 		db.Close() // nolint:errcheck // The initialization error is the one that matters
 		return nil, ez.Wrap(err)
 	}
+
+	log.Info().
+		Int("Missing", len(plan.Missing)).
+		Int("Different", len(plan.Different)).
+		Int("Extra", len(plan.Extra)).
+		Msg("Checked the database schema")
 
 	return db, nil
 }

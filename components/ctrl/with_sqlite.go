@@ -1,6 +1,8 @@
 package ctrl
 
 import (
+	"context"
+
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/vanclief/compose/drivers/databases/relational"
@@ -8,9 +10,9 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// WithSQLite - Opens a SQLite database and creates the schema from the
-// model structs if it doesn't already exist.
-func (c *BaseController) WithSQLite(cfg *sqlite.ConnectionConfig, models []interface{}, options ...relational.Option) (*relational.DB, error) {
+// WithSQLite - Opens a SQLite database, runs the options, then migrates it
+// to the schema (see relational.Schema). Options must not change the schema
+func (c *BaseController) WithSQLite(cfg *sqlite.ConnectionConfig, schema relational.Schema, options ...relational.Option) (*relational.DB, error) {
 	db, err := sqlite.ConnectToDatabase(cfg)
 	if err != nil {
 		return nil, ez.Wrap(err)
@@ -30,11 +32,17 @@ func (c *BaseController) WithSQLite(cfg *sqlite.ConnectionConfig, models []inter
 		}
 	}
 
-	err = db.CreateTables(models)
+	plan, err := db.Migrate(context.Background(), schema)
 	if err != nil {
 		db.Close() // nolint:errcheck // The initialization error is the one that matters
 		return nil, ez.Wrap(err)
 	}
+
+	log.Info().
+		Int("Missing", len(plan.Missing)).
+		Int("Different", len(plan.Different)).
+		Int("Extra", len(plan.Extra)).
+		Msg("Checked the database schema")
 
 	return db, nil
 }
