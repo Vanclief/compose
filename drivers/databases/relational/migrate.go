@@ -171,7 +171,19 @@ func validateSchema(db bun.IDB, schema Schema) ([]declaredTable, error) {
 		return nil, ez.Wrap(err)
 	}
 
-	names := map[string]bool{schema.Floor: schema.Floor != ""}
+	names := map[string]bool{}
+	for _, floor := range schema.Floors {
+		if floor == "" {
+			return nil, ez.New(ez.EINVALID, "Schema floors must have a name", nil)
+		}
+
+		if names[floor] {
+			msg := fmt.Sprintf("Schema floor %q appears twice", floor)
+			return nil, ez.New(ez.EINVALID, msg, nil)
+		}
+		names[floor] = true
+	}
+
 	for i, step := range schema.Steps {
 		if step.Name == "" {
 			msg := fmt.Sprintf("Schema step %d has no name", i)
@@ -184,7 +196,7 @@ func validateSchema(db bun.IDB, schema Schema) ([]declaredTable, error) {
 		}
 
 		if names[step.Name] {
-			msg := fmt.Sprintf("Schema step %q appears twice or is the floor, step names must be unique", step.Name)
+			msg := fmt.Sprintf("Schema step %q appears twice or is a floor, step names must be unique", step.Name)
 			return nil, ez.New(ez.EINVALID, msg, nil)
 		}
 		names[step.Name] = true
@@ -210,7 +222,7 @@ func isFresh(ctx context.Context, conn bun.Conn) (bool, error) {
 }
 
 // createFresh - Creates every declared table, index and constraint and the
-// ledger in one transaction, recording the floor and then every step as
+// ledger in one transaction, recording the floors and then every step as
 // applied. Steps do not run: the declarations already describe their result
 func createFresh(ctx context.Context, conn bun.Conn, schema Schema, tables []declaredTable) error {
 	err := conn.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -224,8 +236,8 @@ func createFresh(ctx context.Context, conn bun.Conn, schema Schema, tables []dec
 			return err
 		}
 
-		if schema.Floor != "" {
-			err = recordStep(ctx, tx, schema.Floor)
+		for _, floor := range schema.Floors {
+			err = recordStep(ctx, tx, floor)
 			if err != nil {
 				return err
 			}
@@ -273,7 +285,7 @@ func ledgerExists(ctx context.Context, conn bun.Conn) (bool, error) {
 	return count > 0, nil
 }
 
-// checkLedger - Reads the ledger and checks the floor and step names against
+// checkLedger - Reads the ledger and checks the floors and step names against
 // it before any DDL, then returns the pending steps in order. It returns
 // ahead true, with nothing to run, when a newer release has migrated the
 // database: a rolled-back binary must still boot. A missing ledger means no
@@ -298,22 +310,31 @@ func checkLedger(ctx context.Context, conn bun.Conn, schema Schema) ([]Step, boo
 		applied[row.Name] = row.ID
 	}
 
+	// The newest recorded floor. Steps are deleted as a prefix, so a recorded
+	// floor or live step shows the database passed every deletion this
+	// release made. A newer release that created the database recorded its
+	// own floors, which include this release's unless they were dropped since
 	var floorID int64
-	if schema.Floor != "" {
-		// Steps are deleted as a prefix, so a recorded live step shows the
-		// database passed the floor: a newer release created it with a later
-		// floor and never recorded this one
+	var floorName string
+	if len(schema.Floors) > 0 {
+		for _, floor := range schema.Floors {
+			id, ok := applied[floor]
+			if ok && id > floorID {
+				floorID = id
+				floorName = floor
+			}
+		}
+
 		passed := slices.ContainsFunc(schema.Steps, func(step Step) bool {
 			_, ok := applied[step.Name]
 			return ok
 		})
 
-		id, ok := applied[schema.Floor]
-		if !ok && !passed {
-			msg := fmt.Sprintf("The database never ran schema step %q, which this release no longer carries. Deploy an older release that still has it, or rebuild the database", schema.Floor)
+		if floorName == "" && !passed {
+			newest := schema.Floors[len(schema.Floors)-1]
+			msg := fmt.Sprintf("The database never ran schema step %q, which this release no longer carries. Deploy an older release that still has it, or rebuild the database", newest)
 			return nil, false, ez.New(ez.ECONFLICT, msg, nil)
 		}
-		floorID = id
 	}
 
 	// known is the newest ledger row this release can account for
@@ -328,7 +349,7 @@ func checkLedger(ctx context.Context, conn bun.Conn, schema Schema) ([]Step, boo
 		}
 
 		if id < floorID {
-			msg := fmt.Sprintf("Schema step %q reuses the name of a step applied before the floor %q, rename it", step.Name, schema.Floor)
+			msg := fmt.Sprintf("Schema step %q reuses the name of a step applied before the floor %q, rename it", step.Name, floorName)
 			return nil, false, ez.New(ez.EINVALID, msg, nil)
 		}
 
@@ -342,10 +363,10 @@ func checkLedger(ctx context.Context, conn bun.Conn, schema Schema) ([]Step, boo
 		}
 	}
 
-	if len(unknown) > 0 && schema.Floor == "" {
+	if len(unknown) > 0 && len(schema.Floors) == 0 {
 		log.Error().
 			Strs("Steps", unknown).
-			Msg("The database records schema steps this release does not carry and Floor is not set, so it is treated as migrated by a newer release: no schema steps run and nothing is created. If steps were deleted, set Floor to the newest deleted one")
+			Msg("The database records schema steps this release does not carry and Floors is empty, so it is treated as migrated by a newer release: no schema steps run and nothing is created. If steps were deleted, append the newest deleted one to Floors")
 		return nil, true, nil
 	}
 
@@ -470,6 +491,18 @@ func changeEvent(event *zerolog.Event, change Change) *zerolog.Event {
 		Str("Name", change.Name).
 		Str("Want", change.Want).
 		Str("Have", change.Have)
+}
+
+// Why Apply refuses a missing index on an existing table, on either dialect
+const (
+	refusalLackingColumn = "depends on a column Apply did not create"
+	refusalUniqueIndex   = "can reject the older binary's writes or fail on duplicates, install it with a step calling ApplyDeclared"
+)
+
+// refusalOwnedElsewhere - Why Apply refuses an index whose name another table
+// already uses
+func refusalOwnedElsewhere(name, table string) string {
+	return fmt.Sprintf("an index named %q already exists on table %q, rename the declaration", name, table)
 }
 
 // refuse - Records and logs why Apply did not create a missing object, with

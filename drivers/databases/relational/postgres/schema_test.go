@@ -113,6 +113,15 @@ func (*schemaTestOrphan) Constraints() []relational.Constraint {
 	}
 }
 
+// schemaTestLiteral - A default whose value looks like a schema-qualified
+// name, which the comparison must not rewrite
+type schemaTestLiteral struct {
+	bun.BaseModel `bun:"table:schema_test_literals"`
+
+	ID     int64  `bun:",pk,autoincrement"`
+	Status string `bun:",notnull,default:'schema_test.active'"`
+}
+
 // schemaTestEvent - A table that is partitioned in the database
 type schemaTestEvent struct {
 	bun.BaseModel `bun:"table:schema_test_events"`
@@ -256,6 +265,20 @@ func (suite *SchemaSuite) constraintExists(name string) bool {
 
 func (suite *SchemaSuite) indexExists(name string) bool {
 	return suite.count("SELECT count(*) FROM pg_class WHERE relnamespace = 'schema_test'::regnamespace AND relname = ?", name) > 0
+}
+
+// indexOwner - The table the named index is on, "" when there is none
+func (suite *SchemaSuite) indexOwner(name string) string {
+	var owners []string
+	err := suite.db.NewRaw(`SELECT t.relname FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid
+		WHERE ic.relnamespace = 'schema_test'::regnamespace AND ic.relname = ?`, name).Scan(context.Background(), &owners)
+	suite.Require().NoError(err)
+
+	if len(owners) == 0 {
+		return ""
+	}
+
+	return owners[0]
 }
 
 // beginWriter - An open transaction that has inserted into
@@ -440,6 +463,45 @@ func (suite *SchemaSuite) TestApplyReplacesInvalidIndexLeftover() {
 	suite.True(suite.validIndexExists("schema_test_accounts_status_idx"))
 
 	suite.Equal(relational.Plan{}, suite.plan(schemaTestModels()))
+}
+
+func (suite *SchemaSuite) TestIndexNameAnotherTableOwnsIsRefused() {
+	ctx := context.Background()
+	suite.createFresh(schemaTestModels())
+	suite.exec("DROP INDEX schema_test_transfers_account_idx")
+	suite.exec("INSERT INTO schema_test_accounts (email, nickname) VALUES ('a@example.com', 'a'), ('b@example.com', 'b')")
+
+	// An invalid index under the transfers index's name is left on accounts:
+	// IF NOT EXISTS would pass over it and a leftover drop by name would
+	// remove it from the wrong table
+	_, err := suite.db.ExecContext(ctx, "CREATE UNIQUE INDEX CONCURRENTLY schema_test_transfers_account_idx ON schema_test_accounts (status)")
+	suite.Require().Error(err)
+	suite.Equal("schema_test_accounts", suite.indexOwner("schema_test_transfers_account_idx"))
+
+	plan := suite.migrate(relational.Schema{Models: schemaTestModels(), Mode: relational.Apply})
+	suite.Equal([]string{"index schema_test_transfers.schema_test_transfers_account_idx"}, changeKeys(plan.Missing))
+	suite.Equal(`an index named "schema_test_transfers_account_idx" already exists on table "schema_test_accounts", rename the declaration`, plan.Missing[0].Refused)
+	suite.Equal("schema_test_accounts", suite.indexOwner("schema_test_transfers_account_idx"), "the other table's index is left alone")
+
+	err = relational.ApplyDeclared(ctx, suite.db, schemaTestModels(), "schema_test_transfers_account_idx")
+	suite.Require().Error(err)
+	suite.Equal(ez.ECONFLICT, ez.ErrorCode(err))
+	suite.Equal("schema_test_accounts", suite.indexOwner("schema_test_transfers_account_idx"))
+}
+
+func (suite *SchemaSuite) TestLiteralDefaultIsComparedAsWritten() {
+	models := []interface{}{(*schemaTestLiteral)(nil)}
+	suite.createFresh(models)
+	suite.Equal(relational.Plan{}, suite.plan(models))
+
+	suite.exec("ALTER TABLE schema_test_literals ALTER COLUMN status SET DEFAULT 'active'")
+	suite.Equal([]relational.Change{{
+		Kind:  "column",
+		Table: "schema_test_literals",
+		Name:  "status",
+		Want:  "character varying NOT NULL DEFAULT 'schema_test.active'::character varying",
+		Have:  "character varying NOT NULL DEFAULT 'active'::character varying",
+	}}, suite.plan(models).Different)
 }
 
 func (suite *SchemaSuite) TestUniqueIndexIsRefusedThenInstalledByStep() {

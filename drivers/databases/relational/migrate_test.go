@@ -55,6 +55,39 @@ func (*migrateChild) Indexes() []Index {
 	return []Index{{Name: "migrate_children_parent_idx", Def: "(parent_id)"}}
 }
 
+// migrateParentUnique - migrate_parents with a unique index, which Apply
+// refuses on an existing table
+type migrateParentUnique struct {
+	bun.BaseModel `bun:"table:migrate_parents"`
+
+	ID   int64  `bun:",pk,autoincrement"`
+	Code string `bun:",notnull"`
+}
+
+func (*migrateParentUnique) Indexes() []Index {
+	return []Index{
+		{Name: "migrate_parents_code_idx", Def: "(code)"},
+		{Name: "migrate_parents_code_uidx", Unique: true, Def: "(code)"},
+	}
+}
+
+// migrateParentNoted - migrate_parents with a column the database may lack
+// and an index on it
+type migrateParentNoted struct {
+	bun.BaseModel `bun:"table:migrate_parents"`
+
+	ID   int64  `bun:",pk,autoincrement"`
+	Code string `bun:",notnull"`
+	Note string `bun:",notnull,default:''"`
+}
+
+func (*migrateParentNoted) Indexes() []Index {
+	return []Index{
+		{Name: "migrate_parents_code_idx", Def: "(code)"},
+		{Name: "migrate_parents_note_idx", Def: "(note)"},
+	}
+}
+
 // migrateClash - Declares an index name migrate_parents already uses
 type migrateClash struct {
 	bun.BaseModel `bun:"table:migrate_clashes"`
@@ -204,6 +237,10 @@ func TestNormalizeDefaults(t *testing.T) {
 				"current":  {Type: "bigint", Default: "public.next_code()"},
 				"other":    {Type: "bigint", Default: "xpublic.next_code()"},
 				"constant": {Type: "text", Default: "'public'::text"},
+				"literal":  {Type: "text", Default: "'public.active'::text"},
+				"quoted":   {Type: "text", Default: "'it''s public.x'::text"},
+				"relation": {Type: "bigint", Default: "nextval('public.accounts_id_seq'::regclass)"},
+				"mixed":    {Type: "text", Default: "concat('public.', public.next_code(), 'public.')"},
 			},
 		},
 	}
@@ -214,6 +251,10 @@ func TestNormalizeDefaults(t *testing.T) {
 	assert.Equal(t, "next_code()", columns["current"].Default)
 	assert.Equal(t, "xpublic.next_code()", columns["other"].Default)
 	assert.Equal(t, "'public'::text", columns["constant"].Default)
+	assert.Equal(t, "'public.active'::text", columns["literal"].Default, "a value is not an identifier")
+	assert.Equal(t, "'it''s public.x'::text", columns["quoted"].Default)
+	assert.Equal(t, "nextval('accounts_id_seq'::regclass)", columns["relation"].Default, "a regclass literal names a relation")
+	assert.Equal(t, "concat('public.', next_code(), 'public.')", columns["mixed"].Default)
 
 	// The raw catalog, which Apply executes from, is left alone
 	assert.Equal(t, "public.next_code()", catalog["accounts"].Columns["current"].Default)
@@ -230,13 +271,13 @@ func TestMigrateFreshStampsStepsWithoutRunning(t *testing.T) {
 	plan, err := db.Migrate(ctx, Schema{
 		Models: []interface{}{(*migrateParent)(nil), (*migrateChild)(nil)},
 		Steps:  []Step{recordingStep("first", &ran), recordingStep("second", &ran)},
-		Floor:  "deleted",
+		Floors: []string{"older", "deleted"},
 	})
 	require.NoError(t, err)
 
 	assert.Equal(t, Plan{}, plan)
 	assert.Empty(t, ran, "a fresh database is created at the declared shape")
-	assert.Equal(t, []string{"deleted", "first", "second"}, ledgerNames(t, db))
+	assert.Equal(t, []string{"older", "deleted", "first", "second"}, ledgerNames(t, db))
 	assert.True(t, sqliteObjectExists(t, db, "table", "migrate_parents"))
 	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_idx"))
 	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_children_parent_idx"))
@@ -321,7 +362,7 @@ func TestMigrateRefusesDatabaseBelowFloor(t *testing.T) {
 	_, err = db.Migrate(ctx, Schema{
 		Models: []interface{}{(*migrateParent)(nil), (*migrateChild)(nil)},
 		Steps:  []Step{recordingStep("new", &ran)},
-		Floor:  "never-ran",
+		Floors: []string{"never-ran"},
 		Mode:   Apply,
 	})
 	require.Error(t, err)
@@ -347,7 +388,7 @@ func TestMigrateRefusesReusedStepName(t *testing.T) {
 	_, err = db.Migrate(ctx, Schema{
 		Models: models,
 		Steps:  []Step{recordingStep("rename-codes", &ran)},
-		Floor:  "drop-legacy",
+		Floors: []string{"drop-legacy"},
 	})
 	require.Error(t, err)
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
@@ -388,7 +429,7 @@ func TestMigrateOlderReleaseBootsDatabaseCreatedByNewerRelease(t *testing.T) {
 
 	// Release N+1 deleted s1, s2 and a, and creates the database
 	var ran []string
-	_, err := db.Migrate(ctx, Schema{Models: models, Steps: []Step{recordingStep("b", &ran)}, Floor: "a"})
+	_, err := db.Migrate(ctx, Schema{Models: models, Steps: []Step{recordingStep("b", &ran)}, Floors: []string{"a"}})
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b"}, ledgerNames(t, db))
 
@@ -407,12 +448,41 @@ func TestMigrateOlderReleaseBootsDatabaseCreatedByNewerRelease(t *testing.T) {
 	_, err = db.Migrate(ctx, Schema{
 		Models: models,
 		Steps:  []Step{recordingStep("a", &ran), recordingStep("b", &ran)},
-		Floor:  "F0",
+		Floors: []string{"F0"},
 		Mode:   Apply,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, ran)
 	assert.Equal(t, []string{"a", "b"}, ledgerNames(t, db))
+}
+
+func TestMigrateOlderReleaseBootsDatabaseCreatedAfterLaterDeletion(t *testing.T) {
+	ctx := context.Background()
+	db := newMigrateDB(t)
+	models := []interface{}{(*migrateParent)(nil)}
+
+	// Release N+2 deleted steps up to a, later up to c, and creates the
+	// database: it shares no step name with release N
+	var ran []string
+	_, err := db.Migrate(ctx, Schema{Models: models, Steps: []Step{recordingStep("d", &ran)}, Floors: []string{"a", "c"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "c", "d"}, ledgerNames(t, db))
+
+	plan, err := db.Migrate(ctx, Schema{
+		Models: models,
+		Steps:  []Step{recordingStep("b", &ran)},
+		Floors: []string{"a"},
+		Mode:   Apply,
+	})
+	require.NoError(t, err, "the recorded floor a tells the database from one below the floor")
+	assert.Equal(t, Plan{}, plan)
+	assert.Empty(t, ran)
+	assert.Equal(t, []string{"a", "c", "d"}, ledgerNames(t, db))
+
+	// Had release N+2 dropped the floor a, release N could not tell
+	_, err = db.Migrate(ctx, Schema{Models: models, Steps: []Step{recordingStep("b", &ran)}, Floors: []string{"a0"}})
+	require.Error(t, err)
+	assert.Equal(t, ez.ECONFLICT, ez.ErrorCode(err))
 }
 
 func TestMigrateFloorWithoutLedgerCreatesNothing(t *testing.T) {
@@ -427,7 +497,7 @@ func TestMigrateFloorWithoutLedgerCreatesNothing(t *testing.T) {
 	schema := Schema{
 		Models: []interface{}{(*migrateParent)(nil)},
 		Steps:  []Step{recordingStep("first", &ran)},
-		Floor:  "deleted",
+		Floors: []string{"deleted"},
 		Mode:   Apply,
 	}
 
@@ -439,7 +509,7 @@ func TestMigrateFloorWithoutLedgerCreatesNothing(t *testing.T) {
 	assert.False(t, sqliteObjectExists(t, db, "table", "migrate_parents"))
 
 	// Without a floor the ledger is created and the steps run
-	schema.Floor = ""
+	schema.Floors = nil
 	_, err = db.Migrate(ctx, schema)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"first"}, ran)
@@ -480,6 +550,9 @@ func TestMigrateRejectsInvalidSteps(t *testing.T) {
 		"unnamed step":     {Models: models, Steps: []Step{{Run: run}}},
 		"step without Run": {Models: models, Steps: []Step{{Name: "no-run"}}},
 		"qualified table":  {Models: []interface{}{(*migrateQualified)(nil)}},
+		"unnamed floor":    {Models: models, Floors: []string{""}},
+		"repeated floor":   {Models: models, Floors: []string{"a", "a"}},
+		"step named floor": {Models: models, Floors: []string{"a"}, Steps: []Step{{Name: "a", Run: run}}},
 	} {
 		_, err := db.Migrate(ctx, schema)
 		require.Error(t, err, name)
@@ -582,16 +655,117 @@ func TestMigrateSQLiteReportAndApply(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, plan.Missing, 3)
 	assert.Equal(t, "add it with a step", plan.Missing[0].Refused)
-	assert.Empty(t, plan.Missing[1].Refused)
+	assert.Equal(t, refusalLackingColumn, plan.Missing[1].Refused)
 	assert.Empty(t, plan.Missing[2].Refused)
 	assert.True(t, sqliteObjectExists(t, db, "table", "migrate_children"))
 	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_children_parent_idx"))
-	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_idx"))
+	assert.False(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_idx"), "no index on a table left without a declared column")
 
-	// Only the refused column is left
+	// The refused column and index are left
 	planned, err = db.Plan(ctx, schema)
 	require.NoError(t, err)
-	assert.Equal(t, wantMissing[:1], planned.Missing)
+	assert.Equal(t, wantMissing[:2], planned.Missing)
+
+	// Once a step adds the column, Apply builds the index
+	schema.Steps = []Step{{
+		Name: "add-note",
+		Run: func(ctx context.Context, db bun.IDB) error {
+			return ExecShort(ctx, db, "ALTER TABLE migrate_parents ADD COLUMN note VARCHAR NOT NULL DEFAULT ''")
+		},
+	}}
+	plan, err = db.Migrate(ctx, schema)
+	require.NoError(t, err)
+	require.Len(t, plan.Missing, 1)
+	assert.Empty(t, plan.Missing[0].Refused)
+	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_idx"))
+
+	planned, err = db.Plan(ctx, schema)
+	require.NoError(t, err)
+	assert.Equal(t, Plan{}, planned)
+}
+
+func TestMigrateSQLiteRefusesUniqueIndexOnExistingTable(t *testing.T) {
+	ctx := context.Background()
+	db := newMigrateDB(t)
+
+	_, err := db.Migrate(ctx, Schema{Models: []interface{}{(*migrateParent)(nil)}})
+	require.NoError(t, err)
+
+	// An older binary may still write duplicates
+	_, err = db.ExecContext(ctx, "INSERT INTO migrate_parents (code) VALUES ('dup'), ('dup')")
+	require.NoError(t, err)
+
+	models := []interface{}{(*migrateParentUnique)(nil)}
+	plan, err := db.Migrate(ctx, Schema{Models: models, Mode: Apply})
+	require.NoError(t, err, "the unique index is refused, not attempted")
+	require.Len(t, plan.Missing, 1)
+	assert.Equal(t, "migrate_parents_code_uidx", plan.Missing[0].Name)
+	assert.Equal(t, refusalUniqueIndex, plan.Missing[0].Refused)
+	assert.False(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_uidx"))
+
+	// A step installs it once the data allows
+	_, err = db.ExecContext(ctx, "DELETE FROM migrate_parents WHERE id > (SELECT min(id) FROM migrate_parents)")
+	require.NoError(t, err)
+
+	step := Step{
+		Name: "install-code-uidx",
+		Run: func(ctx context.Context, db bun.IDB) error {
+			return ApplyDeclared(ctx, db, models, "migrate_parents_code_uidx")
+		},
+	}
+	plan, err = db.Migrate(ctx, Schema{Models: models, Steps: []Step{step}, Mode: Apply})
+	require.NoError(t, err)
+	assert.Equal(t, Plan{}, plan)
+	assert.True(t, sqliteObjectExists(t, db, "index", "migrate_parents_code_uidx"))
+}
+
+func TestMigrateSQLiteRefusesIndexOnRefusedColumn(t *testing.T) {
+	ctx := context.Background()
+	db := newMigrateDB(t)
+
+	_, err := db.Migrate(ctx, Schema{Models: []interface{}{(*migrateParent)(nil)}})
+	require.NoError(t, err)
+
+	plan, err := db.Migrate(ctx, Schema{Models: []interface{}{(*migrateParentNoted)(nil)}, Mode: Apply})
+	require.NoError(t, err, "the index on the missing column is refused, not attempted")
+	require.Len(t, plan.Missing, 2)
+	assert.Equal(t, "note", plan.Missing[0].Name)
+	assert.Equal(t, "add it with a step", plan.Missing[0].Refused)
+	assert.Equal(t, "migrate_parents_note_idx", plan.Missing[1].Name)
+	assert.Equal(t, refusalLackingColumn, plan.Missing[1].Refused)
+	assert.False(t, sqliteObjectExists(t, db, "index", "migrate_parents_note_idx"))
+}
+
+func TestMigrateSQLiteRefusesIndexNameAnotherTableOwns(t *testing.T) {
+	ctx := context.Background()
+	db := newMigrateDB(t)
+	models := []interface{}{(*migrateParent)(nil), (*migrateChild)(nil)}
+
+	_, err := db.Migrate(ctx, Schema{Models: models})
+	require.NoError(t, err)
+
+	// The declared name is taken by an index on another table, which
+	// IF NOT EXISTS would pass over
+	_, err = db.ExecContext(ctx, "DROP INDEX migrate_parents_code_idx")
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, "CREATE INDEX migrate_parents_code_idx ON migrate_children (id)")
+	require.NoError(t, err)
+
+	plan, err := db.Migrate(ctx, Schema{Models: models, Mode: Apply})
+	require.NoError(t, err)
+	require.Len(t, plan.Missing, 1)
+	assert.Equal(t, "migrate_parents", plan.Missing[0].Table)
+	assert.Equal(t, "migrate_parents_code_idx", plan.Missing[0].Name)
+	assert.Equal(t, refusalOwnedElsewhere("migrate_parents_code_idx", "migrate_children"), plan.Missing[0].Refused)
+
+	var owner string
+	err = db.NewRaw("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = 'migrate_parents_code_idx'").Scan(ctx, &owner)
+	require.NoError(t, err)
+	assert.Equal(t, "migrate_children", owner, "the other table's index is left alone")
+
+	err = ApplyDeclared(ctx, db, models, "migrate_parents_code_idx")
+	require.Error(t, err)
+	assert.Equal(t, ez.ECONFLICT, ez.ErrorCode(err))
 }
 
 func TestResetSchema(t *testing.T) {
@@ -611,7 +785,7 @@ func TestResetSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	schema.Steps = append(schema.Steps, recordingStep("second", &ran))
-	schema.Floor = "deleted"
+	schema.Floors = []string{"deleted"}
 	err = db.ResetSchema(ctx, schema)
 	require.NoError(t, err)
 

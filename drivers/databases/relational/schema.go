@@ -62,8 +62,12 @@ type Schema struct {
 	Models     []interface{}
 	Extensions []string // Postgres only, created before anything else
 	Steps      []Step   // ordered, append at the bottom, delete from the top
-	Floor      string   // name of the newest deleted step, "" when none
-	Mode       Mode
+	// Floors - The last deleted name of each deletion of steps, oldest first.
+	// A fresh database records them all, so a release rolled back across a
+	// deletion still tells a database a newer release created from one below
+	// its own floor. Drop the oldest once no release still deployable needs it
+	Floors []string
+	Mode   Mode
 	// MaxIndexTableSize - Apply builds a missing index at boot only when
 	// pg_relation_size of its table is at most this many bytes, zero means
 	// DefaultMaxIndexTableSize. The build must also finish inside the
@@ -299,51 +303,82 @@ func ApplyDeclared(ctx context.Context, db bun.IDB, models []interface{}, name s
 	return ez.New(ez.EINVALID, msg, nil)
 }
 
-// createDeclaredIndex - Creates a declared index unless it exists. On
-// Postgres IF NOT EXISTS matches by name, so an invalid leftover of a failed
-// concurrent build is dropped first, with a plain DROP since the step may run
-// in a transaction, and the index must end up valid
+// createDeclaredIndex - Creates a declared index unless a valid one by that
+// name is already on its table. Index names are unique per schema, so a name
+// another table owns is ECONFLICT rather than something IF NOT EXISTS would
+// pass over. On Postgres an invalid leftover of a failed concurrent build on
+// the table is dropped first, with a plain DROP since the step may run in a
+// transaction, and the index must end up valid
 func createDeclaredIndex(ctx context.Context, db bun.IDB, table string, index Index) error {
-	statement := createIndexSQL(db, table, index, "IF NOT EXISTS")
-	if db.Dialect().Name() != dialect.PG {
-		_, err := db.ExecContext(ctx, statement)
-		if err != nil {
-			return ez.Wrap(err)
-		}
+	live, err := findLiveIndex(ctx, db, index.Name)
+	if err != nil {
+		return ez.Wrap(err)
+	}
 
+	if live.Found && live.Table != table {
+		msg := fmt.Sprintf("Index %q already exists on table %q", index.Name, live.Table)
+		return ez.New(ez.ECONFLICT, msg, nil)
+	}
+
+	if live.Found && live.Valid {
 		return nil
 	}
 
-	var validity []bool
-	err := db.NewRaw(indexValidity, index.Name).Scan(ctx, &validity)
-	if err != nil {
-		return ez.Wrap(err)
-	}
-
-	if len(validity) > 0 && !validity[0] {
-		_, err = db.ExecContext(ctx, "DROP INDEX IF EXISTS "+quoteIdent(db, index.Name))
+	if live.Found {
+		_, err = db.ExecContext(ctx, "DROP INDEX "+quoteIdent(db, index.Name))
 		if err != nil {
 			return ez.Wrap(err)
 		}
 	}
 
-	_, err = db.ExecContext(ctx, statement)
+	_, err = db.ExecContext(ctx, createIndexSQL(db, table, index, ""))
 	if err != nil {
 		return ez.Wrap(err)
 	}
 
-	var valid bool
-	err = db.NewRaw(indexValidity, index.Name).Scan(ctx, &valid)
+	live, err = findLiveIndex(ctx, db, index.Name)
 	if err != nil {
 		return ez.Wrap(err)
 	}
 
-	if !valid {
-		msg := fmt.Sprintf("Index %q exists but is not valid", index.Name)
+	if !live.Found || live.Table != table || !live.Valid {
+		msg := fmt.Sprintf("Index %q was created but is not a valid index of table %q", index.Name, table)
 		return ez.New(ez.EINTERNAL, msg, nil)
 	}
 
 	return nil
+}
+
+// liveIndex - What the database has under an index name
+type liveIndex struct {
+	Table string // the table the index is on
+	Valid bool   // false for the leftover of a failed concurrent build
+	Found bool
+}
+
+// findLiveIndex - Looks an index up by name in the current schema. Index
+// names are unique per schema on both dialects, so the table it is on tells
+// whether a declaration may claim the name
+func findLiveIndex(ctx context.Context, db bun.IDB, name string) (liveIndex, error) {
+	query := postgresLiveIndex
+	if db.Dialect().Name() == dialect.SQLite {
+		query = sqliteLiveIndex
+	}
+
+	var rows []struct {
+		Table string `bun:"table_name"`
+		Valid bool   `bun:"valid"`
+	}
+	err := db.NewRaw(query, name).Scan(ctx, &rows)
+	if err != nil {
+		return liveIndex{}, ez.Wrap(err)
+	}
+
+	if len(rows) == 0 {
+		return liveIndex{}, nil
+	}
+
+	return liveIndex{Table: rows[0].Table, Valid: rows[0].Valid, Found: true}, nil
 }
 
 // ExecShort - Runs one DDL statement in a transaction with lock_timeout 2s

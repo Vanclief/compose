@@ -314,7 +314,7 @@ func normalizeDefaults(catalog Catalog, namespace string) Catalog {
 	for name, table := range catalog {
 		columns := make(map[string]Column, len(table.Columns))
 		for columnName, column := range table.Columns {
-			column.Default = qualifier.ReplaceAllString(column.Default, "${1}")
+			column.Default = normalizeDefault(column.Default, qualifier)
 			columns[columnName] = column
 		}
 
@@ -322,6 +322,54 @@ func normalizeDefaults(catalog Catalog, namespace string) Catalog {
 	}
 
 	return normalized
+}
+
+// normalizeDefault - One default expression with the qualifier stripped
+// outside string literals, which are values and stay as written, and inside
+// a regclass literal, which names a relation (nextval of a sequence).
+// pg_get_expr writes a literal with doubled quotes and no escapes
+func normalizeDefault(expression string, qualifier *regexp.Regexp) string {
+	var out strings.Builder
+	for expression != "" {
+		start := strings.IndexByte(expression, '\'')
+		if start < 0 {
+			out.WriteString(qualifier.ReplaceAllString(expression, "${1}"))
+			break
+		}
+
+		out.WriteString(qualifier.ReplaceAllString(expression[:start], "${1}"))
+
+		end := literalEnd(expression, start)
+		literal := expression[start:end]
+		expression = expression[end:]
+		if strings.HasPrefix(expression, "::regclass") {
+			literal = qualifier.ReplaceAllString(literal, "${1}")
+		}
+
+		out.WriteString(literal)
+	}
+
+	return out.String()
+}
+
+// literalEnd - The index just past the string literal opening at start,
+// where a doubled quote is part of the literal. An unterminated literal runs
+// to the end
+func literalEnd(expression string, start int) int {
+	for i := start + 1; i < len(expression); i++ {
+		if expression[i] != '\'' {
+			continue
+		}
+
+		if i+1 < len(expression) && expression[i+1] == '\'' {
+			i++
+			continue
+		}
+
+		return i + 1
+	}
+
+	return len(expression)
 }
 
 // markVolatileDefaults - Sets VolatileDefault on each desired column with a
@@ -491,12 +539,12 @@ func applyPostgres(ctx context.Context, conn bun.Conn, schema Schema, tables []d
 
 		statement := createIndexSQL(conn, table, index, "CONCURRENTLY IF NOT EXISTS")
 		if lackingColumns[table] {
-			plan.Missing[i] = refuse(change, "depends on a column Apply did not create", statement)
+			plan.Missing[i] = refuse(change, refusalLackingColumn, statement)
 			continue
 		}
 
 		if index.Unique {
-			plan.Missing[i] = refuse(change, "can reject the older binary's writes or fail on duplicates, install it with a step calling ApplyDeclared", statement)
+			plan.Missing[i] = refuse(change, refusalUniqueIndex, statement)
 			continue
 		}
 
@@ -521,13 +569,12 @@ func applyPostgres(ctx context.Context, conn bun.Conn, schema Schema, tables []d
 			continue
 		}
 
-		built, err := buildIndex(ctx, conn, table, index)
+		reason, err := buildIndex(ctx, conn, table, index)
 		if err != nil {
 			return plan, ez.Wrap(err)
 		}
 
-		if !built {
-			reason := fmt.Sprintf("the build waited over %s for other transactions, build it by hand", IndexBuildLockTimeout)
+		if reason != "" {
 			plan.Missing[i] = refuse(change, reason, statement)
 			continue
 		}
@@ -556,24 +603,41 @@ func applyPostgres(ctx context.Context, conn bun.Conn, schema Schema, tables []d
 	return plan, nil
 }
 
-// indexValidity - Whether the named index of the current schema is valid,
-// empty when there is no such index
-const indexValidity = `SELECT i.indisvalid FROM pg_index i
+// postgresLiveIndex - The table an index of the current schema is on, by
+// index name, and whether the index is valid
+const postgresLiveIndex = `SELECT t.relname AS table_name, i.indisvalid AS valid FROM pg_index i
 	JOIN pg_class ic ON ic.oid = i.indexrelid
+	JOIN pg_class t ON t.oid = i.indrelid
 	JOIN pg_namespace n ON n.oid = ic.relnamespace
 	WHERE n.nspname = current_schema() AND ic.relname = ?`
 
-// buildIndex - Builds a missing non-unique index without blocking writes. An
-// invalid leftover of an interrupted build is dropped first, the build runs
-// CONCURRENTLY outside any transaction, and the result must be valid. Each
-// wait for another transaction is bounded by IndexBuildLockTimeout: it
-// returns false when one ran out, after dropping what the canceled build left
-// if it can
-func buildIndex(ctx context.Context, conn bun.Conn, table string, index Index) (bool, error) {
-	// CONCURRENTLY cannot run in a transaction, so SET LOCAL does not apply
-	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = %d", IndexBuildLockTimeout.Milliseconds()))
+// buildIndex - Builds a missing non-unique index without blocking writes,
+// returning the reason when it refuses to. Index names are unique per
+// schema, so a name another table owns is refused, and so is a name a
+// constraint's index on the table already has, since the comparison leaves
+// those out. An invalid leftover of an interrupted build on the table is
+// dropped first, the build runs CONCURRENTLY outside any transaction, and
+// the result must be valid. Each wait for another transaction is bounded by
+// IndexBuildLockTimeout: when one runs out, what the canceled build left is
+// dropped if it can be
+func buildIndex(ctx context.Context, conn bun.Conn, table string, index Index) (string, error) {
+	live, err := findLiveIndex(ctx, conn, index.Name)
 	if err != nil {
-		return false, ez.Wrap(err)
+		return "", ez.Wrap(err)
+	}
+
+	if live.Found && live.Table != table {
+		return refusalOwnedElsewhere(index.Name, live.Table), nil
+	}
+
+	if live.Found && live.Valid {
+		return fmt.Sprintf("an index named %q already backs a constraint on the table, rename the declaration or declare the constraint", index.Name), nil
+	}
+
+	// CONCURRENTLY cannot run in a transaction, so SET LOCAL does not apply
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = %d", IndexBuildLockTimeout.Milliseconds()))
+	if err != nil {
+		return "", ez.Wrap(err)
 	}
 
 	defer func() {
@@ -583,57 +647,51 @@ func buildIndex(ctx context.Context, conn bun.Conn, table string, index Index) (
 		}
 	}()
 
-	var validity []bool
-	err = conn.NewRaw(indexValidity, index.Name).Scan(ctx, &validity)
-	if err != nil {
-		return false, ez.Wrap(err)
-	}
-
+	waited := fmt.Sprintf("the build waited over %s for other transactions, build it by hand", IndexBuildLockTimeout)
 	drop := "DROP INDEX CONCURRENTLY IF EXISTS " + quoteIdent(conn, index.Name)
-	if len(validity) > 0 && !validity[0] {
+	if live.Found {
 		_, err = conn.ExecContext(ctx, drop)
 		if lockTimedOut(err) {
-			return false, nil
+			return waited, nil
 		}
 
 		if err != nil {
-			return false, ez.Wrap(err)
+			return "", ez.Wrap(err)
 		}
 	}
 
-	_, err = conn.ExecContext(ctx, createIndexSQL(conn, table, index, "CONCURRENTLY IF NOT EXISTS"))
+	_, err = conn.ExecContext(ctx, createIndexSQL(conn, table, index, "CONCURRENTLY"))
 	if lockTimedOut(err) {
 		// The canceled build leaves an invalid index behind, and dropping it
 		// waits for the same transactions the build waited for
 		_, err = conn.ExecContext(ctx, drop)
 		if lockTimedOut(err) {
 			log.Warn().Str("Name", index.Name).Msg("Timed out dropping the invalid index a canceled build left, the next build drops it first")
-			return false, nil
+			return waited, nil
 		}
 
 		if err != nil {
-			return false, ez.Wrap(err)
+			return "", ez.Wrap(err)
 		}
 
-		return false, nil
+		return waited, nil
 	}
 
 	if err != nil {
-		return false, ez.Wrap(err)
+		return "", ez.Wrap(err)
 	}
 
-	var valid bool
-	err = conn.NewRaw(indexValidity, index.Name).Scan(ctx, &valid)
+	live, err = findLiveIndex(ctx, conn, index.Name)
 	if err != nil {
-		return false, ez.Wrap(err)
+		return "", ez.Wrap(err)
 	}
 
-	if !valid {
-		msg := fmt.Sprintf("Index %q was built but is not valid", index.Name)
-		return false, ez.New(ez.EINTERNAL, msg, nil)
+	if !live.Found || live.Table != table || !live.Valid {
+		msg := fmt.Sprintf("Index %q was built but is not a valid index of table %q", index.Name, table)
+		return "", ez.New(ez.EINTERNAL, msg, nil)
 	}
 
-	return true, nil
+	return "", nil
 }
 
 // lockTimedOut - Whether Postgres canceled the statement because
