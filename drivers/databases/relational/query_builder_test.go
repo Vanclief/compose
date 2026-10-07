@@ -55,7 +55,7 @@ func TestParseConditions(t *testing.T) {
 	enumValues := []testEnum{"active", "pending"}
 	amounts := []float64{1.5, 2.5}
 
-	// A nil slice must be skipped exactly like an empty one.
+	// A nil slice must behave exactly like an empty one.
 	var nilStatuses []string
 
 	tests := []struct {
@@ -106,11 +106,11 @@ func TestParseConditions(t *testing.T) {
 			wantArgs:  []interface{}{bun.List(uuids)},
 		},
 		{
-			name: "empty string slice is skipped",
+			name: "empty string slice with IN is FALSE",
 			conditions: []Condition{
 				{Column: "status", Comparison: InOperator, Value: []string{}},
 			},
-			wantQuery: "",
+			wantQuery: "FALSE",
 		},
 		{
 			name: "string slice with NOT IN operator",
@@ -144,11 +144,93 @@ func TestParseConditions(t *testing.T) {
 			wantArgs:  []interface{}{5},
 		},
 		{
-			name: "zero int is skipped",
+			name: "zero int is bound",
 			conditions: []Condition{
 				{Column: "count", Comparison: EqualOperator, Value: 0},
 			},
+			wantQuery: "count = ?",
+			wantArgs:  []interface{}{0},
+		},
+		{
+			name: "zero uuid is bound",
+			conditions: []Condition{
+				{Column: "tenant_id", Comparison: EqualOperator, Value: uuid.Nil},
+			},
+			wantQuery: "tenant_id = ?",
+			wantArgs:  []interface{}{uuid.Nil},
+		},
+		{
+			name: "empty string is bound",
+			conditions: []Condition{
+				{Column: "name", Comparison: EqualOperator, Value: ""},
+			},
+			wantQuery: "name = ?",
+			wantArgs:  []interface{}{""},
+		},
+		{
+			name: "false is bound",
+			conditions: []Condition{
+				{Column: "active", Comparison: EqualOperator, Value: false},
+			},
+			wantQuery: "active = ?",
+			wantArgs:  []interface{}{false},
+		},
+		{
+			name: "nil value is an error",
+			conditions: []Condition{
+				{Column: "name", Comparison: EqualOperator, Value: nil},
+			},
+			wantErr: true,
+		},
+		{
+			name: "optional zero int is skipped",
+			conditions: []Condition{
+				{Column: "count", Comparison: EqualOperator, Value: 0, Optional: true},
+			},
 			wantQuery: "",
+		},
+		{
+			name: "optional zero uuid is skipped",
+			conditions: []Condition{
+				{Column: "tenant_id", Comparison: EqualOperator, Value: uuid.Nil, Optional: true},
+			},
+			wantQuery: "",
+		},
+		{
+			name: "optional empty string is skipped",
+			conditions: []Condition{
+				{Column: "name", Comparison: EqualOperator, Value: "", Optional: true},
+			},
+			wantQuery: "",
+		},
+		{
+			name: "optional false is skipped",
+			conditions: []Condition{
+				{Column: "active", Comparison: EqualOperator, Value: false, Optional: true},
+			},
+			wantQuery: "",
+		},
+		{
+			name: "optional nil value is skipped",
+			conditions: []Condition{
+				{Column: "name", Comparison: EqualOperator, Value: nil, Optional: true},
+			},
+			wantQuery: "",
+		},
+		{
+			name: "optional empty slice is skipped",
+			conditions: []Condition{
+				{Column: "status", Comparison: InOperator, Value: []string{}, Optional: true},
+			},
+			wantQuery: "",
+		},
+		{
+			name: "optional non-zero value is emitted",
+			conditions: []Condition{
+				{Column: "count", Comparison: EqualOperator, Value: 5, Optional: true},
+			},
+			wantQuery: "count = ?",
+			wantArgs:  []interface{}{5},
 		},
 		{
 			name: "string and string slice joined with AND",
@@ -160,14 +242,33 @@ func TestParseConditions(t *testing.T) {
 			wantArgs:  []interface{}{"x", bun.List(statuses)},
 		},
 		{
-			name: "empty slice in the middle does not leave a dangling AND",
+			name: "optional empty slice in the middle does not leave a dangling AND",
+			conditions: []Condition{
+				{Column: "name", Comparison: EqualOperator, Value: "x"},
+				{Column: "status", Comparison: InOperator, LogOp: AndOperator, Value: []string{}, Optional: true},
+				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
+			},
+			wantQuery: "name = ? AND id = ?",
+			wantArgs:  []interface{}{"x", int64(7)},
+		},
+		{
+			name: "required empty slice in the middle is FALSE",
 			conditions: []Condition{
 				{Column: "name", Comparison: EqualOperator, Value: "x"},
 				{Column: "status", Comparison: InOperator, LogOp: AndOperator, Value: []string{}},
 				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
 			},
-			wantQuery: "name = ? AND id = ?",
+			wantQuery: "name = ? AND FALSE AND id = ?",
 			wantArgs:  []interface{}{"x", int64(7)},
+		},
+		{
+			name: "leading required empty slice keeps the following AND",
+			conditions: []Condition{
+				{Column: "status", Comparison: InOperator, Value: []string{}},
+				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
+			},
+			wantQuery: "FALSE AND id = ?",
+			wantArgs:  []interface{}{int64(7)},
 		},
 		{
 			name:       "no conditions is an error",
@@ -175,46 +276,46 @@ func TestParseConditions(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name: "leading empty slice does not leave a dangling AND",
+			name: "leading optional empty slice does not leave a dangling AND",
 			conditions: []Condition{
-				{Column: "status", Comparison: InOperator, Value: []string{}},
+				{Column: "status", Comparison: InOperator, Value: []string{}, Optional: true},
 				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
 			},
 			wantQuery: "id = ?",
 			wantArgs:  []interface{}{int64(7)},
 		},
 		{
-			name: "leading empty string does not leave a dangling AND",
+			name: "leading optional empty string does not leave a dangling AND",
 			conditions: []Condition{
-				{Column: "name", Comparison: EqualOperator, Value: ""},
+				{Column: "name", Comparison: EqualOperator, Value: "", Optional: true},
 				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
 			},
 			wantQuery: "id = ?",
 			wantArgs:  []interface{}{int64(7)},
 		},
 		{
-			name: "two leading skipped conditions then OR",
+			name: "two leading skipped optional conditions then OR",
 			conditions: []Condition{
-				{Column: "name", Comparison: EqualOperator, Value: ""},
-				{Column: "status", Comparison: InOperator, LogOp: AndOperator, Value: []string{}},
+				{Column: "name", Comparison: EqualOperator, Value: "", Optional: true},
+				{Column: "status", Comparison: InOperator, LogOp: AndOperator, Value: []string{}, Optional: true},
 				{Column: "id", Comparison: EqualOperator, LogOp: OrOperator, Value: int64(7)},
 			},
 			wantQuery: "id = ?",
 			wantArgs:  []interface{}{int64(7)},
 		},
 		{
-			name: "empty slice with = operator is skipped",
+			name: "empty slice with = operator is FALSE",
 			conditions: []Condition{
 				{Column: "status", Comparison: EqualOperator, Value: []string{}},
 			},
-			wantQuery: "",
+			wantQuery: "FALSE",
 		},
 		{
-			name: "empty slice with NOT IN is skipped",
+			name: "empty slice with NOT IN is TRUE",
 			conditions: []Condition{
 				{Column: "status", Comparison: NotInOperator, Value: []string{}},
 			},
-			wantQuery: "",
+			wantQuery: "TRUE",
 		},
 		{
 			name: "json.RawMessage is an error, not a list",
@@ -246,9 +347,16 @@ func TestParseConditions(t *testing.T) {
 			wantArgs:  []interface{}{bun.List(levels)},
 		},
 		{
-			name: "nil slice is skipped",
+			name: "nil slice is FALSE",
 			conditions: []Condition{
 				{Column: "status", Comparison: InOperator, Value: nilStatuses},
+			},
+			wantQuery: "FALSE",
+		},
+		{
+			name: "optional nil slice is skipped",
+			conditions: []Condition{
+				{Column: "status", Comparison: InOperator, Value: nilStatuses, Optional: true},
 			},
 			wantQuery: "",
 		},
@@ -319,7 +427,7 @@ func TestQueryBuilderSkipsEmptyGroups(t *testing.T) {
 	groups := []ConditionGroup{
 		{
 			Conditions: []Condition{
-				{Column: "tags", Comparison: InOperator, Value: []string{}},
+				{Column: "tags", Comparison: InOperator, Value: []string{}, Optional: true},
 			},
 		},
 		{
@@ -336,11 +444,34 @@ func TestQueryBuilderSkipsEmptyGroups(t *testing.T) {
 	require.Equal(t, []interface{}{bun.List(statuses)}, args)
 }
 
+func TestQueryBuilderRequiredEmptySliceGroupIsFalse(t *testing.T) {
+	statuses := []string{"active", "pending"}
+
+	groups := []ConditionGroup{
+		{
+			Conditions: []Condition{
+				{Column: "tags", Comparison: InOperator, Value: []string{}},
+			},
+		},
+		{
+			Conditions: []Condition{
+				{Column: "status", Comparison: InOperator, Value: statuses},
+			},
+			LogOp: AndOperator,
+		},
+	}
+
+	query, args, err := (&DB{}).QueryBuilder(groups)
+	require.NoError(t, err)
+	require.Equal(t, "(FALSE) AND (status IN (?))", normaliseQuery(query))
+	require.Equal(t, []interface{}{bun.List(statuses)}, args)
+}
+
 func TestQueryBuilderLeadingSkippedCondition(t *testing.T) {
 	groups := []ConditionGroup{
 		{
 			Conditions: []Condition{
-				{Column: "status", Comparison: InOperator, Value: []string{}},
+				{Column: "status", Comparison: InOperator, Value: []string{}, Optional: true},
 				{Column: "id", Comparison: EqualOperator, LogOp: AndOperator, Value: int64(7)},
 			},
 		},

@@ -6,56 +6,91 @@ import (
 	"github.com/vanclief/compose/drivers/databases/relational"
 )
 
-// TestQueryBuilderExecutesSliceFilters pushes the bun.List that QueryBuilder
-// emits for slice values through the real SQLite dialect and driver, rather
-// than only checking the formatted SQL. It covers the legacy "=" on a slice,
-// which maps to IN, and empty slices at the head and tail of a group, which
-// must be skipped without leaving a dangling AND.
+// TestQueryBuilderExecutesSliceFilters pushes the SQL that QueryBuilder emits
+// for slice values through the real SQLite dialect and driver, rather than
+// only checking the formatted SQL. It covers the legacy "=" on a slice, which
+// maps to IN, optional empty slices at the head and tail of a group, which
+// must be skipped without leaving a dangling AND, and required empty slices,
+// which must behave as an empty list: IN matches nothing and NOT IN matches
+// every row.
 func (suite *TestSuite) TestQueryBuilderExecutesSliceFilters() {
 	db := suite.newFileDB()
 	defer db.Close() // nolint:errcheck
 
+	suite.seedItems(db, "a", "b", "c")
+	ctx := context.Background()
+
+	tests := []struct {
+		name   string
+		groups []relational.ConditionGroup
+		want   []string
+	}{
+		{
+			name: "optional empty slices are skipped around a legacy = list",
+			groups: []relational.ConditionGroup{{
+				Conditions: []relational.Condition{
+					{Column: "name", Comparison: relational.InOperator, Value: []string{}, Optional: true},
+					{Column: "name", Comparison: relational.EqualOperator, LogOp: relational.AndOperator, Value: []string{"a", "b"}},
+					{Column: "id", Comparison: relational.NotInOperator, LogOp: relational.AndOperator, Value: []int64{}, Optional: true},
+				},
+			}},
+			want: []string{"a", "b"},
+		},
+		{
+			name: "NOT IN excludes the listed rows",
+			groups: []relational.ConditionGroup{{
+				Conditions: []relational.Condition{
+					{Column: "name", Comparison: relational.NotInOperator, Value: []string{"a"}},
+				},
+			}},
+			want: []string{"b", "c"},
+		},
+		{
+			name: "required empty IN matches nothing",
+			groups: []relational.ConditionGroup{{
+				Conditions: []relational.Condition{
+					{Column: "name", Comparison: relational.InOperator, Value: []string{}},
+				},
+			}},
+			want: []string{},
+		},
+		{
+			name: "required empty NOT IN matches every row",
+			groups: []relational.ConditionGroup{{
+				Conditions: []relational.Condition{
+					{Column: "name", Comparison: relational.NotInOperator, Value: []string{}},
+				},
+			}},
+			want: []string{"a", "b", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			query, args, err := db.QueryBuilder(tt.groups)
+			suite.Require().NoError(err)
+
+			var got []testItem
+			err = db.NewSelect().Model(&got).Where(query, args...).Order("name ASC").Scan(ctx)
+			suite.Require().NoError(err)
+			suite.Equal(tt.want, itemNames(got))
+		})
+	}
+}
+
+// seedItems creates the test schema and inserts one item per name, so a test
+// can start from known rows without holding the setup errors in its own scope.
+func (suite *TestSuite) seedItems(db *relational.DB, names ...string) {
 	err := db.CreateTables(testModels())
 	suite.Require().NoError(err)
 
-	ctx := context.Background()
-	items := []testItem{{Name: "a"}, {Name: "b"}, {Name: "c"}}
-	_, err = db.NewInsert().Model(&items).Exec(ctx)
-	suite.Require().NoError(err)
-
-	groups := []relational.ConditionGroup{
-		{
-			Conditions: []relational.Condition{
-				{Column: "name", Comparison: relational.InOperator, Value: []string{}},
-				{Column: "name", Comparison: relational.EqualOperator, LogOp: relational.AndOperator, Value: []string{"a", "b"}},
-				{Column: "id", Comparison: relational.NotInOperator, LogOp: relational.AndOperator, Value: []int64{}},
-			},
-		},
+	items := make([]testItem, 0, len(names))
+	for _, name := range names {
+		items = append(items, testItem{Name: name})
 	}
 
-	query, args, err := db.QueryBuilder(groups)
+	_, err = db.NewInsert().Model(&items).Exec(context.Background())
 	suite.Require().NoError(err)
-
-	var got []testItem
-	err = db.NewSelect().Model(&got).Where(query, args...).Order("name ASC").Scan(ctx)
-	suite.Require().NoError(err)
-	suite.Equal([]string{"a", "b"}, itemNames(got))
-
-	groups = []relational.ConditionGroup{
-		{
-			Conditions: []relational.Condition{
-				{Column: "name", Comparison: relational.NotInOperator, Value: []string{"a"}},
-			},
-		},
-	}
-
-	query, args, err = db.QueryBuilder(groups)
-	suite.Require().NoError(err)
-
-	got = nil
-	err = db.NewSelect().Model(&got).Where(query, args...).Order("name ASC").Scan(ctx)
-	suite.Require().NoError(err)
-	suite.Equal([]string{"b", "c"}, itemNames(got))
 }
 
 // itemNames returns the names of items in order, so a query result can be

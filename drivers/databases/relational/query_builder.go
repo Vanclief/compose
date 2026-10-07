@@ -27,14 +27,23 @@ type ConditionGroup struct {
 // it must come from code, never from client input. Only Value is bound as a
 // parameter.
 //
+// Every condition is emitted, zero values included: 0, "", uuid.Nil and false
+// are bound as-is, and an empty or nil slice becomes FALSE for IN or TRUE for
+// NOT IN, which is what an empty list means. That keeps scoping conditions
+// such as tenant or complex IDs from silently vanishing. Set Optional on
+// filters that should be dropped when their value is zero, such as search
+// terms and request filters.
+//
 // Slice values become "column IN (?)" or "NOT IN (?)"; = and != are accepted as
-// aliases. An empty or nil slice is skipped like any other zero value. A byte
-// slice is a blob, not a list, and is rejected.
+// aliases. A byte slice is a blob, not a list, and is rejected.
 type Condition struct {
 	Column     string
 	Comparison Operator
 	LogOp      LogicalOperator
 	Value      interface{}
+
+	// Optional drops the condition when Value is zero instead of binding it.
+	Optional bool
 }
 
 // QueryBuilder builds a WHERE clause and its arguments from condition groups.
@@ -72,40 +81,26 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 	}
 
 	for _, c := range conditions {
+		if c.Optional && isZeroValue(c.Value) {
+			continue
+		}
+
 		if query == "" {
 			c.LogOp.Value = ""
 		}
 
 		switch arg := c.Value.(type) {
-		case int:
-			if arg != 0 {
-				// LogOp, Column, Comparison: AND column = ?
-				query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
-				queryArgs = append(queryArgs, c.Value)
-			}
-		case int64:
-			if arg != 0 {
-				query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
-				queryArgs = append(queryArgs, c.Value)
-			}
-		case string:
-			if arg != "" {
-				query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
-				parsedVal := c.Value
-				if c.Comparison == LikeOperator || c.Comparison == ILikeOperator {
-					parsedVal = fmt.Sprintf("%%%s%%", c.Value)
-				}
-				queryArgs = append(queryArgs, parsedVal)
-			}
-
-		case uuid.UUID:
-			if arg != uuid.Nil {
-				query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
-				queryArgs = append(queryArgs, c.Value)
-			}
-		case bool:
+		case int, int64, uuid.UUID, bool:
+			// LogOp, Column, Comparison: AND column = ?
 			query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
 			queryArgs = append(queryArgs, c.Value)
+		case string:
+			query += fmt.Sprintf(" %s %s %s ?", c.LogOp.Value, bun.Ident(c.Column), c.Comparison.Value)
+			parsedVal := c.Value
+			if c.Comparison == LikeOperator || c.Comparison == ILikeOperator {
+				parsedVal = fmt.Sprintf("%%%s%%", arg)
+			}
+			queryArgs = append(queryArgs, parsedVal)
 
 		default:
 			// Any other slice becomes an IN / NOT IN list.
@@ -117,17 +112,20 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 				return "", nil, ez.New(ez.EINVALID, "Byte slices are not lists", nil)
 			}
 
-			var op string
+			var op, emptyList string
 			switch c.Comparison {
 			case Operator{}, InOperator, EqualOperator:
-				op = "IN"
+				op, emptyList = "IN", "FALSE"
 			case NotInOperator, NotEqualOperator:
-				op = "NOT IN"
+				op, emptyList = "NOT IN", "TRUE"
 			default:
 				return "", nil, ez.New(ez.EINVALID, "Slice values only support IN and NOT IN", nil)
 			}
 
+			// SQL has no empty list literal, so emit what one evaluates to:
+			// IN () matches nothing and NOT IN () matches every row.
 			if v.Len() == 0 {
+				query += fmt.Sprintf(" %s %s", c.LogOp.Value, emptyList)
 				continue
 			}
 
@@ -137,6 +135,19 @@ func (db *DB) parseConditions(conditions []Condition) (query string, queryArgs [
 	}
 
 	return query, queryArgs, nil
+}
+
+// isZeroValue reports whether an Optional condition should be dropped: a nil
+// Value, the zero value of its type, or an empty slice.
+func isZeroValue(value interface{}) bool {
+	v := reflect.ValueOf(value)
+	if !v.IsValid() {
+		return true
+	}
+	if v.Kind() == reflect.Slice {
+		return v.Len() == 0
+	}
+	return v.IsZero()
 }
 
 type Operator struct {
