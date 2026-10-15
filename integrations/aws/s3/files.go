@@ -155,3 +155,20 @@ func (c *Client) DownloadBytes(ctx context.Context, input *s3.GetObjectInput) ([
 
 	return data, nil
 }
+
+// SetObjectACL replaces the access control list of one object, for instance to make a public
+// object private. The object's content and metadata are untouched.
+func (c *Client) SetObjectACL(ctx context.Context, input *s3.PutObjectAclInput) (*s3.PutObjectAclOutput, error) {
+	if input == nil {
+		return nil, ez.New(ez.EINVALID, "input is required", nil)
+	}
+
+	input.Bucket = aws.String(c.Bucket)
+
+	output, err := c.s3.PutObjectAcl(ctx, input)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	return output, nil
+}
