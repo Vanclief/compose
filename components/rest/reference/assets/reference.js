@@ -2460,11 +2460,12 @@
     const box = modal.box;
     box.textContent = '';
     // The title is the trail of models opened here: each earlier one goes
-    // back to it.
+    // back to it. Under it is the model's name in the spec, when the title
+    // shortens it.
     const head = el('div', 'mm-head');
+    const heading = el('div', 'mm-heading');
     const trail = el('nav', 'mm-trail');
     trail.setAttribute('aria-label', 'Models opened');
-    trail.append(el('span', 'ico-obj', '{}'));
     modal.stack.forEach((id, i) => {
       const title = doc.getElementById(id).querySelector('.model-title a');
       const name = title ? title.textContent : id;
@@ -2480,7 +2481,14 @@
       crumb.onclick = () => modelBack(i + 1);
       trail.append(crumb, el('span', 'mm-sep', '›'));
     });
-    head.append(trail);
+    heading.append(el('span', 'ico-obj', '{}'), trail);
+    const specName = card.querySelector('.model-name code');
+    if (specName) {
+      const line = el('code', 'mm-name', specName.textContent);
+      line.title = 'Schema name in the spec: #/components/schemas/' + specName.textContent;
+      heading.append(line);
+    }
+    head.append(heading);
     const open = el('a', 'btn ghost mm-open', 'Open in Models');
     open.href = '#' + anchor;
     const close = el('button', 'mm-close');
@@ -2496,7 +2504,7 @@
     // holds expand in place, and their types open here in turn.
     const body = el('div', 'mm-body');
     const sample = modelSample(anchor);
-    ['.model-name', '.model-flow', sample ? '' : ':scope > .tree'].forEach((sel) => {
+    ['.model-flow', sample ? '' : ':scope > .tree'].forEach((sel) => {
       const node = sel && card.querySelector(sel);
       if (node) {
         body.append(node.cloneNode(true));
