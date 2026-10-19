@@ -34,6 +34,7 @@ type pageView struct {
 	JSVersion   string
 	CSS         template.CSS
 	JS          template.JS
+	Flow        template.JS
 }
 
 // serverView is one server: URL has every variable replaced by its default
@@ -133,6 +134,9 @@ type opView struct {
 	TryBody     bool
 	TryCT       string
 	TryServer   string // the operation's own server, when it overrides servers[0]
+	Machine     machineView
+	Trace       string // trace ids of the models the operation produces or consumes
+	ref         OperationRef
 }
 
 // paramGroup holds the parameters of one location. Required ones are always
@@ -209,6 +213,9 @@ type modelView struct {
 	Anchor string
 	Tree   template.HTML
 	Search string
+	MadeBy int
+	UsedBy int
+	Trace  string
 }
 
 type builder struct {
@@ -219,6 +226,7 @@ type builder struct {
 	models  map[string]string // component schema name to anchor
 	schemes map[string]string // security scheme name to anchor
 	server  string
+	flow    *flowIndex
 }
 
 func buildPage(d *Document, opts Options) *pageView {
@@ -277,6 +285,7 @@ func buildPage(d *Document, opts Options) *pageView {
 	p.Global = b.requirements(d.Security)
 	p.Tags = b.buildTags()
 	p.Models = b.buildModels()
+	p.Flow = b.flow.JSON
 
 	return p
 }
@@ -534,12 +543,14 @@ func (b *builder) buildTags() []*tagView {
 		return tv
 	}
 
+	var ops []*opView
 	for _, ref := range b.d.Operations() {
 		tags := ref.Operation.Tags
 		if len(tags) == 0 {
 			tags = []string{"Other"}
 		}
 		ov := b.buildOperation(ref, tags)
+		ops = append(ops, ov)
 		for i, name := range tags {
 			tv := tagFor(name)
 			tv.Nav = append(tv.Nav, ov)
@@ -548,6 +559,8 @@ func (b *builder) buildTags() []*tagView {
 			}
 		}
 	}
+
+	b.buildFlow(ops)
 
 	sort.SliceStable(extra, func(i, j int) bool {
 		if extra[i].Name == "Other" || extra[j].Name == "Other" {
@@ -783,6 +796,7 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 		OperationID: op.OperationID,
 		Deprecated:  op.Deprecated,
 		Description: markdown(op.Description),
+		ref:         ref,
 	}
 	if ov.Title == "" {
 		ov.Title = op.OperationID
@@ -1076,6 +1090,9 @@ func (b *builder) buildModels() []*modelView {
 			Anchor: b.models[name],
 			Tree:   b.newTree(ForResponse, false).root(s, name),
 			Search: strings.ToLower(short + " " + name),
+			MadeBy: len(b.flow.producers[name]),
+			UsedBy: len(b.flow.consumers[name]),
+			Trace:  b.flow.ids[name],
 		})
 	}
 	return out

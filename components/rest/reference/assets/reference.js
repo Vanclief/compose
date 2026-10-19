@@ -248,6 +248,13 @@
       return;
     }
 
+    if (e.key === 'Escape' && pop) {
+      const btn = pop.btn;
+      closePop();
+      btn.focus();
+      return;
+    }
+
     const typing = e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable]');
     if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
@@ -774,6 +781,7 @@
       }
     }
     updateAuthNote(form);
+    litPorts(form);
     const first = form.querySelector('input, textarea');
     if (first) {
       first.focus({ preventScroll: true });
@@ -916,11 +924,17 @@
     status.append(el('span', 'muted', 'Sending ' + method + ' ' + url + ' …'));
     result.append(status);
 
+    const machine = machineOf(form);
+    litPorts(form);
+    machineState(machine, 'running');
     const started = performance.now();
+    // The belt runs for a beat even when the answer is instant.
+    const settle = (state, code) => setTimeout(() => machineState(machine, state, code), Math.max(0, 450 - (performance.now() - started)));
     let res;
     try {
       res = await fetch(url, { method, headers, body });
     } catch (err) {
+      settle('jam');
       status.textContent = '';
       status.append(el('span', 'try-error', 'Network error: ' + (err && err.message ? err.message : String(err)) +
         '. The server may be unreachable, or it does not allow cross-origin requests from this page (CORS).'));
@@ -928,6 +942,7 @@
       return;
     }
     const elapsed = Math.round(performance.now() - started);
+    settle('done', res.status);
     const text = await res.text().catch(() => '');
 
     status.textContent = '';
@@ -1137,6 +1152,363 @@
     }
   }
 
+  // ----------------------------------------------------------------- flow
+  // Every operation is a machine: its inputs wired in, its outputs wired out.
+  // The flow data links machines into chains through the models they make
+  // and take, for the source and user lists, sidebar cards and tracing.
+
+  let flow = null;
+
+  function flowData() {
+    if (flow) {
+      return flow;
+    }
+    const node = doc.getElementById('flow-data');
+    try {
+      flow = JSON.parse(node ? node.textContent : '{}') || {};
+    } catch (err) {
+      flow = {};
+    }
+    flow.ops = flow.ops || [];
+    flow.models = flow.models || {};
+    flow.opIndex = {};
+    flow.ops.forEach((op, i) => {
+      flow.opIndex[op.a] = i;
+    });
+    flow.modelIndex = {};
+    Object.keys(flow.models).forEach((id) => {
+      flow.modelIndex[flow.models[id].a] = id;
+    });
+    return flow;
+  }
+
+  // recipe renders an operation as one line: inputs -> outputs.
+  function recipe(op) {
+    const line = el('div', 'recipe');
+    const ins = op.i || [];
+    ins.forEach((name) => line.append(el('span', 'ri', name)));
+    if (op.q) {
+      line.append(el('span', 'ri opt', '+' + op.q + ' optional'));
+    }
+    if (ins.length === 0 && !op.q) {
+      line.append(el('span', 'ri none', 'nothing'));
+    }
+    line.append(el('span', 'r-arrow', '→'));
+    (op.o && op.o.length ? op.o : ['empty']).forEach((out) => line.append(el('span', 'ri out', out)));
+    if (op.e && op.e.length) {
+      line.append(el('span', 'r-err', 'or ' + op.e.join(', ')));
+    }
+    return line;
+  }
+
+  function opTitle(op, cls) {
+    const t = el('div', cls);
+    t.append(el('span', 'm m-' + op.m.toLowerCase(), op.m), el('span', '', op.t));
+    return t;
+  }
+
+  // Popover: the operations that make (by) or take (use) the models of the
+  // port or model card the button sits in.
+  let pop = null;
+
+  function closePop() {
+    if (!pop) {
+      return;
+    }
+    pop.box.remove();
+    pop.btn.setAttribute('aria-expanded', 'false');
+    pop = null;
+  }
+
+  function openPop(btn) {
+    const same = pop && pop.btn === btn;
+    closePop();
+    if (same) {
+      return;
+    }
+    const f = flowData();
+    const holder = btn.closest('[data-m]');
+    const ids = holder ? holder.dataset.m.split(' ') : [];
+    const kind = btn.dataset.pop;
+    const article = btn.closest('[data-op]');
+    const self = article ? article.id : '';
+    const seen = new Set();
+    const ops = [];
+    const names = [];
+    ids.forEach((id) => {
+      const m = f.models[id];
+      if (!m) {
+        return;
+      }
+      names.push(m.n);
+      (m[kind] || []).forEach((i) => {
+        const op = f.ops[i];
+        if (op && op.a !== self && !seen.has(i)) {
+          seen.add(i);
+          ops.push(op);
+        }
+      });
+    });
+
+    const box = el('div', 'fpop');
+    box.setAttribute('role', 'dialog');
+    const head = el('div', 'fpop-h');
+    head.append(kind === 'by' ? 'Where to get ' : 'What takes ');
+    head.append(el('b', '', names.join(', ')));
+    head.append(el('span', '', '· ' + ops.length));
+    box.append(head);
+    const list = el('div', 'fpop-list');
+    ops.forEach((op) => {
+      const a = el('a', 'fpop-op');
+      a.href = '#' + op.a;
+      a.dataset.search = (op.t + ' ' + op.m + ' ' + op.p).toLowerCase();
+      a.append(opTitle(op, 'fpop-t'), recipe(op));
+      list.append(a);
+    });
+    if (ops.length > 8) {
+      const filter = el('input', 'fpop-filter');
+      filter.type = 'search';
+      filter.placeholder = 'Filter ' + ops.length + ' operations';
+      filter.setAttribute('aria-label', 'Filter operations');
+      filter.addEventListener('input', () => {
+        const q = filter.value.trim().toLowerCase();
+        list.querySelectorAll('.fpop-op').forEach((a) => {
+          a.hidden = q !== '' && !a.dataset.search.includes(q);
+        });
+      });
+      box.append(filter);
+    }
+    box.append(list);
+    doc.body.append(box);
+
+    const r = btn.getBoundingClientRect();
+    const width = box.offsetWidth;
+    const left = Math.max(12, Math.min(r.left, window.innerWidth - width - 12));
+    box.style.left = (left + window.scrollX) + 'px';
+    box.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    btn.setAttribute('aria-expanded', 'true');
+    pop = { box, btn };
+    const first = box.querySelector('input, a');
+    if (first) {
+      first.focus({ preventScroll: true });
+    }
+  }
+
+  // A port jumps to its detail: the parameter row, the body, the optional
+  // parameters or the response, opening it when collapsed.
+  function findRow(scope, name) {
+    if (!scope) {
+      return null;
+    }
+    for (const pn of scope.querySelectorAll('.row-head > .pn')) {
+      if (pn.textContent.trim() === name) {
+        return pn.closest('.row');
+      }
+    }
+    return null;
+  }
+
+  function flash(node) {
+    node.classList.remove('flash');
+    void node.offsetWidth;
+    node.classList.add('flash');
+    setTimeout(() => node.classList.remove('flash'), 1500);
+  }
+
+  function gotoPort(btn) {
+    const port = btn.closest('[data-port]');
+    const article = btn.closest('[data-op]');
+    if (!port || !article) {
+      return;
+    }
+    const parts = port.dataset.port.split(':');
+    let target = null;
+    if (parts[0] === 'out') {
+      target = Array.from(article.querySelectorAll('.resp[data-status]')).find((r) => r.dataset.status === parts[1]) || null;
+      const tg = target && target.querySelector('.resp-head > .tg');
+      if (tg && tg.getAttribute('aria-expanded') !== 'true') {
+        toggle(tg);
+      }
+    } else if (parts[1] === 'optional') {
+      const tgs = article.querySelectorAll('.zone-send .opt-tg');
+      tgs.forEach((tg) => {
+        if (tg.getAttribute('aria-expanded') !== 'true') {
+          toggle(tg);
+        }
+      });
+      target = tgs.length ? tgs[0].closest('.io') : null;
+    } else {
+      const io = Array.from(article.querySelectorAll('.zone-send .io[data-in]')).find((n) => n.dataset.in === parts[1]) || null;
+      target = (parts[2] && findRow(io, parts[2])) || io;
+    }
+    if (target) {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      flash(target);
+    }
+  }
+
+  // Tracing: hovering a port, a model link or a model card lights every port
+  // that carries the same model and the sidebar operations that make or take
+  // it, through one generated style rule.
+  const traceStyle = el('style');
+  doc.head.append(traceStyle);
+  let traced = '';
+  let traceTimer = 0;
+
+  function traceIds(t) {
+    const holder = t.closest('.port[data-m], .pfields li[data-m], .model-flow[data-m]');
+    if (holder) {
+      return holder.dataset.m;
+    }
+    const link = t.closest('a.ref[href^="#model/"], a.nav-model, .model-title a');
+    if (link) {
+      return flowData().modelIndex[link.getAttribute('href').slice(1)] || '';
+    }
+    return '';
+  }
+
+  function setTrace(ids) {
+    if (ids === traced) {
+      return;
+    }
+    traced = ids;
+    if (!ids) {
+      traceStyle.textContent = '';
+      return;
+    }
+    const f = flowData();
+    const ports = [];
+    const nav = [];
+    const folders = [];
+    const links = [];
+    ids.split(' ').forEach((id) => {
+      ports.push('.port[data-m~="' + id + '"] > .pbox', '.pfields li[data-m~="' + id + '"]');
+      nav.push('.nav-op[data-m~="' + id + '"]');
+      folders.push('.nav-folder:has(.nav-op[data-m~="' + id + '"]) > .nav-folder-tg .count', '.nav-group:has(.nav-op[data-m~="' + id + '"]) > .nav-group-tg .count');
+      const m = f.models[id];
+      if (m) {
+        links.push('a.ref[href="#' + m.a + '"]', 'a.nav-model[href="#' + m.a + '"]');
+      }
+    });
+    let css = ports.join(',') + '{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important;border-radius:7px}';
+    css += nav.join(',') + '{color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}';
+    css += folders.join(',') + '{background:var(--accent);border-color:var(--accent);color:var(--bg)}';
+    if (links.length) {
+      css += links.join(',') + '{background:var(--accent-soft);box-shadow:0 0 0 2px var(--accent-soft);border-radius:3px}';
+    }
+    traceStyle.textContent = css;
+  }
+
+  // Sidebar card: hovering an operation shows its recipe.
+  let card = null;
+  let cardFor = null;
+  let cardTimer = 0;
+
+  function hideCard() {
+    clearTimeout(cardTimer);
+    if (card) {
+      card.remove();
+      card = null;
+    }
+  }
+
+  function showCard(a) {
+    const f = flowData();
+    const i = f.opIndex[a.getAttribute('href').slice(1)];
+    const side = sidebar ? sidebar.getBoundingClientRect() : null;
+    if (i === undefined || !side || side.right + 360 > window.innerWidth) {
+      return;
+    }
+    const op = f.ops[i];
+    card = el('div', 'navcard');
+    card.setAttribute('aria-hidden', 'true');
+    card.append(opTitle(op, 'navcard-t'), el('div', 'navcard-path', op.p), recipe(op));
+    doc.body.append(card);
+    const r = a.getBoundingClientRect();
+    card.style.left = (side.right + 8) + 'px';
+    card.style.top = Math.max(8, Math.min(r.top - 6, window.innerHeight - card.offsetHeight - 8)) + 'px';
+  }
+
+  doc.addEventListener('mouseover', (e) => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (!t) {
+      return;
+    }
+    const ids = traceIds(t);
+    clearTimeout(traceTimer);
+    traceTimer = setTimeout(() => setTrace(ids), ids ? 90 : 160);
+
+    const a = t.closest('.nav-op');
+    if (a !== cardFor) {
+      cardFor = a;
+      hideCard();
+      if (a) {
+        cardTimer = setTimeout(() => showCard(a), 300);
+      }
+    }
+  });
+  if (sidebar) {
+    sidebar.addEventListener('scroll', hideCard, { passive: true });
+  }
+
+  // Try it drives the machine: filled inputs light their port, a request
+  // runs it, and the status that came back lights its output.
+  function machineOf(form) {
+    const article = form.closest('[data-op]');
+    return article ? article.querySelector('.machine') : null;
+  }
+
+  function litPorts(form) {
+    const machine = machineOf(form);
+    if (!machine) {
+      return;
+    }
+    const filled = {};
+    let optional = false;
+    form.querySelectorAll('input[data-in]').forEach((input) => {
+      const has = input.value.trim() !== '';
+      filled['in:' + input.dataset.in + ':' + input.dataset.name] = has;
+      if (has && !input.hasAttribute('data-required')) {
+        optional = true;
+      }
+    });
+    const body = form.querySelector('[data-body]');
+    filled['in:body'] = !!(body && body.value.trim());
+    filled['in:optional'] = optional;
+    machine.querySelectorAll('.mc-ins > .port').forEach((port) => {
+      port.classList.toggle('lit', !!filled[port.dataset.port]);
+    });
+  }
+
+  function machineState(machine, state, status) {
+    if (!machine) {
+      return;
+    }
+    machine.classList.remove('running', 'done', 'jam');
+    machine.querySelectorAll('.fired').forEach((p) => p.classList.remove('fired'));
+    if (!state) {
+      return;
+    }
+    machine.classList.add(state);
+    if (state !== 'done') {
+      return;
+    }
+    const code = String(status);
+    const ports = Array.from(machine.querySelectorAll('.mc-outs > .port'));
+    const key = (k) => ports.find((p) => p.dataset.port.toLowerCase() === 'out:' + k.toLowerCase());
+    const port = key(code) || key(code.charAt(0) + 'xx') || key('default');
+    if (port) {
+      port.classList.add('fired');
+    }
+  }
+
+  doc.addEventListener('input', (e) => {
+    const form = e.target instanceof Element ? e.target.closest('form.try') : null;
+    if (form) {
+      litPorts(form);
+    }
+  });
+
   // ------------------------------------------------------ delegated clicks
 
   doc.addEventListener('click', (e) => {
@@ -1145,9 +1517,18 @@
       return;
     }
 
+    if (pop && !t.closest('.fpop') && !t.closest('[data-pop]')) {
+      closePop();
+    }
+    hideCard();
+
     const btn = t.closest('button');
     if (btn) {
-      if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
+      if (btn.matches('[data-pop]')) {
+        openPop(btn);
+      } else if (btn.matches('[data-goto]')) {
+        gotoPort(btn);
+      } else if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
       } else if (btn.matches('.jt-tg')) {
         const open = btn.getAttribute('aria-expanded') !== 'true';
@@ -1191,6 +1572,7 @@
     const href = a.getAttribute('href');
     if (href === '' || href.startsWith('#')) {
       e.preventDefault();
+      closePop();
       if (href.length > 1) {
         navigate(a);
       } else {

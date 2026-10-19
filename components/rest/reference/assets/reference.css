@@ -363,6 +363,172 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .opt-body { margin: 6px 0 0 5px; padding-left: 14px; border-left: 2px solid var(--border); border-bottom: 0; }
 .zone .resp:last-child { margin-bottom: 0; }
 
+/* Machine: the operation's inputs wired in on the left, what it produces
+   wired out on the right. Ports are shaped by type; lists are stacked. */
+.machine {
+  --wire: var(--border-strong);
+  --lit: var(--accent);
+  --k-str: #15aabf;
+  --k-num: #f59f00;
+  --k-bool: #be4bdb;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) 24px auto 24px minmax(0, 1fr);
+  align-items: center;
+  margin: 18px 0 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background-color: var(--bg-soft);
+  background-image: radial-gradient(color-mix(in srgb, var(--faint) 28%, transparent) 1px, transparent 1.2px);
+  background-size: 14px 14px;
+}
+.k-str { --kc: var(--k-str); }
+.k-num { --kc: var(--k-num); }
+.k-bool { --kc: var(--k-bool); }
+.k-obj { --kc: var(--accent); }
+.k-any { --kc: var(--faint); }
+.mc-ins, .mc-outs, .pfields { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.mc-ins > li, .mc-outs > li { position: relative; padding: 5px 0; }
+.mc-ins > li { padding-right: 14px; }
+.mc-outs > li { padding-left: 14px; }
+/* Each port draws its own stub and its share of the bus. */
+.mc-ins > li::after, .mc-outs > li::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  margin-top: -1px;
+  border-top: 2px solid color-mix(in srgb, var(--kc, var(--wire)) 55%, var(--wire));
+}
+.mc-ins > li::after { right: 0; }
+.mc-outs > li::after { left: 0; }
+.mc-ins > li::before, .mc-outs > li::before { content: ""; position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--wire); }
+.mc-ins > li::before { right: 0; }
+.mc-outs > li::before { left: 0; }
+.mc-ins > li:first-child::before, .mc-outs > li:first-child::before { top: 50%; margin-top: -1px; }
+.mc-ins > li:last-child::before, .mc-outs > li:last-child::before { bottom: 50%; margin-bottom: -1px; }
+.mc-ins > li:only-child::before, .mc-outs > li:only-child::before { display: none; }
+.mc-ins > li.opt::after, .mc-ins > li.ghost::after, .mc-outs > li:not(.main)::after { border-top-style: dashed; }
+
+.pbox { min-width: 0; padding: 5px 9px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg); transition: border-color .15s, box-shadow .15s, opacity .2s; }
+.pt { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--text); text-align: left; cursor: pointer; }
+.pt:hover .pnm { color: var(--accent); }
+.ps { flex: none; width: 9px; height: 9px; border: 2px solid var(--kc); border-radius: 50%; background: var(--kc); }
+.k-num .ps { border-radius: 1px; transform: rotate(45deg) scale(.82); }
+.k-bool .ps { border-radius: 2px; }
+.k-obj .ps { width: 11px; border-radius: 3px; }
+.port:not(.req) > .pbox > .pt .ps { background: transparent; }
+.pnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.pty { flex: 0 1 auto; max-width: 60%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.mc-outs .status { font-size: 12.5px; }
+.port.opt .pnm { font-weight: 500; color: var(--muted); }
+.port.opt > .pbox, .port.ghost > .pbox { border-style: dashed; background: transparent; }
+.port.ghost .pnm { font-weight: 400; font-style: italic; color: var(--faint); }
+.port.ghost .pt { cursor: default; }
+.port.main > .pbox { border-color: color-mix(in srgb, var(--s2) 55%, var(--border-strong)); }
+.mc-outs > li:not(.main) > .pbox { padding: 3px 9px; border-style: dashed; background: transparent; }
+.mc-outs > li:not(.main) .pty { color: var(--faint); }
+/* A list is a stack of cards. */
+.port.stack > .pbox {
+  margin: 5px 5px 0 0;
+  box-shadow: 3px -3px 0 -1px var(--bg), 3px -3px 0 0 var(--border-strong), 6px -6px 0 -1px var(--bg), 6px -6px 0 0 var(--border-strong);
+}
+.src { display: flex; align-items: baseline; gap: 5px; min-width: 0; margin-top: 2px; padding-left: 16px; font-size: 12px; color: var(--muted); }
+.src a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-k { flex: none; color: var(--faint); }
+.mc-outs .src { padding-left: 0; }
+.pop-tg { flex: none; padding: 0 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-soft); font: inherit; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.pop-tg:hover { border-color: var(--accent); color: var(--accent); }
+.pop-tg.users { color: var(--accent); }
+.pfields { margin: 4px 0 1px 4px; padding-left: 9px; border-left: 2px solid var(--border); }
+.pfields li { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding: 1px 0; }
+.pfields .pt { flex: none; width: auto; }
+.pfields .ps { width: 7px; height: 7px; }
+.pfields .pnm { font-size: 12px; font-weight: 500; }
+.pfields .src { margin: 0; padding: 0; }
+.pfields .more { font-size: 11.5px; color: var(--faint); }
+
+.mc-wire { position: relative; height: 2px; background: var(--wire); }
+.mc-wire::after { content: ""; position: absolute; right: -1px; top: -4px; border: 5px solid transparent; border-left: 7px solid var(--wire); border-right: 0; }
+.mc-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 104px;
+  max-width: 170px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 8px 20px -14px rgba(0, 0, 0, .45);
+  transition: border-color .2s, box-shadow .2s;
+}
+.mc-res { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+
+/* Try it: filled inputs light their wire, a request runs the belt, the
+   status that came back lights its output. */
+.port.lit > .pbox { border-color: var(--lit); }
+.mc-ins > li.lit::after { border-top-color: var(--lit); }
+.port.lit .ps { background: var(--kc); }
+.machine.running .mc-wire, .machine.running .mc-ins > li.lit::after {
+  background: repeating-linear-gradient(90deg, var(--lit) 0 6px, transparent 6px 12px);
+  background-size: 24px 2px;
+  animation: mc-belt .5s linear infinite;
+}
+.machine.running .mc-ins > li.lit::after { border-top-color: transparent; height: 2px; }
+.machine.running .mc-node { border-color: var(--lit); box-shadow: 0 0 0 4px var(--accent-soft); animation: mc-pulse 1s ease-in-out infinite; }
+.machine.done .mc-wire-in, .machine.done .mc-wire-out { background: var(--lit); }
+.machine.done .mc-wire::after { border-left-color: var(--lit); }
+.machine.done .mc-outs > li:not(.fired) { opacity: .4; }
+.port.fired > .pbox { border-color: var(--lit); box-shadow: 0 0 0 3px var(--accent-soft); }
+.mc-outs > li.fired::after { border-top: 2px solid var(--lit); }
+.machine.jam .mc-node { border-color: var(--s5); box-shadow: 0 0 0 4px color-mix(in srgb, var(--s5) 18%, transparent); }
+.machine.jam .mc-wire-out { background: repeating-linear-gradient(90deg, var(--s5) 0 3px, transparent 3px 7px); }
+@keyframes mc-belt { to { background-position: 24px 0; } }
+@keyframes mc-pulse { 50% { box-shadow: 0 0 0 7px var(--accent-soft); } }
+
+/* Jumping from a port to its detail row. */
+.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: 0 0 0 6px transparent; } }
+
+/* Recipes: inputs -> outputs on one line. */
+.recipe { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.ri { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-soft); }
+.ri.opt { border-style: dashed; background: none; color: var(--faint); }
+.ri.none { border-style: dashed; background: none; color: var(--faint); font-style: italic; }
+.ri.out { color: var(--s2); border-color: color-mix(in srgb, var(--s2) 45%, var(--border-strong)); }
+.r-arrow { color: var(--faint); }
+.r-err { color: var(--faint); font-size: 11px; }
+
+/* Popover lists of operations, and the sidebar's hover card. */
+.fpop, .navcard {
+  position: absolute;
+  z-index: 50;
+  width: min(400px, calc(100vw - 24px));
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--bg);
+  box-shadow: 0 16px 40px -12px rgba(0, 0, 0, .45);
+  font-size: 13px;
+}
+.fpop-h { display: flex; align-items: baseline; gap: 6px; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.fpop-h b { color: var(--text); font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.fpop-list { max-height: 340px; overflow-y: auto; padding: 4px; }
+.fpop-op { display: block; padding: 7px 8px; border-radius: 6px; color: var(--text); }
+.fpop-op:hover, .fpop-op:focus-visible { background: var(--bg-hover); text-decoration: none; }
+.fpop-t { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.fpop-t .m { min-width: 46px; font-size: 10px; }
+.fpop-filter { width: calc(100% - 8px); margin: 4px 4px 0; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); color: var(--text); font: inherit; font-size: 12.5px; }
+.navcard { position: fixed; width: 340px; padding: 10px 12px; pointer-events: none; }
+.navcard-path { margin: 4px 0 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
+.navcard-t { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+
+/* Tracing: hovering a model lights everything that makes or takes it. */
+.model-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }
+.model-flow .pop-tg { font-size: 12px; padding: 1px 9px; }
+
 /* Responses */
 .resp { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; }
 .resp-head { display: flex; align-items: baseline; gap: 10px; padding: 8px 12px; }
@@ -627,6 +793,12 @@ button.pn:hover { color: var(--accent); }
   .section, .op { padding: 24px 16px; }
   .tag-head { padding: 32px 16px 8px; }
   .model { padding: 20px 16px; }
+  .machine { grid-template-columns: minmax(0, 1fr); justify-items: stretch; }
+  .mc-ins > li, .mc-outs > li { padding-left: 0; padding-right: 0; }
+  .mc-ins > li::before, .mc-ins > li::after, .mc-outs > li::before, .mc-outs > li::after { display: none; }
+  .mc-wire { justify-self: center; width: 2px; height: 18px; }
+  .mc-wire::after { right: -4px; top: auto; bottom: -1px; border: 5px solid transparent; border-top: 7px solid var(--wire); border-bottom: 0; }
+  .mc-node { justify-self: center; flex-direction: row; max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

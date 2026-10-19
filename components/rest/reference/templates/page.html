@@ -23,6 +23,7 @@
 <footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
 </main>
 </div>
+<script type="application/json" id="flow-data">{{.Flow}}</script>
 {{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/reference.js?v={{.JSVersion}}"></script>{{end}}
 </body>
 </html>
@@ -56,7 +57,7 @@
 </nav>
 </aside>{{end}}
 
-{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span><span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
+{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span><span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
 {{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .}}</ul>
@@ -117,6 +118,7 @@
 {{range .Models}}<article class="model" id="{{.Anchor}}" data-anchor>
 <h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a></h3>
 {{if ne .Short .Name}}<div class="model-name"><code>{{.Name}}</code></div>{{end}}
+{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
 {{.Tree}}
 </article>
 {{end}}</section>{{end}}

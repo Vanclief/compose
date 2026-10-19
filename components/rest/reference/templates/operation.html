@@ -7,19 +7,20 @@
 <span class="ml">Auth</span>{{if .NoAuth}}<span class="noauth">No authentication</span>{{else}}{{template "reqs" .Security}}{{end}}
 {{if .OperationID}}<span class="ml">operationId</span><code>{{.OperationID}}</code>{{end}}
 </div>
+{{template "machine" .}}
 <button type="button" class="btn try-btn" data-try aria-expanded="false">Try it</button>
 {{template "try" .}}
 <div class="flow">
 <section class="zone zone-send" aria-label="Request">
 <h4 class="zone-h">Send</h4>
-{{range .ParamGroups}}<div class="io">
+{{range .ParamGroups}}<div class="io" data-in="{{.In}}">
 <div class="io-k">{{.In}}</div>
 <div class="io-v">{{if .Rows}}<div class="rows">{{.Rows}}</div>{{end}}{{if .Optional}}<div class="opt">
 <button type="button" class="tg opt-tg" aria-expanded="false"><span class="opt-n">{{len .OptionalNames}} optional</span><span class="opt-names">{{range .OptionalNames}}<code class="chip">{{.}}</code>{{end}}</span></button>
 <div class="rows opt-body" hidden>{{.Optional}}</div>
 </div>{{end}}</div>
 </div>
-{{end}}<div class="io">
+{{end}}<div class="io" data-in="body">
 <div class="io-k">body</div>
 <div class="io-v">{{with .Body}}<div class="sum"><span class="ty">{{.Summary.Label}}</span>{{if .Required}} <span class="mk req">required</span>{{end}}</div>
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
@@ -29,7 +30,7 @@
 <div class="flow-arrow" aria-hidden="true"></div>
 <section class="zone zone-recv" aria-label="Responses">
 <h4 class="zone-h">Receive</h4>
-{{range .Responses}}<div class="resp">
+{{range .Responses}}<div class="resp" data-status="{{.Status}}">
 <div class="resp-head"{{if .HasBody}} data-resp-toggle{{end}}>{{if .HasBody}}<button type="button" class="tg rs" aria-expanded="false"><span class="status {{.Class}}">{{.Status}}</span></button>{{else}}<span class="rs"><span class="status {{.Class}}">{{.Status}}</span></span>{{end}}<div class="resp-main">{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}{{with .Summary}}{{if .Label}}<div class="resp-sum"><span class="ty">{{.Label}}</span>{{range .Fields}}<code class="chip">{{.}}</code>{{end}}{{if .MoreFields}}<span class="more">+{{.MoreFields}}</span>{{end}}</div>{{end}}{{end}}</div></div>
 {{if .HasBody}}<div class="resp-body" hidden>
 {{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
@@ -66,3 +67,18 @@
 <div class="try-actions"><button type="submit" class="btn primary">Send</button><span class="try-auth"></span></div>
 <div class="try-result" hidden aria-live="polite"></div>
 </form>{{end}}
+
+{{define "machine"}}<div class="machine" aria-label="Inputs and outputs of {{.Title}}">
+<ul class="mc-ins">{{range .Machine.Inputs}}{{template "port" .}}{{end}}</ul>
+<div class="mc-wire mc-wire-in" aria-hidden="true"></div>
+<div class="mc-node"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="mc-res">{{.Machine.Resource}}</span></div>
+<div class="mc-wire mc-wire-out" aria-hidden="true"></div>
+<ul class="mc-outs">{{range .Machine.Outputs}}{{template "port" .}}{{end}}</ul>
+</div>{{end}}
+
+{{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">
+{{- if .Ghost}}<span class="pt"><span class="ps"></span><span class="pnm">{{.Name}}</span></span>{{else}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}>{{if .Class}}<span class="status {{.Class}}">{{.Name}}</span>{{else}}<span class="ps"></span><span class="pnm">{{.Name}}</span>{{end}}{{if .Type}}<span class="pty">{{.Type}}</span>{{end}}</button>{{end}}
+{{- with .Source}}<div class="src"><span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a>{{if $.MoreSources}}<button type="button" class="pop-tg" data-pop="by">+{{$.MoreSources}}</button>{{end}}</div>{{end}}
+{{- if .Users}}<div class="src"><button type="button" class="pop-tg users" data-pop="use">used by {{.Users}} &rarr;</button></div>{{end}}
+{{- if .Fields}}<ul class="pfields">{{range .Fields}}<li class="k-{{.Kind}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><button type="button" class="pt" data-goto title="{{.Title}}"><span class="ps"></span><span class="pnm">{{.Name}}</span></button>{{with .Source}}<span class="src"><span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a></span>{{end}}</li>{{end}}{{if .MoreFields}}<li class="more">+{{.MoreFields}} more ids</li>{{end}}</ul>{{end -}}
+</div></li>{{end}}
