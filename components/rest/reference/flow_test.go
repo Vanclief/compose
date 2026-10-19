@@ -241,7 +241,7 @@ func TestFlowRender(t *testing.T) {
 
 	require.Contains(t, html, `<script type="application/json" id="flow-data">{"ops":[`)
 	get := section(t, html, `id="operation/pets-get"`)
-	require.Contains(t, get, `<span class="m m-get">GET</span><span class="mc-res">pets</span><span class="mc-run">&#9654; Send</span></button>`)
+	require.Contains(t, get, `<div class="mc-node"><span class="m m-get">GET</span><span class="mc-res">pets</span></div>`)
 	require.Contains(t, get, `<span class="pin">id</span><span class="lchip">path</span></button><div class="src"><span class="pty">int64</span><span class="src-k">from</span><a href="#operation/pets-list">`)
 	require.Contains(t, get, `<button type="button" class="pop-tg" data-pop="by">+1</button>`)
 	require.Contains(t, get, `<div class="io" data-in="path">`)

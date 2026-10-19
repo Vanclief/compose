@@ -142,13 +142,11 @@ type opView struct {
 	Diff        *diffBadge
 }
 
-// paramGroup holds the parameters of one location. Required ones are always
-// shown; optional ones collapse behind a row that lists their names.
+// paramGroup holds the parameter rows of one location, required ones first.
 type paramGroup struct {
-	In            string
-	Rows          template.HTML
-	Optional      template.HTML
-	OptionalNames []string
+	In       string
+	Rows     template.HTML
+	Optional template.HTML
 }
 
 type bodyView struct {
@@ -865,7 +863,6 @@ func (b *builder) buildParameters(ov *opView, ref OperationRef) {
 			rows.WriteString(t.String())
 		} else {
 			optional.WriteString(t.String())
-			current.OptionalNames = append(current.OptionalNames, p.Name)
 		}
 
 		if p.In == "cookie" {

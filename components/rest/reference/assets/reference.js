@@ -87,12 +87,8 @@
   // ------------------------------------------------------------- toggles
 
   function toggleBody(btn) {
-    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg') || btn.classList.contains('opt-tg')) {
+    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg')) {
       return btn.nextElementSibling;
-    }
-    const resp = btn.closest('.resp');
-    if (btn.classList.contains('rs') && resp) {
-      return resp.querySelector(':scope > .resp-body');
     }
     const row = btn.closest('.row');
     return row ? row.querySelector(':scope > .row-kids') : null;
@@ -1355,34 +1351,52 @@
     setTimeout(() => node.classList.remove('flash'), 1500);
   }
 
+  // Ports open their details under the machine: the parameters, the body
+  // or the response they stand for. Clicking the same port again closes
+  // them.
+  function detailKey(port) {
+    const parts = port.split(':');
+    if (parts[0] === 'out') {
+      return port;
+    }
+    return parts[1] === 'body' ? 'body' : 'params';
+  }
+
+  function showDetail(machine, port) {
+    const key = port ? detailKey(port) : '';
+    let open = null;
+    machine.querySelectorAll(':scope > .mc-detail').forEach((d) => {
+      d.hidden = d.dataset.detail !== key;
+      if (!d.hidden) {
+        open = d;
+      }
+    });
+    machine.dataset.shown = open ? port : '';
+    machine.querySelectorAll('[data-port]').forEach((p) => {
+      p.classList.toggle('shown', !!open && p.dataset.port === port);
+    });
+    return open;
+  }
+
   function gotoPort(btn) {
     const port = btn.closest('[data-port]');
-    const article = btn.closest('[data-op]');
-    if (!port || !article) {
+    const machine = btn.closest('.machine');
+    if (!port || !machine) {
       return;
     }
-    const parts = port.dataset.port.split(':');
-    let target = null;
-    if (parts[0] === 'out') {
-      target = Array.from(article.querySelectorAll('.resp[data-status]')).find((r) => r.dataset.status === parts[1]) || null;
-      const tg = target && target.querySelector('.resp-head > .tg');
-      if (tg && tg.getAttribute('aria-expanded') !== 'true') {
-        toggle(tg);
-      }
-    } else if (parts[1] === 'optional') {
-      const tgs = article.querySelectorAll('.spec .opt-tg');
-      tgs.forEach((tg) => {
-        if (tg.getAttribute('aria-expanded') !== 'true') {
-          toggle(tg);
-        }
-      });
-      target = tgs.length ? tgs[0].closest('.io') : null;
-    } else {
-      const io = Array.from(article.querySelectorAll('.spec .io[data-in]')).find((n) => n.dataset.in === parts[1]) || null;
-      target = (parts[2] && findRow(io, parts[2])) || io;
+    const key = port.dataset.port;
+    const detail = showDetail(machine, machine.dataset.shown === key ? '' : key);
+    if (!detail) {
+      return;
     }
+    const parts = key.split(':');
+    let target = null;
+    if (parts[0] === 'in' && parts[2]) {
+      const scope = parts[1] === 'body' ? detail : Array.from(detail.querySelectorAll('.io[data-in]')).find((n) => n.dataset.in === parts[1]);
+      target = findRow(scope, parts.slice(2).join(':'));
+    }
+    detail.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     if (target) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
       flash(target);
     }
   }
@@ -1831,6 +1845,8 @@
         openFinder(btn);
       } else if (btn.matches('[data-goto]')) {
         gotoPort(btn);
+      } else if (btn.matches('[data-detail-close]')) {
+        showDetail(btn.closest('.machine'), '');
       } else if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
       } else if (btn.matches('.jt-tg')) {
@@ -1866,12 +1882,6 @@
       e.preventDefault();
       closePop();
       openModel(idFromHref(a.getAttribute('href')));
-      return;
-    }
-    // The whole response header toggles its body, not only the status.
-    const head = t.closest('[data-resp-toggle]');
-    if (head && !a && !window.getSelection().toString()) {
-      toggle(head.querySelector(':scope > .tg'));
       return;
     }
     if (!a) {
@@ -2804,12 +2814,6 @@
   function toggleFor(box) {
     if (box.classList.contains('row-kids')) {
       return box.parentElement.querySelector(':scope > .row-head > .tg');
-    }
-    if (box.classList.contains('resp-body')) {
-      return box.parentElement.querySelector(':scope > .resp-head .tg');
-    }
-    if (box.classList.contains('opt-body')) {
-      return box.previousElementSibling;
     }
     return null;
   }

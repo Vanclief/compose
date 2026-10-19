@@ -270,14 +270,17 @@ func TestRenderSmallDocument(t *testing.T) {
 	// Path-level parameter merged with the operation's query parameter.
 	require.Contains(t, getPet, `<div class="io-k"><span class="lchip">path</span></div>`)
 	require.Contains(t, getPet, `<span class="pn">pet_id</span><span class="ty">string &lt;uuid&gt;</span><span class="mk req">required</span>`)
-	// Optional parameters collapse behind a row listing their names.
-	require.Contains(t, getPet, `<span class="opt-n">1 optional</span><span class="opt-names"><code class="chip">status</code></span>`)
-	// No body, no body row.
-	require.NotContains(t, getPet, `data-in="body"`)
-	// Responses start collapsed on one line: status, model, description.
-	require.Contains(t, getPet, `<span class="status schip s2xx">200</span></button><span class="resp-ty"><a class="ref" href="#model/Pet" title="Pet">Pet</a></span><div class="resp-desc md"><p>OK</p>`)
+	// Optional parameters start open in their port, each with its input.
+	require.Contains(t, getPet, `<button type="button" class="pt" data-opt aria-expanded="true" title="status">`)
+	require.Contains(t, getPet, `<div class="popt" data-port="in:query:status"><button type="button" class="popt-n" data-goto>status<span class="lchip">query</span></button>`)
+	// No body, no body panel.
+	require.NotContains(t, getPet, `data-detail="body"`)
+	// Each response has a closed panel the output port opens: status, model,
+	// description, then its fields.
+	require.Contains(t, getPet, `<div class="mc-detail" data-detail="out:200" hidden>
+<div class="mcd-head"><span class="status schip s2xx">200</span><span class="resp-ty"><a class="ref" href="#model/Pet" title="Pet">Pet</a></span><div class="resp-desc md"><p>OK</p>`)
 	require.Contains(t, getPet, `<span class="resp-ty empty">empty</span><div class="resp-desc md"><p>Not found</p>`)
-	require.NotContains(t, getPet, `class="tg rs" aria-expanded="true"`)
+	require.Contains(t, getPet, `<button type="submit" class="mc-play" title="Send GET /pets/{pet_id}"`)
 	// Nested response objects start collapsed and list their fields.
 	require.Contains(t, getPet, `<button type="button" class="tg pn" aria-expanded="false">contact</button><span class="ty">object</span><span class="kid-sum"><code class="chip">email</code><code class="chip">phone</code></span>`)
 	// The response card renders a pretty view from the raw JSON it keeps.
@@ -451,9 +454,9 @@ paths:
 	// Required inputs sit in their ports, optional ones in the optional port.
 	require.Contains(t, op, `<span class="pty">integer[]</span></div><input type="text" class="pin-v" data-in="path" data-name="ids" placeholder="1,2" aria-label="ids" data-required data-array title=`)
 	require.Contains(t, op, `data-name="tag" placeholder="a,b" aria-label="tag" data-required data-array data-explode`)
-	require.Contains(t, op, `<label class="popt"><span class="popt-n">sort<span class="lchip">query</span></span><input type="text" class="pin-v" data-in="query" data-name="sort" placeholder="name,age" aria-label="sort" data-array title=`)
+	require.Contains(t, op, `<span class="lchip">query</span></button><input type="text" class="pin-v" data-in="query" data-name="sort" placeholder="name,age" aria-label="sort" data-array title=`)
 	require.Contains(t, op, `data-name="pipe" placeholder="string" aria-label="pipe" data-array data-sep="|"`)
-	require.Contains(t, op, `<button type="submit" class="mc-node" title="Send GET /items/{ids}">`)
+	require.Contains(t, op, `<button type="submit" class="mc-play" title="Send GET /items/{ids}" aria-label="Send GET /items/{ids}">`)
 	require.NotContains(t, op, `{port}`)
 
 	out, err = Render(doc, Options{ServerURL: "https://staging.example.com"})

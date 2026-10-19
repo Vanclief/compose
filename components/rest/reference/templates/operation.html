@@ -8,36 +8,6 @@
 {{if .OperationID}}<span class="ml">operationId</span><code>{{.OperationID}}</code>{{end}}
 </div>
 {{template "machine" .}}
-<div class="spec">
-<section class="spec-sec" aria-label="Request">
-<h4 class="spec-h">Request</h4>
-{{range .ParamGroups}}<div class="io" data-in="{{.In}}">
-<div class="io-k"><span class="lchip">{{.In}}</span></div>
-<div class="io-v">{{if .Rows}}<div class="rows">{{.Rows}}</div>{{end}}{{if .Optional}}<div class="opt">
-<button type="button" class="tg opt-tg" aria-expanded="false"><span class="opt-n">{{len .OptionalNames}} optional</span><span class="opt-names">{{range .OptionalNames}}<code class="chip">{{.}}</code>{{end}}</span></button>
-<div class="rows opt-body" hidden>{{.Optional}}</div>
-</div>{{end}}</div>
-</div>
-{{end}}{{with .Body}}<div class="io" data-in="body">
-<div class="io-k"><span class="lchip">body</span></div>
-<div class="io-v"><div class="sum">{{.Summary.Type}}{{if .Required}}<span class="mk req">required</span>{{end}}</div>
-{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
-{{template "contents" .Contents}}</div>
-</div>
-{{else}}{{if not .ParamGroups}}<span class="none">No parameters.</span>
-{{end}}{{end}}</section>
-<section class="spec-sec" aria-label="Responses">
-<h4 class="spec-h">Responses</h4>
-{{range .Responses}}<div class="resp" data-status="{{.Status}}">
-<div class="resp-head"{{if .HasBody}} data-resp-toggle{{end}}>{{if .HasBody}}<button type="button" class="tg rs" aria-expanded="false"><span class="status schip {{.Class}}">{{.Status}}</span></button>{{else}}<span class="rs"><span class="status schip {{.Class}}">{{.Status}}</span></span>{{end}}{{with .Summary.Type}}<span class="resp-ty">{{.}}</span>{{else}}<span class="resp-ty empty">empty</span>{{end}}{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}</div>
-{{if .HasBody}}<div class="resp-body" hidden>
-{{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
-{{template "contents" .Contents}}
-</div>{{end}}
-</div>
-{{else}}<span class="none">No responses documented.</span>
-{{end}}</section>
-</div>
 </div>
 <aside class="op-samples" aria-label="Samples for {{.Title}}">
 {{if or .Curl .ReqSamples}}<div class="card tabset">
@@ -61,22 +31,43 @@
 {{define "tryin"}}<input type="text" class="pin-v" data-in="{{.In}}" data-name="{{.Name}}" placeholder="{{.Placeholder}}" aria-label="{{.Name}}"{{if .Required}} data-required{{end}}{{if .Array}} data-array{{if .Explode}} data-explode{{else if ne .Sep ","}} data-sep="{{.Sep}}"{{end}} title="Comma-separated list"{{end}} spellcheck="false" autocomplete="off">{{end}}
 
 {{define "machine"}}<form class="machine try" aria-label="Try {{.Title}}" data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
+<div class="mc-top"><button type="submit" class="mc-play" title="Send {{.Method}} {{.Path}}" aria-label="Send {{.Method}} {{.Path}}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.6v10.8L13.2 8z"/></svg></button></div>
 <ul class="mc-ins">{{range .Machine.Inputs}}{{template "port" .}}{{end}}</ul>
 <div class="mc-wire mc-wire-in" aria-hidden="true"></div>
-<button type="submit" class="mc-node" title="Send {{.Method}} {{.Path}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="mc-res">{{.Machine.Resource}}</span><span class="mc-run">&#9654; Send</span></button>
+<div class="mc-node"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="mc-res">{{.Machine.Resource}}</span></div>
 <div class="mc-wire mc-wire-out" aria-hidden="true"></div>
 <ul class="mc-outs">{{range .Machine.Outputs}}{{template "port" .}}{{end}}</ul>
 {{if .TryBody}}<div class="mc-body" hidden><div class="mc-body-h">Body <span class="ct">{{.TryCT}}</span></div><textarea data-body rows="12" spellcheck="false" aria-label="Request body"></textarea></div>
-{{end}}<div class="mc-foot"><span class="try-auth"></span></div>
-<div class="try-result" hidden aria-live="polite"></div>
+{{end}}{{template "details" .}}<div class="try-result" hidden aria-live="polite"></div>
 </form>{{end}}
+
+{{define "detail-x"}}<button type="button" class="mcd-x" data-detail-close aria-label="Close details">&times;</button>{{end}}
+
+{{define "details"}}{{if .ParamGroups}}<div class="mc-detail" data-detail="params" hidden>
+<div class="mcd-head"><span class="mcd-t">Parameters</span>{{template "detail-x"}}</div>
+{{range .ParamGroups}}<div class="io" data-in="{{.In}}">
+<div class="io-k"><span class="lchip">{{.In}}</span></div>
+<div class="io-v">{{if .Rows}}<div class="rows">{{.Rows}}</div>{{end}}{{if .Optional}}<div class="rows">{{.Optional}}</div>{{end}}</div>
+</div>
+{{end}}</div>
+{{end}}{{with .Body}}<div class="mc-detail" data-detail="body" hidden>
+<div class="mcd-head"><span class="lchip">body</span><span class="resp-ty">{{.Summary.Type}}</span>{{if .Required}}<span class="mk req">required</span>{{end}}{{template "detail-x"}}</div>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+{{template "contents" .Contents}}
+</div>
+{{end}}{{range .Responses}}<div class="mc-detail" data-detail="out:{{.Status}}" hidden>
+<div class="mcd-head"><span class="status schip {{.Class}}">{{.Status}}</span>{{with .Summary.Type}}<span class="resp-ty">{{.}}</span>{{else}}<span class="resp-ty empty">empty</span>{{end}}{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}{{template "detail-x"}}</div>
+{{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
+{{if .HasBody}}{{template "contents" .Contents}}{{else}}<p class="none">No body.</p>{{end}}
+</div>
+{{end}}{{end}}
 
 {{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Loc}} in{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">
 {{- if .Ghost}}<span class="pt"><span class="ps"></span><span class="pnm">{{.Name}}</span></span>
 {{- else if .Loc}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pin">{{dotName .Head}}</span><span class="lchip">{{.Loc}}</span></button>
 {{- if or (ne .Head .Type) .Source}}<div class="src">{{if ne .Head .Type}}<span class="pty">{{.Type}}</span>{{end}}{{with .Source}}<span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a>{{if $.MoreSources}}<button type="button" class="pop-tg" data-pop="by">+{{$.MoreSources}}</button>{{end}}{{end}}</div>{{end}}
 {{- with .Try}}{{template "tryin" .}}{{end}}{{if .Edit}}<button type="button" class="pedit" data-body-tg aria-expanded="false">Edit body</button>{{end}}
-{{- else if .Opts}}<button type="button" class="pt" data-opt aria-expanded="false"{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pnm">{{.Name}}</span><span class="opt-chev" aria-hidden="true">&rsaquo;</span></button><div class="popts" hidden>{{range .Opts}}<label class="popt"><span class="popt-n">{{.Name}}<span class="lchip">{{.In}}</span></span>{{template "tryin" .}}</label>{{end}}</div>
+{{- else if .Opts}}<button type="button" class="pt" data-opt aria-expanded="true"{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pnm">{{.Name}}</span><span class="opt-chev" aria-hidden="true">&rsaquo;</span></button><div class="popts">{{range .Opts}}<div class="popt" data-port="in:{{.In}}:{{.Name}}"><button type="button" class="popt-n" data-goto>{{.Name}}<span class="lchip">{{.In}}</span></button>{{template "tryin" .}}</div>{{end}}</div>
 {{- else if .Main}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}><span class="pout{{if eq .Type "empty"}} empty{{end}}">{{with dotPrefix .BaseType}}<span class="pre">{{.}}</span>{{end}}{{dotName .BaseType}}{{with .ListSuffix}}<span class="arr">{{.}}</span>{{end}}</span><span class="status schip {{.Class}}">{{.Name}}</span></button>
 {{- else}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}>{{if .Class}}<span class="status {{.Class}}">{{.Name}}</span>{{else}}<span class="ps"></span><span class="pnm">{{.Name}}</span>{{end}}{{if .Type}}<span class="pty">{{.Type}}</span>{{end}}</button>{{end}}
 {{- if .Users}}<div class="src"><button type="button" class="pop-tg users" data-pop="use">used by {{.Users}} &rarr;</button></div>{{end}}
