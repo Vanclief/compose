@@ -304,6 +304,28 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .tag-head h2 a, .op-title a, .model-title a { color: inherit; }
 .op-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .op-path { font-size: 14px; word-break: break-all; background: none; }
+/* Path bar: each segment is a folder you can open, like Finder's. */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; font-family: var(--mono); font-size: 13.5px; }
+.crumb { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid transparent; border-radius: 6px; background: none; font: inherit; color: var(--text); cursor: pointer; }
+.crumb:hover, .crumb[aria-expanded="true"] { border-color: var(--border-strong); background: var(--bg-soft); }
+.crumb .ico-folder { width: 14px; height: 14px; flex: none; fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); stroke-width: 1.2; }
+.crumb.param { color: var(--accent); font-weight: 600; background: var(--accent-soft); }
+.crumb.root { padding: 2px 6px; color: var(--muted); }
+.crumbs > .crumb:last-child { font-weight: 700; }
+.crumb-sep { color: var(--faint); }
+.finder .fpop-list { padding: 4px; }
+.fd-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; }
+.fd-crumbs .crumb { padding: 1px 5px; font-size: 12px; }
+.fd-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 13px; color: var(--text); text-align: left; cursor: pointer; }
+.fd-row:hover, .fd-row:focus-visible { background: var(--bg-hover); text-decoration: none; }
+.fd-row .ico-folder { width: 15px; height: 15px; flex: none; fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); stroke-width: 1.2; }
+.fd-row .fd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.fd-row .fd-name.param { color: var(--accent); font-weight: 600; }
+.fd-row .count { flex: none; }
+.fd-row .fd-go { flex: none; color: var(--faint); }
+.fd-row .m { min-width: 46px; font-size: 10px; }
+.fd-row.here { background: var(--accent-soft); }
+.fd-sec { padding: 6px 8px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
 .pp { color: var(--accent); font-weight: 600; }
 .op-title { font-size: 21px; }
 .op-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 12px 0; font-size: 13px; }
@@ -519,7 +541,7 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 /* Popover lists of operations, and the sidebar's hover card. */
 .fpop, .navcard {
   position: absolute;
-  z-index: 50;
+  z-index: 70;
   width: min(400px, calc(100vw - 24px));
   border: 1px solid var(--border-strong);
   border-radius: 9px;
@@ -538,6 +560,17 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .navcard { position: fixed; width: 340px; padding: 10px 12px; pointer-events: none; }
 .navcard-path { margin: 4px 0 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
 .navcard-t { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+
+/* Model dialog: a model opens over the page instead of leaving it. */
+html.modal-open { overflow: hidden; }
+.mmodal-back { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; background: rgba(8, 10, 14, .55); backdrop-filter: blur(2px); }
+.mmodal { display: flex; flex-direction: column; width: min(780px, 100%); max-height: 88vh; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .6); }
+.mm-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
+.mm-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 16px; font-weight: 700; }
+.mm-title .ico-obj { color: var(--accent); font-size: 13px; }
+.mm-open { font-size: 13px; }
+.mm-body { overflow: auto; padding: 12px 18px 18px; }
+.mm-body .model-name { margin-bottom: 8px; }
 
 /* Tracing: hovering a model lights everything that makes or takes it. */
 .model-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }

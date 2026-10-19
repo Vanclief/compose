@@ -116,7 +116,7 @@ type opView struct {
 	Method      string
 	MethodClass string
 	Path        string
-	PathHTML    template.HTML
+	Crumbs      []crumbView
 	Title       string
 	OperationID string
 	Deprecated  bool
@@ -765,20 +765,20 @@ func commonPrefix(paths [][]string) int {
 	return n
 }
 
-var pathParam = regexp.MustCompile(`\{[^}/]+\}`)
+// crumbView is one segment of an operation's path bar. Depth is how many
+// segments the prefix up to and including it holds.
+type crumbView struct {
+	Name  string
+	Param bool
+	Depth int
+}
 
-func pathHTML(path string) template.HTML {
-	var sb strings.Builder
-	last := 0
-	for _, loc := range pathParam.FindAllStringIndex(path, -1) {
-		sb.WriteString(template.HTMLEscapeString(path[last:loc[0]]))
-		sb.WriteString(`<span class="pp">`)
-		sb.WriteString(template.HTMLEscapeString(path[loc[0]:loc[1]]))
-		sb.WriteString(`</span>`)
-		last = loc[1]
+func crumbs(path string) []crumbView {
+	var out []crumbView
+	for i, seg := range pathSegments(path) {
+		out = append(out, crumbView{Name: seg, Param: isParamSegment(seg), Depth: i + 1})
 	}
-	sb.WriteString(template.HTMLEscapeString(path[last:]))
-	return template.HTML(sb.String())
+	return out
 }
 
 func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
@@ -793,7 +793,7 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 		Method:      ref.Method,
 		MethodClass: strings.ToLower(ref.Method),
 		Path:        ref.Path,
-		PathHTML:    pathHTML(ref.Path),
+		Crumbs:      crumbs(ref.Path),
 		Title:       op.Summary,
 		OperationID: op.OperationID,
 		Deprecated:  op.Deprecated,

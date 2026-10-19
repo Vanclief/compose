@@ -284,7 +284,8 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, getPet, `<div class="pv" data-pv></div><pre class="raw"><code class="json">`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
-	require.Contains(t, getPet, `<span class="pp">{pet_id}</span>`)
+	require.Contains(t, getPet, `<nav class="crumbs" data-path="/pets/{pet_id}" aria-label="Path /pets/{pet_id}">`)
+	require.Contains(t, getPet, `<button type="button" class="crumb param" data-crumb="2">{pet_id}</button></nav>`)
 	// Responses are sorted with default last.
 	require.Less(t, strings.Index(getPet, `>200</span>`), strings.Index(getPet, `>404</span>`))
 	require.Less(t, strings.Index(getPet, `>404</span>`), strings.Index(getPet, `>default</span>`))

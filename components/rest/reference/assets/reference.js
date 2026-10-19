@@ -254,6 +254,10 @@
       btn.focus();
       return;
     }
+    if (e.key === 'Escape' && modal) {
+      closeModel();
+      return;
+    }
 
     const typing = e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable]');
     if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -1218,6 +1222,7 @@
     pop.box.remove();
     pop.btn.setAttribute('aria-expanded', 'false');
     pop = null;
+    finderStyle.textContent = '';
   }
 
   function openPop(btn) {
@@ -1279,16 +1284,26 @@
       box.append(filter);
     }
     box.append(list);
-    doc.body.append(box);
+    showPop(box, btn);
+  }
 
+  function showPop(box, btn) {
+    doc.body.append(box);
     const r = btn.getBoundingClientRect();
     const width = box.offsetWidth;
     const left = Math.max(12, Math.min(r.left, window.innerWidth - width - 12));
-    box.style.left = (left + window.scrollX) + 'px';
-    box.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    // Inside the model dialog the popover follows the fixed dialog.
+    if (btn.closest('.mmodal')) {
+      box.style.position = 'fixed';
+      box.style.left = left + 'px';
+      box.style.top = (r.bottom + 6) + 'px';
+    } else {
+      box.style.left = (left + window.scrollX) + 'px';
+      box.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    }
     btn.setAttribute('aria-expanded', 'true');
     pop = { box, btn };
-    const first = box.querySelector('input, a');
+    const first = box.querySelector('input, a, button');
     if (first) {
       first.focus({ preventScroll: true });
     }
@@ -1509,6 +1524,229 @@
     }
   });
 
+  // Path bar: every segment opens a Finder-like browser of the operations
+  // beneath it. Folders drill in, the bar on top climbs back out, and the
+  // sidebar lights the operations in the folder being browsed.
+  const finderStyle = el('style');
+  doc.head.append(finderStyle);
+
+  function pathSegs(path) {
+    return path.split('/').filter(Boolean);
+  }
+
+  function isParamSeg(seg) {
+    return seg.charAt(0) === '{';
+  }
+
+  // under returns the segments of path when it lies beneath prefix, where
+  // any two parameters match.
+  function under(path, prefix) {
+    const segs = pathSegs(path);
+    if (segs.length < prefix.length) {
+      return null;
+    }
+    for (let i = 0; i < prefix.length; i++) {
+      if (segs[i] !== prefix[i] && !(isParamSeg(segs[i]) && isParamSeg(prefix[i]))) {
+        return null;
+      }
+    }
+    return segs;
+  }
+
+  function folderIcon() {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'ico-folder');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z');
+    svg.append(path);
+    return svg;
+  }
+
+  function renderFinder(box, prefix, here) {
+    box.textContent = '';
+    const f = flowData();
+    const head = el('div', 'fd-crumbs');
+    const root = el('button', 'crumb root', '/');
+    root.type = 'button';
+    root.dataset.fd = '0';
+    head.append(root);
+    prefix.forEach((seg, i) => {
+      head.append(el('span', 'crumb-sep', '›'));
+      const b = el('button', 'crumb' + (isParamSeg(seg) ? ' param' : ''), seg);
+      b.type = 'button';
+      b.dataset.fd = String(i + 1);
+      head.append(b);
+    });
+    box.append(head);
+
+    const herePath = pathSegs(here.p);
+    const ops = [];
+    const folders = new Map();
+    const inside = [];
+    f.ops.forEach((op) => {
+      const segs = under(op.p, prefix);
+      if (!segs) {
+        return;
+      }
+      inside.push(op);
+      if (segs.length === prefix.length) {
+        ops.push(op);
+        return;
+      }
+      let next = segs[prefix.length];
+      const key = isParamSeg(next) ? '{}' : next;
+      if (key === '{}' && under(here.p, prefix) && herePath.length > prefix.length && isParamSeg(herePath[prefix.length])) {
+        next = herePath[prefix.length];
+      }
+      if (!folders.has(key)) {
+        folders.set(key, { name: next, count: 0 });
+      }
+      folders.get(key).count++;
+    });
+
+    const list = el('div', 'fpop-list');
+    if (ops.length > 0) {
+      list.append(el('div', 'fd-sec', 'Operations'));
+      ops.forEach((op) => {
+        const a = el('a', 'fd-row' + (op.a === here.a ? ' here' : ''));
+        a.href = '#' + op.a;
+        a.append(el('span', 'm m-' + op.m.toLowerCase(), op.m), el('span', 'fd-name', op.t));
+        list.append(a);
+      });
+    }
+    if (folders.size > 0) {
+      list.append(el('div', 'fd-sec', 'Folders'));
+      Array.from(folders.values()).sort((x, y) => x.name.localeCompare(y.name)).forEach((fd) => {
+        const b = el('button', 'fd-row');
+        b.type = 'button';
+        b.dataset.open = fd.name;
+        b.append(folderIcon(), el('span', 'fd-name' + (isParamSeg(fd.name) ? ' param' : ''), fd.name), el('span', 'count', String(fd.count)), el('span', 'fd-go', '›'));
+        list.append(b);
+      });
+    }
+    box.append(list);
+
+    box.onclick = (e) => {
+      const b = e.target instanceof Element ? e.target.closest('[data-fd], [data-open]') : null;
+      if (!b) {
+        return;
+      }
+      e.stopPropagation();
+      const next = b.dataset.open !== undefined ? prefix.concat(b.dataset.open) : prefix.slice(0, Number(b.dataset.fd));
+      renderFinder(box, next, here);
+      const first = box.querySelector('.fpop-list .fd-row');
+      if (first) {
+        first.focus({ preventScroll: true });
+      }
+    };
+
+    finderStyle.textContent = inside.length === 0 ? '' : inside.map((op) => '.nav-op[href="#' + op.a + '"]').join(',') + '{color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}' +
+      inside.map((op) => '.nav-folder:has(> .nav .nav-op[href="#' + op.a + '"]) > .nav-folder-tg .count,.nav-group:has(.nav-op[href="#' + op.a + '"]) > .nav-group-tg .count').join(',') + '{background:var(--accent);border-color:var(--accent);color:var(--bg)}';
+  }
+
+  function openFinder(btn) {
+    const same = pop && pop.btn === btn;
+    closePop();
+    if (same) {
+      return;
+    }
+    const article = btn.closest('[data-op]');
+    const bar = btn.closest('.crumbs');
+    const f = flowData();
+    const here = f.ops[f.opIndex[article ? article.id : '']] || { a: '', p: bar.dataset.path };
+    const box = el('div', 'fpop finder');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Browse paths');
+    renderFinder(box, pathSegs(bar.dataset.path).slice(0, Number(btn.dataset.crumb)), here);
+    showPop(box, btn);
+  }
+
+  // Model links open the model in a dialog instead of leaving the
+  // operation. Links inside it replace its content, with a way back.
+  let modal = null;
+
+  function closeModel() {
+    if (!modal) {
+      return;
+    }
+    modal.back.remove();
+    doc.documentElement.classList.remove('modal-open');
+    const opener = modal.opener;
+    modal = null;
+    if (opener && opener.isConnected) {
+      opener.focus({ preventScroll: true });
+    }
+  }
+
+  function renderModel() {
+    const anchor = modal.stack[modal.stack.length - 1];
+    const card = doc.getElementById(anchor);
+    const box = modal.box;
+    box.textContent = '';
+    const head = el('div', 'mm-head');
+    if (modal.stack.length > 1) {
+      const back = el('button', 'btn ghost icon mm-back', '‹');
+      back.type = 'button';
+      back.setAttribute('aria-label', 'Back');
+      back.onclick = () => {
+        modal.stack.pop();
+        renderModel();
+      };
+      head.append(back);
+    }
+    const title = card.querySelector('.model-title a');
+    const t = el('span', 'mm-title');
+    t.append(el('span', 'ico-obj', '{}'), title ? title.textContent : anchor);
+    t.id = 'mm-title';
+    head.append(t);
+    const open = el('a', 'btn ghost mm-open', 'Open in Models');
+    open.href = '#' + anchor;
+    const close = el('button', 'btn ghost icon', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close');
+    close.onclick = closeModel;
+    head.append(open, close);
+    box.append(head);
+
+    const body = el('div', 'mm-body');
+    ['.model-name', '.model-flow', ':scope > .tree'].forEach((sel) => {
+      const node = card.querySelector(sel);
+      if (node) {
+        body.append(node.cloneNode(true));
+      }
+    });
+    box.append(body);
+    body.querySelectorAll('[data-autofill]').forEach(observeLazy);
+    close.focus({ preventScroll: true });
+  }
+
+  function openModel(anchor) {
+    if (!doc.getElementById(anchor)) {
+      return false;
+    }
+    if (!modal) {
+      const back = el('div', 'mmodal-back');
+      const box = el('div', 'mmodal');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-labelledby', 'mm-title');
+      back.append(box);
+      back.addEventListener('click', (e) => {
+        if (e.target === back) {
+          closeModel();
+        }
+      });
+      modal = { back, box, stack: [], opener: doc.activeElement };
+      doc.body.append(back);
+      doc.documentElement.classList.add('modal-open');
+    }
+    modal.stack.push(anchor);
+    renderModel();
+    return true;
+  }
+
   // ------------------------------------------------------ delegated clicks
 
   doc.addEventListener('click', (e) => {
@@ -1526,6 +1764,8 @@
     if (btn) {
       if (btn.matches('[data-pop]')) {
         openPop(btn);
+      } else if (btn.matches('[data-crumb]')) {
+        openFinder(btn);
       } else if (btn.matches('[data-goto]')) {
         gotoPort(btn);
       } else if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
@@ -1557,6 +1797,12 @@
     }
 
     const a = t.closest('a[href]');
+    if (a && a.matches('a[href^="#model/"]') && !a.matches('.mm-open, .nav-model') && !a.closest('.sidebar, .model-title, .map')) {
+      e.preventDefault();
+      closePop();
+      openModel(idFromHref(a.getAttribute('href')));
+      return;
+    }
     // The whole response header toggles its body, not only the status.
     const head = t.closest('[data-resp-toggle]');
     if (head && !a && !window.getSelection().toString()) {
@@ -1573,6 +1819,7 @@
     if (href === '' || href.startsWith('#')) {
       e.preventDefault();
       closePop();
+      closeModel();
       if (href.length > 1) {
         navigate(a);
       } else {
