@@ -1,0 +1,21 @@
+{{define "mapswitch"}}<div class="view-switch" aria-label="View">
+<a href="#section/introduction" data-view="reference" aria-current="page">Reference</a><a href="#map" data-view="map">Schema map</a>
+</div>{{end}}
+
+{{define "map"}}<section class="map" id="section/map" aria-label="Schema map" hidden>
+<div class="map-bar">
+<label class="map-scope"><span class="map-label">Scope</span><select data-map-scope aria-label="Scope"></select></label>
+<button type="button" class="btn ghost map-all" data-map-all hidden>Show all</button>
+<span class="map-count" data-map-count></span>
+<span class="map-zoom"><button type="button" class="btn ghost icon" data-map-zoom="-1" aria-label="Zoom out" title="Zoom out">&minus;</button><button type="button" class="btn ghost" data-map-zoom="0" title="Fit to screen">Fit</button><button type="button" class="btn ghost icon" data-map-zoom="1" aria-label="Zoom in" title="Zoom in">+</button></span>
+</div>
+<div class="map-canvas" data-map-canvas><div class="map-world" data-map-world><svg class="map-edges" data-map-svg aria-hidden="true"></svg></div></div>
+<div class="map-legend" aria-label="Legend">
+<span><svg viewBox="0 0 28 8" aria-hidden="true"><path d="M1 4H27"/></svg>declared</span>
+<span><svg viewBox="0 0 28 8" aria-hidden="true"><path class="inferred" d="M1 4H27"/></svg>inferred from a <code>_id</code> name</span>
+<span><i class="lg-card focus"></i>focused</span>
+<span><i class="lg-card ghost"></i>outside the scope</span>
+<span class="muted">Drag to pan, scroll to zoom, click to focus, double-click to open</span>
+</div>
+</section>
+<script type="application/json" id="schema-map-data">{{.JSON}}</script>{{end}}

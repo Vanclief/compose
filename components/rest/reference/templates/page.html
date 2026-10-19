@@ -20,6 +20,7 @@
 {{template "intro" .}}
 {{range .Tags}}{{template "tag" .}}{{end}}
 {{if .Models}}{{template "models" .}}{{end}}
+{{if .Map}}{{template "map" .Map}}{{end}}
 <footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
 </main>
 </div>
@@ -34,6 +35,7 @@
 <a class="brand" href="#section/introduction">{{.InfoTitle}}</a>
 <button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
 </div>
+{{if .Map}}{{template "mapswitch" .}}{{end}}
 <div class="search">
 <input type="search" id="nav-search" placeholder="Search  /" aria-label="Search operations and models" autocomplete="off" spellcheck="false">
 </div>

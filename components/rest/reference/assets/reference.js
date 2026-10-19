@@ -1591,3 +1591,846 @@
   initTabs();
   openInitialHash();
 })();
+
+/* ---- map ---- */
+// Schema map: the entity graph embedded once as JSON, drawn as cards in rank
+// columns with orthogonal edges in one SVG behind them. Pan and zoom move a
+// single CSS transform. The click listener runs in the capture phase so map
+// links and the view switcher are handled before the reference's own links.
+(() => {
+  'use strict';
+
+  const doc = document;
+  const dataEl = doc.getElementById('schema-map-data');
+  const section = doc.getElementById('section/map');
+  if (!dataEl || !section) {
+    return;
+  }
+  let data;
+  try {
+    data = JSON.parse(dataEl.textContent);
+  } catch (err) {
+    return;
+  }
+
+  const CARD_W = 264;
+  const COL_GAP = 140;
+  const SUB_GAP = 56;
+  const ROW_GAP = 28;
+  const MAX_COL_H = 1500;
+  const MAX_FIELDS = 12;
+  const PAD = 48;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  const canvas = section.querySelector('[data-map-canvas]');
+  const world = section.querySelector('[data-map-world]');
+  const svg = section.querySelector('[data-map-svg]');
+  const scopeSelect = section.querySelector('[data-map-scope]');
+  const allBtn = section.querySelector('[data-map-all]');
+  const countEl = section.querySelector('[data-map-count]');
+
+  const nodes = new Map(data.nodes.map((n) => [n.name, n]));
+  const edges = (data.edges || []).filter((e) => nodes.has(e.from) && nodes.has(e.to));
+  // Fields an edge starts from, per node: a collapsed card keeps them.
+  const edgeFields = new Map();
+  for (const e of edges) {
+    if (!edgeFields.has(e.from)) {
+      edgeFields.set(e.from, new Set());
+    }
+    edgeFields.get(e.from).add(e.fromField);
+  }
+
+  function el(tag, cls, text) {
+    const node = doc.createElement(tag);
+    if (cls) {
+      node.className = cls;
+    }
+    if (text !== undefined) {
+      node.textContent = text;
+    }
+    return node;
+  }
+
+  function svgEl(tag, attrs) {
+    const node = doc.createElementNS(SVG_NS, tag);
+    for (const key of Object.keys(attrs)) {
+      node.setAttribute(key, attrs[key]);
+    }
+    return node;
+  }
+
+  // ------------------------------------------------------------- scopes
+
+  const scopes = new Map();
+  scopes.set('all', { label: 'All models', names: data.nodes.map((n) => n.name) });
+  const groups = Array.from(new Set(data.nodes.map((n) => n.group).filter(Boolean))).sort();
+  for (const g of groups) {
+    scopes.set(g, { label: g, kind: 'Groups', names: data.nodes.filter((n) => n.group === g).map((n) => n.name) });
+  }
+  for (const t of data.tags || []) {
+    scopes.set('tag:' + t.name, { label: t.name, kind: 'Tags', names: t.nodes.filter((n) => nodes.has(n)) });
+  }
+  const defaultScope = data.nodes.length <= 25 || !groups.length ? 'all' : groups[0];
+
+  function scopeOption(id) {
+    const s = scopes.get(id);
+    const o = el('option', '', s.label + ' (' + s.names.length + ')');
+    o.value = id;
+    return o;
+  }
+  scopeSelect.appendChild(scopeOption('all'));
+  for (const kind of ['Groups', 'Tags']) {
+    const og = doc.createElement('optgroup');
+    og.label = kind;
+    for (const [id, s] of scopes) {
+      if (s.kind === kind) {
+        og.appendChild(scopeOption(id));
+      }
+    }
+    if (og.children.length) {
+      scopeSelect.appendChild(og);
+    }
+  }
+
+  const state = { scope: defaultScope, focus: null, expanded: new Set(), x: 0, y: 0, k: 1 };
+  let boxes = new Map();
+  let drawn = [];
+  let size = { w: 0, h: 0 };
+  let hovered = null;
+  let isOpen = false;
+  let refHash = 'section/introduction';
+
+  // view returns the nodes to draw with how to draw each ('full', 'ghost'
+  // for a neighbour outside the scope: header only, 'link' for a neighbour
+  // of the focused node: header and the fields pointing at it) and the
+  // edges between them. A focused node shows only itself, its one-hop
+  // neighbours and the edges it is on.
+  function view() {
+    const shown = new Map();
+    if (state.focus) {
+      shown.set(state.focus, 'full');
+      const list = edges.filter((e) => e.from === state.focus || e.to === state.focus);
+      for (const e of list) {
+        for (const end of [e.from, e.to]) {
+          if (!shown.has(end)) {
+            shown.set(end, 'link');
+          }
+        }
+      }
+      return { shown, list };
+    }
+    const scope = scopes.get(state.scope) || scopes.get('all');
+    for (const name of scope.names) {
+      shown.set(name, 'full');
+    }
+    const list = [];
+    for (const e of edges) {
+      if (shown.get(e.from) !== 'full' && shown.get(e.to) !== 'full') {
+        continue;
+      }
+      list.push(e);
+      for (const end of [e.from, e.to]) {
+        if (!shown.has(end)) {
+          shown.set(end, 'ghost');
+        }
+      }
+    }
+    return { shown, list };
+  }
+
+  // ------------------------------------------------------------- layout
+
+  // ranks places every node one column right of the furthest node pointing
+  // at it. Depth-first search from the roots (no incoming edge) drops the
+  // edges that close a cycle; its finish order reversed is topological.
+  function ranks(names, list) {
+    const adj = new Map(names.map((n) => [n, []]));
+    const indeg = new Map(names.map((n) => [n, 0]));
+    for (const e of list) {
+      if (e.from !== e.to) {
+        adj.get(e.from).push(e.to);
+        indeg.set(e.to, indeg.get(e.to) + 1);
+      }
+    }
+    const mark = new Map();
+    const order = [];
+    const dag = new Map(names.map((n) => [n, []]));
+    const visit = (n) => {
+      mark.set(n, 1);
+      for (const m of adj.get(n)) {
+        if (!mark.has(m)) {
+          dag.get(n).push(m);
+          visit(m);
+        } else if (mark.get(m) === 2) {
+          dag.get(n).push(m);
+        }
+      }
+      mark.set(n, 2);
+      order.push(n);
+    };
+    const byOut = names.slice().sort((a, b) => adj.get(b).length - adj.get(a).length);
+    for (const n of names.filter((m) => indeg.get(m) === 0).concat(byOut)) {
+      if (!mark.has(n)) {
+        visit(n);
+      }
+    }
+    const rank = new Map(names.map((n) => [n, 0]));
+    for (let i = order.length - 1; i >= 0; i--) {
+      for (const m of dag.get(order[i])) {
+        rank.set(m, Math.max(rank.get(m), rank.get(order[i]) + 1));
+      }
+    }
+    return rank;
+  }
+
+  function fieldRow(f) {
+    const li = el('li', f.deprecated ? 'mf deprecated' : 'mf');
+    li.dataset.field = f.name;
+    const name = el('span', 'mf-name', f.name);
+    if (f.optional || f.nullable) {
+      name.appendChild(el('span', 'mf-opt', '?'));
+    }
+    li.appendChild(name);
+    const quals = [];
+    if (f.readOnly) {
+      quals.push('read-only');
+    }
+    if (f.writeOnly) {
+      quals.push('write-only');
+    }
+    if (f.deprecated) {
+      quals.push('deprecated');
+    }
+    if (quals.length) {
+      li.appendChild(el('span', 'mf-q', quals.join(' ')));
+    }
+    const target = f.ref ? nodes.get(f.ref) : null;
+    if (target) {
+      const ref = el('button', 'mf-ref', '→ ' + target.short + (/\[\]$/.test(f.type || '') ? '[]' : ''));
+      ref.type = 'button';
+      ref.dataset.mapRef = f.ref;
+      ref.title = 'Focus ' + target.short;
+      li.appendChild(ref);
+    } else if (f.type) {
+      li.appendChild(el('span', 'mf-type', f.type));
+    }
+    if (f.enum && f.enum.length) {
+      const chips = el('span', 'mf-enum');
+      chips.title = f.enum.join(', ');
+      for (const v of f.enum.slice(0, 3)) {
+        chips.appendChild(el('span', 'mchip', v));
+      }
+      if (f.enum.length > 3) {
+        chips.appendChild(el('span', 'mchip more', '+' + (f.enum.length - 3) + ' values'));
+      }
+      li.appendChild(chips);
+    }
+    return li;
+  }
+
+  function card(n, mode) {
+    const c = el('div', 'mcard' + (mode === 'ghost' ? ' ghost' : '') + (n.name === state.focus ? ' focus' : ''));
+    c.dataset.node = n.name;
+    c.tabIndex = 0;
+    c.title = n.name;
+    c.style.width = CARD_W + 'px';
+    const head = el('div', 'mcard-head');
+    head.appendChild(el('span', 'mcard-name', n.short));
+    if (n.group) {
+      head.appendChild(el('span', 'mcard-group', n.group));
+    }
+    c.appendChild(head);
+    if (mode === 'ghost') {
+      return c;
+    }
+    const fields = n.fields || [];
+    if (mode === 'link') {
+      const ul = el('ul', 'mcard-fields');
+      for (const f of fields) {
+        if (f.ref === state.focus) {
+          ul.appendChild(fieldRow(f));
+        }
+      }
+      if (ul.children.length) {
+        c.appendChild(ul);
+      }
+      return c;
+    }
+    const all = state.expanded.has(n.name);
+    let rows = fields;
+    if (!all && fields.length > MAX_FIELDS) {
+      // Keep id, then the fields edges start from, then other references,
+      // then the rest; show the kept ones in document order.
+      const linked = edgeFields.get(n.name) || new Set();
+      const weight = (f) => (f.name === 'id' ? 0 : linked.has(f.name) ? 1 : f.ref ? 2 : 3);
+      const keep = new Set(fields
+        .map((f, i) => ({ f, i, w: weight(f) }))
+        .sort((a, b) => a.w - b.w || a.i - b.i)
+        .slice(0, MAX_FIELDS)
+        .map((x) => x.f));
+      rows = fields.filter((f) => keep.has(f));
+    }
+    const ul = el('ul', 'mcard-fields');
+    for (const f of rows) {
+      ul.appendChild(fieldRow(f));
+    }
+    c.appendChild(ul);
+    if (fields.length > MAX_FIELDS) {
+      const more = el('button', 'mcard-more', all ? 'Show fewer' : '+' + (fields.length - MAX_FIELDS) + ' more');
+      more.type = 'button';
+      more.dataset.mapMore = n.name;
+      c.appendChild(more);
+    }
+    return c;
+  }
+
+  function layout(shown, list) {
+    world.querySelectorAll('.mcard').forEach((c) => c.remove());
+    boxes = new Map();
+    const names = Array.from(shown.keys());
+    for (const name of names) {
+      const c = card(nodes.get(name), shown.get(name));
+      world.appendChild(c);
+      boxes.set(name, { el: c, x: 0, y: 0, h: 0 });
+    }
+    for (const b of boxes.values()) {
+      b.h = b.el.offsetHeight;
+    }
+
+    const rank = ranks(names, list);
+    const cols = [];
+    for (const n of names) {
+      const r = rank.get(n);
+      (cols[r] = cols[r] || []).push(n);
+    }
+    // Order each column by the mean position of its neighbours, sweeping
+    // right then left, to keep edges short and crossings few.
+    const pred = new Map(names.map((n) => [n, []]));
+    const succ = new Map(names.map((n) => [n, []]));
+    for (const e of list) {
+      if (e.from !== e.to) {
+        succ.get(e.from).push(e.to);
+        pred.get(e.to).push(e.from);
+      }
+    }
+    const pos = new Map();
+    const settle = (col) => col.forEach((n, i) => pos.set(n, (i + 0.5) / col.length));
+    const sortBy = (col, nb) => {
+      const score = new Map(col.map((n) => {
+        const ps = nb.get(n);
+        return [n, ps.length ? ps.reduce((t, m) => t + pos.get(m), 0) / ps.length : pos.get(n)];
+      }));
+      col.sort((a, b) => score.get(a) - score.get(b));
+      settle(col);
+    };
+    cols.forEach(settle);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let r = 1; r < cols.length; r++) {
+        sortBy(cols[r], pred);
+      }
+      for (let r = cols.length - 2; r >= 0; r--) {
+        sortBy(cols[r], succ);
+      }
+    }
+
+    // Stack each column; a column taller than MAX_COL_H wraps into
+    // sub-columns side by side.
+    const placed = [];
+    let x = PAD;
+    let maxH = 0;
+    for (const col of cols) {
+      const subs = [[]];
+      let h = 0;
+      for (const n of col) {
+        const bh = boxes.get(n).h;
+        if (h + bh > MAX_COL_H && subs[subs.length - 1].length) {
+          subs.push([]);
+          h = 0;
+        }
+        subs[subs.length - 1].push(n);
+        h += bh + ROW_GAP;
+      }
+      subs.forEach((sub, i) => {
+        const colH = sub.reduce((t, n) => t + boxes.get(n).h + ROW_GAP, -ROW_GAP);
+        placed.push({ x, sub, h: colH });
+        maxH = Math.max(maxH, colH);
+        x += CARD_W + (i < subs.length - 1 ? SUB_GAP : COL_GAP);
+      });
+    }
+    for (const c of placed) {
+      let y = PAD + (maxH - c.h) / 2;
+      for (const n of c.sub) {
+        const b = boxes.get(n);
+        b.x = c.x;
+        b.y = y;
+        b.el.style.left = b.x + 'px';
+        b.el.style.top = b.y + 'px';
+        y += b.h + ROW_GAP;
+      }
+    }
+    size = { w: x - COL_GAP + PAD, h: maxH + 2 * PAD };
+  }
+
+  // anchorY is where an edge meets a card: the row of its field, the
+  // "+N more" row when that field is collapsed, otherwise the header.
+  function anchorY(name, field) {
+    const b = boxes.get(name);
+    let row = field ? b.el.querySelector('[data-field="' + CSS.escape(field) + '"]') : null;
+    if (field && !row) {
+      row = b.el.querySelector('.mcard-more');
+    }
+    const target = row || b.el.querySelector('.mcard-head');
+    return b.y + target.offsetTop + target.offsetHeight / 2;
+  }
+
+  // laneRoom is the narrowest gap a group of edges crosses.
+  function laneRoom(lane) {
+    let room = COL_GAP;
+    for (const it of lane) {
+      if (it.side !== 's') {
+        room = Math.min(room, Math.abs(it.x2 - it.x1));
+      }
+    }
+    return room;
+  }
+
+  function draw(list) {
+    svg.textContent = '';
+    svg.setAttribute('width', size.w);
+    svg.setAttribute('height', size.h);
+    drawn = [];
+    const items = list.map((e) => {
+      const s = boxes.get(e.from);
+      const t = boxes.get(e.to);
+      const it = { e, y1: anchorY(e.from, e.fromField), y2: anchorY(e.to, '') };
+      if (e.from !== e.to && t.x > s.x + CARD_W) {
+        Object.assign(it, { side: 'r', x1: s.x + CARD_W, x2: t.x });
+      } else if (e.from !== e.to && t.x + CARD_W < s.x) {
+        Object.assign(it, { side: 'l', x1: s.x, x2: t.x + CARD_W });
+      } else {
+        Object.assign(it, { side: 's', x1: s.x + CARD_W, x2: t.x + CARD_W });
+      }
+      return it;
+    });
+    // Edges entering the same gap get their own vertical lane in it.
+    const lanes = new Map();
+    for (const it of items) {
+      const key = it.side + Math.round(it.x2);
+      if (!lanes.has(key)) {
+        lanes.set(key, []);
+      }
+      lanes.get(key).push(it);
+    }
+    for (const lane of lanes.values()) {
+      lane.sort((a, b) => a.y1 - b.y1);
+      const step = lane.length > 1 ? Math.max(4, Math.min(12, (laneRoom(lane) - 32) / (lane.length - 1))) : 0;
+      lane.forEach((it, i) => {
+        const off = 16 + i * step;
+        if (it.side === 'r') {
+          it.mid = it.x2 - off;
+        } else if (it.side === 'l') {
+          it.mid = it.x2 + off;
+        } else {
+          it.mid = Math.max(it.x1, it.x2) + off;
+        }
+      });
+    }
+    // Labels avoid cards and each other; one with no free spot along its
+    // segment only shows while its edge is highlighted.
+    const taken = Array.from(boxes.values(), (b) => ({ x: b.x, y: b.y, w: CARD_W, h: b.h }));
+    const free = (r) => !taken.some((o) => r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h);
+    for (const it of items) {
+      const g = svgEl('g', { class: 'medge' + (it.e.inferred ? ' inferred' : '') });
+      g.appendChild(svgEl('path', { d: 'M' + it.x1 + ' ' + it.y1 + 'H' + it.mid + 'V' + it.y2 + 'H' + it.x2 }));
+      g.appendChild(svgEl('circle', { cx: it.x2, cy: it.y2, r: 3 }));
+      const text = it.e.cardinality;
+      const w = text.length * 6.4 + 8;
+      const spots = [];
+      if (Math.abs(it.y2 - it.y1) < 24) {
+        spots.push([(it.x1 + it.mid) / 2, it.y1 - 8]);
+      } else {
+        const lo = Math.min(it.y1, it.y2) + 10;
+        const hi = Math.max(it.y1, it.y2) - 10;
+        for (const d of [0, 16, -16, 32, -32, 56, -56, 88, -88]) {
+          const y = (it.y1 + it.y2) / 2 + d;
+          if (y >= lo && y <= hi) {
+            spots.push([it.mid, y]);
+          }
+        }
+      }
+      let spot = spots.find(([x, y]) => free({ x: x - w / 2, y: y - 7, w, h: 14 }));
+      const crowded = !spot;
+      spot = spot || spots[0] || [it.mid, (it.y1 + it.y2) / 2];
+      if (!crowded) {
+        taken.push({ x: spot[0] - w / 2, y: spot[1] - 7, w, h: 14 });
+      }
+      const label = svgEl('text', { x: spot[0], y: spot[1], class: crowded ? 'crowded' : '' });
+      label.textContent = text;
+      g.appendChild(label);
+      const title = svgEl('title', {});
+      title.textContent = nodes.get(it.e.from).short + '.' + (it.e.fromField || '') + ' → ' + nodes.get(it.e.to).short + (it.e.inferred ? ' (inferred)' : '');
+      g.appendChild(title);
+      svg.appendChild(g);
+      drawn.push({ e: it.e, g });
+    }
+  }
+
+  function render(refit) {
+    const { shown, list } = view();
+    layout(shown, list);
+    draw(list);
+    hovered = undefined;
+    highlight(null);
+    let ghosts = 0;
+    shown.forEach((mode) => {
+      ghosts += mode === 'ghost' ? 1 : 0;
+    });
+    countEl.textContent = (shown.size - ghosts) + ' models · ' + list.length + ' relations' + (ghosts ? ' · ' + ghosts + ' linked from elsewhere' : '');
+    if (refit) {
+      fit(0.3);
+    }
+  }
+
+  // ------------------------------------------------------- pan and zoom
+
+  function apply() {
+    world.style.transform = 'translate(' + state.x + 'px, ' + state.y + 'px) scale(' + state.k + ')';
+  }
+
+  function zoomAt(k, cx, cy) {
+    const next = Math.min(2, Math.max(0.1, k));
+    state.x = cx - (cx - state.x) * next / state.k;
+    state.y = cy - (cy - state.y) * next / state.k;
+    state.k = next;
+    apply();
+  }
+
+  // fit scales the drawing into the canvas above the legend; below min it
+  // keeps min and starts at the top left instead.
+  function fit(min) {
+    const legend = section.querySelector('.map-legend');
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight - (legend ? legend.offsetHeight + 14 : 0);
+    const k = Math.min(1, w / size.w, h / size.h);
+    if (k < min) {
+      state.k = min;
+      state.x = 0;
+      state.y = 0;
+    } else {
+      state.k = k;
+      state.x = (w - size.w * k) / 2;
+      state.y = Math.max(0, (h - size.h * k) / 2);
+    }
+    apply();
+  }
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const speed = e.deltaMode === 1 ? 0.05 : 0.0015;
+    zoomAt(state.k * Math.exp(-e.deltaY * speed), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  let drag = null;
+  let suppressClick = false;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button, select, a')) {
+      return;
+    }
+    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: state.x, y: state.y, moved: false };
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) {
+      return;
+    }
+    const dx = e.clientX - drag.sx;
+    const dy = e.clientY - drag.sy;
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) {
+      return;
+    }
+    if (!drag.moved) {
+      drag.moved = true;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.classList.add('panning');
+      highlight(null);
+    }
+    state.x = drag.x + dx;
+    state.y = drag.y + dy;
+    apply();
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) {
+      return;
+    }
+    if (drag.moved) {
+      suppressClick = true;
+      setTimeout(() => {
+        suppressClick = false;
+      }, 0);
+      canvas.classList.remove('panning');
+    }
+    drag = null;
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  // ------------------------------------------------- hover and focus
+
+  function highlight(name) {
+    if (name === hovered) {
+      return;
+    }
+    hovered = name;
+    world.classList.toggle('dim', Boolean(name));
+    const near = new Set(name ? [name] : []);
+    for (const d of drawn) {
+      const on = Boolean(name) && (d.e.from === name || d.e.to === name);
+      d.g.classList.toggle('hl', on);
+      if (on) {
+        near.add(d.e.from);
+        near.add(d.e.to);
+      }
+    }
+    for (const [n, b] of boxes) {
+      b.el.classList.toggle('hl', near.has(n));
+    }
+  }
+  canvas.addEventListener('pointerover', (e) => {
+    if (drag && drag.moved) {
+      return;
+    }
+    const c = e.target.closest('.mcard');
+    highlight(c ? c.dataset.node : null);
+  });
+  canvas.addEventListener('pointerleave', () => highlight(null));
+
+  function setFocus(name) {
+    state.focus = name && nodes.has(name) ? name : null;
+    allBtn.hidden = !state.focus;
+    render(true);
+    setHash(hashFor(), false);
+  }
+
+  function openModel(name) {
+    const n = nodes.get(name);
+    if (!n) {
+      return;
+    }
+    close();
+    // The reference's own link handler scrolls, marks the sidebar and
+    // updates the hash.
+    const a = el('a');
+    a.href = '#' + n.anchor;
+    a.hidden = true;
+    doc.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  let clickTimer = 0;
+  section.addEventListener('click', (e) => {
+    const t = e.target;
+    if (suppressClick || !(t instanceof Element)) {
+      return;
+    }
+    const zoom = t.closest('[data-map-zoom]');
+    if (zoom) {
+      const dir = Number(zoom.dataset.mapZoom);
+      if (dir === 0) {
+        fit(0.1);
+      } else {
+        zoomAt(state.k * (dir > 0 ? 1.25 : 0.8), canvas.clientWidth / 2, canvas.clientHeight / 2);
+      }
+      return;
+    }
+    if (t.closest('[data-map-all]')) {
+      setFocus(null);
+      return;
+    }
+    const more = t.closest('[data-map-more]');
+    if (more) {
+      const name = more.dataset.mapMore;
+      if (state.expanded.has(name)) {
+        state.expanded.delete(name);
+      } else {
+        state.expanded.add(name);
+      }
+      render(false);
+      return;
+    }
+    const ref = t.closest('[data-map-ref]');
+    if (ref) {
+      setFocus(ref.dataset.mapRef);
+      return;
+    }
+    const c = t.closest('.mcard');
+    if (c && c.dataset.node !== state.focus) {
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => setFocus(c.dataset.node), 240);
+    }
+  });
+  section.addEventListener('dblclick', (e) => {
+    const c = e.target instanceof Element ? e.target.closest('.mcard') : null;
+    if (c) {
+      clearTimeout(clickTimer);
+      openModel(c.dataset.node);
+    }
+  });
+  section.addEventListener('keydown', (e) => {
+    const c = e.target instanceof Element ? e.target.closest('.mcard') : null;
+    if (e.key === 'Enter' && c && e.target === c) {
+      setFocus(c.dataset.node);
+    } else if (e.key === 'Escape' && state.focus) {
+      setFocus(null);
+    }
+  });
+  scopeSelect.addEventListener('change', () => {
+    state.scope = scopeSelect.value;
+    setFocus(null);
+  });
+
+  // ------------------------------------------------- open, close, hash
+
+  function setHash(id, push) {
+    try {
+      if (push) {
+        history.pushState(null, '', '#' + id);
+      } else {
+        history.replaceState(null, '', '#' + id);
+      }
+    } catch (err) {
+      // about:srcdoc and sandboxed frames may refuse history updates.
+    }
+  }
+
+  function hashFor() {
+    let id = 'map/' + encodeURIComponent(state.scope);
+    if (state.focus) {
+      id += '/' + encodeURIComponent(state.focus);
+    }
+    return id;
+  }
+
+  function isMapHash(h) {
+    return h === '#map' || h.startsWith('#map/');
+  }
+
+  function decode(s) {
+    try {
+      return decodeURIComponent(s);
+    } catch (err) {
+      return s;
+    }
+  }
+
+  // place lays the map over the content pane, beside the sidebar and below
+  // the mobile top bar, whatever their size.
+  function place() {
+    const sidebar = doc.getElementById('sidebar');
+    const bar = doc.querySelector('.topbar');
+    const left = sidebar && getComputedStyle(sidebar).position !== 'fixed' ? sidebar.getBoundingClientRect().right : 0;
+    const top = bar && bar.offsetParent !== null ? bar.getBoundingClientRect().bottom : 0;
+    section.style.left = Math.max(0, left) + 'px';
+    section.style.top = Math.max(0, top) + 'px';
+  }
+
+  function setSwitch(map) {
+    doc.querySelectorAll('[data-view]').forEach((a) => {
+      if ((a.dataset.view === 'map') === map) {
+        a.setAttribute('aria-current', 'page');
+      } else {
+        a.removeAttribute('aria-current');
+      }
+    });
+  }
+
+  // open shows the map; push is true to add a history entry, false to
+  // replace the current one and null to leave the hash alone.
+  function open(scope, focus, push) {
+    if (!isOpen) {
+      if (location.hash.length > 1 && !isMapHash(location.hash)) {
+        refHash = location.hash.slice(1);
+      }
+      isOpen = true;
+      section.hidden = false;
+      doc.body.classList.add('map-open');
+      setSwitch(true);
+      const sidebar = doc.getElementById('sidebar');
+      if (sidebar) {
+        sidebar.classList.remove('open');
+      }
+      place();
+    }
+    state.scope = scopes.has(scope) ? scope : state.scope;
+    state.focus = focus && nodes.has(focus) ? focus : null;
+    scopeSelect.value = state.scope;
+    allBtn.hidden = !state.focus;
+    render(true);
+    if (push !== null) {
+      setHash(hashFor(), push);
+    }
+  }
+
+  function openHash(h, push) {
+    const parts = h.slice(1).split('/').map(decode);
+    open(parts[1] || '', parts[2] || '', push);
+  }
+
+  function close() {
+    if (!isOpen) {
+      return;
+    }
+    isOpen = false;
+    section.hidden = true;
+    doc.body.classList.remove('map-open');
+    setSwitch(false);
+    highlight(null);
+  }
+
+  doc.addEventListener('click', (e) => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (!t) {
+      return;
+    }
+    const sw = t.closest('[data-view]');
+    if (sw) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (sw.dataset.view === 'map') {
+        open('', '', true);
+      } else if (isOpen) {
+        close();
+        setHash(refHash, true);
+      }
+      return;
+    }
+    const a = t.closest('a[href^="#"]');
+    if (!a) {
+      return;
+    }
+    if (isMapHash(a.getAttribute('href'))) {
+      e.preventDefault();
+      e.stopPropagation();
+      openHash(a.getAttribute('href'), true);
+    } else if (isOpen && !section.contains(a)) {
+      close();
+    }
+  }, true);
+
+  window.addEventListener('popstate', () => {
+    if (isMapHash(location.hash)) {
+      openHash(location.hash, null);
+    } else {
+      close();
+    }
+  });
+  window.addEventListener('resize', () => {
+    if (isOpen) {
+      place();
+    }
+  });
+
+  if (isMapHash(location.hash)) {
+    openHash(location.hash, false);
+  }
+})();

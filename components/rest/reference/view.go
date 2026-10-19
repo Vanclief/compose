@@ -29,6 +29,7 @@ type pageView struct {
 	Global      []requirementView
 	Tags        []*tagView
 	Models      []*modelView
+	Map         *mapView
 	AssetsURL   string
 	CSSVersion  string
 	JSVersion   string
@@ -286,6 +287,7 @@ func buildPage(d *Document, opts Options) *pageView {
 	p.Tags = b.buildTags()
 	p.Models = b.buildModels()
 	p.Flow = b.flow.JSON
+	p.Map = b.buildMap(p.Tags)
 
 	return p
 }
