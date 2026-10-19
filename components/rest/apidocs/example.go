@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -164,7 +165,12 @@ func appendScalar(buf *bytes.Buffer, v any) {
 	err := enc.Encode(v)
 	if err != nil {
 		tmp.Reset()
-		enc.Encode(fmt.Sprint(v))
+		err = enc.Encode(fmt.Sprint(v))
+	}
+	if err != nil {
+		// Encoding a plain string cannot fail, but never emit invalid JSON.
+		buf.WriteString(strconv.Quote(fmt.Sprint(v)))
+		return
 	}
 	buf.Write(bytes.TrimRight(tmp.Bytes(), "\n"))
 }
@@ -189,7 +195,10 @@ func (e *exampler) value(s *Schema, depth int) any {
 		return v
 	}
 
-	_, name := e.doc.Schema(s)
+	// SchemaName sees through allOf wrappers such as
+	// {allOf: [{$ref: Node}], description: ...}, so a model that recurs through
+	// one is still caught by the stack and counted by the model cap.
+	name := e.doc.SchemaName(s)
 	flat := e.doc.Flatten(s)
 	if flat == nil {
 		return nil
@@ -230,8 +239,7 @@ func (e *exampler) capped(s *Schema) bool {
 	if ok {
 		return false
 	}
-	_, name := e.doc.Schema(s)
-	if name == "" {
+	if e.doc.SchemaName(s) == "" {
 		return false
 	}
 	flat := e.doc.Flatten(s)
@@ -275,7 +283,7 @@ func (e *exampler) variant(s *Schema, depth int) any {
 	}
 	member := members[0]
 
-	_, memberName := e.doc.Schema(member)
+	memberName := e.doc.SchemaName(member)
 	if memberName != "" && e.stack[memberName] {
 		return emptyExample(s)
 	}

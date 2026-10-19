@@ -270,6 +270,7 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 }
 .h-small { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .servers ul { margin: 0 0 16px; padding-left: 18px; }
+.server-vars { font-size: 13px; margin: 2px 0 6px; }
 .scheme { margin: 20px 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft); }
 .scheme h3 { font-size: 16px; }
 .scheme p { margin: 0 0 6px; }

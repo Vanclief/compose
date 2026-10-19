@@ -77,10 +77,20 @@ func loadAssets() map[string]asset {
 	return out
 }
 
+// assetVersion is the ETag of an embedded asset without quotes. Pages link
+// assets with ?v=<version> so a new page never runs a cached older script.
+func assetVersion(name string) string {
+	return strings.Trim(embeddedAssets[name].etag, `"`)
+}
+
 // Assets serves apidocs.css and apidocs.js from the embedded files, matched on
-// the last path segment so it works with or without http.StripPrefix. Every
-// other path is a 404. Responses carry an ETag and a short max-age, so a
-// deploy is picked up within minutes and revalidation is a cheap 304.
+// the last path segment so it works with or without http.StripPrefix; the
+// ?v= version query that Render appends is ignored. Every other path is a
+// 404. Responses carry an ETag and a short max-age, so a deploy is picked up
+// within minutes and revalidation is a cheap 304.
+//
+// Mount Assets on a public route: the page loads it with <link> and
+// <script src>, which cannot send an Authorization header.
 func Assets() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a, ok := embeddedAssets[path.Base(r.URL.Path)]

@@ -206,7 +206,8 @@ func TestEmmaQuirks(t *testing.T) {
 
 	// Mutually exclusive fields are spelled as anyOf of required lists.
 	assign := doc.Components.Schemas.Map["application_modules_property_complexes_staff_AssignStaffRoleRequest"]
-	require.False(t, assign.OneOf[0].AdditionalAllowed())
+	require.NotNil(t, assign.OneOf[0].AdditionalProperties)
+	require.False(t, assign.OneOf[0].AdditionalProperties.Allowed)
 	require.Len(t, assign.OneOf[0].AnyOf, 2)
 	require.Equal(t, []string{"email"}, assign.OneOf[0].AnyOf[0].Required)
 	require.Empty(t, assign.OneOf[0].AnyOf[0].Type)
@@ -581,4 +582,73 @@ paths:
 	require.Empty(t, doc.OperationSecurity(item.Post))
 	require.NotNil(t, doc.OperationSecurity(item.Post))
 	require.Equal(t, []map[string][]string{{"apiKey": {"read"}}}, doc.OperationSecurity(item.Put))
+}
+
+// polymorphicSpec is the springdoc and NSwag shape: the base lists its
+// subtypes in oneOf and each subtype extends the base through allOf.
+const polymorphicSpec = `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [petType]
+      properties:
+        petType: {type: string}
+        name: {type: string}
+      discriminator:
+        propertyName: petType
+        mapping:
+          cat: '#/components/schemas/Cat'
+          dog: '#/components/schemas/Dog'
+      oneOf:
+        - $ref: '#/components/schemas/Cat'
+        - $ref: '#/components/schemas/Dog'
+    Cat:
+      allOf:
+        - $ref: '#/components/schemas/Pet'
+        - type: object
+          properties:
+            lives: {type: integer}
+    Dog:
+      allOf:
+        - $ref: '#/components/schemas/Pet'
+        - type: object
+          properties:
+            barks: {type: boolean}
+    Tabby:
+      allOf:
+        - $ref: '#/components/schemas/Cat'
+        - type: object
+          properties:
+            stripes: {type: integer}
+    Wrapper:
+      allOf:
+        - $ref: '#/components/schemas/Pet'
+      description: unrelated to the oneOf members
+`
+
+func TestFlattenAllOfPolymorphism(t *testing.T) {
+	doc := parseYAML(t, polymorphicSpec)
+
+	cat := doc.Flatten(schemaRef("Cat"))
+	require.Empty(t, cat.OneOf)
+	require.Nil(t, cat.Discriminator)
+	require.Equal(t, []string{"petType", "name", "lives"}, cat.Properties.Keys)
+
+	// The back-reference is found anywhere in the allOf chain.
+	tabby := doc.Flatten(schemaRef("Tabby"))
+	require.Empty(t, tabby.OneOf)
+	require.Nil(t, tabby.Discriminator)
+	require.Equal(t, []string{"petType", "name", "lives", "stripes"}, tabby.Properties.Keys)
+
+	// The base keeps its variants, and so does a schema that is not one of them.
+	pet := doc.Flatten(schemaRef("Pet"))
+	require.Len(t, pet.OneOf, 2)
+	require.NotNil(t, pet.Discriminator)
+	wrapper := doc.Flatten(schemaRef("Wrapper"))
+	require.Len(t, wrapper.OneOf, 2)
+	require.NotNil(t, wrapper.Discriminator)
 }

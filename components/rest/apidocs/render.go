@@ -29,18 +29,35 @@ var pageTemplate = template.Must(template.New("apidocs").Funcs(template.FuncMap{
 }).ParseFS(templateFS, "templates/*.html"))
 
 // Options configures Render and New.
+//
+// # Embedding
+//
+// To show the page inside another app (emma-webapp does), fetch the HTML
+// with the user's credentials and put it in
+// <iframe srcdoc="..." sandbox="allow-scripts allow-popups">. Leave out
+// allow-same-origin so the docs cannot read the host's cookies or storage;
+// try-it credentials then live in the iframe's own in-memory store (the
+// script falls back to memory when storage is unavailable) and are lost on
+// reload. Set AssetsURL to an absolute URL on a public route, and set
+// ServerURL, since a srcdoc page has no origin of its own.
 type Options struct {
 	// Title is the <title> of the page; defaults to info.title.
 	Title string
 	// AssetsURL is the base URL serving apidocs.css and apidocs.js (see
 	// Assets). Empty inlines both into the page, which then needs no other
-	// request but also needs a CSP that allows inline scripts.
+	// request but also needs a CSP that allows inline scripts. Use an
+	// absolute URL when the page is embedded through iframe srcdoc: a
+	// relative one resolves against the host page. The asset route must be
+	// public, because <script src> and <link> cannot send auth headers.
 	AssetsURL string
 	// SpecURL is an optional link to the raw spec shown in the header; empty
 	// hides it.
 	SpecURL string
-	// ServerURL is the base URL for curl samples and the try-it client;
-	// empty uses servers[0], then the page origin.
+	// ServerURL is the base URL for curl samples and the default server of
+	// the try-it client. Empty uses the operation's servers[0], then the
+	// document's servers[0] (variables replaced by their defaults), then the
+	// page origin. Because try-it otherwise defaults to servers[0], usually
+	// production, a staging deployment must set it.
 	ServerURL string
 }
 
@@ -142,7 +159,7 @@ func (t *tree) root(s *Schema, self string) template.HTML {
 	if s == nil {
 		return ""
 	}
-	_, name := t.d.Schema(s)
+	name := t.d.SchemaName(s)
 	if self != "" {
 		name = self
 	}
@@ -234,7 +251,7 @@ func (t *tree) content(f *Schema, name string, depth int) {
 	if !isArray(f) || f.Items == nil {
 		return
 	}
-	_, itemName := t.d.Schema(f.Items)
+	itemName := t.d.SchemaName(f.Items)
 	items := t.d.Flatten(f.Items)
 	if !t.expandable(items) || depth >= maxTreeDepth {
 		return
@@ -340,7 +357,7 @@ func (t *tree) variants(f *Schema, depth int) {
 			t.w(`<div class="tabpanel" role="tabpanel" hidden>`)
 		}
 
-		_, name := t.d.Schema(v)
+		name := t.d.SchemaName(v)
 		fv := t.d.Flatten(v)
 		switch {
 		case fv == nil:
@@ -403,7 +420,7 @@ func mergeVariant(base, v *Schema) *Schema {
 }
 
 func (t *tree) variantLabel(parent, v *Schema, i int) string {
-	_, name := t.d.Schema(v)
+	name := t.d.SchemaName(v)
 	disc := parent.Discriminator
 	if disc != nil && name != "" {
 		keys := make([]string, 0, len(disc.Mapping))
@@ -448,10 +465,10 @@ func (t *tree) variantLabel(parent, v *Schema, i int) string {
 			continue
 		}
 		if len(pf.Enum) == 1 {
-			return key + ": " + scalarString(pf.Enum[0])
+			return key + ": " + ParamString(pf.Enum[0])
 		}
 		if pf.Const != nil {
-			return key + ": " + scalarString(pf.Const)
+			return key + ": " + ParamString(pf.Const)
 		}
 	}
 
@@ -481,7 +498,7 @@ func (t *tree) row(r rowSpec, depth int) {
 	refName := ""
 	var f *Schema
 	if s != nil {
-		_, refName = t.d.Schema(s)
+		refName = t.d.SchemaName(s)
 		f = t.d.Flatten(s)
 	}
 	if f == nil {
@@ -509,7 +526,7 @@ func (t *tree) row(r rowSpec, depth int) {
 	kid := f
 	kidName := refName
 	for i := 0; i < 8 && isArray(kid) && kid.Items != nil; i++ {
-		_, kidName = t.d.Schema(kid.Items)
+		kidName = t.d.SchemaName(kid.Items)
 		kid = t.d.Flatten(kid.Items)
 	}
 	hasKids := t.expandable(kid)
@@ -624,7 +641,7 @@ func (t *tree) label(s *Schema) string {
 	if s == nil {
 		return "any"
 	}
-	_, name := t.d.Schema(s)
+	name := t.d.SchemaName(s)
 	f := t.d.Flatten(s)
 	if f == nil {
 		return "any"
@@ -677,7 +694,7 @@ func (t *tree) labelOf(f *Schema, name string, depth int) string {
 		if f.Items == nil || depth > 8 {
 			return "array" + ref
 		}
-		_, itemName := t.d.Schema(f.Items)
+		itemName := t.d.SchemaName(f.Items)
 		items := t.d.Flatten(f.Items)
 		if items == nil {
 			return "array" + ref
@@ -735,7 +752,7 @@ func chips(values []any) string {
 		} else if v == "" {
 			sb.WriteString(`""`)
 		} else {
-			sb.WriteString(esc(scalarString(v)))
+			sb.WriteString(esc(ParamString(v)))
 		}
 		sb.WriteString(`</code>`)
 	}
@@ -747,7 +764,7 @@ func jsonValue(v any) string {
 	data, err := json.Marshal(v)
 	out := string(data)
 	if err != nil {
-		out = scalarString(v)
+		out = ParamString(v)
 	}
 	runes := []rune(out)
 	if len(runes) > 160 {

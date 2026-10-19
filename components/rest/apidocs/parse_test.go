@@ -149,7 +149,8 @@ func TestSchemaAdditionalProperties(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			for format, s := range parseSchemaBothWays(t, "3.1.0", tc.input) {
-				require.Equal(t, tc.allowed, s.AdditionalAllowed(), format)
+				allowed := s.AdditionalProperties == nil || s.AdditionalProperties.Allowed
+				require.Equal(t, tc.allowed, allowed, format)
 				if tc.schemaType == "" {
 					require.Nil(t, s.AdditionalSchema(), format)
 					continue
@@ -468,13 +469,91 @@ func TestParseCompose31Golden(t *testing.T) {
 	require.Equal(t, TypeList{"array"}, steps.Type)
 	require.True(t, steps.Nullable)
 
+	// anyOf: [{$ref: Config}, {type: "null"}] reads as a nullable Config.
 	config := create.Properties.Map["config"]
-	require.Len(t, config.AnyOf, 2)
-	require.Empty(t, config.AnyOf[1].Type)
-	require.True(t, config.AnyOf[1].Nullable)
+	require.Empty(t, config.AnyOf)
+	require.True(t, config.Nullable)
+	require.Equal(t, "#/components/schemas/fixture.Config", config.Ref)
+	_, configName := doc.Schema(config)
+	require.Equal(t, "fixture.Config", configName)
+
+	// A member with siblings next to its $ref moves into allOf instead.
+	status := doc.Components.Schemas.Map["fixture.UpdateRequest"].Properties.Map["status"]
+	require.Empty(t, status.AnyOf)
+	require.True(t, status.Nullable)
+	require.Len(t, status.AllOf, 1)
+	require.Equal(t, []any{"failed", "cancelled"}, status.AllOf[0].Enum)
+	require.Equal(t, "fixture.RunStatus", doc.SchemaName(status))
 
 	labels := create.Properties.Map["labels"]
 	resolved, name := doc.Schema(labels.AdditionalSchema())
 	require.Equal(t, "fixture.Config", name)
 	require.Equal(t, "object", resolved.Type.Primary())
+}
+
+func TestSchemaNullMembersOfOneOfAndAnyOf(t *testing.T) {
+	doc := parseSpec(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Pet: {type: object}
+    Holder:
+      type: object
+      properties:
+        ref:
+          anyOf: [{$ref: '#/components/schemas/Pet'}, {type: "null"}]
+        oneRef:
+          oneOf: [{type: "null"}, {$ref: '#/components/schemas/Pet'}]
+          description: kept on the wrapper
+        inline:
+          oneOf: [{type: string, format: uuid}, {type: "null"}]
+        many:
+          anyOf: [{type: string}, {type: integer}, {type: "null"}]
+        typed:
+          type: object
+          anyOf: [{required: [a]}, {type: "null"}]
+        described:
+          anyOf: [{$ref: '#/components/schemas/Pet'}, {type: "null", description: not bare}]
+        onlyNull:
+          oneOf: [{type: "null"}]
+`)
+	props := doc.Components.Schemas.Map["Holder"].Properties.Map
+
+	ref := props["ref"]
+	require.True(t, ref.Nullable)
+	require.Empty(t, ref.AnyOf)
+	require.Equal(t, "#/components/schemas/Pet", ref.Ref)
+
+	oneRef := props["oneRef"]
+	require.True(t, oneRef.Nullable)
+	require.Empty(t, oneRef.OneOf)
+	require.Equal(t, "#/components/schemas/Pet", oneRef.Ref)
+	require.Equal(t, "kept on the wrapper", oneRef.Description)
+
+	inline := props["inline"]
+	require.True(t, inline.Nullable)
+	require.Empty(t, inline.OneOf)
+	require.Empty(t, inline.Ref)
+	require.Len(t, inline.AllOf, 1)
+	require.Equal(t, "uuid", doc.Flatten(inline).Format)
+
+	many := props["many"]
+	require.True(t, many.Nullable)
+	require.Len(t, many.AnyOf, 2)
+
+	// A parent with its own type keeps the remaining member where it was.
+	typed := props["typed"]
+	require.True(t, typed.Nullable)
+	require.Len(t, typed.AnyOf, 1)
+	require.Empty(t, typed.AllOf)
+
+	// A null member with other keywords is not exactly null.
+	require.Len(t, props["described"].AnyOf, 2)
+	require.False(t, props["described"].Nullable)
+
+	onlyNull := props["onlyNull"]
+	require.True(t, onlyNull.Nullable)
+	require.Empty(t, onlyNull.OneOf)
 }

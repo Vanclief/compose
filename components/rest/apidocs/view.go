@@ -2,7 +2,6 @@ package apidocs
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"regexp"
 	"sort"
@@ -31,14 +30,27 @@ type pageView struct {
 	Tags        []*tagView
 	Models      []*modelView
 	AssetsURL   string
+	CSSVersion  string
+	JSVersion   string
 	CSS         template.CSS
 	JS          template.JS
 }
 
+// serverView is one server: URL has every variable replaced by its default
+// and is what curl and try-it use; Template is the raw URL when it differs.
 type serverView struct {
 	URL         string
+	Template    string
+	Variables   []serverVariableView
 	Description string
 	Selected    bool
+}
+
+type serverVariableView struct {
+	Name        string
+	Default     string
+	Enum        string
+	Description string
 }
 
 type schemeView struct {
@@ -104,6 +116,7 @@ type opView struct {
 	TryParams   []tryParam
 	TryBody     bool
 	TryCT       string
+	TryServer   string // the operation's own server, when it overrides servers[0]
 }
 
 type paramGroup struct {
@@ -147,10 +160,16 @@ func textHTML(s string) template.HTML {
 	return template.HTML(textEscaper.Replace(s))
 }
 
+// tryParam is one try-it input. Array values are typed comma separated;
+// Explode says whether the client sends them as repeated keys (a=1&a=2),
+// otherwise they travel as one value joined with Sep.
 type tryParam struct {
 	Name        string
 	In          string
 	Required    bool
+	Array       bool
+	Explode     bool
+	Sep         string
 	Value       string
 	Placeholder string
 }
@@ -189,7 +208,7 @@ func buildPage(d *Document, opts Options) *pageView {
 
 	b.server = opts.ServerURL
 	if b.server == "" && len(d.Servers) > 0 {
-		b.server = d.Servers[0].URL
+		b.server = d.Servers[0].Expand()
 	}
 
 	p := &pageView{
@@ -205,6 +224,8 @@ func buildPage(d *Document, opts Options) *pageView {
 		ServerURL:   b.server,
 		SpecURL:     opts.SpecURL,
 		AssetsURL:   strings.TrimSuffix(opts.AssetsURL, "/"),
+		CSSVersion:  assetVersion("apidocs.css"),
+		JSVersion:   assetVersion("apidocs.js"),
 	}
 	if p.Title == "" {
 		p.Title = d.Info.Title
@@ -217,7 +238,7 @@ func buildPage(d *Document, opts Options) *pageView {
 	}
 
 	for _, s := range d.Servers {
-		p.Servers = append(p.Servers, serverView{URL: s.URL, Description: s.Description, Selected: s.URL == b.server})
+		p.Servers = append(p.Servers, newServerView(s, b.server))
 	}
 	if opts.ServerURL != "" && !hasServer(d.Servers, opts.ServerURL) {
 		p.Servers = append([]serverView{{URL: opts.ServerURL, Selected: true}}, p.Servers...)
@@ -233,11 +254,35 @@ func buildPage(d *Document, opts Options) *pageView {
 
 func hasServer(servers []Server, url string) bool {
 	for _, s := range servers {
-		if s.URL == url {
+		if s.Expand() == url {
 			return true
 		}
 	}
 	return false
+}
+
+func newServerView(s Server, selected string) serverView {
+	v := serverView{URL: s.Expand(), Description: s.Description}
+	v.Selected = v.URL == selected
+	if v.URL == s.URL {
+		return v
+	}
+	v.Template = s.URL
+	names := make([]string, 0, len(s.Variables))
+	for name := range s.Variables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sv := s.Variables[name]
+		v.Variables = append(v.Variables, serverVariableView{
+			Name:        name,
+			Default:     sv.Default,
+			Enum:        strings.Join(sv.Enum, ", "),
+			Description: sv.Description,
+		})
+	}
+	return v
 }
 
 // anchor returns a page-unique id, suffixing -2, -3 on collision.
@@ -547,7 +592,12 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 	b.buildBody(ov, op)
 	b.buildResponses(ov, op)
 
-	ov.Curl = textHTML(b.d.Curl(ref.Method, ref.Path, ref.Item, op, b.server))
+	// Without an explicit ServerURL, Curl picks the operation's server before
+	// servers[0]; try-it follows the same precedence through TryServer.
+	ov.Curl = textHTML(b.d.Curl(ref.Method, ref.Path, ref.Item, op, b.opts.ServerURL))
+	if b.opts.ServerURL == "" && len(op.Servers) > 0 {
+		ov.TryServer = op.Servers[0].Expand()
+	}
 
 	return ov
 }
@@ -584,14 +634,25 @@ func (b *builder) buildParameters(ov *opView, ref OperationRef) {
 
 		schema := parameterSchema(p)
 		t := b.newTree(ForRequest, false)
-		t.paramRow(p.Name, schema, p.Description, p.Required, p.Deprecated, documentedExample(b.d, p))
+		t.paramRow(p.Name, schema, p.Description, p.Required, p.Deprecated, paramExample(b.d, p, false))
 		rows.WriteString(t.String())
 
 		if p.In == "cookie" {
 			continue
 		}
 		tp := tryParam{Name: p.Name, In: p.In, Required: p.Required}
-		example := scalarString(tryExample(b.d, p, schema))
+		f := b.d.Flatten(schema)
+		tp.Array = f != nil && isArray(f)
+		if tp.Array {
+			// Probe ParamValues so try-it serializes arrays the way curl does:
+			// repeated keys, or one value joined with the style's separator.
+			probe := ParamValues(p, []any{"a", "b"})
+			tp.Explode = len(probe) > 1
+			if len(probe) == 1 {
+				tp.Sep = strings.TrimSuffix(strings.TrimPrefix(probe[0], "a"), "b")
+			}
+		}
+		example := ParamString(paramExample(b.d, p, true))
 		if p.Required || p.In == "path" {
 			tp.Value = example
 		}
@@ -619,8 +680,9 @@ func parameterSchema(p *Parameter) *Schema {
 	return nil
 }
 
-// documentedExample is the documented example of p, if any.
-func documentedExample(d *Document, p *Parameter) any {
+// paramExample is the documented example of p (example, then the first
+// named example) or, when generate is set, the schema's example value.
+func paramExample(d *Document, p *Parameter, generate bool) any {
 	if p.Example != nil {
 		return p.Example
 	}
@@ -630,55 +692,11 @@ func documentedExample(d *Document, p *Parameter) any {
 			return e.Value
 		}
 	}
-	return nil
-}
-
-// tryExample prefers documented values, then the generated example.
-func tryExample(d *Document, p *Parameter, schema *Schema) any {
-	v := documentedExample(d, p)
-	if v != nil {
-		return v
-	}
-	if schema == nil {
+	schema := parameterSchema(p)
+	if !generate || schema == nil {
 		return nil
-	}
-	f := d.Flatten(schema)
-	if f == nil {
-		return nil
-	}
-	if f.Example != nil {
-		return f.Example
-	}
-	if f.Default != nil {
-		return f.Default
-	}
-	if len(f.Enum) > 0 {
-		return f.Enum[0]
 	}
 	return d.ExampleValue(schema, ForRequest)
-}
-
-// scalarString renders a parameter value the way it travels in a URL or
-// header: strings verbatim, arrays comma-joined, everything else as JSON.
-func scalarString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	case []any:
-		parts := make([]string, 0, len(x))
-		for _, item := range x {
-			parts = append(parts, scalarString(item))
-		}
-		return strings.Join(parts, ",")
-	default:
-		data, err := json.Marshal(x)
-		if err != nil {
-			return fmt.Sprint(x)
-		}
-		return string(data)
-	}
 }
 
 func (b *builder) buildBody(ov *opView, op *Operation) {
@@ -764,7 +782,7 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 				if h == nil {
 					continue
 				}
-				t.paramRow(name, parameterSchema(h), h.Description, h.Required, h.Deprecated, documentedExample(b.d, h))
+				t.paramRow(name, parameterSchema(h), h.Description, h.Required, h.Deprecated, paramExample(b.d, h, false))
 			}
 			rv.Headers = template.HTML(t.String())
 		}

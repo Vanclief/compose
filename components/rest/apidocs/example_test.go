@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -485,4 +486,62 @@ func TestExampleValueCapsNamedModelNesting(t *testing.T) {
 	level4 := level3Root["next"].(map[string]any)
 	require.Equal(t, map[string]any{"name": "string"}, level4["next"])
 	require.Equal(t, []any{map[string]any{"name": "string", "next": map[string]any{"name": "string"}}}, level3Root["list"])
+}
+
+const wrappedRecursionSpec = `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Node:
+      type: object
+      properties:
+        a: {allOf: [{$ref: '#/components/schemas/Node'}], description: first}
+        b: {allOf: [{$ref: '#/components/schemas/Node'}], description: second}
+        c: {allOf: [{$ref: '#/components/schemas/Node'}], description: third}
+    Level1:
+      type: object
+      properties:
+        next: {allOf: [{$ref: '#/components/schemas/Level2'}], description: wrapped}
+    Level2:
+      type: object
+      properties:
+        next: {allOf: [{$ref: '#/components/schemas/Level3'}], description: wrapped}
+    Level3:
+      type: object
+      properties:
+        next: {allOf: [{$ref: '#/components/schemas/Level4'}], description: wrapped}
+    Level4:
+      type: object
+      properties:
+        name: {type: string}
+`
+
+// A model that recurs through the 3.0 {allOf: [$ref], description} wrapper
+// used to be stopped only by the depth cap, which with three such properties
+// produced about 100 MB of JSON.
+func TestExampleValueRecursionThroughAllOfWrappers(t *testing.T) {
+	doc := parseSpec(t, wrappedRecursionSpec)
+
+	start := time.Now()
+	out := doc.ExampleJSON(schemaRef("Node"), ForResponse)
+	require.Less(t, time.Since(start), time.Second)
+	require.Less(t, len(out), 2048)
+	require.Equal(t, map[string]any{"a": map[string]any{}, "b": map[string]any{}, "c": map[string]any{}}, decode(t, out))
+
+	// Wrapped models count toward the nesting cap too.
+	level1 := decode(t, doc.ExampleJSON(schemaRef("Level1"), ForResponse))
+	level3 := level1["next"].(map[string]any)["next"].(map[string]any)
+	require.Equal(t, map[string]any{}, level3["next"])
+}
+
+func TestExampleValueAllOfPolymorphism(t *testing.T) {
+	doc := parseSpec(t, polymorphicSpec)
+
+	cat := decode(t, doc.ExampleJSON(schemaRef("Cat"), ForRequest))
+	require.Equal(t, map[string]any{"petType": "string", "name": "string", "lives": float64(0)}, cat)
+
+	pet := decode(t, doc.ExampleJSON(schemaRef("Pet"), ForRequest))
+	require.Equal(t, map[string]any{"petType": "cat", "name": "string", "lives": float64(0)}, pet)
 }

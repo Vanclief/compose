@@ -156,6 +156,12 @@ func (d *Document) Example(e *Example) *Example {
 // flags (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when
 // any of them sets it. oneOf, anyOf, discriminator and additionalProperties of
 // members are kept only when the parent has none of its own.
+//
+// A member's oneOf, anyOf and discriminator are dropped when they point back
+// at the schema being flattened or at any schema in the current allOf chain.
+// That is the springdoc and NSwag polymorphism shape, Pet: {oneOf: [Cat, Dog],
+// discriminator} with Cat: {allOf: [Pet, {...}]}: Cat is one concrete variant,
+// not another "one of Cat or Dog".
 func (d *Document) Flatten(s *Schema) *Schema {
 	return d.flatten(s, map[*Schema]bool{})
 }
@@ -190,10 +196,44 @@ func (d *Document) flatten(s *Schema, visiting map[*Schema]bool) *Schema {
 		if m == nil {
 			continue
 		}
+		if d.polymorphicOver(m, visiting) {
+			concrete := *m
+			concrete.OneOf = nil
+			concrete.AnyOf = nil
+			concrete.Discriminator = nil
+			m = &concrete
+		}
 		mergeInto(&out, m)
 	}
 
 	return &out
+}
+
+// polymorphicOver reports whether a oneOf or anyOf member of m, or a
+// discriminator mapping target of m, resolves to a schema in chain.
+func (d *Document) polymorphicOver(m *Schema, chain map[*Schema]bool) bool {
+	for _, list := range [][]*Schema{m.OneOf, m.AnyOf} {
+		for _, member := range list {
+			resolved, _ := d.Schema(member)
+			if chain[resolved] {
+				return true
+			}
+		}
+	}
+	if m.Discriminator == nil {
+		return false
+	}
+	for _, target := range m.Discriminator.Mapping {
+		name := RefName(target, refSchemas)
+		if name == "" {
+			name = target
+		}
+		resolved, ok := d.Components.Schemas.Get(name)
+		if ok && chain[resolved] {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeInto(out, m *Schema) {

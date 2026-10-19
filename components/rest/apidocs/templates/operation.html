@@ -48,8 +48,8 @@
 {{range $i, $c := .}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}>{{$c.Tree}}</div>
 {{end}}</div>{{else}}{{range .}}<div class="ct">{{.Type}}</div>{{.Tree}}{{end}}{{end}}{{end}}
 
-{{define "try"}}<form class="try" hidden data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
-{{if .TryParams}}<div class="try-grid">{{range .TryParams}}<label class="field"><span class="field-name">{{.Name}}{{if .Required}} <span class="star" title="required">*</span>{{end}} <span class="field-in">{{.In}}</span></span><input type="text" data-in="{{.In}}" data-name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}"{{if .Required}} data-required{{end}} spellcheck="false"></label>
+{{define "try"}}<form class="try" hidden data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
+{{if .TryParams}}<div class="try-grid">{{range .TryParams}}<label class="field"><span class="field-name">{{.Name}}{{if .Required}} <span class="star" title="required">*</span>{{end}} <span class="field-in">{{.In}}</span></span><input type="text" data-in="{{.In}}" data-name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}"{{if .Required}} data-required{{end}}{{if .Array}} data-array{{if .Explode}} data-explode{{else if ne .Sep ","}} data-sep="{{.Sep}}"{{end}} title="Comma-separated list"{{end}} spellcheck="false"></label>
 {{end}}</div>{{end}}
 {{if .TryBody}}<label class="field"><span class="field-name">Body <span class="field-in">{{.TryCT}}</span></span><textarea data-body rows="10" spellcheck="false"></textarea></label>{{end}}
 <div class="try-actions"><button type="submit" class="btn primary">Send</button><span class="try-auth"></span></div>

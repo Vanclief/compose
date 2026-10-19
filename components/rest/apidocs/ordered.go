@@ -167,11 +167,11 @@ func (o Ordered[T]) MarshalJSON() ([]byte, error) {
 		}
 		k, err := json.Marshal(key)
 		if err != nil {
-			return nil, err
+			return nil, ez.Wrap(err)
 		}
 		v, err := json.Marshal(o.Map[key])
 		if err != nil {
-			return nil, err
+			return nil, ez.Wrap(err)
 		}
 		buf.Write(k)
 		buf.WriteByte(':')

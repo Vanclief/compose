@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -89,7 +90,8 @@ func missingVersionMessage(data []byte, isJSON bool) string {
 
 // normalizeDocument walks every schema once and rewrites 3.1 forms into the
 // single shape the model promises: "null" moves from the type list into
-// Nullable, and 3.0 boolean exclusive bounds become numeric bounds.
+// Nullable, {type: "null"} members of oneOf and anyOf become Nullable on the
+// parent, and 3.0 boolean exclusive bounds become numeric bounds.
 func normalizeDocument(doc *Document) {
 	seen := map[*Schema]bool{}
 
@@ -214,4 +216,56 @@ func normalizeSchema(s *Schema, seen map[*Schema]bool) {
 	for _, sub := range s.AnyOf {
 		normalizeSchema(sub, seen)
 	}
+
+	normalizeNullMembers(s)
+}
+
+// normalizeNullMembers rewrites the 3.1 nullable idiom
+// anyOf: [{$ref: Pet}, {type: "null"}] (or oneOf) into the 3.0 shape the
+// renderer already understands. Members that only say "null" are removed and
+// the parent becomes Nullable. When one member remains and the parent has
+// nothing else that would conflict, a bare $ref member becomes the parent's
+// Ref and any other member becomes a single-member allOf, so the schema reads
+// as Pet, nullable, rather than as two variants.
+func normalizeNullMembers(s *Schema) {
+	oneOf, oneNull := withoutNullMembers(s.OneOf)
+	anyOf, anyNull := withoutNullMembers(s.AnyOf)
+	if !oneNull && !anyNull {
+		return
+	}
+	s.Nullable = true
+	s.OneOf = oneOf
+	s.AnyOf = anyOf
+
+	members := append(append([]*Schema(nil), oneOf...), anyOf...)
+	if len(members) != 1 || len(s.Type) > 0 || s.Properties.Len() > 0 || s.Items != nil || s.Ref != "" || len(s.AllOf) > 0 {
+		return
+	}
+	s.OneOf = nil
+	s.AnyOf = nil
+
+	member := members[0]
+	if member.Ref != "" && reflect.DeepEqual(*member, Schema{Ref: member.Ref}) {
+		s.Ref = member.Ref
+		return
+	}
+	s.AllOf = []*Schema{member}
+}
+
+// withoutNullMembers returns members without the ones that only allow null,
+// and whether any were removed. The input slice is never modified.
+func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
+	var out []*Schema
+	removed := false
+	for _, m := range members {
+		if m != nil && reflect.DeepEqual(*m, Schema{Nullable: true}) {
+			removed = true
+			continue
+		}
+		out = append(out, m)
+	}
+	if !removed {
+		return members, false
+	}
+	return out, true
 }

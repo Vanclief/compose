@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}}</title>
-{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/apidocs.css">{{end}}
+{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/apidocs.css?v={{.CSSVersion}}">{{end}}
 </head>
 <body data-server="{{.ServerURL}}">
 <a class="skip" href="#main">Skip to content</a>
@@ -23,7 +23,7 @@
 <footer class="footer">Rendered by compose apidocs from the OpenAPI {{.OpenAPI}} document.</footer>
 </main>
 </div>
-{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/apidocs.js"></script>{{end}}
+{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/apidocs.js?v={{.JSVersion}}"></script>{{end}}
 </body>
 </html>
 {{- end}}
@@ -42,13 +42,13 @@
 {{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
 </ul>
 {{range .Tags}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false">{{.Name}}<span class="count">{{len .Nav}}</span></button>
+<button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
 <ul class="nav" hidden>
 {{range .Nav}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="nav-title">{{.Title}}</span></a></li>
 {{end}}</ul>
 </div>
 {{end}}{{if .Models}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false">Models<span class="count">{{len .Models}}</span></button>
+<button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
 <ul class="nav" hidden>
 {{range .Models}}<li><a class="nav-model" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{.Short}}</a></li>
 {{end}}</ul>
@@ -70,7 +70,7 @@
 {{with .License}}<li><span class="ml">License</span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Name}}</a>{{else}}{{.Name}}{{end}}</li>{{end}}
 {{if .Terms}}<li><span class="ml">Terms</span><a href="{{.Terms}}" target="_blank" rel="noopener">Terms of service</a></li>{{end}}
 </ul>
-{{if .Servers}}<div class="servers"><h2 class="h-small">Servers</h2><ul>{{range .Servers}}<li><code>{{.URL}}</code>{{if .Description}} <span class="muted">{{.Description}}</span>{{end}}</li>{{end}}</ul></div>{{end}}
+{{if .Servers}}<div class="servers"><h2 class="h-small">Servers</h2><ul>{{range .Servers}}<li><code>{{.URL}}</code>{{if .Description}} <span class="muted">{{.Description}}</span>{{end}}{{if .Template}}<div class="server-vars muted">Template <code>{{.Template}}</code>{{range .Variables}}<div><code>{{"{"}}{{.Name}}{{"}"}}</code> default <code>{{.Default}}</code>{{if .Enum}}, one of {{.Enum}}{{end}}{{if .Description}}: {{.Description}}{{end}}</div>{{end}}</div>{{end}}</li>{{end}}</ul></div>{{end}}
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
 </div>
 <div class="side-col">

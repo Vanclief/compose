@@ -100,8 +100,10 @@
 
   // Rows that reference a named model are rendered empty; their content is
   // cloned from the model card, either on first expand or, for rows that
-  // start open, when they come near the viewport. Nested toggles in the clone
-  // start collapsed.
+  // start open, when they come near the viewport. Named oneOf/anyOf variants
+  // (.variant-body) are filled the same way when their tab is shown. Nested
+  // toggles in the clone start collapsed; visible variant bodies in the clone
+  // are observed again so they fill too.
   function fillLazy(body) {
     if (!body.dataset.model || body.dataset.loaded) {
       return;
@@ -117,14 +119,36 @@
         body.append(child.cloneNode(true));
       }
     }
-    body.querySelectorAll('[data-autofill]').forEach((n) => n.removeAttribute('data-autofill'));
     body.querySelectorAll('.tg[aria-expanded="true"]').forEach((b) => {
       b.setAttribute('aria-expanded', 'false');
       const kids = toggleBody(b);
       if (kids) {
         kids.hidden = true;
+        kids.removeAttribute('data-autofill');
       }
     });
+    body.querySelectorAll('[data-autofill]').forEach(observeLazy);
+  }
+
+  // autoFill fills a lazy node that has no toggle of its own. A model that
+  // already encloses the node is not cloned again, so variants that refer
+  // back to an ancestor cannot fill forever.
+  function autoFill(node) {
+    if (!node.dataset.model || node.dataset.loaded) {
+      return;
+    }
+    for (let up = node.parentElement && node.parentElement.closest('[data-model]'); up; up = up.parentElement && up.parentElement.closest('[data-model]')) {
+      if (up.dataset.model === node.dataset.model) {
+        node.dataset.loaded = '1';
+        const note = el('div', 'note');
+        const a = el('a', 'ref', 'Recursive');
+        a.href = '#' + node.dataset.model;
+        note.append(a, ', see the model above.');
+        node.append(note);
+        return;
+      }
+    }
+    fillLazy(node);
   }
 
   const lazyObserver = 'IntersectionObserver' in window
@@ -132,19 +156,21 @@
       for (const entry of entries) {
         if (entry.isIntersecting) {
           lazyObserver.unobserve(entry.target);
-          fillLazy(entry.target);
+          autoFill(entry.target);
         }
       }
     }, { rootMargin: '1200px 0px' })
     : null;
 
-  doc.querySelectorAll('[data-autofill]').forEach((node) => {
+  function observeLazy(node) {
     if (lazyObserver) {
       lazyObserver.observe(node);
     } else {
-      fillLazy(node);
+      autoFill(node);
     }
-  });
+  }
+
+  doc.querySelectorAll('[data-autofill]').forEach(observeLazy);
 
   function setExpanded(btn, open) {
     const body = toggleBody(btn);
@@ -184,6 +210,9 @@
     panels.forEach((p, i) => {
       p.hidden = i !== index;
     });
+    if (panels[index]) {
+      panels[index].querySelectorAll(':scope > [data-model]').forEach(autoFill);
+    }
     if (focus) {
       tab.focus();
     }
@@ -346,13 +375,14 @@
     menuBtn.setAttribute('aria-expanded', String(open));
   }
 
-  function navigate(e, a) {
+  // navigate handles an in-page link; the caller has already prevented the
+  // default, which inside a srcdoc iframe would load a different document.
+  function navigate(a) {
     const id = idFromHref(a.getAttribute('href'));
     const target = doc.getElementById(id);
     if (!target) {
       return;
     }
-    e.preventDefault();
     revealModelOrOp(target);
     // Jump instantly: smooth scrolling across a 180-operation page is slow
     // and lets the scroll spy rewrite the hash on the way.
@@ -483,7 +513,8 @@
     let total = 0;
     for (const group of groups) {
       const btn = group.querySelector('.nav-group-tg');
-      const groupName = btn.textContent.toLowerCase();
+      const label = btn.querySelector('.nav-group-name');
+      const groupName = (label ? label.textContent : '').toLowerCase();
       let shown = 0;
       group.querySelectorAll('a[data-search]').forEach((a) => {
         const hay = a.dataset.search + ' ' + groupName;
@@ -575,7 +606,11 @@
     if (reqs.length === 0) {
       return null;
     }
-    return reqs.find((r) => r.every(schemeFilled)) || reqs[0];
+    // An empty requirement ({}) means "optional"; prefer a complete set of
+    // credentials over it, then the optional entry, then the first set.
+    return reqs.find((r) => r.length > 0 && r.every(schemeFilled)) ||
+      reqs.find((r) => r.length === 0) ||
+      reqs[0];
   }
 
   function updateAuthNote(form) {
@@ -650,8 +685,14 @@
 
   // --------------------------------------------------------------- try it
 
-  function serverBase() {
-    let base = (serverInput && serverInput.value.trim()) || doc.body.dataset.server || '';
+  // serverBase is the Server setting, or the operation's own server while
+  // the setting still holds the page default.
+  function serverBase(form) {
+    const fallback = doc.body.dataset.server || '';
+    let base = (serverInput && serverInput.value.trim()) || fallback;
+    if (form.dataset.server && base === fallback) {
+      base = form.dataset.server;
+    }
     const origin = location.origin && location.origin !== 'null' ? location.origin : '';
     if (!base) {
       base = origin;
@@ -693,15 +734,55 @@
     return "'" + s.replace(/'/g, "'\\''") + "'";
   }
 
-  function curlFor(method, url, headers, body) {
+  function curlFor(method, url, headers, bodyArgs) {
     const parts = ['curl -X ' + method + ' ' + shellQuote(url)];
     for (const [k, v] of Object.entries(headers)) {
       parts.push('-H ' + shellQuote(k + ': ' + v));
     }
-    if (body !== undefined) {
-      parts.push('--data-raw ' + shellQuote(body));
+    return parts.concat(bodyArgs).join(' \\\n  ');
+  }
+
+  // formFields turns the JSON object in the body textarea into name/value
+  // pairs for form content types: scalars as text, arrays of scalars as
+  // repeated fields, nested objects skipped.
+  function formFields(text) {
+    const obj = JSON.parse(text);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+      throw new Error('expected a JSON object');
     }
-    return parts.join(' \\\n  ');
+    const out = [];
+    for (const [k, v] of Object.entries(obj)) {
+      const list = Array.isArray(v) ? v : [v];
+      for (const item of list) {
+        if (item !== null && typeof item !== 'object') {
+          out.push([k, String(item)]);
+        }
+      }
+    }
+    return out;
+  }
+
+  // requestBody builds the fetch body and the matching curl flags for the
+  // textarea contents. Only JSON content types are sent as raw text with
+  // their Content-Type; form types are encoded from the JSON object.
+  function requestBody(text, ct, headers) {
+    const type = ct.split(';')[0].trim().toLowerCase();
+    if (type === 'multipart/form-data') {
+      const fd = new FormData();
+      const args = [];
+      for (const [k, v] of formFields(text)) {
+        fd.append(k, v);
+        args.push('-F ' + shellQuote(k + '=' + v));
+      }
+      return { body: fd, args };
+    }
+    if (type === 'application/x-www-form-urlencoded') {
+      const params = new URLSearchParams(formFields(text));
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      return { body: params, args: ['--data-raw ' + shellQuote(params.toString())] };
+    }
+    headers['Content-Type'] = ct;
+    return { body: text, args: ['--data-raw ' + shellQuote(text)] };
   }
 
   const sentCurl = new WeakMap();
@@ -724,12 +805,19 @@
         return;
       }
       input.classList.remove('invalid');
+      // Arrays are typed comma separated. Exploded ones (the default for
+      // query parameters) travel as repeated keys, the rest comma-joined.
+      const items = input.hasAttribute('data-array') ? value.split(',').map((v) => v.trim()) : [value];
       if (input.dataset.in === 'path') {
-        path = path.split('{' + name + '}').join(encodeURIComponent(value));
+        path = path.split('{' + name + '}').join(items.map(encodeURIComponent).join(','));
       } else if (input.dataset.in === 'query') {
-        query.append(name, value);
+        if (input.hasAttribute('data-explode')) {
+          items.forEach((v) => query.append(name, v));
+        } else {
+          query.append(name, items.join(input.dataset.sep || ','));
+        }
       } else if (input.dataset.in === 'header') {
-        headers[name] = value;
+        headers[name] = items.join(',');
       }
     });
 
@@ -745,18 +833,33 @@
     applyAuth(form, headers, query);
 
     let body;
+    let bodyArgs = [];
     const textarea = form.querySelector('[data-body]');
     if (textarea && textarea.value.trim() !== '' && method !== 'GET' && method !== 'HEAD') {
-      body = textarea.value;
-      const ct = form.dataset.ct || 'application/json';
-      if (!ct.startsWith('multipart/')) {
-        headers['Content-Type'] = ct;
+      try {
+        const built = requestBody(textarea.value, form.dataset.ct || 'application/json', headers);
+        body = built.body;
+        bodyArgs = built.args;
+      } catch (err) {
+        result.append(el('p', 'try-error', 'The body must be a JSON object to send it as ' + form.dataset.ct + ': ' + err.message + '.'));
+        return;
+      }
+    }
+
+    // Header values the browser rejects make fetch throw a TypeError that
+    // reads like a network failure; check them first.
+    for (const [k, v] of Object.entries(headers)) {
+      try {
+        new Headers([[k, v]]);
+      } catch (err) {
+        result.append(el('p', 'try-error', 'Invalid header value for ' + k + ': ' + (err && err.message ? err.message : String(err))));
+        return;
       }
     }
 
     const qs = query.toString();
-    const url = serverBase() + path + (qs ? '?' + qs : '');
-    const curl = curlFor(method, url, headers, body);
+    const url = serverBase(form) + path + (qs ? '?' + qs : '');
+    const curl = curlFor(method, url, headers, bodyArgs);
     sentCurl.set(result, curl);
 
     const status = el('div', 'try-status');
@@ -884,8 +987,13 @@
       return;
     }
     const href = a.getAttribute('href');
-    if (href.startsWith('#') && href.length > 1) {
-      navigate(e, a);
+    if (href === '' || href.startsWith('#')) {
+      e.preventDefault();
+      if (href.length > 1) {
+        navigate(a);
+      } else {
+        window.scrollTo(0, 0);
+      }
     }
   });
 

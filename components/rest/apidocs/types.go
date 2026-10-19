@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/vanclief/ez"
 	"gopkg.in/yaml.v3"
 )
 
@@ -242,7 +243,7 @@ type Schema struct {
 	Discriminator *Discriminator   `json:"discriminator" yaml:"discriminator"`
 
 	// AdditionalProperties is nil when unset, which JSON Schema reads as
-	// allowed. Use AdditionalAllowed and AdditionalSchema to inspect it.
+	// allowed. Use AdditionalSchema to get the schema of extra properties.
 	AdditionalProperties *AdditionalProperties `json:"additionalProperties" yaml:"additionalProperties"`
 
 	Minimum          *float64 `json:"minimum" yaml:"minimum"`
@@ -272,7 +273,11 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 		*s = booleanSchema(string(trimmed) == "true")
 		return nil
 	}
-	return json.Unmarshal(data, (*schemaFields)(s))
+	err := json.Unmarshal(data, (*schemaFields)(s))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
 }
 
 // UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema.
@@ -281,12 +286,16 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 		var allowed bool
 		err := node.Decode(&allowed)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 		*s = booleanSchema(allowed)
 		return nil
 	}
-	return node.Decode((*schemaFields)(s))
+	err := node.Decode((*schemaFields)(s))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
 }
 
 func booleanSchema(allowed bool) Schema {
@@ -294,14 +303,6 @@ func booleanSchema(allowed bool) Schema {
 		return Schema{}
 	}
 	return Schema{Not: &Schema{}}
-}
-
-// AdditionalAllowed reports whether additional properties are permitted.
-func (s *Schema) AdditionalAllowed() bool {
-	if s.AdditionalProperties == nil {
-		return true
-	}
-	return s.AdditionalProperties.Allowed
 }
 
 // AdditionalSchema returns the schema for additional properties, or nil when
@@ -342,7 +343,7 @@ func (a *AdditionalProperties) UnmarshalJSON(data []byte) error {
 	var schema Schema
 	err = json.Unmarshal(data, &schema)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	a.Allowed = true
 	a.Schema = &schema
@@ -355,7 +356,7 @@ func (a *AdditionalProperties) UnmarshalYAML(node *yaml.Node) error {
 		var allowed bool
 		err := node.Decode(&allowed)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 		a.Allowed = allowed
 		a.Schema = nil
@@ -365,7 +366,7 @@ func (a *AdditionalProperties) UnmarshalYAML(node *yaml.Node) error {
 	var schema Schema
 	err := node.Decode(&schema)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	a.Allowed = true
 	a.Schema = &schema
@@ -393,7 +394,7 @@ func (t *TypeList) UnmarshalJSON(data []byte) error {
 	var many []string
 	err = json.Unmarshal(data, &many)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	*t = TypeList(many)
 	return nil
@@ -409,7 +410,7 @@ func (t *TypeList) UnmarshalYAML(node *yaml.Node) error {
 	var many []string
 	err := node.Decode(&many)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	*t = TypeList(many)
 	return nil
@@ -455,7 +456,7 @@ func (b *Bound) UnmarshalJSON(data []byte) error {
 	var value float64
 	err = json.Unmarshal(data, &value)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	b.Flag = false
 	b.Value = &value
@@ -475,7 +476,7 @@ func (b *Bound) UnmarshalYAML(node *yaml.Node) error {
 	var value float64
 	err = node.Decode(&value)
 	if err != nil {
-		return fmt.Errorf("line %d: exclusive bound must be a bool or a number", node.Line)
+		return ez.New(ez.EINVALID, fmt.Sprintf("line %d: exclusive bound must be a bool or a number", node.Line), err)
 	}
 	b.Flag = false
 	b.Value = &value

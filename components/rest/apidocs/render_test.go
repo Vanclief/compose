@@ -237,8 +237,9 @@ func TestRenderAllFixtures(t *testing.T) {
 func TestRenderAssetsURL(t *testing.T) {
 	html := renderTestDoc(t, Options{AssetsURL: "/docs/assets/", SpecURL: "/openapi.yaml", Title: "Docs"})
 
-	require.Contains(t, html, `<script src="/docs/assets/apidocs.js"></script>`)
-	require.Contains(t, html, `<link rel="stylesheet" href="/docs/assets/apidocs.css">`)
+	require.Contains(t, html, `<script src="/docs/assets/apidocs.js?v=`+assetVersion("apidocs.js")+`"></script>`)
+	require.Contains(t, html, `<link rel="stylesheet" href="/docs/assets/apidocs.css?v=`+assetVersion("apidocs.css")+`">`)
+	require.NotEmpty(t, assetVersion("apidocs.js"))
 	require.NotContains(t, html, "<script>")
 	require.NotContains(t, html, "<style>")
 	require.Contains(t, html, "<title>Docs</title>")
@@ -304,6 +305,146 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
 	tree := section(t, html, `id="operation/dup-op"`)
 	require.Contains(t, tree, `<a class="mk rec" href="#model/Node">recursive</a>`)
+}
+
+// TestRenderAllOfWrapperRecursion guards against the schema tree blowing up
+// exponentially when a model refers to itself through allOf wrappers (the
+// 3.0 idiom for adding a description to a $ref): the wrapper must count as
+// the model for the cycle guard and for lazy rows.
+func TestRenderAllOfWrapperRecursion(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Wrapped
+  version: "1"
+paths:
+  /nodes:
+    get:
+      operationId: nodes.get
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+components:
+  schemas:
+    Node:
+      type: object
+      properties:
+        left:
+          description: Left child.
+          allOf:
+            - $ref: '#/components/schemas/Node'
+        right:
+          description: Right child.
+          allOf:
+            - $ref: '#/components/schemas/Node'
+        parent:
+          description: Parent node.
+          allOf:
+            - $ref: '#/components/schemas/Node'
+`
+	doc, err := Parse([]byte(spec))
+	require.NoError(t, err)
+
+	start := time.Now()
+	out, err := Render(doc, Options{AssetsURL: "/assets"})
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 2*time.Second)
+	require.Less(t, len(out), 50*1024)
+
+	html := string(out)
+	requireBalanced(t, html)
+	node := section(t, html, `id="model/Node"`)
+	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
+	require.Contains(t, node, "Left child.")
+	op := section(t, html, `id="operation/nodes-get"`)
+	require.Contains(t, op, `<a class="mk rec" href="#model/Node">recursive</a>`)
+}
+
+func TestRenderServersAndTryParams(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Servers
+  version: "1"
+servers:
+  - url: http://{host}:{port}/v1
+    variables:
+      host:
+        default: localhost
+      port:
+        default: "8080"
+        enum: ["8080", "9090"]
+paths:
+  /items/{ids}:
+    get:
+      operationId: items.list
+      servers:
+        - url: https://items.example.com
+      parameters:
+        - name: ids
+          in: path
+          required: true
+          schema:
+            type: array
+            items:
+              type: integer
+          example: [1, 2]
+        - name: tag
+          in: query
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+          example: [a, b]
+        - name: sort
+          in: query
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+          example: [name, age]
+        - name: pipe
+          in: query
+          style: pipeDelimited
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "204":
+          description: Empty
+`
+	doc, err := Parse([]byte(spec))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{})
+	require.NoError(t, err)
+	html := string(out)
+
+	require.Contains(t, html, `data-server="http://localhost:8080/v1"`)
+	require.Contains(t, html, `<option value="http://localhost:8080/v1">`)
+	require.Contains(t, html, `<li><code>http://localhost:8080/v1</code>`)
+	require.Contains(t, html, `Template <code>http://{host}:{port}/v1</code>`)
+	require.NotContains(t, html, `value="http://{host}`)
+
+	op := section(t, html, `id="operation/items-list"`)
+	require.Contains(t, op, `data-server="https://items.example.com"`)
+	require.Contains(t, op, `data-name="ids" value="1,2" placeholder="1,2" data-required data-array title=`)
+	require.Contains(t, op, `data-name="tag" value="a,b" placeholder="a,b" data-required data-array data-explode`)
+	require.Contains(t, op, `data-name="sort" value="" placeholder="name,age" data-array title=`)
+	require.Contains(t, op, `data-name="pipe" value="" placeholder="string" data-array data-sep="|"`)
+	require.NotContains(t, op, `{port}`)
+
+	out, err = Render(doc, Options{ServerURL: "https://staging.example.com"})
+	require.NoError(t, err)
+	op = section(t, string(out), `id="operation/items-list"`)
+	require.NotContains(t, op, `data-server=`)
 }
 
 // section returns the element that starts at marker up to the next element of

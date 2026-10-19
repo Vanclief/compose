@@ -52,6 +52,7 @@ func TestAssets(t *testing.T) {
 		{"/apidocs.css", http.StatusOK, "text/css; charset=utf-8"},
 		{"/apidocs.js", http.StatusOK, "text/javascript; charset=utf-8"},
 		{"/docs/assets/apidocs.js", http.StatusOK, "text/javascript; charset=utf-8"},
+		{"/docs/assets/apidocs.js?v=" + assetVersion("apidocs.js"), http.StatusOK, "text/javascript; charset=utf-8"},
 		{"/apidocs.html", http.StatusNotFound, ""},
 		{"/", http.StatusNotFound, ""},
 	}
