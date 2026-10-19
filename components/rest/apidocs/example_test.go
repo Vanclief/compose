@@ -2,6 +2,7 @@ package apidocs
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -340,4 +341,148 @@ func TestExampleJSONEmma(t *testing.T) {
 			require.True(t, json.Valid([]byte(out)), name)
 		}
 	}
+}
+
+// emmaExampleSizes renders the request and response examples of every emma
+// operation and returns their total bytes and the longest one in lines.
+func emmaExampleSizes(t *testing.T) (int, int) {
+	t.Helper()
+	doc := loadEmma(t, "emma.yaml")
+	total := 0
+	longest := 0
+	measure := func(mt *MediaType, mode ExampleMode) {
+		out := doc.MediaExampleJSON(mt, mode)
+		total += len(out)
+		longest = max(longest, strings.Count(out, "\n")+1)
+	}
+	for _, path := range doc.Paths.Keys {
+		item := doc.Paths.Map[path]
+		if item == nil {
+			continue
+		}
+		for _, m := range item.Methods() {
+			body := doc.RequestBody(m.Operation.RequestBody)
+			if body != nil {
+				for _, ct := range body.Content.Keys {
+					measure(body.Content.Map[ct], ForRequest)
+				}
+			}
+			for _, code := range m.Operation.Responses.Keys {
+				r := doc.Response(m.Operation.Responses.Map[code])
+				if r == nil {
+					continue
+				}
+				for _, ct := range r.Content.Keys {
+					measure(r.Content.Map[ct], ForResponse)
+				}
+			}
+		}
+	}
+	return total, longest
+}
+
+func TestExampleSizesEmma(t *testing.T) {
+	total, longest := emmaExampleSizes(t)
+	t.Logf("emma examples: %d bytes, longest %d lines", total, longest)
+
+	// Without the model nesting cap these were 2.3 MB and 1,102 lines.
+	require.Less(t, total, 1_000_000)
+	require.Less(t, longest, 500)
+}
+
+const chainSpec = `
+openapi: 3.1.0
+info:
+  title: Chain
+  version: "1"
+components:
+  schemas:
+    Level1:
+      type: object
+      properties:
+        name:
+          type: string
+        next:
+          $ref: '#/components/schemas/Level2'
+    Level2:
+      type: object
+      properties:
+        name:
+          type: string
+        next:
+          $ref: '#/components/schemas/Level3'
+    Level3:
+      type: object
+      properties:
+        name:
+          type: string
+        code:
+          $ref: '#/components/schemas/Code'
+        inline:
+          type: object
+          properties:
+            deep:
+              type: object
+              properties:
+                flag:
+                  type: boolean
+        next:
+          $ref: '#/components/schemas/Level4'
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/Level4'
+        pinned:
+          $ref: '#/components/schemas/Level4'
+          example:
+            name: pinned
+        documented:
+          $ref: '#/components/schemas/Documented'
+    Level4:
+      type: object
+      properties:
+        name:
+          type: string
+        next:
+          $ref: '#/components/schemas/Level5'
+    Level5:
+      type: object
+      properties:
+        name:
+          type: string
+    Code:
+      type: string
+      format: uuid
+    Documented:
+      type: object
+      properties:
+        name:
+          type: string
+      example:
+        name: documented
+paths: {}
+`
+
+func TestExampleValueCapsNamedModelNesting(t *testing.T) {
+	doc := parseSpec(t, chainSpec)
+
+	root := decode(t, doc.ExampleJSON(schemaRef("Level1"), ForResponse))
+	level2 := root["next"].(map[string]any)
+	level3 := level2["next"].(map[string]any)
+	require.Equal(t, "string", level3["name"], "the grandchild model still expands")
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", level3["code"], "named scalars are not cut")
+	require.Equal(t, map[string]any{"deep": map[string]any{"flag": true}}, level3["inline"], "inline objects do not count")
+
+	require.Equal(t, map[string]any{}, level3["next"], "the great-grandchild model is cut")
+	require.Equal(t, []any{}, level3["list"], "arrays of cut models are empty")
+
+	// Explicit examples beyond the cap are used as written.
+	require.Equal(t, map[string]any{"name": "pinned"}, level3["pinned"])
+	require.Equal(t, map[string]any{"name": "documented"}, level3["documented"])
+
+	// The cap counts from wherever the example starts.
+	level3Root := decode(t, doc.ExampleJSON(schemaRef("Level3"), ForResponse))
+	level4 := level3Root["next"].(map[string]any)
+	require.Equal(t, map[string]any{"name": "string"}, level4["next"])
+	require.Equal(t, []any{map[string]any{"name": "string", "next": map[string]any{"name": "string"}}}, level3Root["list"])
 }

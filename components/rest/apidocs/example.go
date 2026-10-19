@@ -23,6 +23,13 @@ const (
 // ancestor.
 const maxExampleDepth = 12
 
+// maxExampleModels bounds how many named object schemas a generated example
+// nests, the way Redoc's sampler keeps related models from ballooning: the
+// root model, its child and its grandchild expand, deeper models render as {}
+// (or [] for arrays of them). Inline objects do not count, and explicit
+// examples are used at any depth.
+const maxExampleModels = 3
+
 // ExampleValue builds a sample value for s the way Redoc and Scalar do.
 //
 // Explicit values win in the order example, examples[0], default, const,
@@ -30,7 +37,8 @@ const maxExampleDepth = 12
 // are returned as *Ordered[any] so properties keep their declared order when
 // passed to ToJSON. oneOf and anyOf use their first member. A named schema
 // that recurs on the current path yields an empty value of its type ({} for
-// objects, [] for arrays, nil for scalars).
+// objects, [] for arrays, nil for scalars). Generated values nest at most
+// three named object schemas deep.
 func (d *Document) ExampleValue(s *Schema, mode ExampleMode) any {
 	e := &exampler{doc: d, mode: mode, stack: map[string]bool{}}
 	return e.value(s, 0)
@@ -166,6 +174,8 @@ type exampler struct {
 	mode ExampleMode
 	// stack holds the component names on the current path.
 	stack map[string]bool
+	// models counts the named object schemas on the current path.
+	models int
 }
 
 func (e *exampler) value(s *Schema, depth int) any {
@@ -197,8 +207,39 @@ func (e *exampler) value(s *Schema, depth int) any {
 		e.stack[name] = true
 		defer delete(e.stack, name)
 	}
+	if name == "" || schemaType(flat) != "object" {
+		return e.generate(flat, depth)
+	}
 
-	return e.generate(flat, depth)
+	if e.models >= maxExampleModels {
+		return emptyExample(flat)
+	}
+	e.models++
+	v = e.generate(flat, depth)
+	e.models--
+	return v
+}
+
+// capped reports whether s is a named object schema without an explicit
+// example that the model nesting cap would cut off.
+func (e *exampler) capped(s *Schema) bool {
+	if e.models < maxExampleModels {
+		return false
+	}
+	_, ok := explicitExample(s)
+	if ok {
+		return false
+	}
+	_, name := e.doc.Schema(s)
+	if name == "" {
+		return false
+	}
+	flat := e.doc.Flatten(s)
+	if flat == nil {
+		return false
+	}
+	_, ok = explicitExample(flat)
+	return !ok && schemaType(flat) == "object"
 }
 
 // generate builds a value from a flattened schema with no explicit example.
@@ -325,7 +366,7 @@ func (e *exampler) object(s *Schema, depth int) any {
 }
 
 func (e *exampler) array(s *Schema, depth int) any {
-	if s.Items == nil {
+	if s.Items == nil || e.capped(s.Items) {
 		return []any{}
 	}
 
