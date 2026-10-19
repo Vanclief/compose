@@ -615,8 +615,12 @@ html.modal-open { overflow: hidden; }
 .mmodal-back { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; background: rgba(8, 10, 14, .55); backdrop-filter: blur(2px); }
 .mmodal { display: flex; flex-direction: column; width: min(780px, 100%); max-height: 88vh; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .6); }
 .mm-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
-.mm-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 16px; font-weight: 700; }
-.mm-title .ico-obj { color: var(--accent); font-size: 13px; }
+.mm-trail { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow: hidden; font-family: var(--mono); font-size: 16px; }
+.mm-trail .ico-obj { flex: none; margin-right: 4px; color: var(--accent); font-size: 13px; }
+.mm-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.mm-crumb { flex: 0 1 auto; min-width: 3ch; max-width: 220px; overflow: hidden; padding: 2px 6px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: inherit; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.mm-crumb:hover { background: var(--bg-hover); color: var(--accent); }
+.mm-sep { flex: none; color: var(--faint); }
 .mm-open { font-size: 13px; }
 .mm-close { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 6px 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-soft); font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; }
 .mm-close:hover { border-color: var(--accent); color: var(--text); }
@@ -791,6 +795,12 @@ button.pn:hover { color: var(--accent); }
 .oi-type.t-kw { color: var(--t-kw); font-style: italic; }
 .oi-type[data-model] { text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; cursor: pointer; }
 .oi-type[data-model]:hover { text-decoration: underline; }
+/* In the dialog a folder's model type toggles the row; its arrow, shown on
+   hover, opens the model. */
+.mmodal .oi-tg .oi-type[data-model] { text-decoration: none; cursor: inherit; }
+.oi-open { display: none; justify-self: start; padding: 0 5px; border-radius: 4px; color: var(--sample-muted); cursor: pointer; }
+.mmodal .oi-tg:hover .oi-open, .mmodal .oi-tg:focus-visible .oi-open { display: inline-block; }
+.oi-open:hover { background: var(--sample-fill); color: var(--accent); }
 .oi-ex { justify-self: start; max-width: 100%; padding: 1px 7px; border-radius: 5px; background: color-mix(in srgb, currentColor 12%, transparent); line-height: 18px; }
 .oi-cols > .oi-val:not(.oi-enum) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oi-enum { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }

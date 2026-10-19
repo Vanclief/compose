@@ -260,6 +260,12 @@
     }
 
     const typing = e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable]');
+    // Backspace or Alt+Left steps the model dialog back along its trail.
+    if (modal && modal.stack.length > 1 && !typing && ((e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) || (e.key === 'ArrowLeft' && e.altKey))) {
+      e.preventDefault();
+      modelBack(modal.stack.length - 1);
+      return;
+    }
     if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
       searchInput.focus();
@@ -1773,7 +1779,14 @@
     line.setAttribute('aria-expanded', String(open));
     const name = el('span', 'oi-k');
     name.append(el('span', isList ? 'oi-ico oi-arr' : 'oi-ico oi-obj', isList ? '[]' : '{}'), key);
-    line.append(name, t && !t.own ? oiType(t, true) : el('span', 'pill', oiSummary(v)));
+    const type = t && !t.own ? oiType(t, true) : el('span', 'pill', oiSummary(v));
+    line.append(name, type);
+    if (type.dataset.model) {
+      const go = el('span', 'oi-open', '↗');
+      go.dataset.model = type.dataset.model;
+      go.title = type.title;
+      line.append(go);
+    }
     if (t && !t.own) {
       oiColumns(line, key, depth, t, true);
     }
@@ -2446,22 +2459,28 @@
     const card = doc.getElementById(anchor);
     const box = modal.box;
     box.textContent = '';
+    // The title is the trail of models opened here: each earlier one goes
+    // back to it.
     const head = el('div', 'mm-head');
-    if (modal.stack.length > 1) {
-      const back = el('button', 'btn ghost icon mm-back', '‹');
-      back.type = 'button';
-      back.setAttribute('aria-label', 'Back');
-      back.onclick = () => {
-        modal.stack.pop();
-        renderModel();
-      };
-      head.append(back);
-    }
-    const title = card.querySelector('.model-title a');
-    const t = el('span', 'mm-title');
-    t.append(el('span', 'ico-obj', '{}'), title ? title.textContent : anchor);
-    t.id = 'mm-title';
-    head.append(t);
+    const trail = el('nav', 'mm-trail');
+    trail.setAttribute('aria-label', 'Models opened');
+    trail.append(el('span', 'ico-obj', '{}'));
+    modal.stack.forEach((id, i) => {
+      const title = doc.getElementById(id).querySelector('.model-title a');
+      const name = title ? title.textContent : id;
+      if (i === modal.stack.length - 1) {
+        const t = el('span', 'mm-title', name);
+        t.id = 'mm-title';
+        trail.append(t);
+        return;
+      }
+      const crumb = el('button', 'mm-crumb', name);
+      crumb.type = 'button';
+      crumb.title = 'Back to ' + name;
+      crumb.onclick = () => modelBack(i + 1);
+      trail.append(crumb, el('span', 'mm-sep', '›'));
+    });
+    head.append(trail);
     const open = el('a', 'btn ghost mm-open', 'Open in Models');
     open.href = '#' + anchor;
     const close = el('button', 'mm-close');
@@ -2495,6 +2514,15 @@
     close.focus({ preventScroll: true });
   }
 
+  // modelBack returns the dialog to the first depth models it opened.
+  function modelBack(depth) {
+    if (!modal || depth < 1 || depth >= modal.stack.length) {
+      return;
+    }
+    modal.stack.length = depth;
+    renderModel();
+  }
+
   function openModel(anchor) {
     if (!doc.getElementById(anchor)) {
       return false;
@@ -2506,9 +2534,11 @@
       box.setAttribute('aria-modal', 'true');
       box.setAttribute('aria-labelledby', 'mm-title');
       back.append(box);
-      // Any click outside the dialog closes it.
+      // A click on the backdrop closes the dialog. Testing the target
+      // rather than box.contains keeps clicks that re-render the dialog,
+      // whose targets are gone by now, from counting as outside.
       back.addEventListener('click', (e) => {
-        if (!box.contains(e.target)) {
+        if (e.target === back) {
           closeModel();
         }
       });
@@ -2534,9 +2564,11 @@
     }
     hideCard();
 
-    // A model type in a sample opens its model, even inside a folder row.
-    const typeLink = t.closest('.oi-type[data-model]');
-    if (typeLink) {
+    // A model type in an inspector opens its model, even inside a folder
+    // row. In the dialog a folder's type toggles the row like the rest of
+    // it, and its arrow opens the model.
+    const typeLink = t.closest('.oi-open[data-model], .oi-type[data-model]');
+    if (typeLink && !(typeLink.matches('.oi-type') && typeLink.closest('.mmodal .oi-tg'))) {
       e.preventDefault();
       closePop();
       openModel(typeLink.dataset.model);
