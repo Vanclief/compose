@@ -259,6 +259,11 @@ type Schema struct {
 	UniqueItems      bool     `json:"uniqueItems" yaml:"uniqueItems"`
 	MinProperties    *int     `json:"minProperties" yaml:"minProperties"`
 	MaxProperties    *int     `json:"maxProperties" yaml:"maxProperties"`
+
+	// Extensions holds the specification extensions (keys starting with
+	// "x-") as decoded values, or nil when the schema has none. It is not
+	// written back by json.Marshal.
+	Extensions map[string]any `json:"-" yaml:"-"`
 }
 
 // schemaFields has the fields of Schema without its methods, so the custom
@@ -277,6 +282,30 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
+	// Most schemas have no extensions; skip the second decode for them. A
+	// parent still rescans when only a nested schema has one.
+	if !bytes.Contains(data, []byte(`"x-`)) {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	err = json.Unmarshal(data, &raw)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	for key, value := range raw {
+		if !strings.HasPrefix(key, "x-") {
+			continue
+		}
+		var v any
+		err = json.Unmarshal(value, &v)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		if s.Extensions == nil {
+			s.Extensions = map[string]any{}
+		}
+		s.Extensions[key] = v
+	}
 	return nil
 }
 
@@ -294,6 +323,24 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	err := node.Decode((*schemaFields)(s))
 	if err != nil {
 		return ez.Wrap(err)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !strings.HasPrefix(key, "x-") {
+			continue
+		}
+		var v any
+		err = node.Content[i+1].Decode(&v)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		if s.Extensions == nil {
+			s.Extensions = map[string]any{}
+		}
+		s.Extensions[key] = v
 	}
 	return nil
 }
