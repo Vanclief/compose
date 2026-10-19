@@ -26,6 +26,14 @@ var pageTemplate = template.Must(template.New("reference").Funcs(template.FuncMa
 	"href": func(anchor string) template.URL {
 		return template.URL("#" + anchor)
 	},
+	// dotPrefix and dotName split a display name such as finance.Category
+	// so the package prefix can be muted.
+	"dotPrefix": func(name string) string {
+		return name[:strings.LastIndex(name, ".")+1]
+	},
+	"dotName": func(name string) string {
+		return name[strings.LastIndex(name, ".")+1:]
+	},
 }).ParseFS(templateFS, "templates/*.html"))
 
 // Options configures Render and New.

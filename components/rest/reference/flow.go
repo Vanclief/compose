@@ -26,6 +26,8 @@ type machineView struct {
 type portView struct {
 	Key         string // data-port value: in:<location>:<name>, in:optional, in:body or out:<status>
 	Name        string
+	Head        string // headline of an input: the parameter name, or the body's model
+	Loc         string // where an input travels: path, query, header, cookie or body
 	Kind        string // type shape: str, num, bool, obj, arr or any
 	Type        string // short type label
 	Title       string // full type label, for the tooltip
@@ -364,6 +366,8 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 		port := b.port(schema, ForRequest)
 		port.Key = "in:" + p.In + ":" + p.Name
 		port.Name = p.Name
+		port.Head = p.Name
+		port.Loc = p.In
 		port.Required = true
 		collection := ""
 		if p.In == "path" {
@@ -387,6 +391,11 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 			port := b.port(schema, ForRequest)
 			port.Key = "in:body"
 			port.Name = "body"
+			port.Head = "body"
+			if port.Kind == "obj" && port.Type != "object" {
+				port.Head = port.Type
+			}
+			port.Loc = "body"
 			port.Required = body.Required
 			f := b.d.Flatten(schema)
 			if f != nil {

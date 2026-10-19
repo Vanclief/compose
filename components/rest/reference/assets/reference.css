@@ -421,6 +421,14 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .pnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .pty { flex: 0 1 auto; max-width: 60%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 .mc-outs .status { font-size: 12.5px; }
+/* Inputs mirror outputs: what you send as the headline, where it travels
+   as a tag, in the Send color. */
+.mc-ins > .port.in > .pbox { border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong)); }
+.pin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); }
+.pt:hover .pin { color: var(--accent); }
+.pre { font-weight: 500; color: var(--muted); }
+.lchip { flex: none; margin-left: auto; padding: 0 6px; border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.src .pty { flex: none; max-width: none; margin: 0 2px 0 0; }
 /* The main output leads with what it produces; the status is a tag. */
 .pout { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); }
 .pout .arr { margin-left: 1px; font-weight: 500; color: var(--muted); }
@@ -501,10 +509,10 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 
 /* Recipes: inputs -> outputs on one line. */
 .recipe { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
-.ri { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-soft); }
-.ri.opt { border-style: dashed; background: none; color: var(--faint); }
+.ri { padding: 0 5px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-strong)); border-radius: 4px; color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.ri.opt { border-style: dashed; background: none; color: color-mix(in srgb, var(--accent) 60%, var(--faint)); }
 .ri.none { border-style: dashed; background: none; color: var(--faint); font-style: italic; }
-.ri.out { color: var(--s2); border-color: color-mix(in srgb, var(--s2) 45%, var(--border-strong)); }
+.ri.out { color: var(--s2); border-color: color-mix(in srgb, var(--s2) 45%, var(--border-strong)); background: color-mix(in srgb, var(--s2) 7%, transparent); }
 .r-arrow { color: var(--faint); }
 .r-err { color: var(--faint); font-size: 11px; }
 
@@ -543,8 +551,11 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .resp-head .rs { flex: none; min-width: 80px; }
 .resp-main { flex: 1; min-width: 0; }
 .resp-desc > :last-child { margin-bottom: 0; }
-.resp-sum { margin-top: 3px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
-.resp-sum .ty { margin-right: 6px; }
+/* A response leads with what comes back; its description is secondary. */
+.resp-main { display: flex; flex-direction: column; }
+.resp-sum { order: -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
+.resp-sum .ty { margin-right: 6px; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.resp-desc { margin-top: 2px; font-size: 13px; color: var(--muted); }
 .resp-sum .chip { margin: 0; color: var(--muted); }
 .more { font-size: 12px; color: var(--faint); }
 .resp-body { padding: 4px 12px 12px; border-top: 1px solid var(--border); }
