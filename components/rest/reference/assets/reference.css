@@ -494,8 +494,14 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
   border-radius: 10px;
   background: var(--bg);
   box-shadow: 0 8px 20px -14px rgba(0, 0, 0, .45);
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
   transition: border-color .2s, box-shadow .2s;
 }
+.mc-node:hover, .mc-node:focus-visible { border-color: var(--accent); }
+.mc-run { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--muted); background: var(--bg-soft); transition: color .15s, background .15s; }
+.mc-node:hover .mc-run, .mc-node:focus-visible .mc-run { color: var(--bg); background: var(--accent); }
 .mc-res { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
 
 /* Try it: filled inputs light their wire, a request runs the belt, the
@@ -772,10 +778,28 @@ button.pn:hover { color: var(--accent); }
 .settings input { background: rgba(255, 255, 255, .06); border-color: var(--sample-border); color: var(--sample-text); }
 .hint { margin: 8px 0 0; font-size: 12px; color: var(--sample-muted); }
 
-/* Try it */
-.try-btn { margin-bottom: 8px; }
-.try { margin: 8px 0 16px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
-.try-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; }
+/* Try it lives in the machine: ports take values, the node sends. */
+.pin-v { display: block; width: 100%; height: 28px; margin: 6px 0 3px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-soft); color: var(--text); font-family: var(--mono); font-size: 12.5px; }
+.pin-v::placeholder { color: var(--faint); }
+.pin-v:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.pin-v.invalid { border-color: var(--req); }
+.opt-chev { margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; transform: rotate(90deg); transition: transform .15s; }
+.pt[data-opt][aria-expanded="true"] .opt-chev { transform: rotate(-90deg); }
+.port.opt:has(.pt[aria-expanded="true"]) > .pbox { border-style: solid; background: var(--bg); }
+.popts { padding: 4px 0 2px 16px; }
+.popt { display: block; margin-top: 6px; }
+.popt-n { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.popt .pin-v { margin-top: 3px; }
+.pedit { margin: 6px 0 2px 16px; padding: 1px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
+.pedit:hover, .pedit[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.mc-body, .mc-foot, .machine > .try-result { grid-column: 1 / -1; }
+.mc-body { margin-top: 12px; }
+.mc-body-h { margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.mc-body-h .ct { margin: 0 0 0 6px; }
+.mc-body textarea { display: block; width: 100%; min-height: 180px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+.mc-body textarea:focus { outline: none; border-color: var(--accent); }
+.mc-foot { margin-top: 10px; }
+.machine:not([data-touched]) .mc-foot { display: none; }
 .field { display: block; margin-bottom: 10px; }
 .field-name { display: block; margin-bottom: 3px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--muted); }
 .field-in { font-family: var(--font); font-weight: 400; color: var(--faint); }
@@ -795,7 +819,7 @@ button.pn:hover { color: var(--accent); }
 .try-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .try-auth { font-size: 12px; color: var(--muted); }
 .try-auth .missing { color: var(--warn); }
-.try-result { margin-top: 14px; }
+.try-result { margin-top: 12px; }
 .try-result .card { margin-top: 8px; }
 .try-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
 .try-status .btn { padding: 3px 10px; font-size: 12px; }
@@ -860,7 +884,7 @@ button.pn:hover { color: var(--accent); }
 }
 
 @media print {
-  .sidebar, .topbar, .try, .try-btn, .copy, .settings { display: none !important; }
+  .sidebar, .topbar, .pin-v, .popts, .pedit, .mc-run, .mc-body, .mc-foot, .try-result, .copy, .settings { display: none !important; }
   .layout { grid-template-columns: 1fr; }
   .op-samples { position: static; max-height: none; }
 }
@@ -1003,7 +1027,7 @@ body.diff.changes-only .nav-folder:not(:has(.diff-op)), body.diff.changes-only .
 /* Removed operations stay, greyed out */
 body.diff .op.diff-removed > * { opacity: .55; }
 body.diff .op.diff-removed .op-path, body.diff .op.diff-removed .op-title a { text-decoration: line-through; }
-.op.diff-removed .try-btn, .op.diff-removed .try { display: none; }
+.op.diff-removed .pin-v, .op.diff-removed .pedit, .op.diff-removed .mc-run { display: none; }
 body.diff .nav .diff-removed .nav-title { text-decoration: line-through; color: var(--faint); }
 
 /* Schema rows: a tinted band with a + or minus gutter */
@@ -1044,3 +1068,10 @@ a.mk.diff-inside:hover { text-decoration: none; filter: brightness(1.1); }
 .diff-lines li.diff-chg::before { content: "~"; color: var(--diff-chg); }
 .diff-where { font-size: 12.5px; }
 .diff-lines .diff-badge { font-size: 9.5px; line-height: 15px; padding: 0 5px; }
+
+/* Tracing and the path browser light sidebar entries, folder counts, ports
+   and model links by class. */
+.nav-op.lit-nav, .nav-op.fd-nav { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.count.lit-count, .count.fd-count { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.pbox.lit-port, .pfields li.lit-port { border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-soft) !important; border-radius: 7px; }
+a.lit-link { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent-soft); border-radius: 3px; }

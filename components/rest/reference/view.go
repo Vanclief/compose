@@ -204,7 +204,6 @@ type tryParam struct {
 	Array       bool
 	Explode     bool
 	Sep         string
-	Value       string
 	Placeholder string
 }
 
@@ -884,11 +883,7 @@ func (b *builder) buildParameters(ov *opView, ref OperationRef) {
 				tp.Sep = strings.TrimSuffix(strings.TrimPrefix(probe[0], "a"), "b")
 			}
 		}
-		example := ParamString(paramExample(b.d, p, true))
-		if p.Required || p.In == "path" {
-			tp.Value = example
-		}
-		tp.Placeholder = example
+		tp.Placeholder = ParamString(paramExample(b.d, p, true))
 		if tp.Placeholder == "" {
 			tp.Placeholder = b.newTree(ForRequest, false).plainLabel(schema)
 		}

@@ -640,7 +640,7 @@
     }
     if (t.dataset.auth) {
       session.setItem('reference.auth.' + t.dataset.auth, t.value);
-      doc.querySelectorAll('form.try:not([hidden])').forEach(updateAuthNote);
+      doc.querySelectorAll('form.try[data-touched]').forEach(updateAuthNote);
     } else if (t.hasAttribute('data-server-input')) {
       session.setItem('reference.server', t.value);
     } else if (t.classList.contains('invalid') && t.value) {
@@ -763,30 +763,54 @@
     return base.replace(/\/+$/, '');
   }
 
-  function openTry(btn) {
-    const op = btn.closest('[data-op]');
-    const form = op ? op.querySelector('form.try') : null;
-    if (!form) {
+  // The machine is the try-it form. It notes the credentials it will send
+  // once it is first used.
+  function touchTry(form) {
+    if (form.dataset.touched) {
       return;
     }
-    const open = form.hidden;
-    form.hidden = !open;
+    form.dataset.touched = '1';
+    updateAuthNote(form);
+  }
+
+  doc.addEventListener('focusin', (e) => {
+    const form = e.target instanceof Element ? e.target.closest('form.try') : null;
+    if (form) {
+      touchTry(form);
+    }
+  });
+
+  // The body port opens the body editor, filled with the example on first
+  // open.
+  function toggleBodyEditor(btn) {
+    const form = btn.closest('form.try');
+    const box = form ? form.querySelector('.mc-body') : null;
+    if (!box) {
+      return;
+    }
+    const open = box.hidden;
+    box.hidden = !open;
     btn.setAttribute('aria-expanded', String(open));
-    btn.textContent = open ? 'Close' : 'Try it';
+    btn.textContent = open ? 'Hide body' : 'Edit body';
     if (!open) {
       return;
     }
-    if (!form.dataset.ready) {
-      form.dataset.ready = '1';
-      const body = form.querySelector('[data-body]');
-      const example = op.querySelector('[data-req-example]');
-      if (body && !body.value && example) {
-        body.value = example.textContent;
-      }
+    const body = box.querySelector('[data-body]');
+    const example = form.closest('[data-op]').querySelector('[data-req-example]');
+    if (!body.value && example) {
+      body.value = example.textContent;
+      litPorts(form);
     }
-    updateAuthNote(form);
-    litPorts(form);
-    const first = form.querySelector('input, textarea');
+    body.focus({ preventScroll: true });
+  }
+
+  // The optional port opens its inputs in place.
+  function toggleOptional(btn) {
+    const box = btn.nextElementSibling;
+    const open = box.hidden;
+    box.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    const first = open ? box.querySelector('input') : null;
     if (first) {
       first.focus({ preventScroll: true });
     }
@@ -850,6 +874,7 @@
   const sentCurl = new WeakMap();
 
   async function send(form) {
+    touchTry(form);
     const method = form.dataset.method;
     let path = form.dataset.path;
     const query = new URLSearchParams();
@@ -928,7 +953,7 @@
     status.append(el('span', 'muted', 'Sending ' + method + ' ' + url + ' …'));
     result.append(status);
 
-    const machine = machineOf(form);
+    const machine = form;
     litPorts(form);
     machineState(machine, 'running');
     const started = performance.now();
@@ -1222,7 +1247,7 @@
     pop.box.remove();
     pop.btn.setAttribute('aria-expanded', 'false');
     pop = null;
-    finderStyle.textContent = '';
+    markFinder([]);
   }
 
   function openPop(btn) {
@@ -1365,8 +1390,6 @@
   // Tracing: hovering a port, a model link or a model card lights every port
   // that carries the same model and the sidebar operations that make or take
   // it, through one generated style rule.
-  const traceStyle = el('style');
-  doc.head.append(traceStyle);
   let traced = '';
   let traceTimer = 0;
 
@@ -1382,36 +1405,68 @@
     return '';
   }
 
+  // Marks put a class on a computed set of elements and clear it in one
+  // batch. Generated selectors (and :has() ones above all) made every click
+  // restyle the whole sidebar.
+  function marker(cls) {
+    let marked = [];
+    return (nodes) => {
+      marked.forEach((n) => n.classList.remove(cls));
+      marked = nodes;
+      marked.forEach((n) => n.classList.add(cls));
+    };
+  }
+
+  // navCounts returns the count pills of the sidebar folders and groups
+  // that hold the entries.
+  function navCounts(entries) {
+    const seen = new Set();
+    const counts = [];
+    entries.forEach((a) => {
+      for (let up = a.parentElement; up && !seen.has(up); up = up.parentElement) {
+        if (up.classList.contains('sidebar')) {
+          break;
+        }
+        if (up.classList.contains('nav-folder') || up.classList.contains('nav-group')) {
+          seen.add(up);
+          const c = up.querySelector(':scope > button .count');
+          if (c) {
+            counts.push(c);
+          }
+        }
+      }
+    });
+    return counts;
+  }
+
+  const markTracePorts = marker('lit-port');
+  const markTraceNav = marker('lit-nav');
+  const markTraceCounts = marker('lit-count');
+  const markTraceLinks = marker('lit-link');
+
   function setTrace(ids) {
     if (ids === traced) {
       return;
     }
     traced = ids;
-    if (!ids) {
-      traceStyle.textContent = '';
-      return;
-    }
-    const f = flowData();
     const ports = [];
     const nav = [];
-    const folders = [];
     const links = [];
-    ids.split(' ').forEach((id) => {
-      ports.push('.port[data-m~="' + id + '"] > .pbox', '.pfields li[data-m~="' + id + '"]');
-      nav.push('.nav-op[data-m~="' + id + '"]');
-      folders.push('.nav-folder:has(.nav-op[data-m~="' + id + '"]) > .nav-folder-tg .count', '.nav-group:has(.nav-op[data-m~="' + id + '"]) > .nav-group-tg .count');
-      const m = f.models[id];
-      if (m) {
-        links.push('a.ref[href="#' + m.a + '"]', 'a.nav-model[href="#' + m.a + '"]');
-      }
-    });
-    let css = ports.join(',') + '{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important;border-radius:7px}';
-    css += nav.join(',') + '{color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}';
-    css += folders.join(',') + '{background:var(--accent);border-color:var(--accent);color:var(--bg)}';
-    if (links.length) {
-      css += links.join(',') + '{background:var(--accent-soft);box-shadow:0 0 0 2px var(--accent-soft);border-radius:3px}';
+    if (ids) {
+      const f = flowData();
+      ids.split(' ').forEach((id) => {
+        doc.querySelectorAll('.port[data-m~="' + id + '"] > .pbox, .pfields li[data-m~="' + id + '"]').forEach((n) => ports.push(n));
+        doc.querySelectorAll('.nav-op[data-m~="' + id + '"]').forEach((n) => nav.push(n));
+        const m = f.models[id];
+        if (m) {
+          doc.querySelectorAll('a.ref[href="#' + m.a + '"], a.nav-model[href="#' + m.a + '"]').forEach((n) => links.push(n));
+        }
+      });
     }
-    traceStyle.textContent = css;
+    markTracePorts(ports);
+    markTraceNav(nav);
+    markTraceCounts(navCounts(nav));
+    markTraceLinks(links);
   }
 
   // Sidebar card: hovering an operation shows its recipe.
@@ -1466,28 +1521,19 @@
     sidebar.addEventListener('scroll', hideCard, { passive: true });
   }
 
-  // Try it drives the machine: filled inputs light their port, a request
-  // runs it, and the status that came back lights its output.
-  function machineOf(form) {
-    const article = form.closest('[data-op]');
-    return article ? article.querySelector('.machine') : null;
-  }
-
-  function litPorts(form) {
-    const machine = machineOf(form);
-    if (!machine) {
-      return;
-    }
+  // The machine runs its own request: filled inputs light their port, a
+  // request runs it, and the status that came back lights its output.
+  function litPorts(machine) {
     const filled = {};
     let optional = false;
-    form.querySelectorAll('input[data-in]').forEach((input) => {
+    machine.querySelectorAll('input[data-in]').forEach((input) => {
       const has = input.value.trim() !== '';
       filled['in:' + input.dataset.in + ':' + input.dataset.name] = has;
       if (has && !input.hasAttribute('data-required')) {
         optional = true;
       }
     });
-    const body = form.querySelector('[data-body]');
+    const body = machine.querySelector('[data-body]');
     filled['in:body'] = !!(body && body.value.trim());
     filled['in:optional'] = optional;
     machine.querySelectorAll('.mc-ins > .port').forEach((port) => {
@@ -1527,8 +1573,23 @@
   // Path bar: every segment opens a Finder-like browser of the operations
   // beneath it. Folders drill in, the bar on top climbs back out, and the
   // sidebar lights the operations in the folder being browsed.
-  const finderStyle = el('style');
-  doc.head.append(finderStyle);
+  const markFinderNav = marker('fd-nav');
+  const markFinderCounts = marker('fd-count');
+  let navIndex = null;
+
+  function navOp(anchor) {
+    if (!navIndex) {
+      navIndex = new Map();
+      doc.querySelectorAll('.nav-op').forEach((a) => navIndex.set(a.getAttribute('href').slice(1), a));
+    }
+    return navIndex.get(anchor);
+  }
+
+  function markFinder(ops) {
+    const nav = ops.map((op) => navOp(op.a)).filter(Boolean);
+    markFinderNav(nav);
+    markFinderCounts(navCounts(nav));
+  }
 
   function pathSegs(path) {
     return path.split('/').filter(Boolean);
@@ -1642,8 +1703,7 @@
       }
     };
 
-    finderStyle.textContent = inside.length === 0 ? '' : inside.map((op) => '.nav-op[href="#' + op.a + '"]').join(',') + '{color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}' +
-      inside.map((op) => '.nav-folder:has(> .nav .nav-op[href="#' + op.a + '"]) > .nav-folder-tg .count,.nav-group:has(.nav-op[href="#' + op.a + '"]) > .nav-group-tg .count').join(',') + '{background:var(--accent);border-color:var(--accent);color:var(--bg)}';
+    markFinder(inside);
   }
 
   function openFinder(btn) {
@@ -1789,8 +1849,10 @@
         if (curl) {
           copyText(curl, btn);
         }
-      } else if (btn.matches('[data-try]')) {
-        openTry(btn);
+      } else if (btn.matches('[data-body-tg]')) {
+        toggleBodyEditor(btn);
+      } else if (btn.matches('[data-opt]')) {
+        toggleOptional(btn);
       } else if (btn.matches('[data-theme-toggle]')) {
         toggleTheme();
       } else if (btn.matches('[data-menu]')) {

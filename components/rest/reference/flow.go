@@ -42,7 +42,10 @@ type portView struct {
 	Ghost       bool // placeholder for an operation without inputs
 	Fields      []portView
 	MoreFields  int
-	Names       []string // optional parameter names
+	Names       []string   // optional parameter names
+	Try         *tryParam  // the input that fills a parameter port
+	Opts        []tryParam // the inputs of the optional port
+	Edit        bool       // the body port opens the body editor
 }
 
 // BaseType is Type without its list brackets: Amenity for Amenity[].
@@ -351,11 +354,21 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 		}
 	}
 
+	inputs := map[string]*tryParam{}
+	for i := range ov.TryParams {
+		tp := &ov.TryParams[i]
+		inputs[tp.In+":"+tp.Name] = tp
+	}
+
 	optional := portView{Key: "in:optional", Kind: "any"}
 	for _, p := range b.d.Parameters(ref.Item, ref.Operation) {
 		schema := parameterSchema(p)
 		if !p.Required {
 			optional.Names = append(optional.Names, p.Name)
+			tp := inputs[p.In+":"+p.Name]
+			if tp != nil {
+				optional.Opts = append(optional.Opts, *tp)
+			}
 			model := b.resolve(p.Name, "")
 			if model != "" && !contains(of.consumed, model) {
 				of.consumed = append(of.consumed, model)
@@ -369,6 +382,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 		port.Head = p.Name
 		port.Loc = p.In
 		port.Required = true
+		port.Try = inputs[p.In+":"+p.Name]
 		collection := ""
 		if p.In == "path" {
 			collection = collectionOf(ref.Path, p.Name)
@@ -397,6 +411,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 			}
 			port.Loc = "body"
 			port.Required = body.Required
+			port.Edit = ov.TryBody
 			f := b.d.Flatten(schema)
 			if f != nil {
 				for _, key := range f.Properties.Keys {

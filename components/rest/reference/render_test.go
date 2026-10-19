@@ -448,10 +448,12 @@ paths:
 
 	op := section(t, html, `id="operation/items-list"`)
 	require.Contains(t, op, `data-server="https://items.example.com"`)
-	require.Contains(t, op, `data-name="ids" value="1,2" placeholder="1,2" data-required data-array title=`)
-	require.Contains(t, op, `data-name="tag" value="a,b" placeholder="a,b" data-required data-array data-explode`)
-	require.Contains(t, op, `data-name="sort" value="" placeholder="name,age" data-array title=`)
-	require.Contains(t, op, `data-name="pipe" value="" placeholder="string" data-array data-sep="|"`)
+	// Required inputs sit in their ports, optional ones in the optional port.
+	require.Contains(t, op, `<span class="pty">integer[]</span></div><input type="text" class="pin-v" data-in="path" data-name="ids" placeholder="1,2" aria-label="ids" data-required data-array title=`)
+	require.Contains(t, op, `data-name="tag" placeholder="a,b" aria-label="tag" data-required data-array data-explode`)
+	require.Contains(t, op, `<label class="popt"><span class="popt-n">sort<span class="lchip">query</span></span><input type="text" class="pin-v" data-in="query" data-name="sort" placeholder="name,age" aria-label="sort" data-array title=`)
+	require.Contains(t, op, `data-name="pipe" placeholder="string" aria-label="pipe" data-array data-sep="|"`)
+	require.Contains(t, op, `<button type="submit" class="mc-node" title="Send GET /items/{ids}">`)
 	require.NotContains(t, op, `{port}`)
 
 	out, err = Render(doc, Options{ServerURL: "https://staging.example.com"})
