@@ -215,6 +215,10 @@
       tab.focus();
     }
     highlightWithin(set);
+    const article = set.closest('.op-samples') ? set.closest('[data-op]') : null;
+    if (article && responseTab(article, tab.textContent.trim()) === tab) {
+      markResponse(article, tab.textContent.trim());
+    }
   }
 
   function initTabs() {
@@ -1351,15 +1355,27 @@
     setTimeout(() => node.classList.remove('flash'), 1500);
   }
 
-  // Ports open their details under the machine: the parameters, the body
-  // or the response they stand for. Clicking the same port again closes
-  // them.
+  // Input ports open their details under the machine: the parameters or
+  // the body. Clicking the same port again closes them. Output ports show
+  // their response in the Response card instead.
   function detailKey(port) {
-    const parts = port.split(':');
-    if (parts[0] === 'out') {
-      return port;
+    return port.split(':')[1] === 'body' ? 'body' : 'params';
+  }
+
+  function responseTab(article, status) {
+    const card = article.querySelector('.op-samples .card:last-child');
+    if (!card || card.querySelector('.card-head > span').textContent !== 'Response') {
+      return null;
     }
-    return parts[1] === 'body' ? 'body' : 'params';
+    const want = status.toLowerCase();
+    return Array.from(card.querySelectorAll('.card-head [role="tab"]')).find((t) => t.textContent.trim().toLowerCase() === want) || null;
+  }
+
+  // markResponse marks the output port of the response the card shows.
+  function markResponse(article, status) {
+    article.querySelectorAll('.mc-outs > .port').forEach((p) => {
+      p.classList.toggle('sel', p.dataset.port.toLowerCase() === 'out:' + status.toLowerCase());
+    });
   }
 
   function showDetail(machine, port) {
@@ -1385,6 +1401,17 @@
       return;
     }
     const key = port.dataset.port;
+    if (key.startsWith('out:')) {
+      const article = machine.closest('[data-op]');
+      const tab = responseTab(article, key.slice(4));
+      if (tab) {
+        selectTab(tab, false);
+        const card = tab.closest('.card');
+        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        flash(card);
+      }
+      return;
+    }
     const detail = showDetail(machine, machine.dataset.shown === key ? '' : key);
     if (!detail) {
       return;

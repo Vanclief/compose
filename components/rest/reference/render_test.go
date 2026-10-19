@@ -275,18 +275,15 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, getPet, `<div class="popt" data-port="in:query:status"><button type="button" class="popt-n" data-goto>status<span class="lchip">query</span></button>`)
 	// No body, no body panel.
 	require.NotContains(t, getPet, `data-detail="body"`)
-	// Each response has a closed panel the output port opens: status, model,
-	// description, then its fields.
-	require.Contains(t, getPet, `<div class="mc-detail" data-detail="out:200" hidden>
-<div class="mcd-head"><span class="status schip s2xx">200</span><span class="resp-ty"><a class="ref" href="#model/Pet" title="Pet">Pet</a></span><div class="resp-desc md"><p>OK</p>`)
-	require.Contains(t, getPet, `<span class="resp-ty empty">empty</span><div class="resp-desc md"><p>Not found</p>`)
+	// Responses have no panel: their output ports switch the Response card.
+	require.NotContains(t, getPet, `data-detail="out:`)
 	require.Contains(t, getPet, `<button type="submit" class="mc-play" title="Send GET /pets/{pet_id}"`)
-	// Nested response objects start collapsed and list their fields.
-	require.Contains(t, getPet, `<button type="button" class="tg pn" aria-expanded="false">contact</button><span class="ty">object</span><span class="kid-sum"><code class="chip">email</code><code class="chip">phone</code></span>`)
 	// The response card renders a pretty view from the raw JSON it keeps.
 	require.Contains(t, getPet, `<div class="pv" data-pv></div><pre class="raw"><code class="json">`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
+	// Output ports switch the Response card, which has a tab per status.
+	require.Contains(t, getPet, `<button type="button" role="tab" class="tab s2xx" aria-selected="true">200</button>`)
 	require.Contains(t, getPet, `<nav class="crumbs" data-path="/pets/{pet_id}" aria-label="Path /pets/{pet_id}">`)
 	require.Contains(t, getPet, `<button type="button" class="crumb param" data-crumb="2">{pet_id}</button></nav>`)
 	// Responses are sorted with default last.
@@ -319,8 +316,6 @@ func TestRenderSmallDocument(t *testing.T) {
 	// A recursive schema terminates with a recursive row linking the model.
 	node := section(t, html, `id="model/Node"`)
 	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
-	tree := section(t, html, `id="operation/dup-op"`)
-	require.Contains(t, tree, `<a class="mk rec" href="#model/Node">recursive</a>`)
 }
 
 // TestRenderAllOfWrapperRecursion guards against the schema tree blowing up
@@ -376,8 +371,6 @@ components:
 	node := section(t, html, `id="model/Node"`)
 	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
 	require.Contains(t, node, "Left child.")
-	op := section(t, html, `id="operation/nodes-get"`)
-	require.Contains(t, op, `<a class="mk rec" href="#model/Node">recursive</a>`)
 }
 
 func TestRenderServersAndTryParams(t *testing.T) {

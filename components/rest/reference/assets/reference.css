@@ -384,7 +384,7 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .resp-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
 .resp-desc > * { display: inline; margin: 0; }
 .mcd-head .resp-desc + .mcd-x { margin-left: 0; }
-.port.shown > .pbox, .popt.shown .popt-n, .pfields li.shown { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.port.shown > .pbox, .port.sel > .pbox, .popt.shown .popt-n, .pfields li.shown { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .popt.shown .popt-n { border-radius: 4px; }
 
 /* Machine: the operation's inputs wired in on the left, what it produces

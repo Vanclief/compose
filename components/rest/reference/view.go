@@ -127,7 +127,6 @@ type opView struct {
 	SecurityKey string // JSON list of requirement scheme lists, read by the try-it client
 	ParamGroups []paramGroup
 	Body        *bodyView
-	Responses   []*responseView
 	Curl        template.HTML
 	ReqSamples  []sampleView
 	ResSamples  []sampleView
@@ -165,16 +164,6 @@ type summaryView struct {
 type contentView struct {
 	Type string
 	Tree template.HTML
-}
-
-type responseView struct {
-	HasBody     bool
-	Status      string
-	Class       string
-	Description template.HTML
-	Headers     template.HTML
-	Contents    []contentView
-	Summary     summaryView
 }
 
 type sampleView struct {
@@ -988,6 +977,8 @@ func statusClass(code string) string {
 	return "sdefault"
 }
 
+// buildResponses adds a sample per documented response, in status order,
+// for the Response card the machine's output ports switch.
 func (b *builder) buildResponses(ov *opView, op *Operation) {
 	codes := append([]string(nil), op.Responses.Keys...)
 	sort.SliceStable(codes, func(i, j int) bool {
@@ -999,42 +990,17 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 		if r == nil {
 			continue
 		}
-		rv := &responseView{Status: code, Class: statusClass(code), Description: markdown(r.Description)}
-
-		if r.Headers.Len() > 0 {
-			t := b.newTree(ForResponse, false)
-			for _, name := range r.Headers.Keys {
-				h := b.d.Header(r.Headers.Map[name])
-				if h == nil {
-					continue
-				}
-				t.paramRow(name, parameterSchema(h), h.Description, h.Required, h.Deprecated, paramExample(b.d, h, false))
-			}
-			rv.Headers = template.HTML(t.String())
-		}
-
-		sampled := false
 		for _, ct := range r.Content.Keys {
 			mt := r.Content.Map[ct]
 			if mt == nil {
 				continue
 			}
-			if len(rv.Contents) == 0 {
-				rv.Summary = b.summary(mt.Schema, ForResponse)
-			}
-			rv.Contents = append(rv.Contents, contentView{Type: ct, Tree: b.newTree(ForResponse, true).root(mt.Schema, "")})
-			if sampled {
-				continue
-			}
 			example := b.d.MediaExampleJSON(mt, ForResponse)
 			if example != "" {
-				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: rv.Class, Type: ct, Example: textHTML(example)})
-				sampled = true
+				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Example: textHTML(example)})
+				break
 			}
 		}
-
-		rv.HasBody = len(rv.Contents) > 0 || rv.Headers != ""
-		ov.Responses = append(ov.Responses, rv)
 	}
 }
 

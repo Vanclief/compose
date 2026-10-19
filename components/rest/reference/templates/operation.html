@@ -55,11 +55,6 @@
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
 {{template "contents" .Contents}}
 </div>
-{{end}}{{range .Responses}}<div class="mc-detail" data-detail="out:{{.Status}}" hidden>
-<div class="mcd-head"><span class="status schip {{.Class}}">{{.Status}}</span>{{with .Summary.Type}}<span class="resp-ty">{{.}}</span>{{else}}<span class="resp-ty empty">empty</span>{{end}}{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}{{template "detail-x"}}</div>
-{{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
-{{if .HasBody}}{{template "contents" .Contents}}{{else}}<p class="none">No body.</p>{{end}}
-</div>
 {{end}}{{end}}
 
 {{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Loc}} in{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">

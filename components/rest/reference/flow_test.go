@@ -258,7 +258,7 @@ func TestFlowRender(t *testing.T) {
 
 	// A response that is a list of models names the model, marked as a list.
 	stores := section(t, html, `id="operation/stores-list"`)
-	require.Contains(t, stores, `<span class="resp-ty"><a class="ref" href="#model/StoreWithStats" title="StoreWithStats">StoreWithStats</a><span class="arr">[]</span></span>`)
+	require.Contains(t, stores, `<span class="pout">StoreWithStats<span class="arr">[]</span></span>`)
 
 	model := section(t, html, `id="model/Pet"`)
 	require.Contains(t, model, `&larr; made by 3`)

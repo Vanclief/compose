@@ -296,10 +296,9 @@ func TestRenderDiff(t *testing.T) {
 	require.Contains(t, list, `<div class="row diff-del"><div class="row-head"><span class="pn">sort</span>`)
 	require.Contains(t, list, `<div class="row diff-add"><div class="row-head"><span class="pn">project</span>`)
 
-	// Inline response objects are marked in place.
-	stats := section(t, html, `id="operation/issues-stats"`)
-	require.Contains(t, stats, `<div class="row diff-add"><div class="row-head"><span class="pn">closed</span>`)
-	require.Contains(t, stats, `<span class="mk diff-inside">changed inside</span>`)
+	// Responses show in the Response card, so a change inside an inline
+	// response marks the operation.
+	require.Contains(t, html, `<article class="op diff-changed" id="operation/issues-stats"`)
 }
 
 func TestRenderDiffBadBase(t *testing.T) {
