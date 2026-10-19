@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"net/http"
@@ -49,11 +49,11 @@ func TestAssets(t *testing.T) {
 		status      int
 		contentType string
 	}{
-		{"/apidocs.css", http.StatusOK, "text/css; charset=utf-8"},
-		{"/apidocs.js", http.StatusOK, "text/javascript; charset=utf-8"},
-		{"/docs/assets/apidocs.js", http.StatusOK, "text/javascript; charset=utf-8"},
-		{"/docs/assets/apidocs.js?v=" + assetVersion("apidocs.js"), http.StatusOK, "text/javascript; charset=utf-8"},
-		{"/apidocs.html", http.StatusNotFound, ""},
+		{"/reference.css", http.StatusOK, "text/css; charset=utf-8"},
+		{"/reference.js", http.StatusOK, "text/javascript; charset=utf-8"},
+		{"/docs/assets/reference.js", http.StatusOK, "text/javascript; charset=utf-8"},
+		{"/docs/assets/reference.js?v=" + assetVersion("reference.js"), http.StatusOK, "text/javascript; charset=utf-8"},
+		{"/reference.html", http.StatusNotFound, ""},
 		{"/", http.StatusNotFound, ""},
 	}
 
@@ -70,8 +70,8 @@ func TestAssets(t *testing.T) {
 		require.NotEmpty(t, rec.Body.Bytes(), tc.path)
 	}
 
-	etag := embeddedAssets["apidocs.js"].etag
-	req := httptest.NewRequest(http.MethodGet, "/apidocs.js", nil)
+	etag := embeddedAssets["reference.js"].etag
+	req := httptest.NewRequest(http.MethodGet, "/reference.js", nil)
 	req.Header.Set("If-None-Match", etag)
 	rec := httptest.NewRecorder()
 	Assets().ServeHTTP(rec, req)
@@ -83,7 +83,7 @@ func TestAssetsHandlerEcho(t *testing.T) {
 	e.GET("/docs/assets/*", AssetsHandler())
 
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs/assets/apidocs.css", nil))
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs/assets/reference.css", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "text/css; charset=utf-8", rec.Header().Get("Content-Type"))
 

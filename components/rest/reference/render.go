@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"bytes"
@@ -17,10 +17,10 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
-//go:embed assets/apidocs.css assets/apidocs.js
+//go:embed assets/reference.css assets/reference.js
 var assetFS embed.FS
 
-var pageTemplate = template.Must(template.New("apidocs").Funcs(template.FuncMap{
+var pageTemplate = template.Must(template.New("reference").Funcs(template.FuncMap{
 	// href links to a page anchor. Anchors only hold [A-Za-z0-9._/-], so
 	// marking them as a URL is safe and keeps the slash unescaped.
 	"href": func(anchor string) template.URL {
@@ -43,7 +43,7 @@ var pageTemplate = template.Must(template.New("apidocs").Funcs(template.FuncMap{
 type Options struct {
 	// Title is the <title> of the page; defaults to info.title.
 	Title string
-	// AssetsURL is the base URL serving apidocs.css and apidocs.js (see
+	// AssetsURL is the base URL serving reference.css and reference.js (see
 	// Assets). Empty inlines both into the page, which then needs no other
 	// request but also needs a CSP that allows inline scripts. Use an
 	// absolute URL when the page is embedded through iframe srcdoc: a
@@ -69,19 +69,19 @@ type pageData struct {
 // Render renders doc as a complete HTML page.
 func Render(doc *Document, opts Options) ([]byte, error) {
 	if doc == nil {
-		return nil, ez.New(ez.EINVALID, "apidocs: nil document", nil)
+		return nil, ez.New(ez.EINVALID, "reference: nil document", nil)
 	}
 
 	data := pageData{pageView: buildPage(doc, opts), Inline: opts.AssetsURL == ""}
 	if data.Inline {
-		data.CSS = template.CSS(embeddedAssets["apidocs.css"].data)
-		data.JS = template.JS(embeddedAssets["apidocs.js"].data)
+		data.CSS = template.CSS(embeddedAssets["reference.css"].data)
+		data.JS = template.JS(embeddedAssets["reference.js"].data)
 	}
 
 	var buf bytes.Buffer
 	err := pageTemplate.ExecuteTemplate(&buf, "page.html", data)
 	if err != nil {
-		return nil, ez.New(ez.EINTERNAL, "apidocs: render page", err)
+		return nil, ez.New(ez.EINTERNAL, "reference: render page", err)
 	}
 
 	return buf.Bytes(), nil

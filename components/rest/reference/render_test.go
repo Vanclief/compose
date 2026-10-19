@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"os"
@@ -207,7 +207,7 @@ func TestRenderEmmaInline(t *testing.T) {
 
 	require.Contains(t, html, "<script>")
 	require.Contains(t, html, "<style>")
-	require.NotContains(t, html, "apidocs.js\"")
+	require.NotContains(t, html, "reference.js\"")
 
 	// emma's anyOf of bare required lists is a note, not tabs.
 	require.Contains(t, html, "At least one of <code>email</code>, <code>phone_number</code> is required.")
@@ -237,9 +237,9 @@ func TestRenderAllFixtures(t *testing.T) {
 func TestRenderAssetsURL(t *testing.T) {
 	html := renderTestDoc(t, Options{AssetsURL: "/docs/assets/", SpecURL: "/openapi.yaml", Title: "Docs"})
 
-	require.Contains(t, html, `<script src="/docs/assets/apidocs.js?v=`+assetVersion("apidocs.js")+`"></script>`)
-	require.Contains(t, html, `<link rel="stylesheet" href="/docs/assets/apidocs.css?v=`+assetVersion("apidocs.css")+`">`)
-	require.NotEmpty(t, assetVersion("apidocs.js"))
+	require.Contains(t, html, `<script src="/docs/assets/reference.js?v=`+assetVersion("reference.js")+`"></script>`)
+	require.Contains(t, html, `<link rel="stylesheet" href="/docs/assets/reference.css?v=`+assetVersion("reference.css")+`">`)
+	require.NotEmpty(t, assetVersion("reference.js"))
 	require.NotContains(t, html, "<script>")
 	require.NotContains(t, html, "<style>")
 	require.Contains(t, html, "<title>Docs</title>")
@@ -479,11 +479,11 @@ func TestShortNames(t *testing.T) {
 }
 
 // TestWriteEmmaPage writes the rendered emma page for a human to open in a
-// browser: APIDOCS_WRITE=/tmp/apidocs-emma.html go test -run TestWriteEmmaPage
+// browser: APIDOCS_WRITE=/tmp/reference-emma.html go test -run TestWriteEmmaPage
 func TestWriteEmmaPage(t *testing.T) {
 	path := os.Getenv("APIDOCS_WRITE")
 	if path == "" {
-		t.Skip("set APIDOCS_WRITE=/tmp/apidocs-emma.html to write the rendered emma page")
+		t.Skip("set APIDOCS_WRITE=/tmp/reference-emma.html to write the rendered emma page")
 	}
 	doc := loadEmma(t, "emma.yaml")
 	html, err := Render(doc, Options{SpecURL: "/openapi.yaml"})

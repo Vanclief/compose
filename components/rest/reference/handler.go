@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"bytes"
@@ -62,15 +62,15 @@ var embeddedAssets = loadAssets()
 
 func loadAssets() map[string]asset {
 	types := map[string]string{
-		"apidocs.css": "text/css; charset=utf-8",
-		"apidocs.js":  "text/javascript; charset=utf-8",
+		"reference.css": "text/css; charset=utf-8",
+		"reference.js":  "text/javascript; charset=utf-8",
 	}
 
 	out := map[string]asset{}
 	for name, contentType := range types {
 		data, err := assetFS.ReadFile("assets/" + name)
 		if err != nil {
-			panic("apidocs: missing embedded asset " + name)
+			panic("reference: missing embedded asset " + name)
 		}
 		out[name] = asset{data: data, contentType: contentType, etag: etag(data)}
 	}
@@ -83,7 +83,7 @@ func assetVersion(name string) string {
 	return strings.Trim(embeddedAssets[name].etag, `"`)
 }
 
-// Assets serves apidocs.css and apidocs.js from the embedded files, matched on
+// Assets serves reference.css and reference.js from the embedded files, matched on
 // the last path segment so it works with or without http.StripPrefix; the
 // ?v= version query that Render appends is ignored. Every other path is a
 // 404. Responses carry an ETag and a short max-age, so a deploy is picked up
@@ -108,7 +108,7 @@ func Assets() http.Handler {
 }
 
 // AssetsHandler adapts Assets to Echo, for routes like
-// e.GET("/docs/assets/*", apidocs.AssetsHandler()) paired with
+// e.GET("/docs/assets/*", reference.AssetsHandler()) paired with
 // Options.AssetsURL = "/docs/assets".
 func AssetsHandler() echo.HandlerFunc {
 	return echo.WrapHandler(Assets())

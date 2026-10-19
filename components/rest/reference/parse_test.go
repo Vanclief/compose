@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"os"
@@ -400,7 +400,7 @@ func TestParseErrorMessagesLocateTheProblem(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 	require.Contains(t, ez.ErrorMessage(err), "line 10")
-	require.NotContains(t, ez.ErrorMessage(err), "apidocs.")
+	require.NotContains(t, ez.ErrorMessage(err), "reference.")
 }
 
 func TestParsePetstore31(t *testing.T) {

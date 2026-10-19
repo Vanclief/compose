@@ -1,4 +1,4 @@
-// Package apidocs renders an OpenAPI 3.x document as a self-hosted API
+// Package reference renders an OpenAPI 3.x document as a self-hosted API
 // reference page: an alternative to Scalar and Redoc that ships inside the
 // backend, with no CDN assets.
 //
@@ -6,7 +6,7 @@
 // documentation. Unknown fields are ignored. Values that differ between 3.0 and
 // 3.1 (nullable versus "null" in the type list, exclusiveMinimum as a bool
 // versus a number) are normalized by Parse so the renderer sees one shape.
-package apidocs
+package reference
 
 import (
 	"bytes"

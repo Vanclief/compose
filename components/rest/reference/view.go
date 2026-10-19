@@ -1,4 +1,4 @@
-package apidocs
+package reference
 
 import (
 	"encoding/json"
@@ -224,8 +224,8 @@ func buildPage(d *Document, opts Options) *pageView {
 		ServerURL:   b.server,
 		SpecURL:     opts.SpecURL,
 		AssetsURL:   strings.TrimSuffix(opts.AssetsURL, "/"),
-		CSSVersion:  assetVersion("apidocs.css"),
-		JSVersion:   assetVersion("apidocs.js"),
+		CSSVersion:  assetVersion("reference.css"),
+		JSVersion:   assetVersion("reference.js"),
 	}
 	if p.Title == "" {
 		p.Title = d.Info.Title

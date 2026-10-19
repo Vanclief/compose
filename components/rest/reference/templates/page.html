@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}}</title>
-{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/apidocs.css?v={{.CSSVersion}}">{{end}}
+{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/reference.css?v={{.CSSVersion}}">{{end}}
 </head>
 <body data-server="{{.ServerURL}}">
 <a class="skip" href="#main">Skip to content</a>
@@ -20,10 +20,10 @@
 {{template "intro" .}}
 {{range .Tags}}{{template "tag" .}}{{end}}
 {{if .Models}}{{template "models" .}}{{end}}
-<footer class="footer">Rendered by compose apidocs from the OpenAPI {{.OpenAPI}} document.</footer>
+<footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
 </main>
 </div>
-{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/apidocs.js?v={{.JSVersion}}"></script>{{end}}
+{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/reference.js?v={{.JSVersion}}"></script>{{end}}
 </body>
 </html>
 {{- end}}

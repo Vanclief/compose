@@ -1,4 +1,4 @@
-// compose apidocs client: navigation, search, toggles, tabs, copy, JSON
+// compose reference client: navigation, search, toggles, tabs, copy, JSON
 // highlighting and the try-it client. Vanilla ES2020, no dependencies, every
 // event delegated at the document level.
 (() => {
@@ -11,8 +11,8 @@
   function storage(kind) {
     try {
       const s = window[kind];
-      s.setItem('apidocs.probe', '1');
-      s.removeItem('apidocs.probe');
+      s.setItem('reference.probe', '1');
+      s.removeItem('reference.probe');
       return s;
     } catch (err) {
       const mem = new Map();
@@ -28,7 +28,7 @@
 
   // ---------------------------------------------------------------- theme
 
-  const savedTheme = local.getItem('apidocs.theme');
+  const savedTheme = local.getItem('reference.theme');
   if (savedTheme === 'light' || savedTheme === 'dark') {
     root.dataset.theme = savedTheme;
   }
@@ -43,7 +43,7 @@
   function toggleTheme() {
     const next = isDark() ? 'light' : 'dark';
     root.dataset.theme = next;
-    local.setItem('apidocs.theme', next);
+    local.setItem('reference.theme', next);
   }
 
   // ------------------------------------------------------------- helpers
@@ -560,13 +560,13 @@
   const serverInput = doc.querySelector('[data-server-input]');
 
   authInputs.forEach((input) => {
-    const saved = session.getItem('apidocs.auth.' + input.dataset.auth);
+    const saved = session.getItem('reference.auth.' + input.dataset.auth);
     if (saved) {
       input.value = saved;
     }
   });
   if (serverInput) {
-    const savedServer = session.getItem('apidocs.server');
+    const savedServer = session.getItem('reference.server');
     if (savedServer) {
       serverInput.value = savedServer;
     }
@@ -578,10 +578,10 @@
       return;
     }
     if (t.dataset.auth) {
-      session.setItem('apidocs.auth.' + t.dataset.auth, t.value);
+      session.setItem('reference.auth.' + t.dataset.auth, t.value);
       doc.querySelectorAll('form.try:not([hidden])').forEach(updateAuthNote);
     } else if (t.hasAttribute('data-server-input')) {
-      session.setItem('apidocs.server', t.value);
+      session.setItem('reference.server', t.value);
     } else if (t.classList.contains('invalid') && t.value) {
       t.classList.remove('invalid');
     }
