@@ -205,6 +205,27 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .nav-group-tg:hover { background: var(--bg-hover); }
 .nav-group-tg::before { content: "\25B8"; color: var(--faint); font-size: 11px; transition: transform .15s; }
 .nav-group-tg[aria-expanded="true"]::before { transform: rotate(90deg); }
+.nav-folder-tg {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.nav-folder-tg:hover { background: var(--bg-hover); color: var(--text); }
+.nav-folder-tg::before { content: "\25B8"; color: var(--faint); font-size: 10px; transition: transform .15s; }
+.nav-folder-tg[aria-expanded="true"]::before { transform: rotate(90deg); }
+.nav-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-folder > .nav { margin-left: 12px; padding-left: 4px; border-left: 1px solid var(--border); }
 .count { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 12px; }
 .nav-title { overflow: hidden; text-overflow: ellipsis; }
 .nav-op .m { flex: none; width: 46px; text-align: right; font-size: 10px; padding: 0; background: none; }

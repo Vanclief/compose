@@ -44,8 +44,7 @@
 {{range .Tags}}<div class="nav-group">
 <button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
 <ul class="nav" hidden>
-{{range .Nav}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="nav-title">{{.Title}}</span></a></li>
-{{end}}</ul>
+{{template "navfolder" .NavTree}}</ul>
 </div>
 {{end}}{{if .Models}}<div class="nav-group">
 <button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
@@ -56,6 +55,13 @@
 <p class="no-results" hidden>No matches.</p>
 </nav>
 </aside>{{end}}
+
+{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="nav-title">{{.Title}}</span></a></li>
+{{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
+<ul class="nav" hidden>
+{{template "navfolder" .}}</ul>
+</li>
+{{end}}{{end}}
 
 {{define "reqs"}}{{range $i, $r := .}}{{if $i}} <span class="or">or</span> {{end}}<span class="req-set">{{range $j, $s := $r.Schemes}}{{if $j}} + {{end}}{{if $s.Anchor}}<a href="{{href $s.Anchor}}">{{$s.Name}}</a>{{else}}{{$s.Name}}{{end}}{{if $s.Scopes}} <span class="scopes">({{$s.Scopes}})</span>{{end}}{{else}}none{{end}}</span>{{end}}{{end}}
 

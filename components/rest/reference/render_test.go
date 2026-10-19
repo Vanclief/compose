@@ -3,6 +3,7 @@ package reference
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -504,4 +505,132 @@ func BenchmarkRenderEmma(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// navShape prints a sidebar tree as indented lines: folders as "name/ (n)"
+// and operations as their titles.
+func navShape(f *navFolder, indent string) []string {
+	var out []string
+	for _, op := range f.Ops {
+		out = append(out, indent+op.Title)
+	}
+	for _, sub := range f.Folders {
+		out = append(out, indent+sub.Name+"/ ("+strconv.Itoa(sub.Count)+")")
+		out = append(out, navShape(sub, indent+"  ")...)
+	}
+	return out
+}
+
+func navOps(paths ...string) []*opView {
+	var out []*opView
+	for _, p := range paths {
+		parts := strings.SplitN(p, " ", 2)
+		out = append(out, &opView{Title: parts[0], Path: parts[1]})
+	}
+	return out
+}
+
+func TestNavTree(t *testing.T) {
+	ops := navOps(
+		"ListPoints /complexes/{complex_id}/access-control/access-points",
+		"CreatePoint /complexes/{complex_id}/access-control/access-points",
+		"GetPoint /complexes/{cid}/access-control/access-points/{id}",
+		"ListCards /complexes/{complex_id}/access-control/cards",
+		"GetCard /complexes/{complex_id}/access-control/cards/{id}",
+		"RevokeCard /complexes/{complex_id}/access-control/cards/{id}/revoke",
+		"BulkCreate /complexes/{complex_id}/access-control/cards/bulk",
+		"BulkDelete /complexes/{complex_id}/access-control/cards/bulk",
+		"Ping /complexes/{complex_id}/access-control/ping",
+		"ListDevices /complexes/{complex_id}/access-control/devices",
+		"GetDevice /complexes/{complex_id}/access-control/devices/{id}",
+	)
+	tree := navTree(ops)
+	require.Equal(t, 11, tree.Count)
+	require.Equal(t, []string{
+		// A segment with a single operation is not a folder.
+		"Ping",
+		"access-points/ (3)",
+		"  ListPoints",
+		"  CreatePoint",
+		"  GetPoint",
+		// {id} adds no level; revoke has one operation so it stays a leaf;
+		// bulk has two and becomes a sub-folder after the operations.
+		"cards/ (5)",
+		"  ListCards",
+		"  GetCard",
+		"  RevokeCard",
+		"  bulk/ (2)",
+		"    BulkCreate",
+		"    BulkDelete",
+		"devices/ (2)",
+		"  ListDevices",
+		"  GetDevice",
+	}, navShape(tree, ""))
+
+	// One resource level stays flat, in document order.
+	flat := navTree(navOps(
+		"List /visitors",
+		"Create /visitors",
+		"Get /visitors/{id}",
+		"Update /visitors/{id}",
+		"Delete /visitors/{id}",
+		"Codes /visitors/{id}/codes",
+		"Report /visitors/report",
+		"Export /visitors/export",
+		"Search /visitors/search",
+	))
+	require.Empty(t, flat.Folders)
+	require.Equal(t, []string{"List", "Create", "Get", "Update", "Delete", "Codes", "Report", "Export", "Search"}, navShape(flat, ""))
+
+	// Small tags are always flat.
+	small := navTree(navOps(
+		"Login /auth/login",
+		"Challenge /auth/login/challenge",
+		"Update /auth/login/update",
+		"Legacy /login",
+		"LegacyChallenge /login/challenge",
+	))
+	require.Empty(t, small.Folders)
+	require.Equal(t, 5, small.Count)
+
+	// One operation outside /complexes/{complex_id} leaves complexes as a
+	// top-level folder that only scopes by id: it is dissolved. A folder
+	// holding nothing but one sub-folder is compacted into a/b.
+	scoped := navTree(navOps(
+		"Public /public/code",
+		"ListCodes /complexes/{complex_id}/codes",
+		"GetCode /complexes/{complex_id}/codes/{id}",
+		"ListAccesses /complexes/{complex_id}/accesses",
+		"GetAccess /complexes/{complex_id}/accesses/{id}",
+		"ListBills /complexes/{complex_id}/finance/utilities/bills",
+		"GetBill /complexes/{complex_id}/finance/utilities/bills/{id}",
+		"ListShares /complexes/{complex_id}/finance/utilities/shares",
+		"GetShare /complexes/{complex_id}/finance/utilities/shares/{id}",
+	))
+	require.Equal(t, []string{
+		"Public",
+		"accesses/ (2)",
+		"  ListAccesses",
+		"  GetAccess",
+		"codes/ (2)",
+		"  ListCodes",
+		"  GetCode",
+		"finance/utilities/ (4)",
+		"  bills/ (2)",
+		"    ListBills",
+		"    GetBill",
+		"  shares/ (2)",
+		"    ListShares",
+		"    GetShare",
+	}, navShape(scoped, ""))
+
+	// A lone folder left at the top (the parameter sits at different depths,
+	// so the prefix stops early) is unwrapped.
+	paths := []string{}
+	for i := 0; i < 5; i++ {
+		paths = append(paths, "A"+strconv.Itoa(i)+" /x/{id}/c", "B"+strconv.Itoa(i)+" /x/c/{other}")
+	}
+	lone := navTree(navOps(paths...))
+	require.Empty(t, lone.Folders)
+	require.Equal(t, 10, len(lone.Ops))
 }

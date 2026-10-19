@@ -91,7 +91,23 @@ type tagView struct {
 	Description template.HTML
 	Ops         []*opView // operations rendered under this tag
 	Nav         []*opView // sidebar entries, including operations rendered under another tag
+	NavTree     *navFolder
 }
+
+// navFolder is one level of a tag's sidebar tree: operations first, in
+// document order, then sub-folders by name. Count includes every operation
+// beneath the folder.
+type navFolder struct {
+	Name    string
+	Count   int
+	Ops     []*opView
+	Folders []*navFolder
+	scope   bool
+}
+
+// navFlatMax is the largest tag that is always listed flat: a handful of
+// operations reads better without folders.
+const navFlatMax = 8
 
 type opView struct {
 	Anchor      string
@@ -533,9 +549,192 @@ func (b *builder) buildTags() []*tagView {
 			continue
 		}
 		tv.Anchor = b.anchor("tag", slugify(tv.Name))
+		tv.NavTree = navTree(tv.Nav)
 		out = append(out, tv)
 	}
 	return out
+}
+
+// navTree groups a tag's operations into folders by path, the way a file
+// browser would. The path prefix every operation shares is dropped, so the
+// first level is the resource. Parameter segments such as {id} never make a
+// folder; their operations belong to the static segment above them. A static
+// segment becomes a folder only when at least two operations sit beneath it;
+// otherwise its operation joins the enclosing folder. On top of that:
+//
+//   - a top-level folder that only scopes its children by id, like
+//     complexes in /complexes/{complex_id}/invoices when a few operations of
+//     the tag live elsewhere, is dissolved into the top level;
+//   - a folder whose only content is one sub-folder is shown as one compact
+//     folder, finance/utilities;
+//   - tags of up to navFlatMax operations, and tags whose operations all end
+//     up on one level, stay a flat list.
+func navTree(ops []*opView) *navFolder {
+	if len(ops) <= navFlatMax {
+		return &navFolder{Count: len(ops), Ops: ops}
+	}
+
+	order := map[*opView]int{}
+	paths := make([][]string, len(ops))
+	for i, ov := range ops {
+		order[ov] = i
+		paths[i] = pathSegments(ov.Path)
+	}
+	prefix := commonPrefix(paths)
+
+	root := newNavNode()
+	for i, segs := range paths {
+		n := root
+		for j := prefix; j < len(segs); j++ {
+			if isParamSegment(segs[j]) {
+				continue
+			}
+			child, ok := n.children[segs[j]]
+			if !ok {
+				child = newNavNode()
+				n.children[segs[j]] = child
+			}
+			if j+1 >= len(segs) || !isParamSegment(segs[j+1]) {
+				child.scope = false
+			}
+			n = child
+		}
+		n.ops = append(n.ops, ops[i])
+	}
+
+	out := root.fold(order)
+	out.Folders = hoistScopes(out.Folders)
+	out.compact()
+	// A lone folder at the top says nothing the tag name does not.
+	for len(out.Ops) == 0 && len(out.Folders) == 1 {
+		out = &navFolder{Count: out.Count, Ops: out.Folders[0].Ops, Folders: out.Folders[0].Folders}
+	}
+	return out
+}
+
+type navNode struct {
+	ops      []*opView
+	children map[string]*navNode
+	scope    bool // every path through the segment continues with a parameter
+}
+
+func newNavNode() *navNode {
+	return &navNode{children: map[string]*navNode{}, scope: true}
+}
+
+func (n *navNode) fold(order map[*opView]int) *navFolder {
+	f := &navFolder{Ops: append([]*opView(nil), n.ops...), scope: n.scope}
+
+	names := make([]string, 0, len(n.children))
+	for name := range n.children {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		child := n.children[name].fold(order)
+		if child.Count >= 2 || len(child.Folders) > 0 {
+			child.Name = name
+			f.Folders = append(f.Folders, child)
+			f.Count += child.Count
+			continue
+		}
+		f.Ops = append(f.Ops, child.Ops...)
+	}
+
+	sort.SliceStable(f.Ops, func(i, j int) bool {
+		return order[f.Ops[i]] < order[f.Ops[j]]
+	})
+	f.Count += len(f.Ops)
+	return f
+}
+
+// hoistScopes replaces top-level folders that only scope their sub-folders
+// by an id with those sub-folders, unless a name would then appear twice.
+func hoistScopes(folders []*navFolder) []*navFolder {
+	names := map[string]int{}
+	for _, f := range folders {
+		names[f.Name]++
+	}
+	var out []*navFolder
+	hoisted := false
+	for _, f := range folders {
+		if !f.scope || len(f.Ops) > 0 {
+			out = append(out, f)
+			continue
+		}
+		clash := false
+		for _, sub := range f.Folders {
+			if names[sub.Name] > 0 {
+				clash = true
+			}
+		}
+		if clash {
+			out = append(out, f)
+			continue
+		}
+		for _, sub := range f.Folders {
+			names[sub.Name]++
+		}
+		out = append(out, f.Folders...)
+		hoisted = true
+	}
+	if hoisted {
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].Name < out[j].Name
+		})
+	}
+	return out
+}
+
+// compact merges every folder that holds nothing but one sub-folder into a
+// single a/b folder.
+func (f *navFolder) compact() {
+	for _, sub := range f.Folders {
+		for len(sub.Ops) == 0 && len(sub.Folders) == 1 {
+			inner := sub.Folders[0]
+			sub.Name += "/" + inner.Name
+			sub.Ops = inner.Ops
+			sub.Folders = inner.Folders
+		}
+		sub.compact()
+	}
+}
+
+func pathSegments(path string) []string {
+	var out []string
+	for _, seg := range strings.Split(path, "/") {
+		if seg != "" {
+			out = append(out, seg)
+		}
+	}
+	return out
+}
+
+func isParamSegment(seg string) bool {
+	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")
+}
+
+// commonPrefix returns how many leading segments every path shares, treating
+// all parameter segments as equal.
+func commonPrefix(paths [][]string) int {
+	if len(paths) == 0 {
+		return 0
+	}
+	n := len(paths[0])
+	for _, p := range paths[1:] {
+		if len(p) < n {
+			n = len(p)
+		}
+		for i := 0; i < n; i++ {
+			same := p[i] == paths[0][i] || (isParamSegment(p[i]) && isParamSegment(paths[0][i]))
+			if !same {
+				n = i
+				break
+			}
+		}
+	}
+	return n
 }
 
 var pathParam = regexp.MustCompile(`\{[^}/]+\}`)

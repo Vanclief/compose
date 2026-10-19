@@ -87,7 +87,7 @@
   // ------------------------------------------------------------- toggles
 
   function toggleBody(btn) {
-    if (btn.classList.contains('nav-group-tg')) {
+    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg')) {
       return btn.nextElementSibling;
     }
     const resp = btn.closest('.resp');
@@ -187,8 +187,10 @@
   function toggle(btn) {
     const open = btn.getAttribute('aria-expanded') !== 'true';
     setExpanded(btn, open);
-    if (btn.classList.contains('nav-group-tg')) {
-      btn.dataset.user = '1';
+    // Remember sidebar toggles the user chose, so automatic expansion and
+    // search leave them as they were.
+    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg')) {
+      btn.dataset.user = open ? 'open' : 'closed';
     }
   }
 
@@ -417,8 +419,33 @@
     navLinks.get(id).push(a);
   });
 
+  // navToggles lists the sidebar toggles above a link, outermost first: its
+  // tag group, then each path folder down to the link.
+  function navToggles(link) {
+    const out = [];
+    for (let li = link.closest('.nav-folder'); li; li = li.parentElement.closest('.nav-folder')) {
+      out.unshift(li.querySelector(':scope > .nav-folder-tg'));
+    }
+    const group = link.closest('.nav-group');
+    const btn = group ? group.querySelector(':scope > .nav-group-tg') : null;
+    if (btn) {
+      out.unshift(btn);
+    }
+    return out;
+  }
+
+  // Folder names take part in search, so "cards" also finds the operations
+  // filed under a cards folder.
+  doc.querySelectorAll('.sidebar a[data-search]').forEach((a) => {
+    const names = [];
+    for (let li = a.closest('.nav-folder'); li; li = li.parentElement.closest('.nav-folder')) {
+      names.push(li.querySelector(':scope > .nav-folder-tg .nav-folder-name').textContent);
+    }
+    a.dataset.folders = names.join(' ').toLowerCase();
+  });
+
   let activeId = null;
-  let autoOpened = null;
+  let autoOpened = new Set();
   let hashTimer = 0;
 
   function setActive(id, updateHash) {
@@ -434,15 +461,25 @@
 
     const link = links[0];
     if (link && !searchInput.value) {
-      const group = link.closest('.nav-group');
-      const btn = group ? group.querySelector('.nav-group-tg') : null;
-      if (autoOpened && autoOpened !== btn && !autoOpened.dataset.user) {
-        setExpanded(autoOpened, false);
+      // Open the group and folders that lead to the link; close the ones
+      // opened automatically for the previous link unless the user touched
+      // them.
+      const chain = navToggles(link);
+      const kept = new Set();
+      for (const btn of autoOpened) {
+        if (chain.includes(btn)) {
+          kept.add(btn);
+        } else if (!btn.dataset.user) {
+          setExpanded(btn, false);
+        }
       }
-      if (btn && btn.getAttribute('aria-expanded') !== 'true') {
-        setExpanded(btn, true);
-        autoOpened = btn;
+      for (const btn of chain) {
+        if (btn.getAttribute('aria-expanded') !== 'true') {
+          setExpanded(btn, true);
+          kept.add(btn);
+        }
       }
+      autoOpened = kept;
       const box = sidebar.getBoundingClientRect();
       const r = link.getBoundingClientRect();
       if (r.top < box.top + 60 || r.bottom > box.bottom - 20) {
@@ -517,7 +554,7 @@
       const groupName = (label ? label.textContent : '').toLowerCase();
       let shown = 0;
       group.querySelectorAll('a[data-search]').forEach((a) => {
-        const hay = a.dataset.search + ' ' + groupName;
+        const hay = a.dataset.search + ' ' + groupName + ' ' + (a.dataset.folders || '');
         const match = terms.every((t) => hay.includes(t));
         a.parentElement.hidden = !match;
         if (match) {
@@ -525,10 +562,23 @@
         }
       });
       total += shown;
+      group.querySelectorAll('.nav-folder').forEach((folder) => {
+        const fbtn = folder.querySelector(':scope > .nav-folder-tg');
+        if (terms.length > 0) {
+          const any = Array.from(folder.querySelectorAll('a[data-search]')).some((a) => !a.parentElement.hidden);
+          folder.hidden = !any;
+          setExpanded(fbtn, any);
+        } else {
+          folder.hidden = false;
+          setExpanded(fbtn, fbtn.dataset.user ? fbtn.dataset.user === 'open' : folder.querySelector('a.active') !== null);
+        }
+      });
       group.hidden = terms.length > 0 && shown === 0;
       if (terms.length > 0) {
         setExpanded(btn, shown > 0);
-      } else if (!btn.dataset.user) {
+      } else if (btn.dataset.user) {
+        setExpanded(btn, btn.dataset.user === 'open');
+      } else {
         const hasActive = group.querySelector('a.active') !== null;
         setExpanded(btn, hasActive);
       }
@@ -546,7 +596,7 @@
         searchInput.value = '';
         runSearch();
       } else if (e.key === 'Enter') {
-        const first = doc.querySelector('.nav-group:not([hidden]) li:not([hidden]) a');
+        const first = doc.querySelector('.nav-group:not([hidden]) li:not([hidden]) > a[data-search]');
         if (first) {
           first.click();
         }
@@ -957,7 +1007,7 @@
 
     const btn = t.closest('button');
     if (btn) {
-      if (btn.matches('.tg, .nav-group-tg')) {
+      if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
       } else if (btn.matches('[role="tab"]')) {
         selectTab(btn, false);
