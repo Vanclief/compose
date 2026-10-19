@@ -1218,7 +1218,7 @@
     }
     out.push('- Base URL: ' + serverBase(form));
     const meta = article.querySelector('.op-meta');
-    const auth = meta ? Array.from(meta.children).find((n) => n.matches('.ml') && n.textContent.trim().toLowerCase() === 'auth') : null;
+    const auth = meta ? Array.from(meta.querySelectorAll('.ml')).find((n) => n.textContent.trim().toLowerCase() === 'auth') : null;
     if (auth && auth.nextElementSibling) {
       out.push('- Auth: ' + oneLine(auth.nextElementSibling));
     }
@@ -1822,8 +1822,7 @@
   }
 
   // Tracing: hovering a port, a model link or a model card lights every port
-  // that carries the same model and the sidebar operations that make or take
-  // it, through one generated style rule.
+  // and model link that carries the same model.
   let traced = '';
   let traceTimer = 0;
 
@@ -1874,8 +1873,6 @@
   }
 
   const markTracePorts = marker('lit-port');
-  const markTraceNav = marker('lit-nav');
-  const markTraceCounts = marker('lit-count');
   const markTraceLinks = marker('lit-link');
 
   function setTrace(ids) {
@@ -1884,13 +1881,11 @@
     }
     traced = ids;
     const ports = [];
-    const nav = [];
     const links = [];
     if (ids) {
       const f = flowData();
       ids.split(' ').forEach((id) => {
         doc.querySelectorAll('.port[data-m~="' + id + '"] > .pbox, .pfields li[data-m~="' + id + '"]').forEach((n) => ports.push(n));
-        doc.querySelectorAll('.nav-op[data-m~="' + id + '"]').forEach((n) => nav.push(n));
         const m = f.models[id];
         if (m) {
           doc.querySelectorAll('a.ref[href="#' + m.a + '"], a.nav-model[href="#' + m.a + '"]').forEach((n) => links.push(n));
@@ -1898,8 +1893,6 @@
       });
     }
     markTracePorts(ports);
-    markTraceNav(nav);
-    markTraceCounts(navCounts(nav));
     markTraceLinks(links);
   }
 
