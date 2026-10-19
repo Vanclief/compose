@@ -248,6 +248,7 @@ func TestFlowRender(t *testing.T) {
 
 	list := section(t, html, `id="operation/pets-list"`)
 	require.Contains(t, list, `class="port k-obj main stack" data-port="out:200"`)
+	require.Contains(t, list, `<span class="pout">Pet<span class="arr">[]</span></span><span class="status schip s2xx">200</span>`)
 	require.Contains(t, list, `used by 2 &rarr;`)
 
 	model := section(t, html, `id="model/Pet"`)

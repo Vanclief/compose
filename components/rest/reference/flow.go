@@ -43,6 +43,16 @@ type portView struct {
 	Names       []string // optional parameter names
 }
 
+// BaseType is Type without its list brackets: Amenity for Amenity[].
+func (p portView) BaseType() string {
+	return strings.TrimRight(p.Type, "[]")
+}
+
+// ListSuffix is the list brackets Type ends with, if any.
+func (p portView) ListSuffix() string {
+	return p.Type[len(p.BaseType()):]
+}
+
 // flowFieldsMax caps the id fields listed under a body port.
 const flowFieldsMax = 4
 

@@ -421,6 +421,12 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 .pnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .pty { flex: 0 1 auto; max-width: 60%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 .mc-outs .status { font-size: 12.5px; }
+/* The main output leads with what it produces; the status is a tag. */
+.pout { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); }
+.pout .arr { margin-left: 1px; font-weight: 500; color: var(--muted); }
+.pout.empty { font-weight: 500; font-style: italic; color: var(--faint); }
+.pt:hover .pout { color: var(--accent); }
+.status.schip { flex: none; margin-left: auto; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, currentColor 13%, transparent); }
 .port.opt .pnm { font-weight: 500; color: var(--muted); }
 .port.opt > .pbox, .port.ghost > .pbox { border-style: dashed; background: transparent; }
 .port.ghost .pnm { font-weight: 400; font-style: italic; color: var(--faint); }
