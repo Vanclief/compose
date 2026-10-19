@@ -135,15 +135,28 @@ type opView struct {
 	TryServer   string // the operation's own server, when it overrides servers[0]
 }
 
+// paramGroup holds the parameters of one location. Required ones are always
+// shown; optional ones collapse behind a row that lists their names.
 type paramGroup struct {
-	Title string
-	Rows  template.HTML
+	In            string
+	Rows          template.HTML
+	Optional      template.HTML
+	OptionalNames []string
 }
 
 type bodyView struct {
 	Required    bool
 	Description template.HTML
 	Contents    []contentView
+	Summary     summaryView
+}
+
+// summaryView is the one-line shape of a body or response: its type label and
+// the names of its top-level fields.
+type summaryView struct {
+	Label      template.HTML
+	Fields     []string
+	MoreFields int
 }
 
 type contentView struct {
@@ -153,12 +166,12 @@ type contentView struct {
 
 type responseView struct {
 	HasBody     bool
-	Open        bool
 	Status      string
 	Class       string
 	Description template.HTML
 	Headers     template.HTML
 	Contents    []contentView
+	Summary     summaryView
 }
 
 type sampleView struct {
@@ -801,40 +814,36 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 	return ov
 }
 
-var locationTitles = map[string]string{
-	"path":   "Path parameters",
-	"query":  "Query parameters",
-	"header": "Header parameters",
-	"cookie": "Cookie parameters",
-}
-
 func (b *builder) buildParameters(ov *opView, ref OperationRef) {
 	params := b.d.Parameters(ref.Item, ref.Operation)
 
 	var current *paramGroup
-	var rows strings.Builder
+	var rows, optional strings.Builder
 	flush := func() {
 		if current != nil {
 			current.Rows = template.HTML(rows.String())
+			current.Optional = template.HTML(optional.String())
 			ov.ParamGroups = append(ov.ParamGroups, *current)
 			rows.Reset()
+			optional.Reset()
 		}
 	}
 
 	for _, p := range params {
-		title, ok := locationTitles[p.In]
-		if !ok {
-			title = p.In + " parameters"
-		}
-		if current == nil || current.Title != title {
+		if current == nil || current.In != p.In {
 			flush()
-			current = &paramGroup{Title: title}
+			current = &paramGroup{In: p.In}
 		}
 
 		schema := parameterSchema(p)
 		t := b.newTree(ForRequest, false)
 		t.paramRow(p.Name, schema, p.Description, p.Required, p.Deprecated, paramExample(b.d, p, false))
-		rows.WriteString(t.String())
+		if p.Required {
+			rows.WriteString(t.String())
+		} else {
+			optional.WriteString(t.String())
+			current.OptionalNames = append(current.OptionalNames, p.Name)
+		}
 
 		if p.In == "cookie" {
 			continue
@@ -910,6 +919,9 @@ func (b *builder) buildBody(ov *opView, op *Operation) {
 		if mt == nil {
 			continue
 		}
+		if len(bv.Contents) == 0 {
+			bv.Summary = b.summary(mt.Schema, ForRequest)
+		}
 		bv.Contents = append(bv.Contents, contentView{Type: ct, Tree: b.newTree(ForRequest, true).root(mt.Schema, "")})
 
 		example := b.d.MediaExampleJSON(mt, ForRequest)
@@ -966,7 +978,6 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 		return statusRank(codes[i]) < statusRank(codes[j])
 	})
 
-	opened := false
 	for _, code := range codes {
 		r := b.d.Response(op.Responses.Map[code])
 		if r == nil {
@@ -992,6 +1003,9 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 			if mt == nil {
 				continue
 			}
+			if len(rv.Contents) == 0 {
+				rv.Summary = b.summary(mt.Schema, ForResponse)
+			}
 			rv.Contents = append(rv.Contents, contentView{Type: ct, Tree: b.newTree(ForResponse, true).root(mt.Schema, "")})
 			if sampled {
 				continue
@@ -1004,12 +1018,39 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 		}
 
 		rv.HasBody = len(rv.Contents) > 0 || rv.Headers != ""
-		if rv.HasBody && !opened {
-			rv.Open = true
-			opened = true
-		}
 		ov.Responses = append(ov.Responses, rv)
 	}
+}
+
+// summaryFieldsMax caps the field names listed in a one-line summary.
+const summaryFieldsMax = 6
+
+// summary labels s and lists its top-level fields, or its items' fields for
+// arrays, skipping fields that do not apply in mode.
+func (b *builder) summary(s *Schema, mode ExampleMode) summaryView {
+	f := b.d.Flatten(s)
+	if f == nil {
+		return summaryView{}
+	}
+	sv := summaryView{Label: template.HTML(b.newTree(mode, true).labelOf(f, b.d.SchemaName(s), 0))}
+	if isArray(f) && f.Items != nil {
+		f = b.d.Flatten(f.Items)
+	}
+	if f == nil {
+		return sv
+	}
+	for _, key := range f.Properties.Keys {
+		p := b.d.Flatten(f.Properties.Map[key])
+		if p != nil && (mode == ForRequest && p.ReadOnly || mode == ForResponse && p.WriteOnly) {
+			continue
+		}
+		if len(sv.Fields) == summaryFieldsMax {
+			sv.MoreFields++
+			continue
+		}
+		sv.Fields = append(sv.Fields, key)
+	}
+	return sv
 }
 
 func (b *builder) buildModels() []*modelView {

@@ -87,7 +87,7 @@
   // ------------------------------------------------------------- toggles
 
   function toggleBody(btn) {
-    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg')) {
+    if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg') || btn.classList.contains('opt-tg')) {
       return btn.nextElementSibling;
     }
     const resp = btn.closest('.resp');
@@ -1030,6 +1030,12 @@
     }
 
     const a = t.closest('a[href]');
+    // The whole response header toggles its body, not only the status.
+    const head = t.closest('[data-resp-toggle]');
+    if (head && !a && !window.getSelection().toString()) {
+      toggle(head.querySelector(':scope > .tg'));
+      return;
+    }
     if (!a) {
       if (sidebar && sidebar.classList.contains('open') && !t.closest('.sidebar')) {
         setMenu(false);

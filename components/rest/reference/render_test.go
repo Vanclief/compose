@@ -268,9 +268,16 @@ func TestRenderSmallDocument(t *testing.T) {
 
 	getPet := section(t, html, `id="operation/pets-getpet"`)
 	// Path-level parameter merged with the operation's query parameter.
-	require.Contains(t, getPet, "Path parameters")
+	require.Contains(t, getPet, `<div class="io-k">path</div>`)
 	require.Contains(t, getPet, `<span class="pn">pet_id</span><span class="ty">string &lt;uuid&gt;</span><span class="mk req">required</span>`)
-	require.Contains(t, getPet, "Query parameters")
+	// Optional parameters collapse behind a row listing their names.
+	require.Contains(t, getPet, `<span class="opt-n">1 optional</span><span class="opt-names"><code class="chip">status</code></span>`)
+	require.Contains(t, getPet, `<div class="io-k">body</div>
+<div class="io-v"><span class="none">none</span></div>`)
+	// Responses start collapsed with a one-line summary of their shape.
+	require.Contains(t, getPet, `<div class="resp-sum"><span class="ty">object (<a class="ref" href="#model/Pet" title="Pet">Pet</a>)</span><code class="chip">name</code>`)
+	require.Contains(t, getPet, `<span class="more">+1</span>`)
+	require.NotContains(t, getPet, `class="tg rs" aria-expanded="true"`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
 	require.Contains(t, getPet, `<span class="pp">{pet_id}</span>`)
