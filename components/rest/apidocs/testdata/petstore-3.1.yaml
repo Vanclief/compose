@@ -1,0 +1,90 @@
+openapi: 3.1.0
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: https://petstore.example.com/v1
+paths:
+  /pets/{petId}:
+    parameters:
+      - $ref: '#/components/parameters/PetId'
+      - name: X-Trace
+        in: header
+        schema:
+          type: string
+    get:
+      operationId: getPet
+      parameters:
+        - name: fields
+          in: query
+          explode: false
+          schema:
+            type: [array, "null"]
+            items:
+              type: string
+      responses:
+        200:
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        "404":
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    PetId:
+      name: petId
+      in: path
+      required: true
+      schema:
+        type: integer
+        exclusiveMinimum: 0
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+  schemas:
+    Pet:
+      type: object
+      required: [id, kind]
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1000000
+        name:
+          type: [string, "null"]
+          examples: [Rex, Fido]
+        kind:
+          type: string
+      discriminator:
+        propertyName: kind
+        mapping:
+          dog: '#/components/schemas/Dog'
+          cat: '#/components/schemas/Cat'
+      oneOf:
+        - $ref: '#/components/schemas/Dog'
+        - $ref: '#/components/schemas/Cat'
+    Dog:
+      type: object
+      properties:
+        kind:
+          const: dog
+        bark:
+          type: boolean
+    Cat:
+      type: object
+      properties:
+        kind:
+          const: cat
+        lives:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 9

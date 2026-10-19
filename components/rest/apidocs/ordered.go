@@ -47,7 +47,9 @@ func (o *Ordered[T]) Len() int {
 	return len(o.Keys)
 }
 
-// UnmarshalYAML keeps mapping order.
+// UnmarshalYAML keeps mapping order. Merge keys (<<: *anchor) are expanded in
+// place; keys written in the mapping itself win over merged ones, and earlier
+// merged mappings win over later ones, as the YAML merge spec says.
 func (o *Ordered[T]) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return ez.New(ez.EINVALID, fmt.Sprintf("line %d: expected a mapping", node.Line), nil)
@@ -57,6 +59,14 @@ func (o *Ordered[T]) UnmarshalYAML(node *yaml.Node) error {
 	o.Map = map[string]T{}
 
 	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].ShortTag() == "!!merge" {
+			err := o.merge(node.Content[i+1])
+			if err != nil {
+				return ez.Wrap(err)
+			}
+			continue
+		}
+
 		var key string
 		err := node.Content[i].Decode(&key)
 		if err != nil {
@@ -75,10 +85,45 @@ func (o *Ordered[T]) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// UnmarshalJSON keeps object key order.
+// merge adds the entries of a merge key value (a mapping, an alias to one, or
+// a sequence of those) that are not already set.
+func (o *Ordered[T]) merge(node *yaml.Node) error {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+
+	if node.Kind == yaml.SequenceNode {
+		for _, item := range node.Content {
+			err := o.merge(item)
+			if err != nil {
+				return ez.Wrap(err)
+			}
+		}
+		return nil
+	}
+
+	var merged Ordered[T]
+	err := merged.UnmarshalYAML(node)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	for _, key := range merged.Keys {
+		_, exists := o.Map[key]
+		if !exists {
+			o.Set(key, merged.Map[key])
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON keeps object key order. A JSON null decodes as empty.
 func (o *Ordered[T]) UnmarshalJSON(data []byte) error {
 	o.Keys = nil
 	o.Map = map[string]T{}
+
+	if string(bytes.TrimSpace(data)) == "null" {
+		return nil
+	}
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 

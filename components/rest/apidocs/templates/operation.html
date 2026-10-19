@@ -1,0 +1,57 @@
+{{define "operation"}}<article class="op" id="{{.Anchor}}" data-anchor data-op>
+<div class="op-main">
+<div class="op-line"><span class="m m-{{.MethodClass}}">{{.Method}}</span><code class="op-path">{{.PathHTML}}</code>{{if .Deprecated}}<span class="mk dep">deprecated</span>{{end}}</div>
+<h3 class="op-title"><a href="{{href .Anchor}}">{{.Title}}</a></h3>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+<div class="op-meta">
+<span class="ml">Auth</span>{{if .NoAuth}}<span class="noauth">No authentication</span>{{else}}{{template "reqs" .Security}}{{end}}
+{{if .OperationID}}<span class="ml">operationId</span><code>{{.OperationID}}</code>{{end}}
+</div>
+<button type="button" class="btn try-btn" data-try aria-expanded="false">Try it</button>
+{{template "try" .}}
+{{range .ParamGroups}}<div class="block">
+<h4>{{.Title}}</h4>
+<div class="rows">{{.Rows}}</div>
+</div>
+{{end}}{{with .Body}}<div class="block">
+<h4>Request body{{if .Required}} <span class="mk req">required</span>{{end}}</h4>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+{{template "contents" .Contents}}
+</div>
+{{end}}{{if .Responses}}<div class="block">
+<h4>Responses</h4>
+{{range .Responses}}<div class="resp">
+<div class="resp-head">{{if .HasBody}}<button type="button" class="tg rs" aria-expanded="{{if .Open}}true{{else}}false{{end}}"><span class="status {{.Class}}">{{.Status}}</span></button>{{else}}<span class="rs"><span class="status {{.Class}}">{{.Status}}</span></span>{{end}}{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}</div>
+{{if .HasBody}}<div class="resp-body"{{if not .Open}} hidden{{end}}>
+{{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
+{{template "contents" .Contents}}
+</div>{{end}}
+</div>
+{{end}}</div>
+{{end}}</div>
+<aside class="op-samples" aria-label="Samples for {{.Title}}">
+{{if or .Curl .ReqSamples}}<div class="card tabset">
+<div class="card-head"><span>Request</span><div class="tablist" role="tablist">{{if .Curl}}<button type="button" role="tab" class="tab" aria-selected="true">curl</button>{{end}}{{range $i, $s := .ReqSamples}}<button type="button" role="tab" class="tab" aria-selected="{{if and (eq $i 0) (not $.Curl)}}true{{else}}false{{end}}" title="{{$s.Type}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
+{{if .Curl}}<div class="tabpanel" role="tabpanel"><pre><code class="sh">{{.Curl}}</code></pre></div>
+{{end}}{{range $i, $s := .ReqSamples}}<div class="tabpanel" role="tabpanel"{{if or $.Curl (ne $i 0)}} hidden{{end}}><pre><code class="json"{{if eq $i 0}} data-req-example{{end}}>{{$s.Example}}</code></pre></div>
+{{end}}</div>
+{{end}}{{if .ResSamples}}<div class="card tabset">
+<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
+{{range $i, $s := .ResSamples}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}</div><pre><code class="json">{{$s.Example}}</code></pre></div>
+{{end}}</div>
+{{end}}</aside>
+</article>
+{{end}}
+
+{{define "contents"}}{{if gt (len .) 1}}<div class="tabset ctabs">
+<div class="tablist" role="tablist">{{range $i, $c := .}}<button type="button" role="tab" class="tab" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$c.Type}}</button>{{end}}</div>
+{{range $i, $c := .}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}>{{$c.Tree}}</div>
+{{end}}</div>{{else}}{{range .}}<div class="ct">{{.Type}}</div>{{.Tree}}{{end}}{{end}}{{end}}
+
+{{define "try"}}<form class="try" hidden data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
+{{if .TryParams}}<div class="try-grid">{{range .TryParams}}<label class="field"><span class="field-name">{{.Name}}{{if .Required}} <span class="star" title="required">*</span>{{end}} <span class="field-in">{{.In}}</span></span><input type="text" data-in="{{.In}}" data-name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}"{{if .Required}} data-required{{end}} spellcheck="false"></label>
+{{end}}</div>{{end}}
+{{if .TryBody}}<label class="field"><span class="field-name">Body <span class="field-in">{{.TryCT}}</span></span><textarea data-body rows="10" spellcheck="false"></textarea></label>{{end}}
+<div class="try-actions"><button type="submit" class="btn primary">Send</button><span class="try-auth"></span></div>
+<div class="try-result" hidden aria-live="polite"></div>
+</form>{{end}}

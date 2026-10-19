@@ -3,6 +3,9 @@ package apidocs
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -10,27 +13,35 @@ import (
 )
 
 // Parse decodes an OpenAPI 3.x document from YAML or JSON and normalizes the
-// 3.0/3.1 differences described on Schema.
+// 3.0/3.1 differences described on Schema. Every failure is an ez.EINVALID
+// error whose message says what is wrong with the input.
 func Parse(data []byte) (*Document, error) {
 	doc := &Document{}
 
+	// Leading whitespace only picks the format; decoding sees it so error
+	// line numbers match the input.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
 	if len(trimmed) == 0 {
 		return nil, ez.New(ez.EINVALID, "empty OpenAPI document", nil)
 	}
+	isJSON := trimmed[0] == '{'
 
 	var err error
-	if trimmed[0] == '{' {
-		err = json.Unmarshal(trimmed, doc)
+	if isJSON {
+		err = json.Unmarshal(data, doc)
 	} else {
-		err = yaml.Unmarshal(trimmed, doc)
+		err = yaml.Unmarshal(data, doc)
 	}
 	if err != nil {
-		return nil, ez.New(ez.EINVALID, "invalid OpenAPI document", err)
+		return nil, ez.New(ez.EINVALID, "invalid OpenAPI document: "+causeText(data, err), err)
 	}
 
+	if doc.OpenAPI == "" {
+		return nil, ez.New(ez.EINVALID, missingVersionMessage(data, isJSON), nil)
+	}
 	if !strings.HasPrefix(doc.OpenAPI, "3.") {
-		return nil, ez.New(ez.EINVALID, "unsupported OpenAPI version "+strconvQuote(doc.OpenAPI)+", expected 3.x", nil)
+		return nil, ez.New(ez.EINVALID, "unsupported OpenAPI version "+strconv.Quote(doc.OpenAPI)+", expected 3.x", nil)
 	}
 
 	normalizeDocument(doc)
@@ -38,8 +49,42 @@ func Parse(data []byte) (*Document, error) {
 	return doc, nil
 }
 
-func strconvQuote(s string) string {
-	return `"` + s + `"`
+// causeText describes a decoding error by its innermost message, without the
+// ez operation prefixes, and adds the line of a JSON syntax error.
+func causeText(data []byte, err error) string {
+	var syntax *json.SyntaxError
+	if errors.As(err, &syntax) {
+		line := 1 + bytes.Count(data[:min(int(syntax.Offset), len(data))], []byte("\n"))
+		return fmt.Sprintf("line %d: %s", line, syntax.Error())
+	}
+
+	for {
+		e, ok := err.(*ez.Error)
+		if !ok {
+			return err.Error()
+		}
+		if e.Err == nil {
+			return e.Message
+		}
+		err = e.Err
+	}
+}
+
+// missingVersionMessage explains a document without an openapi field, calling
+// out Swagger 2.0 documents, which use a swagger field instead.
+func missingVersionMessage(data []byte, isJSON bool) string {
+	var probe struct {
+		Swagger string `json:"swagger" yaml:"swagger"`
+	}
+	if isJSON {
+		_ = json.Unmarshal(data, &probe)
+	} else {
+		_ = yaml.Unmarshal(data, &probe)
+	}
+	if probe.Swagger != "" {
+		return "Swagger " + probe.Swagger + " documents are not supported, convert the document to OpenAPI 3.x"
+	}
+	return "missing openapi version field, expected an OpenAPI 3.x document"
 }
 
 // normalizeDocument walks every schema once and rewrites 3.1 forms into the
@@ -52,13 +97,13 @@ func normalizeDocument(doc *Document) {
 		normalizeSchema(doc.Components.Schemas.Map[key], seen)
 	}
 	for _, key := range doc.Components.Parameters.Keys {
-		normalizeSchema(doc.Components.Parameters.Map[key].Schema, seen)
+		normalizeParameter(doc.Components.Parameters.Map[key], seen)
 	}
 	for _, key := range doc.Components.Headers.Keys {
-		normalizeSchema(doc.Components.Headers.Map[key].Schema, seen)
+		normalizeParameter(doc.Components.Headers.Map[key], seen)
 	}
 	for _, key := range doc.Components.RequestBodies.Keys {
-		normalizeContent(doc.Components.RequestBodies.Map[key].Content, seen)
+		normalizeRequestBody(doc.Components.RequestBodies.Map[key], seen)
 	}
 	for _, key := range doc.Components.Responses.Keys {
 		normalizeResponse(doc.Components.Responses.Map[key], seen)
@@ -72,9 +117,7 @@ func normalizeDocument(doc *Document) {
 		normalizeParameters(item.Parameters, seen)
 		for _, m := range item.Methods() {
 			normalizeParameters(m.Operation.Parameters, seen)
-			if m.Operation.RequestBody != nil {
-				normalizeContent(m.Operation.RequestBody.Content, seen)
-			}
+			normalizeRequestBody(m.Operation.RequestBody, seen)
 			for _, status := range m.Operation.Responses.Keys {
 				normalizeResponse(m.Operation.Responses.Map[status], seen)
 			}
@@ -84,12 +127,23 @@ func normalizeDocument(doc *Document) {
 
 func normalizeParameters(params []*Parameter, seen map[*Schema]bool) {
 	for _, p := range params {
-		if p == nil {
-			continue
-		}
-		normalizeSchema(p.Schema, seen)
-		normalizeContent(p.Content, seen)
+		normalizeParameter(p, seen)
 	}
+}
+
+func normalizeParameter(p *Parameter, seen map[*Schema]bool) {
+	if p == nil {
+		return
+	}
+	normalizeSchema(p.Schema, seen)
+	normalizeContent(p.Content, seen)
+}
+
+func normalizeRequestBody(b *RequestBody, seen map[*Schema]bool) {
+	if b == nil {
+		return
+	}
+	normalizeContent(b.Content, seen)
 }
 
 func normalizeResponse(res *Response, seen map[*Schema]bool) {
@@ -98,7 +152,7 @@ func normalizeResponse(res *Response, seen map[*Schema]bool) {
 	}
 	normalizeContent(res.Content, seen)
 	for _, key := range res.Headers.Keys {
-		normalizeSchema(res.Headers.Map[key].Schema, seen)
+		normalizeParameter(res.Headers.Map[key], seen)
 	}
 }
 

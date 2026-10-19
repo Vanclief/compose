@@ -9,6 +9,7 @@
 package apidocs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -241,6 +242,42 @@ type Schema struct {
 	MaxProperties    *int     `json:"maxProperties" yaml:"maxProperties"`
 }
 
+// schemaFields has the fields of Schema without its methods, so the custom
+// unmarshalers can decode the object form without recursing into themselves.
+type schemaFields Schema
+
+// UnmarshalJSON accepts a schema object or a 3.1 boolean schema: true is the
+// empty schema (anything) and false is {"not": {}} (nothing).
+func (s *Schema) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if string(trimmed) == "true" || string(trimmed) == "false" {
+		*s = booleanSchema(string(trimmed) == "true")
+		return nil
+	}
+	return json.Unmarshal(data, (*schemaFields)(s))
+}
+
+// UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema.
+func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!bool" {
+		var allowed bool
+		err := node.Decode(&allowed)
+		if err != nil {
+			return err
+		}
+		*s = booleanSchema(allowed)
+		return nil
+	}
+	return node.Decode((*schemaFields)(s))
+}
+
+func booleanSchema(allowed bool) Schema {
+	if allowed {
+		return Schema{}
+	}
+	return Schema{Not: &Schema{}}
+}
+
 // AdditionalAllowed reports whether additional properties are permitted.
 func (s *Schema) AdditionalAllowed() bool {
 	if s.AdditionalProperties == nil {
@@ -320,8 +357,14 @@ func (a *AdditionalProperties) UnmarshalYAML(node *yaml.Node) error {
 // TypeList decodes "type" as either a string (3.0) or an array (3.1).
 type TypeList []string
 
-// UnmarshalJSON accepts a string or an array of strings.
+// UnmarshalJSON accepts a string or an array of strings. A JSON null leaves
+// the list empty.
 func (t *TypeList) UnmarshalJSON(data []byte) error {
+	if string(bytes.TrimSpace(data)) == "null" {
+		*t = nil
+		return nil
+	}
+
 	var single string
 	err := json.Unmarshal(data, &single)
 	if err == nil {

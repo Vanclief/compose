@@ -1,0 +1,116 @@
+{{define "page.html" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}}</title>
+{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/apidocs.css">{{end}}
+</head>
+<body data-server="{{.ServerURL}}">
+<a class="skip" href="#main">Skip to content</a>
+<div class="topbar">
+<button type="button" class="btn ghost" data-menu aria-controls="sidebar" aria-expanded="false">Menu</button>
+<span class="topbar-title">{{.InfoTitle}}</span>
+</div>
+<div class="layout">
+{{template "sidebar" .}}
+<main class="content" id="main" tabindex="-1">
+{{template "intro" .}}
+{{range .Tags}}{{template "tag" .}}{{end}}
+{{if .Models}}{{template "models" .}}{{end}}
+<footer class="footer">Rendered by compose apidocs from the OpenAPI {{.OpenAPI}} document.</footer>
+</main>
+</div>
+{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/apidocs.js"></script>{{end}}
+</body>
+</html>
+{{- end}}
+
+{{define "sidebar"}}<aside class="sidebar" id="sidebar">
+<div class="side-top">
+<a class="brand" href="#section/introduction">{{.InfoTitle}}</a>
+<button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
+</div>
+<div class="search">
+<input type="search" id="nav-search" placeholder="Search  /" aria-label="Search operations and models" autocomplete="off" spellcheck="false">
+</div>
+<nav class="nav-wrap" aria-label="API reference">
+<ul class="nav nav-static">
+<li><a class="nav-link" href="#section/introduction">Introduction</a></li>
+{{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
+</ul>
+{{range .Tags}}<div class="nav-group">
+<button type="button" class="nav-group-tg" aria-expanded="false">{{.Name}}<span class="count">{{len .Nav}}</span></button>
+<ul class="nav" hidden>
+{{range .Nav}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="nav-title">{{.Title}}</span></a></li>
+{{end}}</ul>
+</div>
+{{end}}{{if .Models}}<div class="nav-group">
+<button type="button" class="nav-group-tg" aria-expanded="false">Models<span class="count">{{len .Models}}</span></button>
+<ul class="nav" hidden>
+{{range .Models}}<li><a class="nav-model" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{.Short}}</a></li>
+{{end}}</ul>
+</div>{{end}}
+<p class="no-results" hidden>No matches.</p>
+</nav>
+</aside>{{end}}
+
+{{define "reqs"}}{{range $i, $r := .}}{{if $i}} <span class="or">or</span> {{end}}<span class="req-set">{{range $j, $s := $r.Schemes}}{{if $j}} + {{end}}{{if $s.Anchor}}<a href="{{href $s.Anchor}}">{{$s.Name}}</a>{{else}}{{$s.Name}}{{end}}{{if $s.Scopes}} <span class="scopes">({{$s.Scopes}})</span>{{end}}{{else}}none{{end}}</span>{{end}}{{end}}
+
+{{define "intro"}}<section class="section intro" id="section/introduction" data-anchor>
+<div class="main-col">
+<h1 class="title">{{.InfoTitle}}</h1>
+<div class="badges">{{if .Version}}<span class="badge ver">v{{.Version}}</span>{{end}}<span class="badge">OpenAPI {{.OpenAPI}}</span></div>
+{{if .Summary}}<p class="lead">{{.Summary}}</p>{{end}}
+<ul class="facts">
+{{if .SpecURL}}<li><span class="ml">Spec</span><a href="{{.SpecURL}}" target="_blank" rel="noopener" download>Download OpenAPI document</a></li>{{end}}
+{{with .Contact}}<li><span class="ml">Contact</span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{if .Name}}{{.Name}}{{else}}{{.URL}}{{end}}</a>{{else}}{{.Name}}{{end}}{{if .Email}} <a href="mailto:{{.Email}}">{{.Email}}</a>{{end}}</li>{{end}}
+{{with .License}}<li><span class="ml">License</span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Name}}</a>{{else}}{{.Name}}{{end}}</li>{{end}}
+{{if .Terms}}<li><span class="ml">Terms</span><a href="{{.Terms}}" target="_blank" rel="noopener">Terms of service</a></li>{{end}}
+</ul>
+{{if .Servers}}<div class="servers"><h2 class="h-small">Servers</h2><ul>{{range .Servers}}<li><code>{{.URL}}</code>{{if .Description}} <span class="muted">{{.Description}}</span>{{end}}</li>{{end}}</ul></div>{{end}}
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+<div class="side-col">
+<div class="card settings" id="try-settings">
+<div class="card-head"><span>Try it settings</span></div>
+<div class="card-body">
+<label class="field"><span class="field-name">Server</span><input type="url" list="server-list" data-server-input value="{{.ServerURL}}" placeholder="page origin" spellcheck="false"></label>
+{{if .Servers}}<datalist id="server-list">{{range .Servers}}<option value="{{.URL}}">{{end}}</datalist>{{end}}
+{{range .Schemes}}{{$scheme := .}}{{range .Inputs}}<label class="field"><span class="field-name">{{.Label}} <span class="field-in">{{$scheme.Name}}</span></span><input {{if .Secret}}type="password"{{else}}type="text"{{end}} data-auth="{{.Key}}" data-scheme="{{.Scheme}}" data-kind="{{.Kind}}" data-in="{{.In}}" data-param="{{.Param}}" placeholder="{{.Placeholder}}" autocomplete="off" spellcheck="false"></label>
+{{end}}{{end}}<p class="hint">Credentials stay in this tab (sessionStorage) and are only sent by Try it.</p>
+</div>
+</div>
+</div>
+</section>
+{{if .Schemes}}<section class="section" id="section/authentication" data-anchor>
+<div class="main-col">
+<h2>Authentication</h2>
+{{if .Global}}<p>Every operation requires {{template "reqs" .Global}} unless it says otherwise.</p>{{else}}<p>No authentication is required by default.</p>{{end}}
+{{range .Schemes}}<div class="scheme" id="{{.Anchor}}">
+<h3>{{.Name}} <span class="badge">{{.Kind}}</span>{{if .Global}} <span class="badge ok">global</span>{{end}}</h3>
+{{if .Detail}}<p>{{.Detail}}</p>{{end}}
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+{{end}}</div>
+<div class="side-col"></div>
+</section>{{end}}{{end}}
+
+{{define "tag"}}<section class="tag">
+<div class="tag-head" id="{{.Anchor}}" data-anchor>
+<h2><a href="{{href .Anchor}}">{{.Name}}</a></h2>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+{{range .Ops}}{{template "operation" .}}{{end}}
+</section>{{end}}
+
+{{define "models"}}<section class="models" id="section/models">
+<div class="tag-head"><h2>Models</h2></div>
+{{range .Models}}<article class="model" id="{{.Anchor}}" data-anchor>
+<h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a></h3>
+{{if ne .Short .Name}}<div class="model-name"><code>{{.Name}}</code></div>{{end}}
+{{.Tree}}
+</article>
+{{end}}</section>{{end}}

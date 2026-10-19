@@ -1,6 +1,10 @@
 package apidocs
 
-import "strings"
+import (
+	"net/url"
+	"sort"
+	"strings"
+)
 
 // Ref targets are local JSON pointers into components, the only form the
 // generators we care about emit. Remote and relative refs stay unresolved and
@@ -24,7 +28,15 @@ func RefName(ref, prefix string) string {
 	return unescapePointer(strings.TrimPrefix(ref, prefix))
 }
 
+// unescapePointer decodes a JSON pointer token taken from a URI fragment:
+// percent-encoding first (Foo%20Bar), then the ~1 and ~0 escapes.
 func unescapePointer(s string) string {
+	if strings.Contains(s, "%") {
+		decoded, err := url.PathUnescape(s)
+		if err == nil {
+			s = decoded
+		}
+	}
 	s = strings.ReplaceAll(s, "~1", "/")
 	return strings.ReplaceAll(s, "~0", "~")
 }
@@ -111,15 +123,19 @@ func (d *Document) Example(e *Example) *Example {
 }
 
 // Flatten resolves s and merges its allOf members into a single schema, the
-// way Redoc presents composed objects. The result is a fresh copy; the
-// document is never mutated. Members are resolved and flattened recursively;
-// a member seen earlier in the same chain is skipped so cyclic allOf
-// definitions terminate.
+// way Redoc presents composed objects. The document is never mutated: a schema
+// without allOf is returned as resolved, otherwise the result is a fresh
+// shallow copy. Treat the result as read-only either way. Members are resolved
+// and flattened recursively; a member seen earlier in the same chain is not
+// expanded again, so cyclic allOf definitions terminate.
 //
-// Merge rules: properties are unioned in order (later members override a
-// property of the same name), required is unioned, scalar keywords take the
-// first non-empty value walking parent first then members in order, and
-// oneOf/anyOf of members are kept only when the parent has none of its own.
+// Merge rules: properties are unioned in order, parent first then members in
+// order, and a later definition of the same property replaces the earlier one
+// while keeping its position. Required is unioned. Scalar keywords take the
+// first non-empty value walking parent first then members in order; boolean
+// flags (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when
+// any of them sets it. oneOf, anyOf, discriminator and additionalProperties of
+// members are kept only when the parent has none of its own.
 func (d *Document) Flatten(s *Schema) *Schema {
 	return d.flatten(s, map[*Schema]bool{})
 }
@@ -187,6 +203,12 @@ func mergeInto(out, m *Schema) {
 	}
 	if len(out.Enum) == 0 {
 		out.Enum = m.Enum
+	}
+	if out.Const == nil {
+		out.Const = m.Const
+	}
+	if len(out.Examples) == 0 {
+		out.Examples = m.Examples
 	}
 	if out.Default == nil {
 		out.Default = m.Default
@@ -267,4 +289,79 @@ func (d *Document) OperationSecurity(op *Operation) []map[string][]string {
 		return *op.Security
 	}
 	return d.Security
+}
+
+// OperationRef is one operation of the document with the path it lives on.
+type OperationRef struct {
+	Method    string
+	Path      string
+	Item      *PathItem
+	Operation *Operation
+}
+
+// Operations lists every operation in document path order, then in the
+// canonical method order of PathItem.Methods.
+func (d *Document) Operations() []OperationRef {
+	var out []OperationRef
+	for _, path := range d.Paths.Keys {
+		item := d.Paths.Map[path]
+		if item == nil {
+			continue
+		}
+		for _, m := range item.Methods() {
+			out = append(out, OperationRef{Method: m.Method, Path: path, Item: item, Operation: m.Operation})
+		}
+	}
+	return out
+}
+
+// parameterOrder ranks the "in" locations the way references list them.
+var parameterOrder = map[string]int{"path": 0, "query": 1, "header": 2, "cookie": 3}
+
+// Parameters returns the parameters that apply to op: the path item's merged
+// with the operation's, where an operation parameter replaces a path parameter
+// of the same name and location in place. Refs are resolved. The result is
+// grouped by location (path, query, header, cookie, then anything else) and
+// keeps document order within each group. Either argument may be nil.
+func (d *Document) Parameters(item *PathItem, op *Operation) []*Parameter {
+	var all []*Parameter
+	if item != nil {
+		all = append(all, item.Parameters...)
+	}
+	if op != nil {
+		all = append(all, op.Parameters...)
+	}
+
+	var out []*Parameter
+	index := map[string]int{}
+	for _, raw := range all {
+		p := d.Parameter(raw)
+		if p == nil {
+			continue
+		}
+		key := p.In + "\x00" + p.Name
+		if p.Ref != "" {
+			key = "$ref\x00" + p.Ref
+		}
+		i, exists := index[key]
+		if exists {
+			out[i] = p
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, p)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return parameterRank(out[i].In) < parameterRank(out[j].In)
+	})
+	return out
+}
+
+func parameterRank(in string) int {
+	rank, ok := parameterOrder[in]
+	if !ok {
+		return len(parameterOrder)
+	}
+	return rank
 }
