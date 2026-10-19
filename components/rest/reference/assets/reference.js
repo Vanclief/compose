@@ -1470,30 +1470,178 @@
     return n + (n === 1 ? ' field' : ' fields');
   }
 
+  // Type notes describe a sample's values: one line per value, indented by
+  // depth, naming its step from the parent ("[]" for list items), then a tab,
+  // its kind and label (an enum's values as JSON), and "!" when the value is
+  // the author's example rather than a generated one. They parse into a tree
+  // that walks alongside the sample.
+  let typeNotes = null;
+
+  function typeTree(ref) {
+    if (ref === undefined || ref === '') {
+      return null;
+    }
+    if (!typeNotes) {
+      const node = doc.getElementById('type-notes');
+      try {
+        typeNotes = JSON.parse(node ? node.textContent : '[]') || [];
+      } catch (err) {
+        typeNotes = [];
+      }
+    }
+    const text = typeNotes[Number(ref)];
+    if (typeof text !== 'string') {
+      return null;
+    }
+    const root = { kids: new Map() };
+    const stack = [root];
+    for (const line of text.split('\n')) {
+      const cut = line.indexOf('\t');
+      if (cut < 0) {
+        continue;
+      }
+      const head = line.slice(0, cut);
+      const step = head.trimStart();
+      const level = head.length - step.length;
+      const note = line.slice(cut + 1);
+      const own = note.endsWith('!');
+      const node = { kind: note.charAt(0), label: note.slice(2, own ? -1 : undefined), own, kids: new Map() };
+      if (level === 0) {
+        Object.assign(root, node, { kids: root.kids });
+        stack.length = 1;
+        continue;
+      }
+      const parent = stack[level - 1];
+      if (!parent) {
+        continue;
+      }
+      parent.kids.set(step, node);
+      stack.length = level;
+      stack.push(node);
+    }
+    return root;
+  }
+
+  function typeKid(t, step) {
+    return t ? t.kids.get(step) || null : null;
+  }
+
+  // Types read like a typed language: primitives in one color, models in
+  // another, enums as the union of their values.
+  function pvType(t) {
+    if (t.kind === 'e') {
+      return el('span', 'pv-t t-kw', 'enum');
+    }
+    return el('span', 'pv-t ' + (t.kind === 'm' || t.kind === 'l' ? 't-model' : 't-prim'), t.label);
+  }
+
+  // pvLit renders a value as a highlighted JSON literal.
+  function pvLit(v) {
+    if (Array.isArray(v)) {
+      const span = el('span', 'pv-v');
+      span.append(el('span', 'j-p', '['));
+      v.forEach((item, i) => {
+        if (i > 0) {
+          span.append(el('span', 'j-p', ', '));
+        }
+        span.append(pvLit(item));
+      });
+      span.append(el('span', 'j-p', ']'));
+      return span;
+    }
+    if (v === null) {
+      return el('span', 'j-n', 'null');
+    }
+    if (typeof v === 'string') {
+      return el('span', 'j-s', JSON.stringify(v));
+    }
+    if (typeof v === 'number') {
+      return el('span', 'j-d', String(v));
+    }
+    if (typeof v === 'boolean') {
+      return el('span', 'j-b', String(v));
+    }
+    return el('span', 'j-p', JSON.stringify(v));
+  }
+
+  // An enum shows its values as a union.
+  function pvEnum(t) {
+    let values = [];
+    try {
+      values = JSON.parse(t.label);
+    } catch (err) {
+      values = [];
+    }
+    const span = el('span', 'pv-v pv-enum');
+    values.forEach((v, i) => {
+      if (i > 0) {
+        span.append(el('span', 'j-p', ' | '));
+      }
+      span.append(pvLit(v));
+    });
+    return span;
+  }
+
+  // pvExample is the example column: enums list their values, empty
+  // containers and the generator's bare "string" say nothing the type
+  // does not.
+  function pvExample(v, t) {
+    if (t.kind === 'e') {
+      return pvEnum(t);
+    }
+    if (v !== null && typeof v === 'object' && Object.keys(v).length === 0) {
+      return null;
+    }
+    if (!t.own && v === 'string') {
+      return null;
+    }
+    const span = pvLit(v);
+    span.classList.add('pv-v');
+    span.title = typeof v === 'string' ? v : JSON.stringify(v);
+    return span;
+  }
+
   // Samples render as a file tree: objects and lists are folders with a
-  // chevron, an icon and a count; values are leaves on elbow connectors.
-  function pvList(v, depth) {
+  // chevron, an icon and their type; values are leaves on elbow connectors
+  // with their type and, when the spec gives one, their example.
+  function pvList(v, depth, t) {
     const ul = el('ul', 'jt');
     if (Array.isArray(v) && v.length === 1 && pvIsNode(v[0]) && !Array.isArray(v[0])) {
       // A list of one object reads better as that object's fields.
       v = v[0];
+      t = typeKid(t, '[]');
     }
     if (Array.isArray(v)) {
-      v.forEach((item, i) => ul.append(pvItem('#' + (i + 1), item, depth)));
+      v.forEach((item, i) => ul.append(pvItem('#' + (i + 1), item, depth, typeKid(t, '[]'))));
     } else {
       for (const key of Object.keys(v)) {
-        ul.append(pvItem(key, v[key], depth));
+        ul.append(pvItem(key, v[key], depth, typeKid(t, key)));
       }
+    }
+    // Siblings line their types up: the key column fits the longest key,
+    // in the monospace font's ch units.
+    if (t) {
+      const keys = Array.isArray(v) ? ['#' + v.length] : Object.keys(v);
+      ul.style.setProperty('--kw', Math.min(28, Math.max(...keys.map((k) => k.length), 1)) + 'ch');
+      const types = keys.map((k) => typeKid(t, Array.isArray(v) ? '[]' : k)).filter(Boolean).map((n) => n.kind === 'e' ? 4 : n.label.length);
+      ul.style.setProperty('--tw', Math.min(24, Math.max(...types, 4)) + 'ch');
     }
     return ul;
   }
 
-  function pvItem(key, v, depth) {
+  function pvItem(key, v, depth, t) {
     const li = el('li');
     if (!pvIsNode(v)) {
       const line = el('div', 'jt-line');
       line.append(el('span', 'jt-k', key));
-      if (Array.isArray(v)) {
+      if (t) {
+        line.classList.add('jt-cols');
+        line.append(pvType(t));
+        const ex = pvExample(v, t);
+        if (ex) {
+          line.append(ex);
+        }
+      } else if (Array.isArray(v)) {
         const list = el('span', 'pv-v pv-list');
         if (v.length === 0) {
           list.append(el('span', 'pv-empty', 'empty list'));
@@ -1516,9 +1664,12 @@
     line.append(
       el('span', isList ? 'jt-ico jt-arr' : 'jt-ico jt-obj', isList ? '[]' : '{}'),
       el('span', 'jt-k', key),
-      el('span', 'pill', pvSummary(v)),
+      t && !t.own ? pvType(t) : el('span', 'pill', pvSummary(v)),
     );
-    const kids = pvList(v, depth + 1);
+    if (t && !t.own) {
+      line.classList.add('jt-cols');
+    }
+    const kids = pvList(v, depth + 1, t);
     kids.hidden = !open;
     li.append(line, kids);
     return li;
@@ -1537,10 +1688,12 @@
       box.parentElement.classList.add('pv-off');
       return;
     }
+    let t = typeTree(box.dataset.types);
     if (!pvIsNode(v)) {
       v = { value: v };
+      t = t ? { kids: new Map([['value', t]]) } : null;
     }
-    const root = pvList(v, 0);
+    const root = pvList(v, 0, t);
     root.classList.add('jt-root');
     box.append(root);
   }

@@ -269,3 +269,20 @@ func TestFlowRender(t *testing.T) {
 	require.Contains(t, model, `&larr; made by 3`)
 	require.True(t, strings.Contains(html, `class="nav-op" href="#operation/pets-get"`) && strings.Contains(html, ` data-m="m`))
 }
+
+func TestExampleTypes(t *testing.T) {
+	doc, err := Parse([]byte(flowSpec))
+	require.NoError(t, err)
+	notes := doc.exampleTypes(&Schema{Ref: "#/components/schemas/PetList"}, ForResponse, strings.ToLower)
+	require.Equal(t, []string{
+		"\tm:petlist",
+		" pets\tl:pet[]",
+		"  []\tm:pet",
+		"   id\tn:integer",
+		"   name\ts:string",
+		" next\ts:string",
+	}, notes)
+
+	enum := &Schema{Type: TypeList{"string"}, Enum: []any{"", "a b"}, Example: "a b"}
+	require.Equal(t, []string{"\te:[\"\",\"a b\"]!"}, doc.exampleTypes(enum, ForResponse, strings.ToLower))
+}

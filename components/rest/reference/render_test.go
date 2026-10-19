@@ -279,7 +279,7 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.NotContains(t, getPet, `data-detail="out:`)
 	require.Contains(t, getPet, `<button type="submit" class="mc-play" title="Send GET /pets/{pet_id}"`)
 	// The response card renders a pretty view from the raw JSON it keeps.
-	require.Contains(t, getPet, `<div class="pv" data-pv></div><pre class="raw"><code class="json">`)
+	require.Contains(t, getPet, `<div class="pv" data-pv data-types="0"></div><pre class="raw"><code class="json">`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
 	// Output ports switch the Response card, which has a tab per status.

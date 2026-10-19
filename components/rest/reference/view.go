@@ -37,6 +37,7 @@ type pageView struct {
 	CSS         template.CSS
 	JS          template.JS
 	Flow        template.JS
+	TypeNotes   template.JS // JSON list of sample type descriptions, see typesRef
 }
 
 // serverView is one server: URL has every variable replaced by its default
@@ -171,6 +172,7 @@ type sampleView struct {
 	Class   string
 	Type    string
 	Example template.HTML
+	Types   string // index of the example's type description, see typesRef
 }
 
 // textEscaper escapes text for element content only. html/template's escaper
@@ -216,6 +218,10 @@ type builder struct {
 	server  string
 	flow    *flowIndex
 	diff    *diffState // nil unless Options.Base is set
+	// notes holds each distinct sample type description once; samples
+	// point at theirs by index, see typesRef.
+	notes     []string
+	noteIndex map[string]int
 }
 
 func buildPage(d *Document, opts Options, diff *diffState) *pageView {
@@ -226,6 +232,8 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 		models:  map[string]string{},
 		schemes: map[string]string{},
 		diff:    diff,
+
+		noteIndex: map[string]int{},
 	}
 
 	b.short = shortNames(d.Components.Schemas.Keys)
@@ -276,6 +284,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Tags = b.buildTags()
 	p.Models = b.buildModels()
 	p.Flow = b.flow.JSON
+	p.TypeNotes = b.typeNotesJSON()
 	p.Map = b.buildMap(p.Tags)
 	p.Diff = b.changesView(p)
 
@@ -991,7 +1000,7 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 			}
 			example := b.d.MediaExampleJSON(mt, ForResponse)
 			if example != "" {
-				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Example: textHTML(example)})
+				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Example: textHTML(example), Types: b.typesRef(mt, ForResponse)})
 				break
 			}
 		}
@@ -1012,6 +1021,41 @@ func (b *builder) summary(s *Schema, mode ExampleMode) summaryView {
 		return summaryView{Type: template.HTML(b.typeLink(b.d.SchemaName(f.Items)) + `<span class="arr">[]</span>`)}
 	}
 	return summaryView{Type: template.HTML(`<span class="ty">` + esc(b.newTree(mode, true).plainLabel(s)) + `</span>`)}
+}
+
+// typesRef describes the types of a media type's example values once per
+// page and returns the description's index in the page's type notes, or ""
+// when there is nothing to describe. Many operations share a response model,
+// so most samples point at a description already listed.
+func (b *builder) typesRef(mt *MediaType, mode ExampleMode) string {
+	notes := b.d.mediaTypes(mt, mode, b.display)
+	if notes == "" {
+		return ""
+	}
+	i, ok := b.noteIndex[notes]
+	if !ok {
+		i = len(b.notes)
+		b.notes = append(b.notes, notes)
+		b.noteIndex[notes] = i
+	}
+	return strconv.Itoa(i)
+}
+
+func (b *builder) typeNotesJSON() template.JS {
+	out, err := json.Marshal(b.notes)
+	if err != nil || b.notes == nil {
+		return "[]"
+	}
+	return template.JS(out)
+}
+
+// display is the display name of a component schema.
+func (b *builder) display(name string) string {
+	short, ok := b.short[name]
+	if !ok {
+		return name
+	}
+	return short
 }
 
 // typeLink links the model name, with its package prefix muted.

@@ -182,6 +182,130 @@ type exampler struct {
 	stack map[string]bool
 	// models counts the named object schemas on the current path.
 	models int
+	// notes, when set, collects a type note per value in generation order;
+	// step and level place the current value, see exampleTypes.
+	notes   *[]string
+	step    string
+	level   int
+	display func(string) string // component name to the label the notes use
+}
+
+// exampleTypes describes the values of the example generated for s, one
+// line per value in document order: the value's depth as that many spaces,
+// its step from the parent (a property name, "[]" for array items, "" for
+// the root), a tab and a note. A note is "<kind>:<label>", with a trailing
+// "!" when the value is the author's own example rather than a generated
+// one. Kinds are s string, f formatted string, n number, b boolean, e enum,
+// o object, m model (a component schema object, labelled display(name)),
+// a array, l list of models and x anything. An array's label is its item's
+// with "[]"; an enum's label is its values as a JSON list, at most
+// maxEnumNote of them. A list of pets reads "\tm:ListResponse",
+// " items\tl:Pet[]", "  []\tm:Pet", "   id\tn:int64".
+func (d *Document) exampleTypes(s *Schema, mode ExampleMode, display func(string) string) []string {
+	var notes []string
+	e := &exampler{doc: d, mode: mode, stack: map[string]bool{}, notes: &notes, display: display}
+	e.value(s, 0)
+	return notes
+}
+
+// mediaTypes is exampleTypes for the schema of a media type, joined with
+// newlines, for the client to label the values of MediaExample. Notes are
+// all marked as the author's when the media type carries its own example.
+// "" when the media type has no schema.
+func (d *Document) mediaTypes(mt *MediaType, mode ExampleMode, display func(string) string) string {
+	if mt == nil || mt.Schema == nil {
+		return ""
+	}
+	notes := d.exampleTypes(mt.Schema, mode, display)
+	if mt.Example != nil || mt.Examples.Len() > 0 {
+		for i, note := range notes {
+			if !strings.HasSuffix(note, "!") {
+				notes[i] = note + "!"
+			}
+		}
+	}
+	return strings.Join(notes, "\n")
+}
+
+// note records the type of the value at the current path.
+func (e *exampler) note(s *Schema, explicit bool) {
+	if e.notes == nil {
+		return
+	}
+	flat := e.doc.Flatten(s)
+	if flat == nil {
+		return
+	}
+	kind, label := e.typeNote(s, flat)
+	if kind == "a" && flat.Items != nil {
+		itemKind, itemLabel := e.typeNote(flat.Items, e.doc.Flatten(flat.Items))
+		switch itemKind {
+		case "m":
+			kind = "l"
+		case "e":
+			itemLabel = "enum"
+		}
+		label = itemLabel + "[]"
+	}
+	if explicit {
+		label += "!"
+	}
+	*e.notes = append(*e.notes, strings.Repeat(" ", e.level)+e.step+"\t"+kind+":"+label)
+}
+
+// typeNote is the kind and short label of s, flattened as flat: a named
+// object is a model, kind m, labelled with its display name.
+func (e *exampler) typeNote(s, flat *Schema) (string, string) {
+	kind, label := typeNote(flat)
+	name := e.doc.SchemaName(s)
+	if name != "" && kind == "o" {
+		return "m", e.display(name)
+	}
+	return kind, label
+}
+
+// maxEnumNote caps the enum values a type note lists.
+const maxEnumNote = 12
+
+// typeNote is the kind and short label of a flattened schema.
+func typeNote(s *Schema) (string, string) {
+	if s == nil {
+		return "x", "any"
+	}
+	if len(s.Enum) > 0 {
+		values := s.Enum
+		if len(values) > maxEnumNote {
+			values = values[:maxEnumNote]
+		}
+		out, err := json.Marshal(values)
+		if err != nil {
+			return "e", "[]"
+		}
+		return "e", string(out)
+	}
+	t := schemaType(s)
+	switch t {
+	case "string":
+		if s.Format != "" {
+			return "f", s.Format
+		}
+		return "s", "string"
+	case "integer", "number":
+		if s.Format != "" {
+			return "n", s.Format
+		}
+		return "n", t
+	case "boolean":
+		return "b", "bool"
+	case "object":
+		return "o", "object"
+	case "array":
+		return "a", "array"
+	}
+	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		return "o", "oneOf"
+	}
+	return "x", "any"
 }
 
 func (e *exampler) value(s *Schema, depth int) any {
@@ -192,6 +316,7 @@ func (e *exampler) value(s *Schema, depth int) any {
 	// 3.1 allows example next to $ref, so look before resolving.
 	v, ok := explicitExample(s)
 	if ok {
+		e.note(s, true)
 		return v
 	}
 
@@ -205,6 +330,7 @@ func (e *exampler) value(s *Schema, depth int) any {
 	}
 
 	v, ok = explicitExample(flat)
+	e.note(s, ok)
 	if ok {
 		return v
 	}
@@ -360,17 +486,29 @@ func (e *exampler) object(s *Schema, depth int) any {
 		if e.mode == ForResponse && writeOnly {
 			continue
 		}
-		out.Set(key, e.value(prop, depth+1))
+		out.Set(key, e.at(key, prop, depth+1))
 	}
 
 	if s.Properties.Len() == 0 {
 		extra := s.AdditionalSchema()
 		if extra != nil {
-			out.Set("key", e.value(extra, depth+1))
+			out.Set("key", e.at("key", extra, depth+1))
 		}
 	}
 
 	return out
+}
+
+// at generates the value of a property ("[]" for array items) one level
+// below the current one.
+func (e *exampler) at(step string, s *Schema, depth int) any {
+	parent := e.step
+	e.step = step
+	e.level++
+	v := e.value(s, depth)
+	e.level--
+	e.step = parent
+	return v
 }
 
 func (e *exampler) array(s *Schema, depth int) any {
@@ -383,7 +521,7 @@ func (e *exampler) array(s *Schema, depth int) any {
 		count = min(*s.MinItems, 3)
 	}
 
-	item := e.value(s.Items, depth+1)
+	item := e.at("[]", s.Items, depth+1)
 	out := make([]any, count)
 	for i := range out {
 		out[i] = item
