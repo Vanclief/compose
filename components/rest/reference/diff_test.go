@@ -257,7 +257,7 @@ func TestRenderDiff(t *testing.T) {
 	html := string(out)
 	requireBalanced(t, html)
 
-	require.Contains(t, html, `<body data-server="" class="diff">`)
+	require.Contains(t, html, `<body data-server="" data-mode="docs" class="diff">`)
 	require.Contains(t, html, `data-diff-toggle`)
 	require.Contains(t, html, `data-diff-only`)
 	require.Contains(t, html, `href="#section/changes"`)

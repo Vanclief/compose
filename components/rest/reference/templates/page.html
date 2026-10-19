@@ -8,19 +8,20 @@
 <title>{{.Title}}</title>
 {{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/reference.css?v={{.CSSVersion}}">{{end}}
 </head>
-<body data-server="{{.ServerURL}}"{{if .Diff}} class="diff"{{end}}>
+<body data-server="{{.ServerURL}}" data-mode="docs"{{if .Diff}} class="diff"{{end}}>
 <a class="skip" href="#main">Skip to content</a>
-<div class="topbar">
-<button type="button" class="btn ghost" data-menu aria-controls="sidebar" aria-expanded="false">Menu</button>
-<span class="topbar-title">{{.InfoTitle}}</span>
-</div>
+{{template "appbar" .}}
 <div class="layout">
 {{template "sidebar" .}}
 <main class="content" id="main" tabindex="-1">
+<div class="pane" data-pane="docs">
 {{template "intro" .}}
-{{if .Diff}}{{template "changes" .Diff}}{{end}}{{range .Groups}}{{template "group" .}}{{end}}
-{{if .Models}}{{template "models" .}}{{end}}
-{{if .Map}}{{template "map" .Map}}{{end}}
+{{if .Diff}}{{template "changes" .Diff}}{{end}}</div>
+<div class="pane" data-pane="endpoints">
+{{range .Groups}}{{template "group" .}}{{end}}</div>
+{{if .Models}}<div class="pane" data-pane="models">
+{{template "models" .}}</div>
+{{end}}{{if .Map}}{{template "map" .Map}}{{end}}
 <footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
 </main>
 </div>
@@ -32,35 +33,54 @@
 </html>
 {{- end}}
 
-{{define "sidebar"}}<aside class="sidebar" id="sidebar">
-<div class="side-top">
-<a class="brand" href="#section/introduction">{{.InfoTitle}}</a>
+{{define "appbar"}}<header class="appbar">
+<button type="button" class="btn ghost icon menu-btn" data-menu aria-controls="sidebar" aria-expanded="false" aria-label="Menu" title="Menu"><span aria-hidden="true">&#9776;</span></button>
+<a class="brand" href="#section/introduction">{{.InfoTitle}}{{if .Version}}<span class="brand-ver">v{{.Version}}</span>{{end}}</a>
+<nav class="modes" aria-label="Views">
+<a href="#section/introduction" data-mode="docs" aria-current="page">Documentation</a>
+<a href="{{with .Groups}}{{href (index . 0).Anchor}}{{end}}" data-mode="endpoints">Endpoint Reference</a>
+{{if .Models}}<a href="#section/models" data-mode="models">Models</a>
+{{end}}{{if .Map}}<a href="#map" data-mode="map">Schema Map</a>
+{{end}}</nav>
+<div class="appbar-end">
 {{if .Diff}}{{template "diff-toggle" .Diff}}{{end}}<button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
 </div>
-{{if .Map}}{{template "mapswitch" .}}{{end}}
+</header>{{end}}
+
+{{define "sidebar"}}<aside class="sidebar" id="sidebar">
 <div class="search">
-<input type="search" id="nav-search" placeholder="Search  /" aria-label="Search operations and models" autocomplete="off" spellcheck="false">
+<input type="search" id="nav-search" placeholder="Search endpoints  /" aria-label="Search" autocomplete="off" spellcheck="false">
 {{if .Diff}}{{template "diff-filter" .Diff}}{{end}}</div>
 <nav class="nav-wrap" aria-label="API reference">
+<div class="nav-pane" data-pane="docs">
 <ul class="nav nav-static">
 <li><a class="nav-link" href="#section/introduction">Introduction</a></li>
-{{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
-{{if .Map}}<li><a class="nav-link nav-map" href="#map" data-view="map"><svg class="ico-map" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2" width="5" height="4" rx="1"/><rect x="9.5" y="10" width="5" height="4" rx="1"/><path d="M6.5 4h2.5v8h.5"/></svg>Schema map</a></li>{{end}}
-{{if .Diff}}{{template "diff-nav-link" .Diff}}{{end}}</ul>
+{{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>
+{{range .Schemes}}<li><a class="nav-link nav-sub" href="{{href .Anchor}}">{{.Name}}</a></li>
+{{end}}{{end}}{{if .Diff}}{{template "diff-nav-link" .Diff}}{{end}}</ul>
+</div>
+<div class="nav-pane" data-pane="endpoints">
 {{range .Groups}}<div class="nav-group">
 <button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Ops}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .NavTree}}</ul>
 </div>
-{{end}}{{if .Models}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
+{{end}}</div>
+{{if .Models}}<div class="nav-pane" data-pane="models">
+{{with .ModelNav}}{{if .Loose}}<ul class="nav nav-loose">
+{{range .Loose}}{{template "navmodel" .}}{{end}}</ul>
+{{end}}{{range .Modules}}<div class="nav-group">
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Models}}</span></button>
 <ul class="nav" hidden>
-{{range .Models}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
-{{end}}</ul>
-</div>{{end}}
-<p class="no-results" hidden>No matches.</p>
+{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
+</div>
+{{end}}{{end}}</div>
+{{end}}<p class="no-results" hidden>No matches.</p>
 </nav>
 </aside>{{end}}
+
+{{define "navmodel"}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
+{{end}}
 
 {{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
 {{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
@@ -119,11 +139,14 @@
 </section>{{end}}
 
 {{define "models"}}<section class="models" id="section/models">
-<div class="tag-head"><h2>Models</h2></div>
+<div class="tag-head"><h2>Models</h2><p class="muted">{{len .Models}} schemas in the document. A field holding another model expands in place, and its type opens that model.</p></div>
 {{range .Models}}<article class="model{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor>
 <h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a>{{with .Diff}} {{template "diff-badge" .}}{{end}}</h3>
 {{if ne .Short .Name}}<div class="model-name"><code>{{.Name}}</code></div>{{end}}
-{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
-{{.Tree}}
+{{if .Description}}<div class="md model-desc">{{.Description}}</div>{{end}}
+<div class="model-bar">{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
+</div>
+{{if .Inspector}}<div class="card mm-sample oi-deep"{{if .TreeFirst}} hidden{{end}}><div class="oi" data-model-oi></div></div>
+<div class="model-tree"{{if not .TreeFirst}} hidden{{end}}>{{.Tree}}</div>{{else}}{{.Tree}}{{end}}
 </article>
 {{end}}</section>{{end}}

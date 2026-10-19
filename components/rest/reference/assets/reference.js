@@ -266,8 +266,14 @@
       modelBack(modal.stack.length - 1);
       return;
     }
-    if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !body.classList.contains('map-open')) {
       e.preventDefault();
+      if (body.dataset.mode === 'docs') {
+        const tab = doc.querySelector('.modes a[data-mode="endpoints"]');
+        if (tab) {
+          openMode(tab);
+        }
+      }
       searchInput.focus();
     }
   });
@@ -381,6 +387,86 @@
     }
   });
 
+  // ----------------------------------------------------------------- modes
+
+  // The page is three views of one document, one shown at a time:
+  // Documentation, Endpoint Reference and Models, each a pane of the content
+  // and of the sidebar. The schema map (below) covers them while it is open.
+  // A link shows the view holding its target; a view's tab returns to where
+  // that view was left.
+  const body = doc.body;
+  const modeScroll = {};
+  const modeHash = {};
+  const searchHints = { endpoints: 'Search endpoints', models: 'Search models' };
+  let mapWasOpen = false;
+
+  function modeOf(node) {
+    const pane = node ? node.closest('[data-pane]') : null;
+    return pane ? pane.dataset.pane : '';
+  }
+
+  function markModes() {
+    const current = body.classList.contains('map-open') ? 'map' : body.dataset.mode;
+    doc.querySelectorAll('.modes a[data-mode]').forEach((a) => {
+      if (a.dataset.mode === current) {
+        a.setAttribute('aria-current', 'page');
+      } else {
+        a.removeAttribute('aria-current');
+      }
+    });
+  }
+
+  // setMode shows a view, remembering the scroll position and the active
+  // anchor of the one it leaves.
+  function setMode(mode) {
+    const from = body.dataset.mode;
+    if (mode && mode !== from) {
+      modeScroll[from] = window.scrollY;
+      if (activeId && modeOf(doc.getElementById(activeId)) === from) {
+        modeHash[from] = activeId;
+      }
+      body.dataset.mode = mode;
+      if (searchInput) {
+        searchInput.placeholder = (searchHints[mode] || 'Search') + '  /';
+        if (searchInput.value) {
+          runSearch();
+        }
+      }
+    }
+    markModes();
+  }
+
+  // openMode follows a view's tab: back to the view's last place, or to
+  // the tab's target the first time. The tab of the view the map covered
+  // just closes the map.
+  function openMode(tab) {
+    const mode = tab.dataset.mode;
+    if (mode === body.dataset.mode && mapWasOpen) {
+      markModes();
+      if (activeId) {
+        setHash(activeId, true);
+      }
+      return;
+    }
+    if (mode !== body.dataset.mode && modeScroll[mode] !== undefined) {
+      setMode(mode);
+      window.scrollTo(0, modeScroll[mode]);
+      if (modeHash[mode]) {
+        setHash(modeHash[mode], true);
+        setActive(modeHash[mode], false);
+      }
+      setMenu(false);
+      return;
+    }
+    navigate(tab);
+  }
+
+  // The map closes itself in its own capture listener, which runs after
+  // this one: note whether it was open for openMode.
+  doc.addEventListener('click', () => {
+    mapWasOpen = body.classList.contains('map-open');
+  }, true);
+
   // ------------------------------------------------------------ navigation
 
   const sidebar = doc.getElementById('sidebar');
@@ -402,10 +488,12 @@
     if (!target) {
       return;
     }
+    setMode(modeOf(target));
     revealModelOrOp(target);
     // Jump instantly: smooth scrolling across a 180-operation page is slow
     // and lets the scroll spy rewrite the hash on the way.
     target.scrollIntoView({ block: 'start' });
+    pin(target);
     setHash(id, true);
     setActive(id, false);
     if (!target.hasAttribute('tabindex')) {
@@ -413,6 +501,33 @@
     }
     target.focus({ preventScroll: true });
     setMenu(false);
+  }
+
+  // pin keeps a target jumped to at the top while inspectors around it
+  // render and change the page's height: the browser's scroll anchoring
+  // holds the element half under the app bar instead. It lets go when the
+  // user scrolls, or after a second.
+  let unpin = null;
+
+  function pin(target) {
+    if (unpin) {
+      unpin();
+    }
+    if (!('ResizeObserver' in window)) {
+      return;
+    }
+    const main = doc.getElementById('main');
+    const ro = new ResizeObserver(() => target.scrollIntoView({ block: 'start' }));
+    const stop = () => {
+      ro.disconnect();
+      clearTimeout(timer);
+      ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach((type) => window.removeEventListener(type, stop, true));
+      unpin = null;
+    };
+    const timer = setTimeout(stop, 1000);
+    ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach((type) => window.addEventListener(type, stop, { capture: true, passive: true }));
+    ro.observe(main);
+    unpin = stop;
   }
 
   // Targets are always visible today, but a hidden response or tab panel
@@ -451,12 +566,16 @@
     return out;
   }
 
-  // Folder names take part in search, so "cards" also finds the operations
-  // filed under a cards folder.
+  // Group and folder names take part in search, so "cards" also finds the
+  // operations filed under a cards folder.
   doc.querySelectorAll('.sidebar a[data-search]').forEach((a) => {
     const names = [];
     for (let li = a.closest('.nav-folder'); li; li = li.parentElement.closest('.nav-folder')) {
       names.push(li.querySelector(':scope > .nav-folder-tg .nav-folder-name').textContent);
+    }
+    const group = a.closest('.nav-group');
+    if (group) {
+      names.push(group.querySelector(':scope > .nav-group-tg .nav-group-name').textContent);
     }
     a.dataset.folders = names.join(' ').toLowerCase();
   });
@@ -522,7 +641,8 @@
         }
       }
       // The active entry is the topmost anchor crossing a band near the top
-      // of the viewport (below the sticky mobile bar).
+      // of the viewport, below the app bar and the scroll padding that keeps
+      // a jumped-to anchor clear of it.
       let best = null;
       let bestTop = Infinity;
       for (const node of visible) {
@@ -535,7 +655,7 @@
       if (best) {
         setActive(best.id, spyReady);
       }
-    }, { rootMargin: '-60px 0px -70% 0px' });
+    }, { rootMargin: '-72px 0px -70% 0px' });
     doc.querySelectorAll('[data-anchor]').forEach((node) => spy.observe(node));
     // Do not rewrite the hash until the user actually scrolls.
     window.addEventListener('scroll', () => {
@@ -543,66 +663,63 @@
     }, { once: true, passive: true });
   }
 
-  function openInitialHash() {
-    if (!location.hash || location.hash.length < 2) {
+  // showHash shows the anchor of the current hash, in its view: on load
+  // and when history moves. The map handles its own hashes.
+  function showHash() {
+    if (!location.hash || location.hash.length < 2 || location.hash.startsWith('#map')) {
+      markModes();
       return;
     }
     const id = idFromHref(location.hash);
     const target = doc.getElementById(id);
     if (target) {
+      setMode(modeOf(target));
       target.scrollIntoView({ block: 'start' });
+      pin(target);
       setActive(id, false);
     }
   }
+
+  window.addEventListener('popstate', showHash);
 
   // --------------------------------------------------------------- search
 
   const searchInput = doc.getElementById('nav-search');
   const noResults = doc.querySelector('.no-results');
-  const staticNav = doc.querySelector('.nav-static');
-  const groups = Array.from(doc.querySelectorAll('.nav-group'));
 
+  function navPane() {
+    return doc.querySelector('.nav-pane[data-pane="' + body.dataset.mode + '"]');
+  }
+
+  // runSearch filters the sidebar of the current view: links match every
+  // term in their own text or their folders' names, and groups and folders
+  // open around the matches.
   function runSearch() {
+    const pane = navPane();
+    if (!pane) {
+      return;
+    }
     const terms = searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let total = 0;
-    for (const group of groups) {
-      const btn = group.querySelector('.nav-group-tg');
-      const label = btn.querySelector('.nav-group-name');
-      const groupName = (label ? label.textContent : '').toLowerCase();
-      let shown = 0;
-      group.querySelectorAll('a[data-search]').forEach((a) => {
-        const hay = a.dataset.search + ' ' + groupName + ' ' + (a.dataset.folders || '');
-        const match = terms.every((t) => hay.includes(t));
-        a.parentElement.hidden = !match;
-        if (match) {
-          shown++;
-        }
-      });
-      total += shown;
-      group.querySelectorAll('.nav-folder').forEach((folder) => {
-        const fbtn = folder.querySelector(':scope > .nav-folder-tg');
-        if (terms.length > 0) {
-          const any = Array.from(folder.querySelectorAll('a[data-search]')).some((a) => !a.parentElement.hidden);
-          folder.hidden = !any;
-          setExpanded(fbtn, any);
-        } else {
-          folder.hidden = false;
-          setExpanded(fbtn, fbtn.dataset.user ? fbtn.dataset.user === 'open' : folder.querySelector('a.active') !== null);
-        }
-      });
-      group.hidden = terms.length > 0 && shown === 0;
-      if (terms.length > 0) {
-        setExpanded(btn, shown > 0);
-      } else if (btn.dataset.user) {
-        setExpanded(btn, btn.dataset.user === 'open');
-      } else {
-        const hasActive = group.querySelector('a.active') !== null;
-        setExpanded(btn, hasActive);
+    pane.querySelectorAll('a[data-search]').forEach((a) => {
+      const hay = a.dataset.search + ' ' + (a.dataset.folders || '');
+      const match = terms.every((t) => hay.includes(t));
+      a.parentElement.hidden = !match;
+      if (match) {
+        total++;
       }
-    }
-    if (staticNav) {
-      staticNav.hidden = terms.length > 0;
-    }
+    });
+    pane.querySelectorAll('.nav-folder, .nav-group').forEach((box) => {
+      const btn = box.querySelector(':scope > .nav-folder-tg, :scope > .nav-group-tg');
+      if (terms.length > 0) {
+        const any = Array.from(box.querySelectorAll('a[data-search]')).some((a) => !a.parentElement.hidden);
+        box.hidden = !any;
+        setExpanded(btn, any);
+      } else {
+        box.hidden = false;
+        setExpanded(btn, btn.dataset.user ? btn.dataset.user === 'open' : box.querySelector('a.active') !== null);
+      }
+    });
     noResults.hidden = terms.length === 0 || total > 0;
   }
 
@@ -613,7 +730,8 @@
         searchInput.value = '';
         runSearch();
       } else if (e.key === 'Enter') {
-        const first = doc.querySelector('.nav-group:not([hidden]) li:not([hidden]) > a[data-search]');
+        const pane = navPane();
+        const first = pane ? Array.from(pane.querySelectorAll('li:not([hidden]) > a[data-search]')).find((a) => !a.closest('[hidden]')) : null;
         if (first) {
           first.click();
         }
@@ -1481,9 +1599,10 @@
 
   // Type notes describe a sample's values: one line per value, indented by
   // depth, naming its step from the parent ("[]" for list items), then a tab,
-  // its kind and label (an enum's values as JSON), and "!" when the value is
-  // the author's example rather than a generated one. They parse into a tree
-  // that walks alongside the sample.
+  // its kind and label (an enum's values as JSON), "!" when the value is the
+  // author's example rather than a generated one, and a tab and the spec's
+  // description when it has one. They parse into a tree that walks
+  // alongside the sample.
   let typeNotes = null;
 
   function typeTree(ref) {
@@ -1512,9 +1631,11 @@
       const head = line.slice(0, cut);
       const step = head.trimStart();
       const level = head.length - step.length;
-      const note = line.slice(cut + 1);
+      const rest = line.slice(cut + 1);
+      const tab = rest.indexOf('\t');
+      const note = tab < 0 ? rest : rest.slice(0, tab);
       const own = note.endsWith('!');
-      const node = { kind: note.charAt(0), label: note.slice(2, own ? -1 : undefined), own, kids: new Map() };
+      const node = { kind: note.charAt(0), label: note.slice(2, own ? -1 : undefined), own, desc: tab < 0 ? '' : rest.slice(tab + 1), kids: new Map() };
       if (level === 0) {
         Object.assign(root, node, { kids: root.kids });
         stack.length = 1;
@@ -1770,6 +1891,7 @@
         line.append(oiScalar(v));
       }
       li.append(line);
+      oiDescribe(li, t, false);
       return li;
     }
     const open = !model && depth < 2;
@@ -1798,8 +1920,17 @@
       kids = oiList(v, depth + 1, t);
     }
     kids.hidden = !open;
-    li.append(line, kids);
+    li.append(line);
+    oiDescribe(li, t, true);
+    li.append(kids);
     return li;
+  }
+
+  // oiDescribe adds the spec's description of a field under its row.
+  function oiDescribe(li, t, folder) {
+    if (t && t.desc) {
+      li.append(el('div', folder ? 'oi-desc oi-desc-tg' : 'oi-desc', t.desc));
+    }
   }
 
   function renderInspector(box) {
@@ -1851,6 +1982,71 @@
       renderInspector(box);
     }
   });
+
+  // The Models view shows each model in its own inspector, as in the
+  // dialog, built when the model nears the viewport. Its Full schema
+  // button swaps in the static tree with every constraint.
+  function renderModelInspector(box) {
+    if (box.dataset.done) {
+      return;
+    }
+    box.dataset.done = '1';
+    const sample = modelSample(box.closest('.model').id);
+    if (sample) {
+      box.append(inspectorTree(sample.v, typeTree(String(sample.t)), oiKeyCap(box.clientWidth)));
+    }
+  }
+
+  const modelObserver = 'IntersectionObserver' in window
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          modelObserver.unobserve(entry.target);
+          renderModelInspector(entry.target);
+        }
+      }
+    }, { rootMargin: '800px 0px' })
+    : null;
+
+  // modelViews is the Inspector / Full schema switch of a model, pressed
+  // on the one shown.
+  function modelViews(tree) {
+    const group = el('div', 'model-views');
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', 'Show the model as');
+    [['oi', 'Inspector', ''], ['tree', 'Full schema', 'Every field with its constraints: required, nullable, formats and limits']].forEach(([view, label, title]) => {
+      const btn = el('button', '', label);
+      btn.type = 'button';
+      btn.dataset.modelView = view;
+      btn.setAttribute('aria-pressed', String((view === 'tree') === tree));
+      if (title) {
+        btn.title = title;
+      }
+      group.append(btn);
+    });
+    return group;
+  }
+
+  doc.querySelectorAll('[data-model-oi]').forEach((box) => {
+    const article = box.closest('.model');
+    article.querySelector(':scope > .model-bar').append(modelViews(box.parentElement.hidden));
+    if (modelObserver) {
+      modelObserver.observe(box);
+    } else {
+      renderModelInspector(box);
+    }
+  });
+
+  function showModelView(btn) {
+    const article = btn.closest('.model');
+    const tree = btn.dataset.modelView === 'tree';
+    article.querySelectorAll('[data-model-view]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+    article.querySelector(':scope > .mm-sample').hidden = tree;
+    article.querySelector(':scope > .model-tree').hidden = !tree;
+    if (!tree) {
+      renderModelInspector(article.querySelector('[data-model-oi]'));
+    }
+  }
 
   function toggleRaw(btn) {
     const panel = btn.closest('.tabpanel');
@@ -2513,7 +2709,7 @@
     if (sample) {
       const oi = el('div', 'oi');
       oi.append(inspectorTree(sample.v, typeTree(String(sample.t)), oiKeyCap(box.clientWidth - 60)));
-      const frame = el('div', 'card mm-sample');
+      const frame = el('div', 'card mm-sample oi-deep');
       frame.append(oi);
       body.append(frame);
     }
@@ -2573,10 +2769,11 @@
     hideCard();
 
     // A model type in an inspector opens its model, even inside a folder
-    // row. In the dialog a folder's type toggles the row like the rest of
-    // it, and its arrow opens the model.
+    // row. In a model's own inspector (the dialog and the Models view) a
+    // folder's type toggles the row like the rest of it, and its arrow
+    // opens the model.
     const typeLink = t.closest('.oi-open[data-model], .oi-type[data-model]');
-    if (typeLink && !(typeLink.matches('.oi-type') && typeLink.closest('.mmodal .oi-tg'))) {
+    if (typeLink && !(typeLink.matches('.oi-type') && typeLink.closest('.oi-deep .oi-tg'))) {
       e.preventDefault();
       closePop();
       openModel(typeLink.dataset.model);
@@ -2606,6 +2803,8 @@
         btn.nextElementSibling.hidden = !open;
       } else if (btn.matches('[data-raw]')) {
         toggleRaw(btn);
+      } else if (btn.matches('[data-model-view]')) {
+        showModelView(btn);
       } else if (btn.matches('[role="tab"]')) {
         selectTab(btn, false);
       } else if (btn.matches('[data-copy]')) {
@@ -2643,6 +2842,14 @@
     }
 
     const a = t.closest('a[href]');
+    const tab = a ? a.closest('.modes a[data-mode]') : null;
+    if (tab && tab.dataset.mode !== 'map') {
+      e.preventDefault();
+      closePop();
+      closeModel();
+      openMode(tab);
+      return;
+    }
     if (a && a.matches('a[href^="#model/"]') && !a.matches('.mm-open, .nav-model') && !a.closest('.sidebar, .model-title, .map')) {
       e.preventDefault();
       closePop();
@@ -2676,7 +2883,7 @@
   });
 
   initTabs();
-  openInitialHash();
+  showHash();
 })();
 
 /* ---- map ---- */
@@ -2799,7 +3006,6 @@
   let near = new Map(); // name -> Set of names it shares an edge with
   let rendered = null;
   let isOpen = false;
-  let refHash = 'section/introduction';
   let refScroll = 0;
 
   function positionsKey() {
@@ -3845,9 +4051,11 @@
     return h;
   }
 
+  // setSwitch marks the app bar tab of the map, or of the view under it.
   function setSwitch(map) {
-    doc.querySelectorAll('[data-view]').forEach((a) => {
-      if ((a.dataset.view === 'map') === map) {
+    const current = map ? 'map' : doc.body.dataset.mode;
+    doc.querySelectorAll('.modes a[data-mode]').forEach((a) => {
+      if (a.dataset.mode === current) {
         a.setAttribute('aria-current', 'page');
       } else {
         a.removeAttribute('aria-current');
@@ -3860,9 +4068,6 @@
   // replace the current one and null to leave the hash alone.
   function open(scope, focus, push) {
     if (!isOpen) {
-      if (location.hash.length > 1 && !isMapHash(location.hash)) {
-        refHash = location.hash.slice(1);
-      }
       refScroll = window.scrollY;
       isOpen = true;
       section.hidden = false;
@@ -3918,18 +4123,6 @@
   doc.addEventListener('click', (e) => {
     const t = e.target instanceof Element ? e.target : null;
     if (!t) {
-      return;
-    }
-    const sw = t.closest('[data-view]');
-    if (sw) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (sw.dataset.view === 'map') {
-        open('', isOpen ? state.selected || '' : '', !isOpen);
-      } else if (isOpen) {
-        close();
-        setHash(refHash, true);
-      }
       return;
     }
     const a = t.closest('a[href^="#"]');

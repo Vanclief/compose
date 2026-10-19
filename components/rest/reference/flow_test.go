@@ -292,4 +292,27 @@ func TestExampleTypes(t *testing.T) {
 
 	enum := &Schema{Type: TypeList{"string"}, Enum: []any{"", "a b"}, Example: "a b"}
 	require.Equal(t, []string{"\te:[\"\",\"a b\"]!"}, doc.exampleTypes(enum, ForResponse, strings.ToLower))
+
+	// Fields carry their description on one line; a field holding a model
+	// is described by the field alone, and the root not at all.
+	described := &Schema{Type: TypeList{"object"}, Description: "The root.", Properties: Ordered[*Schema]{
+		Keys: []string{"name", "pet", "owner"},
+		Map: map[string]*Schema{
+			"name":  {Type: TypeList{"string"}, Description: "Shown\n  to people."},
+			"pet":   {Ref: "#/components/schemas/Pet"},
+			"owner": {Ref: "#/components/schemas/Pet", Description: "Who owns it."},
+		},
+	}}
+	require.Equal(t, []string{
+		"\to:object",
+		" name\ts:string\tShown to people.",
+		" pet\tm:pet",
+		"  id\tn:integer",
+		"  name\ts:string",
+		" owner\tm:pet\tWho owns it.",
+		"  id\tn:integer",
+		"  name\ts:string",
+	}, doc.exampleTypes(described, ForResponse, strings.ToLower))
+	require.Equal(t, " name\ts:string!\tShown to people.", ownNote(" name\ts:string\tShown to people."))
+	require.Equal(t, " id\tn:integer!", ownNote(" id\tn:integer!"))
 }

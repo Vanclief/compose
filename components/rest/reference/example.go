@@ -201,8 +201,9 @@ type exampler struct {
 // o object, m model (a component schema object, labelled display(name)),
 // a array, l list of models and x anything. An array's label is its item's
 // with "[]"; an enum's label is its values as a JSON list, at most
-// maxEnumNote of them. A list of pets reads "\tm:ListResponse",
-// " items\tl:Pet[]", "  []\tm:Pet", "   id\tn:int64".
+// maxEnumNote of them. A value the spec describes ends its note with a tab
+// and the description, see noteDescription. A list of pets reads
+// "\tm:ListResponse", " items\tl:Pet[]", "  []\tm:Pet", "   id\tn:int64".
 func (d *Document) exampleTypes(s *Schema, mode ExampleMode, display func(string) string) []string {
 	var notes []string
 	e := &exampler{doc: d, mode: mode, stack: map[string]bool{}, notes: &notes, display: display}
@@ -231,9 +232,7 @@ func (d *Document) mediaTypes(mt *MediaType, mode ExampleMode, display func(stri
 	notes := d.exampleTypes(mt.Schema, mode, display)
 	if mt.Example != nil || mt.Examples.Len() > 0 {
 		for i, note := range notes {
-			if !strings.HasSuffix(note, "!") {
-				notes[i] = note + "!"
-			}
+			notes[i] = ownNote(note)
 		}
 	}
 	return strings.Join(notes, "\n")
@@ -262,7 +261,42 @@ func (e *exampler) note(s *Schema, explicit bool) {
 	if explicit {
 		label += "!"
 	}
-	*e.notes = append(*e.notes, strings.Repeat(" ", e.level)+e.step+"\t"+kind+":"+label)
+	note := strings.Repeat(" ", e.level) + e.step + "\t" + kind + ":" + label
+	desc := e.noteDescription(s, flat)
+	if desc != "" {
+		note += "\t" + desc
+	}
+	*e.notes = append(*e.notes, note)
+}
+
+// noteDescription is the description of the value at the current path, on
+// one line. A field holding a model is described by the field, not by the
+// model, whose description would repeat on every field that holds it. The
+// root is left out: the page shows it with the model or response.
+func (e *exampler) noteDescription(s, flat *Schema) string {
+	if e.step == "" {
+		return ""
+	}
+	desc := s.Description
+	if desc == "" && e.doc.SchemaName(s) == "" {
+		desc = flat.Description
+	}
+	return strings.Join(strings.Fields(desc), " ")
+}
+
+// ownNote marks a note as the author's example: "!" after the label, before
+// any description.
+func ownNote(note string) string {
+	head, rest, _ := strings.Cut(note, "\t")
+	typ, desc, described := strings.Cut(rest, "\t")
+	if !strings.HasSuffix(typ, "!") {
+		typ += "!"
+	}
+	out := head + "\t" + typ
+	if described {
+		out += "\t" + desc
+	}
+	return out
 }
 
 // typeNote is the kind and short label of s, flattened as flat: a named

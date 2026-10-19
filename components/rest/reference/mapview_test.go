@@ -24,8 +24,7 @@ func TestRenderSchemaMap(t *testing.T) {
 	matches := mapDataPattern.FindAllStringSubmatch(page, -1)
 	require.Len(t, matches, 1, "the graph is written once")
 	require.Contains(t, page, `<section class="map" id="section/map"`)
-	require.Contains(t, page, `data-view="map"`)
-	require.Contains(t, page, `<a class="nav-link nav-map" href="#map" data-view="map">`, "the sidebar opens the map too")
+	require.Contains(t, page, `<a href="#map" data-mode="map">Schema Map</a>`, "the app bar opens the map")
 
 	var data struct {
 		Nodes []*Node  `json:"nodes"`

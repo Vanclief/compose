@@ -198,6 +198,22 @@ func TestRenderEmmaInline(t *testing.T) {
 	require.Contains(t, html, `href="#operation/auth-login"`)
 	require.Contains(t, html, `id="model/StandardError"`)
 	require.Contains(t, html, `href="#model/StandardError"`)
+	// The app bar switches between the page's views, each a pane.
+	require.Contains(t, html, `<a href="#section/introduction" data-mode="docs" aria-current="page">Documentation</a>
+<a href="#path/access-codes" data-mode="endpoints">Endpoint Reference</a>
+<a href="#section/models" data-mode="models">Models</a>
+<a href="#map" data-mode="map">Schema Map</a>`)
+	for _, pane := range []string{"docs", "endpoints", "models"} {
+		require.Contains(t, html, `<div class="pane" data-pane="`+pane+`">`)
+		require.Contains(t, html, `<div class="nav-pane" data-pane="`+pane+`">`)
+	}
+	// Models are listed by module and shown in an inspector, with the full
+	// schema a click away.
+	require.Contains(t, html, `<span class="nav-group-name">accesscontrol</span>`)
+	point := section(t, html, `id="model/application_models_accesscontrol_AccessPoint"`)
+	require.Contains(t, point, `<div class="card mm-sample oi-deep"><div class="oi" data-model-oi></div></div>`)
+	require.Contains(t, point, `<div class="model-tree" hidden>`)
+
 	// Groups follow the URL: access control lives under complexes.
 	require.Contains(t, html, `id="path/complexes"`)
 	require.Less(t, strings.Index(html, `id="path/complexes"`), strings.Index(html, `id="operation/accesscontrol-listaccesspoints"`))

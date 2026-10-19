@@ -30,6 +30,7 @@ type pageView struct {
 	Global      []requirementView
 	Groups      []*groupView
 	Models      []*modelView
+	ModelNav    modelNav
 	Map         *mapView
 	Diff        *changesView
 	AssetsURL   string
@@ -201,16 +202,36 @@ type tryParam struct {
 	Placeholder string
 }
 
+// modelView is one model of the Models view. Its fields show in an
+// ObjectInspector built from its sample (see addModelSample) when it has
+// one, and in Tree, the full schema with every constraint. A changed model
+// (diff mode) opens on the tree, which marks the changes.
 type modelView struct {
+	Name        string
+	Short       string
+	Anchor      string
+	Description template.HTML
+	Tree        template.HTML
+	Inspector   bool
+	TreeFirst   bool
+	Search      string
+	MadeBy      int
+	UsedBy      int
+	Trace       string
+	Diff        *diffBadge
+}
+
+// modelNav is the Models sidebar: models whose generated names carry a
+// module (see schemaGroup) in a folder per module, the rest loose above
+// them, each sorted by display name.
+type modelNav struct {
+	Loose   []*modelView
+	Modules []modelModule
+}
+
+type modelModule struct {
 	Name   string
-	Short  string
-	Anchor string
-	Tree   template.HTML
-	Search string
-	MadeBy int
-	UsedBy int
-	Trace  string
-	Diff   *diffBadge
+	Models []*modelView
 }
 
 type builder struct {
@@ -290,6 +311,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Global = b.requirements(d.Security)
 	p.Groups = b.buildGroups()
 	p.Models = b.buildModels()
+	p.ModelNav = buildModelNav(p.Models)
 	p.Flow = b.flow.JSON
 	p.ModelSamples = b.modelSamplesJSON()
 	p.TypeNotes = b.typeNotesJSON()
@@ -1187,17 +1209,53 @@ func (b *builder) buildModels() []*modelView {
 		}
 		short := b.short[name]
 		b.addModelSample(name)
-		out = append(out, &modelView{
-			Name:   name,
-			Short:  short,
-			Anchor: b.models[name],
-			Tree:   b.newTree(ForResponse, false).root(s, name),
-			Search: strings.ToLower(short + " " + name),
-			MadeBy: len(b.flow.producers[name]),
-			UsedBy: len(b.flow.consumers[name]),
-			Trace:  b.flow.ids[name],
-			Diff:   b.modelBadge(name),
-		})
+		mv := &modelView{
+			Name:        name,
+			Short:       short,
+			Anchor:      b.models[name],
+			Description: markdown(s.Description),
+			Tree:        b.newTree(ForResponse, false).root(s, name),
+			Search:      strings.ToLower(short + " " + name),
+			MadeBy:      len(b.flow.producers[name]),
+			UsedBy:      len(b.flow.consumers[name]),
+			Trace:       b.flow.ids[name],
+			Diff:        b.modelBadge(name),
+		}
+		_, mv.Inspector = b.samples[mv.Anchor]
+		mv.TreeFirst = mv.Diff != nil
+		out = append(out, mv)
 	}
 	return out
+}
+
+func buildModelNav(models []*modelView) modelNav {
+	var nav modelNav
+	byModule := map[string]int{}
+	for _, m := range models {
+		module := schemaGroup(m.Name)
+		if module == "" {
+			nav.Loose = append(nav.Loose, m)
+			continue
+		}
+		i, ok := byModule[module]
+		if !ok {
+			i = len(nav.Modules)
+			byModule[module] = i
+			nav.Modules = append(nav.Modules, modelModule{Name: module})
+		}
+		nav.Modules[i].Models = append(nav.Modules[i].Models, m)
+	}
+	byShort := func(list []*modelView) {
+		sort.SliceStable(list, func(i, j int) bool {
+			return strings.ToLower(list[i].Short) < strings.ToLower(list[j].Short)
+		})
+	}
+	byShort(nav.Loose)
+	for _, m := range nav.Modules {
+		byShort(m.Models)
+	}
+	sort.SliceStable(nav.Modules, func(i, j int) bool {
+		return nav.Modules[i].Name < nav.Modules[j].Name
+	})
+	return nav
 }
