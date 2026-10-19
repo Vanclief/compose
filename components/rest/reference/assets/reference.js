@@ -2681,3 +2681,85 @@
     openHash(location.hash, false);
   }
 })();
+
+// ---- diff ----
+// Diff mode (rendered with a base spec): the Show changes toggle, the
+// Changes only sidebar filter and opening the collapsed responses and rows
+// that hold marked changes. It talks to the client above only through the
+// DOM, by clicking the toggles that client already handles.
+(() => {
+  'use strict';
+
+  const doc = document;
+  const body = doc.body;
+  const showBtn = doc.querySelector('[data-diff-toggle]');
+  if (!showBtn) {
+    return;
+  }
+
+  function setShow(on) {
+    body.classList.toggle('diff', on);
+    showBtn.setAttribute('aria-pressed', String(on));
+  }
+
+  // Changes only hides unchanged sidebar entries (in CSS) and opens the
+  // groups and folders that hold changes.
+  function setOnly(on) {
+    body.classList.toggle('changes-only', on);
+    if (!on) {
+      return;
+    }
+    doc.querySelectorAll('.sidebar .nav-group-tg, .sidebar .nav-folder-tg').forEach((btn) => {
+      if (btn.getAttribute('aria-expanded') !== 'true' && btn.parentElement.querySelector('.diff-op')) {
+        btn.click();
+      }
+    });
+  }
+
+  doc.addEventListener('click', (e) => {
+    const btn = e.target instanceof Element ? e.target.closest('[data-diff-toggle]') : null;
+    if (btn) {
+      setShow(!body.classList.contains('diff'));
+    }
+  });
+
+  doc.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t instanceof HTMLInputElement && t.hasAttribute('data-diff-only')) {
+      setOnly(t.checked);
+    }
+  });
+
+  const only = doc.querySelector('[data-diff-only]');
+  if (only && only.checked) {
+    setOnly(true);
+  }
+
+  // toggleFor returns the button that shows a collapsed container.
+  function toggleFor(box) {
+    if (box.classList.contains('row-kids')) {
+      return box.parentElement.querySelector(':scope > .row-head > .tg');
+    }
+    if (box.classList.contains('resp-body')) {
+      return box.parentElement.querySelector(':scope > .resp-head .tg');
+    }
+    if (box.classList.contains('opt-body')) {
+      return box.previousElementSibling;
+    }
+    return null;
+  }
+
+  // Marked rows inside an operation start visible: open every collapsed
+  // response, optional-parameter list and row above them.
+  doc.querySelectorAll('.op:not(.diff-removed) .row.diff-add, .op:not(.diff-removed) .row.diff-del, .op:not(.diff-removed) .row.diff-chg').forEach((row) => {
+    for (let up = row.parentElement; up && !up.classList.contains('op'); up = up.parentElement) {
+      if (!up.hidden) {
+        continue;
+      }
+      const btn = toggleFor(up);
+      if (btn && btn.getAttribute('aria-expanded') !== 'true') {
+        btn.click();
+      }
+    }
+  });
+})();

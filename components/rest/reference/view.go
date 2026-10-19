@@ -30,6 +30,7 @@ type pageView struct {
 	Tags        []*tagView
 	Models      []*modelView
 	Map         *mapView
+	Diff        *changesView
 	AssetsURL   string
 	CSSVersion  string
 	JSVersion   string
@@ -138,6 +139,7 @@ type opView struct {
 	Machine     machineView
 	Trace       string // trace ids of the models the operation produces or consumes
 	ref         OperationRef
+	Diff        *diffBadge
 }
 
 // paramGroup holds the parameters of one location. Required ones are always
@@ -217,6 +219,7 @@ type modelView struct {
 	MadeBy int
 	UsedBy int
 	Trace  string
+	Diff   *diffBadge
 }
 
 type builder struct {
@@ -228,15 +231,17 @@ type builder struct {
 	schemes map[string]string // security scheme name to anchor
 	server  string
 	flow    *flowIndex
+	diff    *diffState // nil unless Options.Base is set
 }
 
-func buildPage(d *Document, opts Options) *pageView {
+func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	b := &builder{
 		d:       d,
 		opts:    opts,
 		used:    map[string]bool{},
 		models:  map[string]string{},
 		schemes: map[string]string{},
+		diff:    diff,
 	}
 
 	b.short = shortNames(d.Components.Schemas.Keys)
@@ -288,6 +293,7 @@ func buildPage(d *Document, opts Options) *pageView {
 	p.Models = b.buildModels()
 	p.Flow = b.flow.JSON
 	p.Map = b.buildMap(p.Tags)
+	p.Diff = b.changesView(p)
 
 	return p
 }
@@ -546,13 +552,17 @@ func (b *builder) buildTags() []*tagView {
 	}
 
 	var ops []*opView
-	for _, ref := range b.d.Operations() {
+	for _, ref := range b.pageOperations() {
 		tags := ref.Operation.Tags
 		if len(tags) == 0 {
 			tags = []string{"Other"}
 		}
-		ov := b.buildOperation(ref, tags)
-		ops = append(ops, ov)
+		ov := b.operationView(ref, tags)
+		// Removed operations (diff mode) belong to the base document and
+		// take no part in the head's production chains.
+		if b.diff == nil || !b.diff.removed[ref.Operation] {
+			ops = append(ops, ov)
+		}
 		for i, name := range tags {
 			tv := tagFor(name)
 			tv.Nav = append(tv.Nav, ov)
@@ -1095,6 +1105,7 @@ func (b *builder) buildModels() []*modelView {
 			MadeBy: len(b.flow.producers[name]),
 			UsedBy: len(b.flow.consumers[name]),
 			Trace:  b.flow.ids[name],
+			Diff:   b.modelBadge(name),
 		})
 	}
 	return out

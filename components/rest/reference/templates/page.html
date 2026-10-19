@@ -8,7 +8,7 @@
 <title>{{.Title}}</title>
 {{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/reference.css?v={{.CSSVersion}}">{{end}}
 </head>
-<body data-server="{{.ServerURL}}">
+<body data-server="{{.ServerURL}}"{{if .Diff}} class="diff"{{end}}>
 <a class="skip" href="#main">Skip to content</a>
 <div class="topbar">
 <button type="button" class="btn ghost" data-menu aria-controls="sidebar" aria-expanded="false">Menu</button>
@@ -18,7 +18,7 @@
 {{template "sidebar" .}}
 <main class="content" id="main" tabindex="-1">
 {{template "intro" .}}
-{{range .Tags}}{{template "tag" .}}{{end}}
+{{if .Diff}}{{template "changes" .Diff}}{{end}}{{range .Tags}}{{template "tag" .}}{{end}}
 {{if .Models}}{{template "models" .}}{{end}}
 {{if .Map}}{{template "map" .Map}}{{end}}
 <footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
@@ -33,17 +33,17 @@
 {{define "sidebar"}}<aside class="sidebar" id="sidebar">
 <div class="side-top">
 <a class="brand" href="#section/introduction">{{.InfoTitle}}</a>
-<button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
+{{if .Diff}}{{template "diff-toggle" .Diff}}{{end}}<button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
 </div>
 {{if .Map}}{{template "mapswitch" .}}{{end}}
 <div class="search">
 <input type="search" id="nav-search" placeholder="Search  /" aria-label="Search operations and models" autocomplete="off" spellcheck="false">
-</div>
+{{if .Diff}}{{template "diff-filter" .Diff}}{{end}}</div>
 <nav class="nav-wrap" aria-label="API reference">
 <ul class="nav nav-static">
 <li><a class="nav-link" href="#section/introduction">Introduction</a></li>
 {{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
-</ul>
+{{if .Diff}}{{template "diff-nav-link" .Diff}}{{end}}</ul>
 {{range .Tags}}<div class="nav-group">
 <button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
 <ul class="nav" hidden>
@@ -52,14 +52,14 @@
 {{end}}{{if .Models}}<div class="nav-group">
 <button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
 <ul class="nav" hidden>
-{{range .Models}}<li><a class="nav-model" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span></a></li>
+{{range .Models}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
 {{end}}</ul>
 </div>{{end}}
 <p class="no-results" hidden>No matches.</p>
 </nav>
 </aside>{{end}}
 
-{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span><span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
+{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
 {{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .}}</ul>
@@ -117,8 +117,8 @@
 
 {{define "models"}}<section class="models" id="section/models">
 <div class="tag-head"><h2>Models</h2></div>
-{{range .Models}}<article class="model" id="{{.Anchor}}" data-anchor>
-<h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a></h3>
+{{range .Models}}<article class="model{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor>
+<h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a>{{with .Diff}} {{template "diff-badge" .}}{{end}}</h3>
 {{if ne .Short .Name}}<div class="model-name"><code>{{.Name}}</code></div>{{end}}
 {{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
 {{.Tree}}

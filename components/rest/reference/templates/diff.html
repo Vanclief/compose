@@ -1,0 +1,29 @@
+{{define "diff-badge"}}<span class="diff-badge {{.Class}}">{{.Label}}</span>{{if .Breaking}}<span class="diff-badge diff-breaking">BREAKING</span>{{end}}{{end}}
+
+{{define "diff-nav-badge"}}<span class="diff-dot {{.Class}}" title="{{.Label}}{{if .Breaking}}, BREAKING{{end}}">{{.Letter}}</span>{{if .Breaking}}<span class="diff-dot diff-breaking" title="BREAKING">!</span>{{end}}{{end}}
+
+{{define "diff-toggle"}}<button type="button" class="btn ghost diff-toggle" data-diff-toggle aria-pressed="true" title="Show what changed since {{if .BaseVersion}}v{{.BaseVersion}}{{else}}the base version{{end}}">Show changes</button>{{end}}
+
+{{define "diff-filter"}}<label class="diff-only"><input type="checkbox" data-diff-only> Changes only</label>{{end}}
+
+{{define "diff-nav-link"}}<li class="diff-navlink"><a class="nav-link" href="#section/changes">What changed <span class="count">{{.Operations}}</span></a></li>{{end}}
+
+{{define "changes"}}<section class="section diff-log" id="section/changes" data-anchor>
+<div class="main-col">
+<h2>What changed</h2>
+{{if .Total}}<p class="diff-sum">Since {{if .BaseVersion}}v{{.BaseVersion}}{{else}}the base version{{end}}: {{.Count .Changed "operation" "operations"}} changed, {{.Added}} added, {{.Removed}} removed{{if .Breaking}}; <span class="diff-brk-n">{{.Count .Breaking "breaking change" "breaking changes"}}</span>{{end}}.</p>
+{{range .Groups}}<div class="diff-group">
+<h3 class="h-small">{{.Name}}</h3>
+<ul class="diff-items">
+{{range .Items}}<li class="diff-item">
+<div class="diff-item-head">{{if .Method}}<span class="m m-{{.MethodClass}}">{{.Method}}</span>{{end}}{{if .Anchor}}<a href="{{href .Anchor}}" title="{{.Title}}"><code>{{.Label}}</code></a>{{else}}<code>{{.Label}}</code>{{end}}{{template "diff-badge" .Badge}}</div>
+{{if .Changes}}<ul class="diff-lines">
+{{range .Changes}}<li class="{{.Class}}">{{if .Where}}<code class="diff-where">{{.Where}}</code> {{end}}<span class="diff-detail">{{.Detail}}</span>{{if .Breaking}} <span class="diff-badge diff-breaking">BREAKING</span>{{end}}</li>
+{{end}}</ul>{{end}}
+</li>
+{{end}}</ul>
+</div>
+{{end}}{{else}}<p class="muted">No changes since {{if .BaseVersion}}v{{.BaseVersion}}{{else}}the base version{{end}}.</p>{{end}}
+</div>
+<div class="side-col"></div>
+</section>{{end}}

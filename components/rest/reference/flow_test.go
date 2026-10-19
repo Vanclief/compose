@@ -127,7 +127,7 @@ func flowPage(t *testing.T) (*pageView, map[string]*opView) {
 	t.Helper()
 	doc, err := Parse([]byte(flowSpec))
 	require.NoError(t, err)
-	p := buildPage(doc, Options{})
+	p := buildPage(doc, Options{}, nil)
 	ops := map[string]*opView{}
 	for _, tag := range p.Tags {
 		for _, ov := range tag.Ops {

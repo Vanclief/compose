@@ -67,6 +67,11 @@ type Options struct {
 	// page origin. Because try-it otherwise defaults to servers[0], usually
 	// production, a staging deployment must set it.
 	ServerURL string
+	// Base is an optional previous version of the spec (YAML or JSON). When
+	// set, the page shows what changed since it: badges on operations and
+	// models, marked rows in schema trees and a "What changed" section. See
+	// Diff for the rules.
+	Base []byte
 }
 
 type pageData struct {
@@ -80,14 +85,19 @@ func Render(doc *Document, opts Options) ([]byte, error) {
 		return nil, ez.New(ez.EINVALID, "reference: nil document", nil)
 	}
 
-	data := pageData{pageView: buildPage(doc, opts), Inline: opts.AssetsURL == ""}
+	diff, err := newDiffState(doc, opts.Base)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	data := pageData{pageView: buildPage(doc, opts, diff), Inline: opts.AssetsURL == ""}
 	if data.Inline {
 		data.CSS = template.CSS(embeddedAssets["reference.css"].data)
 		data.JS = template.JS(embeddedAssets["reference.js"].data)
 	}
 
 	var buf bytes.Buffer
-	err := pageTemplate.ExecuteTemplate(&buf, "page.html", data)
+	err = pageTemplate.ExecuteTemplate(&buf, "page.html", data)
 	if err != nil {
 		return nil, ez.New(ez.EINTERNAL, "reference: render page", err)
 	}
@@ -253,7 +263,7 @@ func (t *tree) content(f *Schema, name string, depth int) {
 	}
 
 	t.w(`<div class="tree-head"><span class="ty">`, t.labelOf(f, name, 0), `</span>`, t.markers(f, f, false), `</div>`)
-	t.meta(f, nil)
+	t.meta(f, nil, t.modelMark(name))
 	t.notes(f)
 
 	if !isArray(f) || f.Items == nil {
@@ -277,7 +287,7 @@ func (t *tree) content(f *Schema, name string, depth int) {
 
 func (t *tree) object(f *Schema, depth int) {
 	for _, key := range f.Properties.Keys {
-		t.row(rowSpec{name: key, schema: f.Properties.Map[key], required: f.IsRequired(key)}, depth)
+		t.diffRow(rowSpec{name: key, schema: f.Properties.Map[key], required: f.IsRequired(key)}, depth)
 	}
 
 	extra := f.AdditionalSchema()
@@ -495,10 +505,12 @@ type rowSpec struct {
 	deprecated  bool
 	example     any
 	param       bool
+	mark        string   // diff mode: diff-add, diff-del or diff-chg
+	diff        *rowMark // diff mode: how the row changed
 }
 
 func (t *tree) paramRow(name string, s *Schema, description string, required, deprecated bool, example any) {
-	t.row(rowSpec{name: name, schema: s, required: required, description: description, deprecated: deprecated, example: example, param: true}, 0)
+	t.diffRow(rowSpec{name: name, schema: s, required: required, description: description, deprecated: deprecated, example: example, param: true}, 0)
 }
 
 func (t *tree) row(r rowSpec, depth int) {
@@ -539,7 +551,7 @@ func (t *tree) row(r rowSpec, depth int) {
 	}
 	hasKids := t.expandable(kid)
 	recursive := hasKids && kidName != "" && t.inChain(kidName)
-	if recursive || depth >= maxTreeDepth {
+	if recursive || depth >= maxTreeDepth || r.mark == markDel {
 		hasKids = false
 	}
 
@@ -573,6 +585,9 @@ func (t *tree) row(r rowSpec, depth int) {
 	if s.WriteOnly || f.WriteOnly {
 		rowClass += " wo"
 	}
+	if r.mark != "" {
+		rowClass += " " + r.mark
+	}
 
 	t.w(`<div class="`, rowClass, `"><div class="row-head">`)
 	switch {
@@ -599,12 +614,13 @@ func (t *tree) row(r rowSpec, depth int) {
 			t.w(`<span class="mk rec">recursive</span>`)
 		}
 	}
+	t.w(t.insideMark(r, kidName))
 	t.w(`</div>`)
 
 	if desc != "" {
 		t.w(`<div class="row-desc md">`, string(markdown(desc)), `</div>`)
 	}
-	t.meta(f, r.example)
+	t.meta(f, r.example, r.diff)
 
 	switch {
 	case lazy != "" && open:
@@ -882,7 +898,7 @@ func rangeText(lo, hi *int, unit, nonEmpty string) []string {
 	return nil
 }
 
-func (t *tree) meta(f *Schema, example any) {
+func (t *tree) meta(f *Schema, example any, diff *rowMark) {
 	var parts []string
 
 	enum := f.Enum
@@ -895,7 +911,7 @@ func (t *tree) meta(f *Schema, example any) {
 		}
 	}
 	if len(enum) > 0 {
-		parts = append(parts, `<span class="mi"><span class="ml">`+enumLabel+`</span>`+chips(enum)+`</span>`)
+		parts = append(parts, `<span class="mi"><span class="ml">`+enumLabel+`</span>`+enumChips(enum, diff)+`</span>`)
 	}
 	if f.Const != nil {
 		parts = append(parts, `<span class="mi"><span class="ml">Constant</span><code>`+esc(jsonValue(f.Const))+`</code></span>`)

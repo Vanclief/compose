@@ -938,3 +938,105 @@ body.map-open { overflow: hidden; }
 @media print {
   .view-switch, .map { display: none !important; }
 }
+
+/* ---- diff ---- */
+/* Diff mode (Options.Base): body.diff shows the marks; the Show changes
+   toggle removes the class to show the head document alone. */
+:root {
+  --diff-add: #1a7f37;
+  --diff-add-bg: #e6f6ea;
+  --diff-del: #cf222e;
+  --diff-del-bg: #fdecea;
+  --diff-chg: #9a6700;
+  --diff-chg-bg: #fff6d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --diff-add: #3fb950;
+    --diff-add-bg: rgba(46, 160, 67, .14);
+    --diff-del: #f85149;
+    --diff-del-bg: rgba(248, 81, 73, .14);
+    --diff-chg: #d29922;
+    --diff-chg-bg: rgba(187, 128, 9, .16);
+  }
+}
+:root[data-theme="dark"] {
+  --diff-add: #3fb950;
+  --diff-add-bg: rgba(46, 160, 67, .14);
+  --diff-del: #f85149;
+  --diff-del-bg: rgba(248, 81, 73, .14);
+  --diff-chg: #d29922;
+  --diff-chg-bg: rgba(187, 128, 9, .16);
+}
+
+body:not(.diff) .diff-badge, body:not(.diff) .diff-dot, body:not(.diff) .diff-log, body:not(.diff) .diff-navlink,
+body:not(.diff) .diff-only, body:not(.diff) .row.diff-del, body:not(.diff) .chip.diff-del, body:not(.diff) .mk.diff-inside,
+body:not(.diff) .op.diff-removed, body:not(.diff) .nav li:has(> .diff-removed) { display: none; }
+
+/* Badges */
+.diff-badge { display: inline-block; padding: 0 7px; border: 1px solid currentColor; border-radius: 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; line-height: 18px; white-space: nowrap; }
+.diff-badge.diff-changed { color: var(--diff-chg); background: var(--diff-chg-bg); }
+.diff-badge.diff-added { color: var(--diff-add); background: var(--diff-add-bg); }
+.diff-badge.diff-removed { color: var(--muted); background: var(--bg-soft); }
+.diff-badge.diff-breaking { color: #fff; background: var(--diff-del); border-color: var(--diff-del); }
+.diff-badge + .diff-badge { margin-left: 4px; }
+.model-title .diff-badge { vertical-align: 2px; font-family: var(--font); }
+.diff-dot { flex: none; min-width: 16px; padding: 0 3px; border-radius: 4px; font-family: var(--mono); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+.diff-dot.diff-changed { color: var(--diff-chg); background: var(--diff-chg-bg); }
+.diff-dot.diff-added { color: var(--diff-add); background: var(--diff-add-bg); }
+.diff-dot.diff-removed { color: var(--muted); background: var(--bg-soft); }
+.diff-dot.diff-breaking { min-width: 12px; color: #fff; background: var(--diff-del); }
+.diff-dot + .diff-dot { margin-left: -5px; }
+
+/* Header toggle and sidebar filter */
+.diff-toggle { margin-left: auto; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.diff-toggle[aria-pressed="true"] { color: var(--diff-chg); border-color: var(--diff-chg); background: var(--diff-chg-bg); }
+.diff-only { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.search .diff-only input { width: auto; margin: 0; padding: 0; accent-color: var(--diff-chg); }
+body.diff.changes-only .nav li:has(> .nav-op:not(.diff-op)), body.diff.changes-only .nav li:has(> .nav-model:not(.diff-op)),
+body.diff.changes-only .nav-folder:not(:has(.diff-op)), body.diff.changes-only .nav-group:not(:has(.diff-op)) { display: none; }
+
+/* Removed operations stay, greyed out */
+body.diff .op.diff-removed > * { opacity: .55; }
+body.diff .op.diff-removed .op-path, body.diff .op.diff-removed .op-title a { text-decoration: line-through; }
+.op.diff-removed .try-btn, .op.diff-removed .try { display: none; }
+body.diff .nav .diff-removed .nav-title { text-decoration: line-through; color: var(--faint); }
+
+/* Schema rows: a tinted band with a + or minus gutter */
+body.diff .row.diff-add, body.diff .row.diff-del, body.diff .row.diff-chg { position: relative; margin: 0 -8px; padding-left: 26px; padding-right: 8px; border-radius: 4px; }
+body.diff .row.diff-add::before, body.diff .row.diff-del::before, body.diff .row.diff-chg::before { position: absolute; left: 9px; top: 9px; font-family: var(--mono); font-weight: 700; font-size: 13px; line-height: 20px; }
+body.diff .row.diff-add { background: var(--diff-add-bg); box-shadow: inset 3px 0 var(--diff-add); }
+body.diff .row.diff-add::before { content: "+"; color: var(--diff-add); }
+body.diff .row.diff-del { background: var(--diff-del-bg); box-shadow: inset 3px 0 var(--diff-del); }
+body.diff .row.diff-del::before { content: "\2212"; color: var(--diff-del); }
+body.diff .row.diff-del .pn, body.diff .row.diff-del .ty { color: var(--diff-del); }
+body.diff .row.diff-chg { background: var(--diff-chg-bg); box-shadow: inset 3px 0 var(--diff-chg); }
+body.diff .row.diff-chg::before { content: "~"; color: var(--diff-chg); }
+body.diff .row.diff-del + .row.diff-add { border-top-color: transparent; }
+body.diff .chip.diff-add { color: var(--diff-add); background: var(--diff-add-bg); box-shadow: inset 0 0 0 1px var(--diff-add); }
+body.diff .chip.diff-add::before { content: "+"; }
+body.diff .chip.diff-del { color: var(--diff-del); background: var(--diff-del-bg); text-decoration: line-through; }
+.mk.diff-inside { color: var(--diff-chg); border-color: var(--diff-chg); background: var(--diff-chg-bg); }
+a.mk.diff-inside:hover { text-decoration: none; filter: brightness(1.1); }
+
+/* What changed: one wide column, the section has no samples */
+.section.diff-log { display: block; }
+.diff-log .main-col { max-width: 1040px; }
+.diff-log .side-col { display: none; }
+.diff-sum { color: var(--muted); }
+.diff-brk-n { color: var(--diff-del); font-weight: 600; }
+.diff-group { margin-top: 24px; }
+.diff-group > .h-small { margin-bottom: 8px; }
+.diff-items { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.diff-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.diff-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.diff-item-head code { font-size: 13px; background: none; padding: 0; color: var(--text); }
+.diff-item-head a:hover code { color: var(--accent); }
+.diff-lines { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13.5px; }
+.diff-lines li { position: relative; padding: 2px 0 2px 20px; }
+.diff-lines li::before { position: absolute; left: 4px; font-family: var(--mono); font-weight: 700; }
+.diff-lines li.diff-add::before { content: "+"; color: var(--diff-add); }
+.diff-lines li.diff-del::before { content: "\2212"; color: var(--diff-del); }
+.diff-lines li.diff-chg::before { content: "~"; color: var(--diff-chg); }
+.diff-where { font-size: 12.5px; }
+.diff-lines .diff-badge { font-size: 9.5px; line-height: 15px; padding: 0 5px; }
