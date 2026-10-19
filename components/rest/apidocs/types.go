@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -53,8 +54,25 @@ type License struct {
 
 // Server is one entry of servers.
 type Server struct {
-	URL         string `json:"url" yaml:"url"`
-	Description string `json:"description" yaml:"description"`
+	URL         string                    `json:"url" yaml:"url"`
+	Description string                    `json:"description" yaml:"description"`
+	Variables   map[string]ServerVariable `json:"variables" yaml:"variables"`
+}
+
+// ServerVariable is one entry of server.variables.
+type ServerVariable struct {
+	Default     string   `json:"default" yaml:"default"`
+	Enum        []string `json:"enum" yaml:"enum"`
+	Description string   `json:"description" yaml:"description"`
+}
+
+// Expand returns the server URL with every {variable} replaced by its default.
+func (s Server) Expand() string {
+	out := s.URL
+	for name, v := range s.Variables {
+		out = strings.ReplaceAll(out, "{"+name+"}", v.Default)
+	}
+	return out
 }
 
 // Tag is one entry of tags. Operations are grouped under tags in the sidebar.

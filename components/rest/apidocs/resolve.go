@@ -62,6 +62,26 @@ func (d *Document) Schema(s *Schema) (*Schema, string) {
 	return s, name
 }
 
+// SchemaName returns the component name s stands for: the name from Schema,
+// or, when s is an inline wrapper whose only composition is a single-member
+// allOf (the 3.0 idiom for adding description or nullable to a $ref), the
+// name of that member. Cycle guards must use this name rather than the one
+// from Schema, otherwise a model that refers to itself through such a wrapper
+// is never recognised as recursive.
+func (d *Document) SchemaName(s *Schema) string {
+	for hops := 0; s != nil && hops < 32; hops++ {
+		resolved, name := d.Schema(s)
+		if name != "" {
+			return name
+		}
+		if resolved == nil || len(resolved.AllOf) != 1 || resolved.Properties.Len() > 0 {
+			return ""
+		}
+		s = resolved.AllOf[0]
+	}
+	return ""
+}
+
 // Parameter resolves a parameter ref.
 func (d *Document) Parameter(p *Parameter) *Parameter {
 	for hops := 0; p != nil && p.Ref != "" && hops < 32; hops++ {
