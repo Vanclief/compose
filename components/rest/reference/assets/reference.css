@@ -508,10 +508,10 @@ button.pn:hover { color: var(--accent); }
 .card.res:not(.show-raw) .tabpanel:not(.pv-off) > pre.raw { display: none; }
 .card.res.show-raw .pv, .pv-off > .pv { display: none; }
 .card [data-raw][aria-pressed="true"] { color: var(--sample-text); border-color: var(--sample-muted); }
-.pv { padding: 6px 12px 12px; max-height: 480px; overflow: auto; font-size: 13px; line-height: 1.45; }
-.pv-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 5px 0; border-top: 1px solid var(--sample-border); }
-.pv-rows > .pv-row:first-child { border-top: 0; }
-.pv-k { flex: 0 0 auto; min-width: 128px; font-family: var(--mono); font-size: 12.5px; color: var(--sample-muted); }
+.pv { position: relative; padding: 6px 12px 12px 18px; max-height: 480px; overflow: auto; font-size: 13.5px; line-height: 1.45; }
+.pv-line { position: relative; display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 3px 6px 3px 2px; border: 0; border-radius: 5px; background: none; color: var(--sample-text); font: inherit; text-align: left; }
+.pv-dot { flex: none; align-self: center; width: 6px; height: 6px; margin: 0 2px 0 1px; border-radius: 50%; background: var(--sample-muted); opacity: .7; transition: box-shadow .15s, opacity .15s; }
+.pv-k { flex: none; color: var(--sample-muted); }
 .pv-v { flex: 1 1 0; min-width: 0; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 .pv-str { color: var(--j-str); }
 .pv-num { color: var(--j-num); }
@@ -519,13 +519,22 @@ button.pn:hover { color: var(--accent); }
 .pv-null, .pv-empty, .pv-ph { color: var(--sample-muted); font-style: italic; }
 .pv-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .pv-list > .pv-v { flex: none; padding: 0 6px; border-radius: 4px; background: rgba(255, 255, 255, .06); }
-.pv-tg { border: 0; background: none; padding: 0; text-align: left; cursor: pointer; color: var(--sample-text); font-weight: 600; }
-.pv-tg::before { content: "\25B8"; display: inline-block; width: 12px; color: var(--sample-muted); font-size: 10px; transition: transform .15s; }
+.pv-tg { cursor: pointer; }
+.pv-tg:hover { background: rgba(255, 255, 255, .05); }
+.pv-tg .pv-k { color: var(--sample-text); font-weight: 600; }
+.pv-tg .pv-dot { opacity: 1; background: var(--sample-text); }
+/* Collapsed parents get a halo around their bullet. */
+.pv-tg[aria-expanded="false"] .pv-dot { box-shadow: 0 0 0 4px rgba(255, 255, 255, .16); }
+.pv-tg::before { content: "\25B8"; position: absolute; left: -13px; color: var(--sample-muted); font-size: 10px; opacity: 0; transition: transform .15s, opacity .15s; }
+.pv-tg:hover::before { opacity: 1; }
 .pv-tg[aria-expanded="true"]::before { transform: rotate(90deg); }
-.pv-tg:hover { color: var(--j-key); }
 .pv-sum { font-size: 12px; color: var(--sample-muted); }
-.pv-kids { flex-basis: 100%; margin: 4px 0 0 5px; padding-left: 12px; border-left: 2px solid var(--sample-border); }
-.pv-kids .pv-k { min-width: 116px; }
+.pv-tg[aria-expanded="false"] .pv-sum { padding: 0 7px; border-radius: 9px; background: rgba(255, 255, 255, .07); }
+.pv-kids { position: relative; margin-left: 6px; padding-left: 14px; }
+/* Thread line along the children: click it to collapse the parent. */
+.pv-thread { position: absolute; left: -5px; top: 0; bottom: 4px; width: 11px; padding: 0; border: 0; background: none; cursor: pointer; }
+.pv-thread::before { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 1px; background: var(--sample-border); transition: background .15s; }
+.pv-thread:hover::before { left: 4px; width: 3px; border-radius: 2px; background: var(--j-key); }
 .copy {
   margin-left: auto;
   padding: 2px 8px;

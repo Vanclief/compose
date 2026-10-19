@@ -1051,35 +1051,58 @@
     return box;
   }
 
+  // Rows read as an outline: a bullet, the key, then the value. Objects and
+  // lists toggle from their line, Workflowy style, or from the thread line
+  // along their children, Reddit style.
   function pvRow(key, v, depth) {
     const row = el('div', 'pv-row');
     if (!pvIsNode(v)) {
-      row.append(el('span', 'pv-k', key));
+      const line = el('div', 'pv-line');
+      line.append(el('span', 'pv-dot'), el('span', 'pv-k', key));
       if (Array.isArray(v)) {
         const list = el('span', 'pv-v pv-list');
         if (v.length === 0) {
           list.append(el('span', 'pv-empty', 'empty list'));
         }
         v.forEach((item) => list.append(pvScalar(item)));
-        row.append(list);
+        line.append(list);
       } else if (v !== null && typeof v === 'object') {
-        row.append(el('span', 'pv-v pv-empty', 'empty object'));
+        line.append(el('span', 'pv-v pv-empty', 'empty object'));
       } else {
-        row.append(pvScalar(v));
+        line.append(pvScalar(v));
       }
+      row.append(line);
       return row;
     }
     row.classList.add('pv-nest');
     const open = depth < 2;
-    const btn = el('button', 'pv-k pv-tg', key);
-    btn.type = 'button';
-    btn.setAttribute('aria-expanded', String(open));
-    row.append(btn, el('span', 'pv-sum', pvSummary(v)));
+    const line = el('button', 'pv-line pv-tg');
+    line.type = 'button';
+    line.setAttribute('aria-expanded', String(open));
+    line.append(el('span', 'pv-dot'), el('span', 'pv-k', key), el('span', 'pv-sum', pvSummary(v)));
     const kids = pvRows(v, depth + 1);
     kids.classList.add('pv-kids');
     kids.hidden = !open;
-    row.append(kids);
+    const thread = el('button', 'pv-thread');
+    thread.type = 'button';
+    thread.title = 'Collapse ' + key;
+    thread.setAttribute('aria-label', 'Collapse ' + key);
+    kids.prepend(thread);
+    row.append(line, kids);
     return row;
+  }
+
+  function pvToggle(row, open) {
+    const line = row.querySelector(':scope > .pv-tg');
+    line.setAttribute('aria-expanded', String(open));
+    row.querySelector(':scope > .pv-kids').hidden = !open;
+    if (!open) {
+      // Collapsing from a long thread can leave the row above the fold.
+      const box = row.closest('.pv');
+      if (box && line.offsetTop < box.scrollTop) {
+        box.scrollTop = line.offsetTop - 8;
+      }
+    }
   }
 
   function renderPretty(box) {
@@ -1144,9 +1167,9 @@
       if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
       } else if (btn.matches('.pv-tg')) {
-        const open = btn.getAttribute('aria-expanded') !== 'true';
-        btn.setAttribute('aria-expanded', String(open));
-        btn.parentElement.querySelector(':scope > .pv-kids').hidden = !open;
+        pvToggle(btn.parentElement, btn.getAttribute('aria-expanded') !== 'true');
+      } else if (btn.matches('.pv-thread')) {
+        pvToggle(btn.parentElement.parentElement, false);
       } else if (btn.matches('[data-raw]')) {
         toggleRaw(btn);
       } else if (btn.matches('[role="tab"]')) {
