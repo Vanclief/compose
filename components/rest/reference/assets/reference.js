@@ -1120,18 +1120,176 @@
 
   const sentCurl = new WeakMap();
 
+  // putParam adds one parameter value to a request being built. Arrays are
+  // typed comma separated. Exploded ones (the default for query parameters)
+  // travel as repeated keys, the rest comma-joined.
+  function putParam(req, input, value) {
+    const name = input.dataset.name;
+    const items = input.hasAttribute('data-array') ? value.split(',').map((v) => v.trim()) : [value];
+    if (input.dataset.in === 'path') {
+      req.path = req.path.split('{' + name + '}').join(items.map(encodeURIComponent).join(','));
+    } else if (input.dataset.in === 'query') {
+      if (input.hasAttribute('data-explode')) {
+        items.forEach((v) => req.query.append(name, v));
+      } else {
+        req.query.append(name, items.join(input.dataset.sep || ','));
+      }
+    } else if (input.dataset.in === 'header') {
+      req.headers[name] = items.join(',');
+    }
+  }
+
+  // ------------------------------------------------------------ copying
+  // The machine copies its request as curl, or the whole endpoint as
+  // Markdown for an agent. Typed values win; required ones fall back to
+  // their examples. Credentials stay shell variables such as $API_KEY, so a
+  // copy never carries a secret.
+
+  function requestExample(form) {
+    const example = form.querySelector('[data-req-example]');
+    return example ? example.textContent : '';
+  }
+
+  function copiedCurl(form) {
+    const method = form.dataset.method;
+    const req = { path: form.dataset.path, query: new URLSearchParams(), headers: {} };
+    form.querySelectorAll('input[data-in]').forEach((input) => {
+      const value = input.value || (input.hasAttribute('data-required') ? input.placeholder : '');
+      if (value !== '') {
+        putParam(req, input, value);
+      }
+    });
+    let auth = {};
+    try {
+      auth = JSON.parse(form.dataset.authArgs || '{}') || {};
+    } catch (err) {
+      auth = {};
+    }
+    let bodyArgs = [];
+    const raw = bodyText(form) || requestExample(form);
+    if (raw.trim() !== '' && method !== 'GET' && method !== 'HEAD') {
+      try {
+        bodyArgs = requestBody(raw, form.dataset.ct || 'application/json', req.headers).args;
+      } catch (err) {
+        bodyArgs = ['--data-raw ' + shellQuote(raw)];
+      }
+    }
+    const qs = req.query.toString();
+    let target = shellQuote(serverBase(form) + req.path + (qs ? '?' + qs : ''));
+    (auth.query || []).forEach((q, i) => {
+      target += shellQuote((i === 0 && !qs ? '?' : '&') + encodeURIComponent(q.name) + '=') + '"$' + q.var + '"';
+    });
+    const parts = ['curl' + (method === 'GET' ? '' : ' -X ' + method) + ' ' + target];
+    parts.push(...(auth.args || []));
+    for (const [k, v] of Object.entries(req.headers)) {
+      parts.push('-H ' + shellQuote(k + ': ' + v));
+    }
+    return parts.concat(bodyArgs).join(' \\\n  ');
+  }
+
+  function fence(lang, text) {
+    const ticks = text.includes('```') ? '~~~~' : '```';
+    return ticks + lang + '\n' + text.trim() + '\n' + ticks;
+  }
+
+  function oneLine(node) {
+    return node ? node.textContent.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  // portType names what an output port carries: the documented schema from
+  // its title, which a list port shortens to its items.
+  function portType(port) {
+    if (!port) {
+      return '';
+    }
+    const pt = port.querySelector('.pt');
+    const m = pt && pt.title ? /\(([^()]+)\)$/.exec(pt.title) : null;
+    return m ? m[1] : oneLine(port.querySelector('.pout, .pty'));
+  }
+
+  function copiedMarkdown(form) {
+    const article = form.closest('[data-op]');
+    const out = [];
+    out.push('# ' + oneLine(article.querySelector('.op-title')), '');
+    out.push('`' + form.dataset.method + ' ' + form.dataset.path + '`', '');
+    const desc = article.querySelector('.op-main > .md');
+    if (desc) {
+      out.push(desc.innerText.trim(), '');
+    }
+    out.push('- Base URL: ' + serverBase(form));
+    const meta = article.querySelector('.op-meta');
+    const auth = meta ? Array.from(meta.children).find((n) => n.matches('.ml') && n.textContent.trim().toLowerCase() === 'auth') : null;
+    if (auth && auth.nextElementSibling) {
+      out.push('- Auth: ' + oneLine(auth.nextElementSibling));
+    }
+    const opID = meta ? meta.querySelector('code') : null;
+    if (opID) {
+      out.push('- operationId: `' + opID.textContent + '`');
+    }
+
+    const groups = form.querySelectorAll('.mc-detail[data-detail="params"] .io[data-in]');
+    if (groups.length > 0) {
+      out.push('', '## Parameters', '');
+      groups.forEach((io) => {
+        io.querySelectorAll('.rows > .row').forEach((row) => {
+          const head = row.querySelector(':scope > .row-head');
+          let line = '- `' + oneLine(head.querySelector('.pn')) + '` (' + io.dataset.in + ', ' + oneLine(head.querySelector('.ty'));
+          line += head.querySelector('.mk.req') ? ', required)' : ')';
+          const d = row.querySelector(':scope > .row-desc');
+          if (d) {
+            line += ': ' + oneLine(d);
+          }
+          out.push(line);
+        });
+      });
+    }
+
+    const body = bodyText(form) || requestExample(form);
+    if (body.trim() !== '') {
+      const name = oneLine(form.querySelector('.port[data-port="in:body"] .pin'));
+      out.push('', '## Request body' + (name ? ': ' + name : '') + ' (' + (form.dataset.ct || 'application/json') + ')', '');
+      out.push(fence('json', body));
+    }
+
+    const card = article.querySelector('.op-samples .card:last-child');
+    const tabs = card ? card.querySelectorAll('[role="tab"]') : [];
+    if (tabs.length > 0) {
+      out.push('', '## Responses');
+      const panels = card.querySelectorAll(':scope > .tabpanel');
+      tabs.forEach((tab, i) => {
+        const status = tab.textContent.trim();
+        const port = form.querySelector('.mc-outs > .port[data-port="out:' + CSS.escape(status) + '"]');
+        const type = portType(port);
+        out.push('', '### ' + status + (type ? ': ' + type : ''), '');
+        const code = panels[i] ? panels[i].querySelector('pre.raw code') : null;
+        if (code && code.textContent.trim() !== '') {
+          out.push(fence('json', code.textContent));
+        }
+      });
+      // Statuses documented without an example still name their type.
+      form.querySelectorAll('.mc-outs > .port').forEach((port) => {
+        const status = port.dataset.port.slice(4);
+        if (!Array.from(tabs).some((tab) => tab.textContent.trim() === status)) {
+          const type = portType(port);
+          out.push('', '### ' + status + (type ? ': ' + type : ''));
+        }
+      });
+    }
+
+    out.push('', '## Example', '', fence('sh', copiedCurl(form)));
+    return out.join('\n') + '\n';
+  }
+
   async function send(form) {
     touchTry(form);
     const method = form.dataset.method;
-    let path = form.dataset.path;
     const query = new URLSearchParams();
     const headers = {};
+    const req = { path: form.dataset.path, query, headers };
     let missing = false;
 
     form.querySelectorAll('input[data-in]').forEach((input) => {
-      const name = input.dataset.name;
-      const value = input.value;
-      if (value === '') {
+      if (input.value === '') {
         if (input.hasAttribute('data-required')) {
           input.classList.add('invalid');
           missing = true;
@@ -1139,21 +1297,9 @@
         return;
       }
       input.classList.remove('invalid');
-      // Arrays are typed comma separated. Exploded ones (the default for
-      // query parameters) travel as repeated keys, the rest comma-joined.
-      const items = input.hasAttribute('data-array') ? value.split(',').map((v) => v.trim()) : [value];
-      if (input.dataset.in === 'path') {
-        path = path.split('{' + name + '}').join(items.map(encodeURIComponent).join(','));
-      } else if (input.dataset.in === 'query') {
-        if (input.hasAttribute('data-explode')) {
-          items.forEach((v) => query.append(name, v));
-        } else {
-          query.append(name, items.join(input.dataset.sep || ','));
-        }
-      } else if (input.dataset.in === 'header') {
-        headers[name] = items.join(',');
-      }
+      putParam(req, input, input.value);
     });
+    const path = req.path;
 
     const result = form.querySelector('.try-result');
     result.hidden = false;
@@ -2138,6 +2284,9 @@
         if (curl) {
           copyText(curl, btn);
         }
+      } else if (btn.matches('[data-copy-req]')) {
+        const form = btn.closest('form.try');
+        copyText(btn.dataset.copyReq === 'ai' ? copiedMarkdown(form) : copiedCurl(form), btn);
       } else if (btn.matches('[data-body-tg]')) {
         toggleBodyEditor(btn);
       } else if (btn.matches('[data-opt]')) {

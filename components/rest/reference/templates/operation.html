@@ -10,12 +10,7 @@
 {{template "machine" .}}
 </div>
 <aside class="op-samples" aria-label="Samples for {{.Title}}">
-{{if or .Curl .ReqSamples}}<div class="card tabset">
-<div class="card-head"><span>Request</span><div class="tablist" role="tablist">{{if .Curl}}<button type="button" role="tab" class="tab" aria-selected="true">curl</button>{{end}}{{range $i, $s := .ReqSamples}}<button type="button" role="tab" class="tab" aria-selected="{{if and (eq $i 0) (not $.Curl)}}true{{else}}false{{end}}" title="{{$s.Type}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
-{{if .Curl}}<div class="tabpanel" role="tabpanel"><pre><code class="sh">{{.Curl}}</code></pre></div>
-{{end}}{{range $i, $s := .ReqSamples}}<div class="tabpanel pvp" role="tabpanel"{{if or $.Curl (ne $i 0)}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="pv" data-pv></div><pre class="raw"><code class="json"{{if eq $i 0}} data-req-example{{end}}>{{$s.Example}}</code></pre></div>
-{{end}}</div>
-{{end}}{{if .ResSamples}}<div class="card tabset">
+{{if .ResSamples}}<div class="card tabset">
 <div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
 {{range $i, $s := .ResSamples}}<div class="tabpanel pvp" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="pv" data-pv></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
 {{end}}</div>
@@ -30,15 +25,15 @@
 
 {{define "tryin"}}<input type="text" class="pin-v" data-in="{{.In}}" data-name="{{.Name}}" placeholder="{{.Placeholder}}" aria-label="{{.Name}}"{{if .Required}} data-required{{end}}{{if .Array}} data-array{{if .Explode}} data-explode{{else if ne .Sep ","}} data-sep="{{.Sep}}"{{end}} title="Comma-separated list"{{end}} spellcheck="false" autocomplete="off">{{end}}
 
-{{define "machine"}}<form class="machine try" aria-label="Try {{.Title}}" data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
-<div class="mc-top"><button type="submit" class="mc-play" title="Send {{.Method}} {{.Path}}" aria-label="Send {{.Method}} {{.Path}}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.6v10.8L13.2 8z"/></svg></button></div>
+{{define "machine"}}<form class="machine try" aria-label="Try {{.Title}}" data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{with .CurlAuth}} data-auth-args="{{.}}"{{end}}{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
+<div class="mc-top"><button type="button" class="mc-copy" data-copy-req="curl" title="Copy this request as curl, with the values typed here">Copy curl</button><button type="button" class="mc-copy" data-copy-req="ai" title="Copy this endpoint as Markdown for an AI agent">Copy for AI</button><button type="submit" class="mc-play" title="Send {{.Method}} {{.Path}}" aria-label="Send {{.Method}} {{.Path}}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.6v10.8L13.2 8z"/></svg></button></div>
 <ul class="mc-ins">{{range .Machine.Inputs}}{{template "port" .}}{{end}}</ul>
 <div class="mc-wire mc-wire-in" aria-hidden="true"></div>
 <div class="mc-node"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="mc-res">{{.Machine.Resource}}</span></div>
 <div class="mc-wire mc-wire-out" aria-hidden="true"></div>
 <ul class="mc-outs">{{range .Machine.Outputs}}{{template "port" .}}{{end}}</ul>
 {{if .TryBody}}<div class="mc-body" hidden><div class="mc-body-h">Body <span class="ct">{{.TryCT}}</span></div><textarea data-body rows="12" spellcheck="false" aria-label="Request body"></textarea></div>
-{{end}}{{template "details" .}}<div class="try-result" hidden aria-live="polite"></div>
+{{end}}{{template "details" .}}{{with .ReqExample}}<pre class="req-ex" hidden data-req-example>{{.}}</pre>{{end}}<div class="try-result" hidden aria-live="polite"></div>
 </form>{{end}}
 
 {{define "detail-x"}}<button type="button" class="mcd-x" data-detail-close aria-label="Close details">&times;</button>{{end}}

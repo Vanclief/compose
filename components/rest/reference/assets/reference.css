@@ -501,7 +501,10 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
   box-shadow: 0 8px 20px -14px rgba(0, 0, 0, .45);
   transition: border-color .2s, box-shadow .2s;
 }
-.mc-top { grid-column: 1 / -1; display: flex; justify-content: flex-end; margin: -6px -6px 2px 0; }
+.mc-top { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: -6px -6px 2px 0; }
+.mc-copy { height: 26px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); font: inherit; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s; }
+.mc-copy:hover { border-color: var(--accent); color: var(--accent); }
+.mc-copy + .mc-play { margin-left: 4px; }
 .mc-play { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--bg); color: var(--s2); cursor: pointer; transition: background .15s, color .15s, border-color .15s, transform .1s; }
 .mc-play svg { width: 15px; height: 15px; margin-left: 2px; fill: currentColor; }
 .mc-play:hover, .mc-play:focus-visible { border-color: var(--s2); background: var(--s2); color: var(--bg); }

@@ -2,6 +2,7 @@ package reference
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -98,8 +99,25 @@ func (d *Document) serverURL(op *Operation, override string) string {
 
 // queryPlaceholder is a credential sent in the query string: name=$Variable.
 type queryPlaceholder struct {
-	Name     string
-	Variable string
+	Name     string `json:"name"`
+	Variable string `json:"var"`
+}
+
+// curlAuth is the credential part of Curl as JSON, for the client to put in
+// the curl it copies: {"args":[...],"query":[{"name":..,"var":..}]}.
+func (d *Document) curlAuth(op *Operation) string {
+	args, query := d.securityArgs(op)
+	if len(args) == 0 && len(query) == 0 {
+		return ""
+	}
+	out, err := json.Marshal(struct {
+		Args  []string           `json:"args,omitempty"`
+		Query []queryPlaceholder `json:"query,omitempty"`
+	}{args, query})
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // quoteTarget single-quotes the URL and appends credential query pairs with

@@ -127,8 +127,8 @@ type opView struct {
 	SecurityKey string // JSON list of requirement scheme lists, read by the try-it client
 	ParamGroups []paramGroup
 	Body        *bodyView
-	Curl        template.HTML
-	ReqSamples  []sampleView
+	CurlAuth    string        // JSON credential args for the copied curl, see curlAuth
+	ReqExample  template.HTML // the request body example the body port's fields start from
 	ResSamples  []sampleView
 	Search      string
 	TryParams   []tryParam
@@ -814,9 +814,9 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 	b.buildBody(ov, op)
 	b.buildResponses(ov, op)
 
-	// Without an explicit ServerURL, Curl picks the operation's server before
-	// servers[0]; try-it follows the same precedence through TryServer.
-	ov.Curl = textHTML(b.d.Curl(ref.Method, ref.Path, ref.Item, op, b.opts.ServerURL))
+	// Without an explicit ServerURL, try-it and the copied curl use the
+	// operation's server before servers[0], as Curl does.
+	ov.CurlAuth = b.d.curlAuth(op)
 	if b.opts.ServerURL == "" && len(op.Servers) > 0 {
 		ov.TryServer = op.Servers[0].Expand()
 	}
@@ -929,17 +929,11 @@ func (b *builder) buildBody(ov *opView, op *Operation) {
 		}
 		bv.Contents = append(bv.Contents, contentView{Type: ct, Tree: b.newTree(ForRequest, true).root(mt.Schema, "")})
 
-		example := b.d.MediaExampleJSON(mt, ForRequest)
-		if example != "" {
-			ov.ReqSamples = append(ov.ReqSamples, sampleView{Label: ct, Type: ct, Example: textHTML(example)})
-		}
 		if !ov.TryBody {
 			ov.TryBody = true
 			ov.TryCT = ct
+			ov.ReqExample = textHTML(b.d.MediaExampleJSON(mt, ForRequest))
 		}
-	}
-	if len(ov.ReqSamples) == 1 {
-		ov.ReqSamples[0].Label = "Body"
 	}
 	ov.Body = bv
 }

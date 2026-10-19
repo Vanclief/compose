@@ -250,6 +250,11 @@ func TestFlowRender(t *testing.T) {
 	require.Contains(t, create, `<span class="pin">NewPet</span><span class="lchip">body</span>`)
 	require.Contains(t, create, `<div class="btree" data-btree></div><button type="button" class="pedit" data-body-tg aria-expanded="false">Edit as JSON</button>`)
 	require.Contains(t, create, `<div class="mc-body" hidden>`)
+	require.Contains(t, create, `<pre class="req-ex" hidden data-req-example>{
+  "name": "string"
+}</pre>`)
+	require.Contains(t, create, `<button type="button" class="mc-copy" data-copy-req="ai"`)
+	require.NotContains(t, create, `<span>Request</span>`)
 
 	list := section(t, html, `id="operation/pets-list"`)
 	require.Contains(t, list, `class="port k-obj main stack" data-port="out:200"`)
