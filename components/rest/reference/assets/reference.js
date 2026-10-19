@@ -1345,7 +1345,7 @@
         toggle(tg);
       }
     } else if (parts[1] === 'optional') {
-      const tgs = article.querySelectorAll('.zone-send .opt-tg');
+      const tgs = article.querySelectorAll('.spec .opt-tg');
       tgs.forEach((tg) => {
         if (tg.getAttribute('aria-expanded') !== 'true') {
           toggle(tg);
@@ -1353,7 +1353,7 @@
       });
       target = tgs.length ? tgs[0].closest('.io') : null;
     } else {
-      const io = Array.from(article.querySelectorAll('.zone-send .io[data-in]')).find((n) => n.dataset.in === parts[1]) || null;
+      const io = Array.from(article.querySelectorAll('.spec .io[data-in]')).find((n) => n.dataset.in === parts[1]) || null;
       target = (parts[2] && findRow(io, parts[2])) || io;
     }
     if (target) {
@@ -1703,9 +1703,11 @@
     head.append(t);
     const open = el('a', 'btn ghost mm-open', 'Open in Models');
     open.href = '#' + anchor;
-    const close = el('button', 'btn ghost icon', '×');
+    const close = el('button', 'mm-close');
     close.type = 'button';
     close.setAttribute('aria-label', 'Close');
+    close.title = 'Close (Esc)';
+    close.append(el('kbd', '', 'Esc'), el('span', 'mm-x', '×'));
     close.onclick = closeModel;
     head.append(open, close);
     box.append(head);
@@ -1733,8 +1735,9 @@
       box.setAttribute('aria-modal', 'true');
       box.setAttribute('aria-labelledby', 'mm-title');
       back.append(box);
+      // Any click outside the dialog closes it.
       back.addEventListener('click', (e) => {
-        if (e.target === back) {
+        if (!box.contains(e.target)) {
           closeModel();
         }
       });

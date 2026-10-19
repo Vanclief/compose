@@ -1,7 +1,7 @@
 {{define "operation"}}<article class="op{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor data-op>
 <div class="op-main">
-<div class="op-line"><span class="m m-{{.MethodClass}}">{{.Method}}</span><nav class="crumbs" data-path="{{.Path}}" aria-label="Path {{.Path}}"><button type="button" class="crumb root" data-crumb="0" title="Browse every path">/</button>{{range .Crumbs}}<span class="crumb-sep" aria-hidden="true">&rsaquo;</span>{{if .Param}}<button type="button" class="crumb param" data-crumb="{{.Depth}}">{{.Name}}</button>{{else}}<button type="button" class="crumb" data-crumb="{{.Depth}}"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg>{{.Name}}</button>{{end}}{{end}}</nav>{{if .Deprecated}}<span class="mk dep">deprecated</span>{{end}}{{with .Diff}}{{template "diff-badge" .}}{{end}}</div>
 <h3 class="op-title"><a href="{{href .Anchor}}">{{.Title}}</a></h3>
+<div class="op-line"><span class="m m-{{.MethodClass}}">{{.Method}}</span><nav class="crumbs" data-path="{{.Path}}" aria-label="Path {{.Path}}"><button type="button" class="crumb root" data-crumb="0" title="Browse every path">/</button>{{range .Crumbs}}<span class="crumb-sep" aria-hidden="true">&rsaquo;</span>{{if .Param}}<button type="button" class="crumb param" data-crumb="{{.Depth}}">{{.Name}}</button>{{else}}<button type="button" class="crumb" data-crumb="{{.Depth}}"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg>{{.Name}}</button>{{end}}{{end}}</nav>{{if .Deprecated}}<span class="mk dep">deprecated</span>{{end}}{{with .Diff}}{{template "diff-badge" .}}{{end}}</div>
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
 <div class="op-meta">
 <span class="ml">Auth</span>{{if .NoAuth}}<span class="noauth">No authentication</span>{{else}}{{template "reqs" .Security}}{{end}}
@@ -10,28 +10,28 @@
 {{template "machine" .}}
 <button type="button" class="btn try-btn" data-try aria-expanded="false">Try it</button>
 {{template "try" .}}
-<div class="flow">
-<section class="zone zone-send" aria-label="Request">
-<h4 class="zone-h">Send</h4>
+<div class="spec">
+<section class="spec-sec" aria-label="Request">
+<h4 class="spec-h">Request</h4>
 {{range .ParamGroups}}<div class="io" data-in="{{.In}}">
-<div class="io-k">{{.In}}</div>
+<div class="io-k"><span class="lchip">{{.In}}</span></div>
 <div class="io-v">{{if .Rows}}<div class="rows">{{.Rows}}</div>{{end}}{{if .Optional}}<div class="opt">
 <button type="button" class="tg opt-tg" aria-expanded="false"><span class="opt-n">{{len .OptionalNames}} optional</span><span class="opt-names">{{range .OptionalNames}}<code class="chip">{{.}}</code>{{end}}</span></button>
 <div class="rows opt-body" hidden>{{.Optional}}</div>
 </div>{{end}}</div>
 </div>
-{{end}}<div class="io" data-in="body">
-<div class="io-k">body</div>
-<div class="io-v">{{with .Body}}<div class="sum"><span class="ty">{{.Summary.Label}}</span>{{if .Required}} <span class="mk req">required</span>{{end}}</div>
+{{end}}{{with .Body}}<div class="io" data-in="body">
+<div class="io-k"><span class="lchip">body</span></div>
+<div class="io-v"><div class="sum">{{.Summary.Type}}{{if .Required}}<span class="mk req">required</span>{{end}}</div>
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
-{{template "contents" .Contents}}{{else}}<span class="none">none</span>{{end}}</div>
+{{template "contents" .Contents}}</div>
 </div>
-</section>
-<div class="flow-arrow" aria-hidden="true"></div>
-<section class="zone zone-recv" aria-label="Responses">
-<h4 class="zone-h">Receive</h4>
+{{else}}{{if not .ParamGroups}}<span class="none">No parameters.</span>
+{{end}}{{end}}</section>
+<section class="spec-sec" aria-label="Responses">
+<h4 class="spec-h">Responses</h4>
 {{range .Responses}}<div class="resp" data-status="{{.Status}}">
-<div class="resp-head"{{if .HasBody}} data-resp-toggle{{end}}>{{if .HasBody}}<button type="button" class="tg rs" aria-expanded="false"><span class="status {{.Class}}">{{.Status}}</span></button>{{else}}<span class="rs"><span class="status {{.Class}}">{{.Status}}</span></span>{{end}}<div class="resp-main">{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}{{with .Summary}}{{if .Label}}<div class="resp-sum"><span class="ty">{{.Label}}</span>{{range .Fields}}<code class="chip">{{.}}</code>{{end}}{{if .MoreFields}}<span class="more">+{{.MoreFields}}</span>{{end}}</div>{{end}}{{end}}</div></div>
+<div class="resp-head"{{if .HasBody}} data-resp-toggle{{end}}>{{if .HasBody}}<button type="button" class="tg rs" aria-expanded="false"><span class="status schip {{.Class}}">{{.Status}}</span></button>{{else}}<span class="rs"><span class="status schip {{.Class}}">{{.Status}}</span></span>{{end}}{{with .Summary.Type}}<span class="resp-ty">{{.}}</span>{{else}}<span class="resp-ty empty">empty</span>{{end}}{{if .Description}}<div class="resp-desc md">{{.Description}}</div>{{end}}</div>
 {{if .HasBody}}<div class="resp-body" hidden>
 {{if .Headers}}<div class="sub"><h5>Headers</h5><div class="rows">{{.Headers}}</div></div>{{end}}
 {{template "contents" .Contents}}
@@ -58,7 +58,7 @@
 {{define "contents"}}{{if gt (len .) 1}}<div class="tabset ctabs">
 <div class="tablist" role="tablist">{{range $i, $c := .}}<button type="button" role="tab" class="tab" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$c.Type}}</button>{{end}}</div>
 {{range $i, $c := .}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}>{{$c.Tree}}</div>
-{{end}}</div>{{else}}{{range .}}<div class="ct">{{.Type}}</div>{{.Tree}}{{end}}{{end}}{{end}}
+{{end}}</div>{{else}}{{range .}}{{if ne .Type "application/json"}}<div class="ct">{{.Type}}</div>{{end}}{{.Tree}}{{end}}{{end}}{{end}}
 
 {{define "try"}}<form class="try" hidden data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
 {{if .TryParams}}<div class="try-grid">{{range .TryParams}}<label class="field"><span class="field-name">{{.Name}}{{if .Required}} <span class="star" title="required">*</span>{{end}} <span class="field-in">{{.In}}</span></span><input type="text" data-in="{{.In}}" data-name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}"{{if .Required}} data-required{{end}}{{if .Array}} data-array{{if .Explode}} data-explode{{else if ne .Sep ","}} data-sep="{{.Sep}}"{{end}} title="Comma-separated list"{{end}} spellcheck="false"></label>

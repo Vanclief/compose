@@ -268,15 +268,15 @@ func TestRenderSmallDocument(t *testing.T) {
 
 	getPet := section(t, html, `id="operation/pets-getpet"`)
 	// Path-level parameter merged with the operation's query parameter.
-	require.Contains(t, getPet, `<div class="io-k">path</div>`)
+	require.Contains(t, getPet, `<div class="io-k"><span class="lchip">path</span></div>`)
 	require.Contains(t, getPet, `<span class="pn">pet_id</span><span class="ty">string &lt;uuid&gt;</span><span class="mk req">required</span>`)
 	// Optional parameters collapse behind a row listing their names.
 	require.Contains(t, getPet, `<span class="opt-n">1 optional</span><span class="opt-names"><code class="chip">status</code></span>`)
-	require.Contains(t, getPet, `<div class="io-k">body</div>
-<div class="io-v"><span class="none">none</span></div>`)
-	// Responses start collapsed with a one-line summary of their shape.
-	require.Contains(t, getPet, `<div class="resp-sum"><span class="ty">object (<a class="ref" href="#model/Pet" title="Pet">Pet</a>)</span><code class="chip">name</code>`)
-	require.Contains(t, getPet, `<span class="more">+1</span>`)
+	// No body, no body row.
+	require.NotContains(t, getPet, `data-in="body"`)
+	// Responses start collapsed on one line: status, model, description.
+	require.Contains(t, getPet, `<span class="status schip s2xx">200</span></button><span class="resp-ty"><a class="ref" href="#model/Pet" title="Pet">Pet</a></span><div class="resp-desc md"><p>OK</p>`)
+	require.Contains(t, getPet, `<span class="resp-ty empty">empty</span><div class="resp-desc md"><p>Not found</p>`)
 	require.NotContains(t, getPet, `class="tg rs" aria-expanded="true"`)
 	// Nested response objects start collapsed and list their fields.
 	require.Contains(t, getPet, `<button type="button" class="tg pn" aria-expanded="false">contact</button><span class="ty">object</span><span class="kid-sum"><code class="chip">email</code><code class="chip">phone</code></span>`)

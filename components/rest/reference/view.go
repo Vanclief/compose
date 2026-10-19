@@ -158,12 +158,10 @@ type bodyView struct {
 	Summary     summaryView
 }
 
-// summaryView is the one-line shape of a body or response: its type label and
-// the names of its top-level fields.
+// summaryView is the one-line shape of a body or response: the model it
+// carries, a list of models, or a plain type label.
 type summaryView struct {
-	Label      template.HTML
-	Fields     []string
-	MoreFields int
+	Type template.HTML
 }
 
 type contentView struct {
@@ -1048,26 +1046,38 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 	}
 }
 
-// summaryFieldsMax caps the field names listed in a one-line summary.
-const summaryFieldsMax = 6
-
-// summary labels s and lists its top-level fields, or its items' fields for
-// arrays, skipping fields that do not apply in mode.
+// summary names what s carries: its model, a list of models, or its label.
 func (b *builder) summary(s *Schema, mode ExampleMode) summaryView {
 	f := b.d.Flatten(s)
 	if f == nil {
 		return summaryView{}
 	}
-	sv := summaryView{Label: template.HTML(b.newTree(mode, true).labelOf(f, b.d.SchemaName(s), 0))}
-	if isArray(f) && f.Items != nil {
-		f = b.d.Flatten(f.Items)
+	name := b.d.SchemaName(s)
+	switch {
+	case name != "":
+		return summaryView{Type: template.HTML(b.typeLink(name))}
+	case isArray(f) && f.Items != nil && b.d.SchemaName(f.Items) != "":
+		return summaryView{Type: template.HTML(b.typeLink(b.d.SchemaName(f.Items)) + `<span class="arr">[]</span>`)}
 	}
-	if f == nil {
-		return sv
-	}
-	sv.Fields, sv.MoreFields = fieldNames(b.d, f, mode)
-	return sv
+	return summaryView{Type: template.HTML(`<span class="ty">` + esc(b.newTree(mode, true).plainLabel(s)) + `</span>`)}
 }
+
+// typeLink links the model name, with its package prefix muted.
+func (b *builder) typeLink(name string) string {
+	short, ok := b.short[name]
+	if !ok {
+		return `<span class="ref">` + esc(name) + `</span>`
+	}
+	cut := strings.LastIndex(short, ".") + 1
+	pre := ""
+	if cut > 0 {
+		pre = `<span class="pre">` + esc(short[:cut]) + `</span>`
+	}
+	return `<a class="ref" href="#` + esc(b.models[name]) + `" title="` + esc(name) + `">` + pre + esc(short[cut:]) + `</a>`
+}
+
+// summaryFieldsMax caps the field names listed after a collapsed row.
+const summaryFieldsMax = 6
 
 // fieldNames lists up to summaryFieldsMax property names of the flattened
 // object f that apply in mode, and how many more there are.
