@@ -780,8 +780,9 @@
     }
   });
 
-  // The body port opens the body editor, filled with the example on first
-  // open.
+  // The body port opens the raw JSON editor. With a field tree, the editor
+  // starts from what the tree holds and hands its JSON back on close;
+  // without one it starts from the example.
   function toggleBodyEditor(btn) {
     const form = btn.closest('form.try');
     const box = form ? form.querySelector('.mc-body') : null;
@@ -789,20 +790,266 @@
       return;
     }
     const open = box.hidden;
+    const tree = form.querySelector('[data-btree] > .jt');
+    const body = box.querySelector('[data-body]');
+    if (tree && !open) {
+      let v;
+      try {
+        v = body.value.trim() === '' ? undefined : JSON.parse(body.value);
+      } catch (err) {
+        body.classList.add('invalid');
+        body.focus({ preventScroll: true });
+        return;
+      }
+      body.classList.remove('invalid');
+      fillTree(tree, v);
+      body.value = '';
+    }
     box.hidden = !open;
     btn.setAttribute('aria-expanded', String(open));
-    btn.textContent = open ? 'Hide body' : 'Edit body';
+    if (tree) {
+      tree.parentElement.hidden = open;
+      btn.textContent = open ? 'Edit as fields' : 'Edit as JSON';
+    } else {
+      btn.textContent = open ? 'Hide body' : 'Edit body';
+    }
     if (!open) {
+      litPorts(form);
       return;
     }
-    const body = box.querySelector('[data-body]');
     const example = form.closest('[data-op]').querySelector('[data-req-example]');
-    if (!body.value && example) {
+    const v = tree ? treeValue(tree) : undefined;
+    if (v !== undefined) {
+      body.value = JSON.stringify(v, null, 2);
+    } else if (!body.value && example) {
       body.value = example.textContent;
-      litPorts(form);
     }
+    litPorts(form);
     body.focus({ preventScroll: true });
   }
+
+  // The body port lists the body's fields as the same tree the samples
+  // use, with an input per value. The example fills the placeholders and
+  // decides how each value is read back: numbers, booleans, lists.
+  function buildBodyTree(box) {
+    if (box.dataset.done) {
+      return;
+    }
+    box.dataset.done = '1';
+    const article = box.closest('[data-op]');
+    const example = article ? article.querySelector('[data-req-example]') : null;
+    let v;
+    try {
+      v = JSON.parse(example ? example.textContent : '');
+    } catch (err) {
+      v = null;
+    }
+    const btn = box.parentElement.querySelector('[data-body-tg]');
+    if (v === null || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length === 0) {
+      box.remove();
+      if (btn) {
+        btn.textContent = 'Edit body';
+      }
+      return;
+    }
+    const root = btList(v, 0, '');
+    root.classList.add('jt-root');
+    box.append(root);
+    // Body ids keep the operations they come from, on their own rows.
+    const fields = box.parentElement.querySelector('.pfields');
+    if (fields) {
+      fields.querySelectorAll(':scope > li[data-port]').forEach((li) => {
+        const row = root.querySelector(':scope > li[data-key="' + CSS.escape(li.dataset.port.slice(8)) + '"]');
+        if (!row) {
+          return;
+        }
+        row.dataset.port = li.dataset.port;
+        if (li.dataset.m) {
+          row.dataset.m = li.dataset.m;
+        }
+        const src = li.querySelector('.src');
+        if (src) {
+          row.querySelector('.jt-line').append(src);
+        }
+      });
+      fields.remove();
+    }
+  }
+
+  function btKind(v) {
+    if (typeof v === 'number') {
+      return 'number';
+    }
+    if (typeof v === 'boolean') {
+      return 'boolean';
+    }
+    return 'string';
+  }
+
+  function btList(v, depth, path) {
+    const ul = el('ul', 'jt');
+    for (const key of Object.keys(v)) {
+      ul.append(btItem(key, v[key], depth, path ? path + '.' + key : key));
+    }
+    return ul;
+  }
+
+  function btItem(key, v, depth, path) {
+    const li = el('li');
+    li.dataset.key = key;
+    const isList = Array.isArray(v);
+    const item = isList && v.length > 0 && v[0] !== null && typeof v[0] === 'object' && !Array.isArray(v[0]) ? v[0] : null;
+    if (item || (!isList && v !== null && typeof v === 'object' && Object.keys(v).length > 0)) {
+      // A list of objects is edited as its first item, sent as a list of one.
+      const open = depth < 1;
+      const line = el('button', 'jt-line jt-tg');
+      line.type = 'button';
+      line.setAttribute('aria-expanded', String(open));
+      line.append(
+        el('span', item ? 'jt-ico jt-arr' : 'jt-ico jt-obj', item ? '[]' : '{}'),
+        el('span', 'jt-k', key),
+      );
+      const kids = btList(item || v, depth + 1, path);
+      kids.hidden = !open;
+      li.dataset.shape = item ? 'list' : 'object';
+      li.append(line, kids);
+      return li;
+    }
+    const line = el('label', 'jt-line');
+    line.append(el('span', 'jt-k', key));
+    let input;
+    if (typeof v === 'boolean') {
+      input = el('select', 'bt-v');
+      for (const opt of ['', 'true', 'false']) {
+        const o = el('option', '', opt === '' ? '—' : opt);
+        o.value = opt;
+        input.append(o);
+      }
+      li.dataset.kind = 'boolean';
+    } else {
+      input = el('input', 'bt-v');
+      input.type = 'text';
+      input.spellcheck = false;
+      input.autocomplete = 'off';
+      if (isList) {
+        li.dataset.kind = 'list-' + (v.length ? btKind(v[0]) : 'string');
+        input.placeholder = v.length ? v.join(', ') : 'a, b';
+        input.title = 'Comma-separated list';
+      } else if (v !== null && typeof v === 'object') {
+        li.dataset.kind = 'json';
+        input.placeholder = '{}';
+        input.title = 'JSON';
+      } else {
+        li.dataset.kind = btKind(v);
+        input.placeholder = v === null ? 'null' : v === '' ? 'string' : String(v);
+      }
+    }
+    input.setAttribute('aria-label', path);
+    line.append(input);
+    li.append(line);
+    return li;
+  }
+
+  function btRead(kind, s) {
+    if (kind === 'number') {
+      const n = Number(s);
+      return s.trim() !== '' && !Number.isNaN(n) ? n : s;
+    }
+    if (kind === 'boolean') {
+      return s === 'true';
+    }
+    if (kind === 'json') {
+      try {
+        return JSON.parse(s);
+      } catch (err) {
+        return s;
+      }
+    }
+    if (kind.startsWith('list-')) {
+      return s.split(',').map((part) => part.trim()).filter((part) => part !== '').map((part) => btRead(kind.slice(5), part));
+    }
+    return s;
+  }
+
+  // treeValue reads the filled fields back into an object, leaving out
+  // whatever is empty; undefined when nothing is filled.
+  function treeValue(ul) {
+    const out = {};
+    let any = false;
+    for (const li of ul.children) {
+      let v;
+      if (li.dataset.shape) {
+        const kids = treeValue(li.querySelector(':scope > .jt'));
+        v = kids !== undefined && li.dataset.shape === 'list' ? [kids] : kids;
+      } else {
+        const input = li.querySelector('.bt-v');
+        v = input.value === '' ? undefined : btRead(li.dataset.kind, input.value);
+      }
+      if (v !== undefined) {
+        out[li.dataset.key] = v;
+        any = true;
+      }
+    }
+    return any ? out : undefined;
+  }
+
+  // fillTree puts a JSON value back into the tree's inputs; keys the tree
+  // does not have are dropped.
+  function fillTree(ul, v) {
+    const obj = v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    for (const li of ul.children) {
+      let x = obj[li.dataset.key];
+      if (li.dataset.shape) {
+        if (li.dataset.shape === 'list' && Array.isArray(x)) {
+          x = x[0];
+        }
+        fillTree(li.querySelector(':scope > .jt'), x);
+        continue;
+      }
+      const input = li.querySelector('.bt-v');
+      if (x === undefined || x === null) {
+        input.value = '';
+      } else if (Array.isArray(x) && li.dataset.kind.startsWith('list-')) {
+        input.value = x.join(', ');
+      } else if (typeof x === 'object') {
+        input.value = JSON.stringify(x);
+      } else {
+        input.value = String(x);
+      }
+    }
+  }
+
+  // bodyText is the body to send: the JSON editor when it is open, the
+  // field tree otherwise.
+  function bodyText(form) {
+    const box = form.querySelector('.mc-body');
+    const textarea = box ? box.querySelector('[data-body]') : null;
+    const tree = form.querySelector('[data-btree] > .jt');
+    if (tree && box && box.hidden) {
+      const v = treeValue(tree);
+      return v === undefined ? '' : JSON.stringify(v, null, 2);
+    }
+    return textarea ? textarea.value : '';
+  }
+
+  const btObserver = 'IntersectionObserver' in window
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          btObserver.unobserve(entry.target);
+          buildBodyTree(entry.target);
+        }
+      }
+    }, { rootMargin: '800px 0px' })
+    : null;
+
+  doc.querySelectorAll('[data-btree]').forEach((box) => {
+    if (btObserver) {
+      btObserver.observe(box);
+    } else {
+      buildBodyTree(box);
+    }
+  });
 
   // The optional port opens its inputs in place.
   function toggleOptional(btn) {
@@ -921,10 +1168,10 @@
 
     let body;
     let bodyArgs = [];
-    const textarea = form.querySelector('[data-body]');
-    if (textarea && textarea.value.trim() !== '' && method !== 'GET' && method !== 'HEAD') {
+    const raw = bodyText(form);
+    if (raw.trim() !== '' && method !== 'GET' && method !== 'HEAD') {
       try {
-        const built = requestBody(textarea.value, form.dataset.ct || 'application/json', headers);
+        const built = requestBody(raw, form.dataset.ct || 'application/json', headers);
         body = built.body;
         bodyArgs = built.args;
       } catch (err) {
@@ -1574,8 +1821,7 @@
         optional = true;
       }
     });
-    const body = machine.querySelector('[data-body]');
-    filled['in:body'] = !!(body && body.value.trim());
+    filled['in:body'] = bodyText(machine).trim() !== '';
     filled['in:optional'] = optional;
     machine.querySelectorAll('.mc-ins > .port').forEach((port) => {
       port.classList.toggle('lit', !!filled[port.dataset.port]);
@@ -1902,6 +2148,17 @@
         setMenu(!sidebar.classList.contains('open'));
       }
       return;
+    }
+
+    // An output port is one target: its padding, stacked edges and "used by"
+    // row switch the Response card like its name does.
+    const out = t.closest('.mc-outs .pbox');
+    if (out && !t.closest('a')) {
+      const pt = out.querySelector(':scope > .pt[data-goto]');
+      if (pt) {
+        gotoPort(pt);
+        return;
+      }
     }
 
     const a = t.closest('a[href]');

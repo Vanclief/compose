@@ -248,7 +248,7 @@ func TestFlowRender(t *testing.T) {
 
 	create := section(t, html, `id="operation/pets-create"`)
 	require.Contains(t, create, `<span class="pin">NewPet</span><span class="lchip">body</span>`)
-	require.Contains(t, create, `<button type="button" class="pedit" data-body-tg aria-expanded="false">Edit body</button>`)
+	require.Contains(t, create, `<div class="btree" data-btree></div><button type="button" class="pedit" data-body-tg aria-expanded="false">Edit as JSON</button>`)
 	require.Contains(t, create, `<div class="mc-body" hidden>`)
 
 	list := section(t, html, `id="operation/pets-list"`)

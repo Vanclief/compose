@@ -776,6 +776,25 @@ button.pn:hover { color: var(--accent); }
 .popt .pin-v { margin-top: 3px; }
 .pedit { margin: 6px 0 2px 16px; padding: 1px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
 .pedit:hover, .pedit[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); }
+/* The body port's fields: the sample tree in page colors, an input per
+   value. */
+.btree { --tl: var(--border-strong); --row: 30px; margin: 6px 0 2px; font-family: var(--mono); font-size: 12.5px; }
+.btree .jt-line { gap: 10px; padding: 1px 0 1px 4px; color: var(--text); }
+.btree .jt-tg { padding-left: 20px; }
+.btree .jt-tg:hover { background: var(--bg-soft); }
+.btree .jt-tg .jt-k { color: var(--text); }
+.btree .jt-tg::before { border-color: var(--muted); }
+.btree .jt-k { color: var(--muted); }
+.btree .jt:not(.jt-root) > li:last-child::after { border-left-color: var(--bg); }
+.btree li[data-port] > .jt-line > .jt-k { color: var(--text); }
+.btree .src { flex: none; margin: 0; padding: 0; font-family: var(--font); }
+.bt-v { flex: 1 1 auto; min-width: 60px; height: 24px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-soft); color: var(--text); font: inherit; }
+.bt-v::placeholder { color: var(--faint); }
+.bt-v:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+select.bt-v { flex: 0 1 90px; }
+.btree + .pedit { margin-left: 4px; }
+.mc-outs .pbox:has(> .pt[data-goto]) { cursor: pointer; }
+.mc-body textarea.invalid { border-color: var(--req); }
 .mc-body, .machine > .try-result { grid-column: 1 / -1; }
 .mc-body { margin-top: 12px; }
 .mc-body-h { margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -866,7 +885,7 @@ button.pn:hover { color: var(--accent); }
 }
 
 @media print {
-  .sidebar, .topbar, .pin-v, .popts, .pedit, .mc-top, .mc-body, .try-result, .copy, .settings { display: none !important; }
+  .sidebar, .topbar, .pin-v, .bt-v, .popts, .pedit, .mc-top, .mc-body, .try-result, .copy, .settings { display: none !important; }
   .layout { grid-template-columns: 1fr; }
   .op-samples { position: static; max-height: none; }
 }
@@ -1039,7 +1058,7 @@ body.diff.changes-only .nav-folder:not(:has(.diff-op)), body.diff.changes-only .
 /* Removed operations stay, greyed out */
 body.diff .op.diff-removed > * { opacity: .55; }
 body.diff .op.diff-removed .op-path, body.diff .op.diff-removed .op-title a { text-decoration: line-through; }
-.op.diff-removed .pin-v, .op.diff-removed .pedit, .op.diff-removed .mc-top { display: none; }
+.op.diff-removed .pin-v, .op.diff-removed .bt-v, .op.diff-removed .pedit, .op.diff-removed .mc-top { display: none; }
 body.diff .nav .diff-removed .nav-title { text-decoration: line-through; color: var(--faint); }
 
 /* Schema rows: a tinted band with a + or minus gutter */
