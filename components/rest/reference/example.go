@@ -180,8 +180,10 @@ type exampler struct {
 	mode ExampleMode
 	// stack holds the component names on the current path.
 	stack map[string]bool
-	// models counts the named object schemas on the current path.
-	models int
+	// models counts the named object schemas on the current path, at most
+	// maxModels (maxExampleModels when 0).
+	models    int
+	maxModels int
 	// notes, when set, collects a type note per value in generation order;
 	// step and level place the current value, see exampleTypes.
 	notes   *[]string
@@ -206,6 +208,16 @@ func (d *Document) exampleTypes(s *Schema, mode ExampleMode, display func(string
 	e := &exampler{doc: d, mode: mode, stack: map[string]bool{}, notes: &notes, display: display}
 	e.value(s, 0)
 	return notes
+}
+
+// modelExample is the example of a component schema s for its own page in
+// the model dialog, with its type notes: models it holds stay empty, as
+// they open in the dialog themselves.
+func (d *Document) modelExample(s *Schema, display func(string) string) (any, []string) {
+	var notes []string
+	e := &exampler{doc: d, mode: ForResponse, stack: map[string]bool{}, notes: &notes, display: display, maxModels: 1}
+	v := e.value(s, 0)
+	return v, notes
 }
 
 // mediaTypes is exampleTypes for the schema of a media type, joined with
@@ -346,7 +358,7 @@ func (e *exampler) value(s *Schema, depth int) any {
 		return e.generate(flat, depth)
 	}
 
-	if e.models >= maxExampleModels {
+	if e.models >= e.modelCap() {
 		return emptyExample(flat)
 	}
 	e.models++
@@ -355,10 +367,17 @@ func (e *exampler) value(s *Schema, depth int) any {
 	return v
 }
 
+func (e *exampler) modelCap() int {
+	if e.maxModels > 0 {
+		return e.maxModels
+	}
+	return maxExampleModels
+}
+
 // capped reports whether s is a named object schema without an explicit
 // example that the model nesting cap would cut off.
 func (e *exampler) capped(s *Schema) bool {
-	if e.models < maxExampleModels {
+	if e.models < e.modelCap() {
 		return false
 	}
 	_, ok := explicitExample(s)

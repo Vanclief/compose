@@ -265,6 +265,8 @@ func TestFlowRender(t *testing.T) {
 	stores := section(t, html, `id="operation/stores-list"`)
 	require.Contains(t, stores, `<span class="pout">StoreWithStats<span class="arr">[]</span></span>`)
 
+	require.Contains(t, html, `"model/Pet":{"v":{"id":0,"name":"string"},"t":`)
+
 	model := section(t, html, `id="model/Pet"`)
 	require.Contains(t, model, `&larr; made by 3`)
 	require.True(t, strings.Contains(html, `class="nav-op" href="#operation/pets-get"`) && strings.Contains(html, ` data-m="m`))
@@ -282,6 +284,11 @@ func TestExampleTypes(t *testing.T) {
 		"   name\ts:string",
 		" next\ts:string",
 	}, notes)
+
+	// A model's own example for the dialog leaves the models it holds empty.
+	v, notes := doc.modelExample(&Schema{Ref: "#/components/schemas/PetList"}, strings.ToLower)
+	require.Equal(t, "{\n  \"pets\": [],\n  \"next\": \"string\"\n}", ToJSON(v))
+	require.Equal(t, []string{"\tm:petlist", " pets\tl:pet[]", " next\ts:string"}, notes)
 
 	enum := &Schema{Type: TypeList{"string"}, Enum: []any{"", "a b"}, Example: "a b"}
 	require.Equal(t, []string{"\te:[\"\",\"a b\"]!"}, doc.exampleTypes(enum, ForResponse, strings.ToLower))

@@ -1526,13 +1526,41 @@
     return t ? t.kids.get(step) || null : null;
   }
 
+  // Model titles name their anchors, so a type in a sample can open its
+  // model.
+  let modelAnchors = null;
+
+  function modelAnchor(name) {
+    if (!modelAnchors) {
+      modelAnchors = new Map();
+      doc.querySelectorAll('.model-title > a[href^="#model/"]').forEach((a) => {
+        modelAnchors.set(a.textContent, idFromHref(a.getAttribute('href')));
+      });
+    }
+    return modelAnchors.get(name.replace(/\[\]$/, '')) || '';
+  }
+
   // Types read like a typed language: primitives in one color, models in
-  // another, enums as the union of their values.
-  function pvType(t) {
+  // another, enums as the union of their values. Models open in the model
+  // dialog: a link on a value row, a marked span inside a folder's button.
+  function pvType(t, folder) {
     if (t.kind === 'e') {
       return el('span', 'pv-t t-kw', 'enum');
     }
-    return el('span', 'pv-t ' + (t.kind === 'm' || t.kind === 'l' ? 't-model' : 't-prim'), t.label);
+    if (t.kind !== 'm' && t.kind !== 'l') {
+      return el('span', 'pv-t t-prim', t.label);
+    }
+    const anchor = modelAnchor(t.label);
+    if (!anchor) {
+      return el('span', 'pv-t t-model', t.label);
+    }
+    const link = el(folder ? 'span' : 'a', 'pv-t t-model', t.label);
+    link.dataset.model = anchor;
+    link.title = 'Open ' + t.label.replace(/\[\]$/, '');
+    if (!folder) {
+      link.href = '#' + anchor;
+    }
+    return link;
   }
 
   // pvLit renders a value as a highlighted JSON literal.
@@ -1565,6 +1593,7 @@
   }
 
   // An enum shows its values as a union.
+  const pvEnumMax = 4;
   function pvEnum(t) {
     let values = [];
     try {
@@ -1573,12 +1602,25 @@
       values = [];
     }
     const span = el('span', 'pv-v pv-enum');
-    values.forEach((v, i) => {
-      if (i > 0) {
-        span.append(el('span', 'j-p', ' | '));
-      }
-      span.append(pvLit(v));
-    });
+    const chip = (v) => {
+      const c = pvLit(v);
+      c.classList.add('pv-ex');
+      c.title = JSON.stringify(v);
+      return c;
+    };
+    // Long enums show their first values and expand on click.
+    const shown = values.length > pvEnumMax + 1 ? pvEnumMax : values.length;
+    values.slice(0, shown).forEach((v) => span.append(chip(v)));
+    if (shown < values.length) {
+      const more = el('button', 'pv-more', '+' + (values.length - shown));
+      more.type = 'button';
+      more.title = 'Show all ' + values.length + ' values';
+      more.onclick = () => {
+        values.slice(shown).forEach((v) => span.insertBefore(chip(v), more));
+        more.remove();
+      };
+      span.append(more);
+    }
     return span;
   }
 
@@ -1596,7 +1638,7 @@
       return null;
     }
     const span = pvLit(v);
-    span.classList.add('pv-v');
+    span.classList.add('pv-v', 'pv-ex');
     span.title = typeof v === 'string' ? v : JSON.stringify(v);
     return span;
   }
@@ -1618,15 +1660,26 @@
         ul.append(pvItem(key, v[key], depth, typeKid(t, key)));
       }
     }
-    // Siblings line their types up: the key column fits the longest key,
-    // in the monospace font's ch units.
-    if (t) {
-      const keys = Array.isArray(v) ? ['#' + v.length] : Object.keys(v);
-      ul.style.setProperty('--kw', Math.min(28, Math.max(...keys.map((k) => k.length), 1)) + 'ch');
-      const types = keys.map((k) => typeKid(t, Array.isArray(v) ? '[]' : k)).filter(Boolean).map((n) => n.kind === 'e' ? 4 : n.label.length);
-      ul.style.setProperty('--tw', Math.min(24, Math.max(...types, 4)) + 'ch');
-    }
     return ul;
+  }
+
+  // The whole tree shares one type column and one example column. Each
+  // level indents by pvIndent (about 3ch), so a row's key cell is the
+  // shared width less its depth; pvCols collects the widest key, counted
+  // with its indent, and the widest type while a tree renders. The shared
+  // key width is capped at pvKeyMax: a row whose key needs more (--kl)
+  // takes it and pushes only its own type over.
+  const pvIndent = 3;
+  const pvKeyMax = 22;
+  let pvCols = { k: 1, t: 4 };
+
+  function pvColumns(line, key, depth, t, folder) {
+    const need = key.length + (folder ? 3 : 0);
+    line.classList.add('jt-cols');
+    line.style.setProperty('--d', String(depth));
+    line.style.setProperty('--kl', need + 'ch');
+    pvCols.k = Math.max(pvCols.k, need + depth * pvIndent + (folder ? 2 : 0) + 1);
+    pvCols.t = Math.max(pvCols.t, t.kind === 'e' ? 4 : t.label.length);
   }
 
   function pvItem(key, v, depth, t) {
@@ -1635,8 +1688,8 @@
       const line = el('div', 'jt-line');
       line.append(el('span', 'jt-k', key));
       if (t) {
-        line.classList.add('jt-cols');
-        line.append(pvType(t));
+        pvColumns(line, key, depth, t, false);
+        line.append(pvType(t, false));
         const ex = pvExample(v, t);
         if (ex) {
           line.append(ex);
@@ -1661,13 +1714,11 @@
     const line = el('button', 'jt-line jt-tg');
     line.type = 'button';
     line.setAttribute('aria-expanded', String(open));
-    line.append(
-      el('span', isList ? 'jt-ico jt-arr' : 'jt-ico jt-obj', isList ? '[]' : '{}'),
-      el('span', 'jt-k', key),
-      t && !t.own ? pvType(t) : el('span', 'pill', pvSummary(v)),
-    );
+    const name = el('span', 'jt-k');
+    name.append(el('span', isList ? 'jt-ico jt-arr' : 'jt-ico jt-obj', isList ? '[]' : '{}'), key);
+    line.append(name, t && !t.own ? pvType(t, true) : el('span', 'pill', pvSummary(v)));
     if (t && !t.own) {
-      line.classList.add('jt-cols');
+      pvColumns(line, key, depth, t, true);
     }
     const kids = pvList(v, depth + 1, t);
     kids.hidden = !open;
@@ -1688,14 +1739,38 @@
       box.parentElement.classList.add('pv-off');
       return;
     }
-    let t = typeTree(box.dataset.types);
+    box.append(pvTree(v, typeTree(box.dataset.types)));
+  }
+
+  // pvTree is the field tree of the value v typed by t, its shared key
+  // column at most keyMax ch wide.
+  function pvTree(v, t, keyMax) {
     if (!pvIsNode(v)) {
       v = { value: v };
       t = t ? { kids: new Map([['value', t]]) } : null;
     }
+    pvCols = { k: 1, t: 4 };
     const root = pvList(v, 0, t);
     root.classList.add('jt-root');
-    box.append(root);
+    root.style.setProperty('--kw', Math.min(keyMax || pvKeyMax, pvCols.k) + 'ch');
+    root.style.setProperty('--tw', Math.min(24, pvCols.t) + 'ch');
+    return root;
+  }
+
+  // Each model's own example and type notes, by anchor, for the model
+  // dialog.
+  let modelSamples = null;
+
+  function modelSample(anchor) {
+    if (!modelSamples) {
+      const node = doc.getElementById('model-samples');
+      try {
+        modelSamples = JSON.parse(node ? node.textContent : '{}') || {};
+      } catch (err) {
+        modelSamples = {};
+      }
+    }
+    return modelSamples[anchor] || null;
   }
 
   const pvObserver = 'IntersectionObserver' in window
@@ -2351,13 +2426,23 @@
     head.append(open, close);
     box.append(head);
 
+    // The fields read like a response sample's: name, type and example,
+    // with the models they hold opening here in turn.
     const body = el('div', 'mm-body');
-    ['.model-name', '.model-flow', ':scope > .tree'].forEach((sel) => {
-      const node = card.querySelector(sel);
+    const sample = modelSample(anchor);
+    ['.model-name', '.model-flow', sample ? '' : ':scope > .tree'].forEach((sel) => {
+      const node = sel && card.querySelector(sel);
       if (node) {
         body.append(node.cloneNode(true));
       }
     });
+    if (sample) {
+      const pv = el('div', 'pv');
+      pv.append(pvTree(sample.v, typeTree(String(sample.t)), 32));
+      const frame = el('div', 'card mm-sample');
+      frame.append(pv);
+      body.append(frame);
+    }
     box.append(body);
     body.querySelectorAll('[data-autofill]').forEach(observeLazy);
     close.focus({ preventScroll: true });
@@ -2401,6 +2486,15 @@
       closePop();
     }
     hideCard();
+
+    // A model type in a sample opens its model, even inside a folder row.
+    const typeLink = t.closest('.pv-t[data-model]');
+    if (typeLink) {
+      e.preventDefault();
+      closePop();
+      openModel(typeLink.dataset.model);
+      return;
+    }
 
     const btn = t.closest('button');
     if (btn) {

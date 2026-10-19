@@ -19,17 +19,23 @@
 
   --code-bg: #f3f5f8;
   --code-text: #1c2128;
-  --sample-bg: #1b2230;
-  --sample-head: #232c3d;
-  --sample-text: #dce3ee;
-  --sample-muted: #93a1b5;
-  --sample-border: #2d3850;
+  --sample-bg: #fcfcfd;
+  --sample-head: #f3f5f8;
+  --sample-text: #1c2128;
+  --sample-muted: #5f6b7a;
+  --sample-border: #e3e6ea;
+  --sample-line: #d5dbe3;
+  --sample-hover: rgba(15, 23, 42, .045);
+  --sample-fill: rgba(15, 23, 42, .06);
 
-  --j-key: #7cc2ff;
-  --j-str: #a5d98b;
-  --j-num: #f5b971;
-  --j-bool: #e491e6;
-  --j-null: #c0a0ff;
+  --j-key: #0550ae;
+  --j-str: #1f7a35;
+  --j-num: #b15c00;
+  --j-bool: #a3248f;
+  --j-null: #6d3fd1;
+  --t-prim: #0b7285;
+  --t-model: #9a6200;
+  --t-kw: #8839c9;
 
   --get: #2563eb;
   --post: #15803d;
@@ -70,6 +76,19 @@
     --sample-bg: #0d1117;
     --sample-head: #161b24;
     --sample-border: #262e3a;
+    --sample-text: #dce3ee;
+    --sample-muted: #93a1b5;
+    --sample-line: #3a4560;
+    --sample-hover: rgba(255, 255, 255, .05);
+    --sample-fill: rgba(255, 255, 255, .07);
+    --j-key: #7cc2ff;
+    --j-str: #a5d98b;
+    --j-num: #f5b971;
+    --j-bool: #e491e6;
+    --j-null: #c0a0ff;
+    --t-prim: #56c8d8;
+    --t-model: #e5c07b;
+    --t-kw: #c792ea;
     --get: #60a5fa;
     --post: #4ade80;
     --put: #fb923c;
@@ -104,6 +123,19 @@
   --sample-bg: #0d1117;
   --sample-head: #161b24;
   --sample-border: #262e3a;
+  --sample-text: #dce3ee;
+  --sample-muted: #93a1b5;
+  --sample-line: #3a4560;
+  --sample-hover: rgba(255, 255, 255, .05);
+  --sample-fill: rgba(255, 255, 255, .07);
+  --j-key: #7cc2ff;
+  --j-str: #a5d98b;
+  --j-num: #f5b971;
+  --j-bool: #e491e6;
+  --j-null: #c0a0ff;
+  --t-prim: #56c8d8;
+  --t-model: #e5c07b;
+  --t-kw: #c792ea;
   --get: #60a5fa;
   --post: #4ade80;
   --put: #fb923c;
@@ -594,6 +626,7 @@ html.modal-open { overflow: hidden; }
 .mmodal { cursor: auto; }
 .mm-body { overflow: auto; padding: 12px 18px 18px; }
 .mm-body .model-name { margin-bottom: 8px; }
+.mm-sample > .pv { max-height: none; padding: 8px 12px; }
 
 /* Tracing: hovering a model lights everything that makes or takes it. */
 .model-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }
@@ -707,10 +740,10 @@ button.pn:hover { color: var(--accent); }
 .card-head .tablist { flex: 1; }
 .card-head .ct { margin: 0; color: var(--sample-muted); flex: 1; }
 .card .tab { background: transparent; border-color: var(--sample-border); color: var(--sample-muted); }
-.card .tab[aria-selected="true"] { background: rgba(255, 255, 255, .08); border-color: var(--sample-muted); color: var(--sample-text); }
-.card .tab.s2xx[aria-selected="true"] { color: #4ade80; }
-.card .tab.s4xx[aria-selected="true"] { color: #fb923c; }
-.card .tab.s5xx[aria-selected="true"] { color: #f87171; }
+.card .tab[aria-selected="true"] { background: var(--sample-fill); border-color: var(--sample-muted); color: var(--sample-text); }
+.card .tab.s2xx[aria-selected="true"] { color: var(--s2); }
+.card .tab.s4xx[aria-selected="true"] { color: var(--s4); }
+.card .tab.s5xx[aria-selected="true"] { color: var(--s5); }
 .card .tabpanel > .ct { display: block; margin: 8px 12px 0; color: var(--sample-muted); }
 .card pre { margin: 0; padding: 12px; overflow: auto; max-height: 480px; font-size: 12.5px; line-height: 1.5; }
 .card code { color: var(--sample-text); white-space: pre; }
@@ -722,7 +755,7 @@ button.pn:hover { color: var(--accent); }
 .card .tabpanel > .ct { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--sample-border); background: color-mix(in srgb, var(--sample-head) 45%, var(--sample-bg)); font-family: var(--mono); font-size: 11.5px; }
 .raw-tg { padding: 1px 8px; border: 1px solid var(--sample-border); border-radius: 4px; background: none; color: var(--sample-muted); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
 .raw-tg:hover, .raw-tg[aria-pressed="true"] { color: var(--sample-text); border-color: var(--sample-muted); }
-.pv { --tl: #3a4560; --row: 28px; padding: 8px 12px 12px; max-height: 480px; overflow: auto; font-family: var(--mono); font-size: 12.5px; }
+.pv { --tl: var(--sample-line); --row: 28px; padding: 8px 12px 12px; max-height: 480px; overflow: auto; font-family: var(--mono); font-size: 12.5px; }
 .jt { list-style: none; margin: 0 0 0 9px; padding: 0; border-left: 1px solid var(--tl); }
 .jt.jt-root { margin: 0; border: 0; }
 .jt > li { position: relative; padding-left: 14px; }
@@ -733,7 +766,7 @@ button.pn:hover { color: var(--accent); }
 .jt-line { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--row); padding: 2px 6px 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--sample-text); font: inherit; text-align: left; }
 .jt-k { flex: none; color: var(--sample-muted); }
 .jt-tg { position: relative; padding-left: 20px; cursor: pointer; }
-.jt-tg:hover { background: rgba(255, 255, 255, .05); }
+.jt-tg:hover, .jt-line.jt-cols:hover { background: var(--sample-hover); }
 .jt-tg .jt-k { color: var(--sample-text); }
 .jt-tg::before { content: ""; position: absolute; left: 6px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.5px solid var(--sample-muted); border-bottom: 1.5px solid var(--sample-muted); transform: rotate(-45deg); transition: transform .15s; }
 .jt-tg[aria-expanded="true"]::before { margin-top: -5px; transform: rotate(45deg); }
@@ -742,26 +775,35 @@ button.pn:hover { color: var(--accent); }
 .jt-arr { color: var(--j-null); }
 .pill { flex: none; padding: 0 8px; border: 1px solid var(--tl); border-radius: 999px; font-family: var(--font); font-size: 11.5px; line-height: 18px; color: var(--sample-muted); }
 .pv-v { min-width: 0; overflow-wrap: anywhere; }
-/* With type notes a row reads name, type, example: siblings share the key
-   column (--kw, set per list) so types line up. Types are colored like a
-   typed language's: primitives, models and the enum keyword; examples are
-   JSON literals. */
-.jt-line.jt-cols { display: grid; grid-template-columns: var(--kw, 12ch) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 5px; padding-bottom: 5px; }
-.jt-tg.jt-cols { display: flex; align-items: center; gap: 8px; padding-top: 2px; padding-bottom: 2px; }
+/* With type notes a row reads name, type, example, and the whole tree
+   shares one type column and one example column: --kw (set on the root)
+   is the key column at depth 0, and each level (--d) indents 24px, which
+   its key cell gives back. A folder's chevron takes 14px more. Types are
+   colored like a typed language's: primitives, models and the enum
+   keyword; examples are JSON literals on a chip of their own color. */
+.jt-line.jt-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
+.jt-tg.jt-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
 .jt-cols > .jt-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-t.t-prim { color: #56c8d8; }
-.pv-t.t-model { color: #e5c07b; }
-.pv-t.t-kw { color: #c792ea; font-style: italic; }
+.jt-k > .jt-ico { margin-right: 7px; }
+.pv-t { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-t.t-prim { color: var(--t-prim); }
+.pv-t.t-model { color: var(--t-model); }
+.pv-t.t-kw { color: var(--t-kw); font-style: italic; }
+.pv-t[data-model] { text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; cursor: pointer; }
+.pv-t[data-model]:hover { text-decoration: underline; }
+.pv-ex { justify-self: start; max-width: 100%; padding: 1px 7px; border-radius: 5px; background: color-mix(in srgb, currentColor 12%, transparent); line-height: 18px; }
 .jt-cols > .pv-v:not(.pv-enum) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-enum > .j-s { white-space: nowrap; }
+.pv-enum { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.pv-enum > .pv-ex { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-more { padding: 1px 7px; border: 1px dashed var(--sample-line); border-radius: 5px; background: none; color: var(--sample-muted); font: inherit; line-height: 18px; cursor: pointer; }
+.pv-more:hover { border-style: solid; color: var(--sample-text); }
 .j-p { color: var(--sample-muted); }
 .pv-str { color: var(--j-str); }
 .pv-num { color: var(--j-num); }
 .pv-bool { color: var(--j-bool); }
 .pv-null, .pv-empty, .pv-ph { color: var(--sample-muted); font-style: italic; }
 .pv-list { display: flex; flex-wrap: wrap; gap: 4px; }
-.pv-list > .pv-v { flex: none; padding: 0 6px; border-radius: 4px; background: rgba(255, 255, 255, .06); }
+.pv-list > .pv-v { flex: none; padding: 0 6px; border-radius: 4px; background: var(--sample-fill); }
 .copy {
   margin-left: auto;
   padding: 2px 8px;
@@ -784,7 +826,7 @@ button.pn:hover { color: var(--accent); }
 .settings { position: sticky; top: 16px; }
 .settings .card-body { padding: 12px; }
 .settings .field-name { color: var(--sample-muted); }
-.settings input { background: rgba(255, 255, 255, .06); border-color: var(--sample-border); color: var(--sample-text); }
+.settings input { background: var(--sample-fill); border-color: var(--sample-border); color: var(--sample-text); }
 .hint { margin: 8px 0 0; font-size: 12px; color: var(--sample-muted); }
 
 /* Try it lives in the machine: ports take values, the node sends. */

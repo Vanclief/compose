@@ -1,6 +1,7 @@
 package reference
 
 import (
+	"bytes"
 	"encoding/json"
 	"html/template"
 	"regexp"
@@ -38,6 +39,9 @@ type pageView struct {
 	JS          template.JS
 	Flow        template.JS
 	TypeNotes   template.JS // JSON list of sample type descriptions, see typesRef
+	// ModelSamples maps each model's anchor to its example and type notes
+	// for the model dialog, see modelSamplesJSON.
+	ModelSamples template.JS
 }
 
 // serverView is one server: URL has every variable replaced by its default
@@ -222,6 +226,7 @@ type builder struct {
 	// point at theirs by index, see typesRef.
 	notes     []string
 	noteIndex map[string]int
+	samples   map[string]modelSample
 }
 
 func buildPage(d *Document, opts Options, diff *diffState) *pageView {
@@ -234,6 +239,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 		diff:    diff,
 
 		noteIndex: map[string]int{},
+		samples:   map[string]modelSample{},
 	}
 
 	b.short = shortNames(d.Components.Schemas.Keys)
@@ -284,6 +290,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Tags = b.buildTags()
 	p.Models = b.buildModels()
 	p.Flow = b.flow.JSON
+	p.ModelSamples = b.modelSamplesJSON()
 	p.TypeNotes = b.typeNotesJSON()
 	p.Map = b.buildMap(p.Tags)
 	p.Diff = b.changesView(p)
@@ -1032,13 +1039,47 @@ func (b *builder) typesRef(mt *MediaType, mode ExampleMode) string {
 	if notes == "" {
 		return ""
 	}
+	return strconv.Itoa(b.noteRef(notes))
+}
+
+// noteRef lists a type description once per page and returns its index.
+func (b *builder) noteRef(notes string) int {
 	i, ok := b.noteIndex[notes]
 	if !ok {
 		i = len(b.notes)
 		b.notes = append(b.notes, notes)
 		b.noteIndex[notes] = i
 	}
-	return strconv.Itoa(i)
+	return i
+}
+
+// modelSample is a model's example for the model dialog, which shows it as
+// the samples' field tree: Value is the example as JSON, Types the index of
+// its type notes.
+type modelSample struct {
+	Value json.RawMessage `json:"v"`
+	Types int             `json:"t"`
+}
+
+// addModelSample records the dialog sample of the component schema name.
+func (b *builder) addModelSample(name string) {
+	v, notes := b.d.modelExample(&Schema{Ref: refSchemas + name}, b.display)
+	if len(notes) == 0 {
+		return
+	}
+	var raw bytes.Buffer
+	appendJSON(&raw, v)
+	b.samples[b.models[name]] = modelSample{Value: raw.Bytes(), Types: b.noteRef(strings.Join(notes, "\n"))}
+}
+
+// modelSamplesJSON is the dialog samples by model anchor. Marshal escapes
+// <, > and & in the examples, so the JSON is safe inside a script element.
+func (b *builder) modelSamplesJSON() template.JS {
+	out, err := json.Marshal(b.samples)
+	if err != nil {
+		return "{}"
+	}
+	return template.JS(out)
 }
 
 func (b *builder) typeNotesJSON() template.JS {
@@ -1102,6 +1143,7 @@ func (b *builder) buildModels() []*modelView {
 			continue
 		}
 		short := b.short[name]
+		b.addModelSample(name)
 		out = append(out, &modelView{
 			Name:   name,
 			Short:  short,
