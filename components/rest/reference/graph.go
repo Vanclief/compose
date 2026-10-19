@@ -16,12 +16,15 @@ type Graph struct {
 
 // Node is one entity. Name is the component name, Short its display name,
 // Group the module it belongs to ("" when the names carry none) and Anchor
-// the id of its model card in the reference page.
+// the id of its model card in the reference page. Hub marks an entity that
+// most others point at (see hubSources); the map leaves its edges out until
+// asked.
 type Node struct {
 	Name   string  `json:"name"`
 	Short  string  `json:"short"`
 	Group  string  `json:"group,omitempty"`
 	Anchor string  `json:"anchor"`
+	Hub    bool    `json:"hub,omitempty"`
 	Fields []Field `json:"fields"`
 }
 
@@ -58,6 +61,11 @@ type Edge struct {
 	Cardinality string `json:"cardinality"`
 	Inferred    bool   `json:"inferred,omitempty"`
 }
+
+// hubSources is the number of distinct entities that may point at an entity
+// before it counts as a hub: Organization, Complex or User, which nearly
+// every entity carries a key to.
+const hubSources = 8
 
 // wrapperSuffixes mark request and response shapes, which are not entities
 // even when they carry an id.
@@ -113,7 +121,26 @@ func (d *Document) Graph() *Graph {
 		}
 	}
 
+	markHubs(g)
 	return g
+}
+
+// markHubs sets Hub on the entities that more than hubSources other
+// entities point at. Self references do not count.
+func markHubs(g *Graph) {
+	sources := map[string]map[string]bool{}
+	for _, e := range g.Edges {
+		if e.From == e.To {
+			continue
+		}
+		if sources[e.To] == nil {
+			sources[e.To] = map[string]bool{}
+		}
+		sources[e.To][e.From] = true
+	}
+	for _, n := range g.Nodes {
+		n.Hub = len(sources[n.Name]) > hubSources
+	}
 }
 
 // graphObjects returns the flattened component schemas that can be entities:

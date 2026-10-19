@@ -25,6 +25,7 @@ func TestRenderSchemaMap(t *testing.T) {
 	require.Len(t, matches, 1, "the graph is written once")
 	require.Contains(t, page, `<section class="map" id="section/map"`)
 	require.Contains(t, page, `data-view="map"`)
+	require.Contains(t, page, `<a class="nav-link nav-map" href="#map" data-view="map">`, "the sidebar opens the map too")
 
 	var data struct {
 		Nodes []*Node  `json:"nodes"`
@@ -58,6 +59,52 @@ func TestRenderSchemaMap(t *testing.T) {
 		}
 	}
 	require.True(t, found, "some tag reaches Ticket")
+}
+
+func TestSchemaMapScopes(t *testing.T) {
+	page := renderPage(t, loadEmma(t, "emma.yaml"))
+	matches := mapDataPattern.FindAllStringSubmatch(page, -1)
+	require.Len(t, matches, 1)
+
+	var data struct {
+		Nodes   []*Node  `json:"nodes"`
+		Tags    []mapTag `json:"tags"`
+		Default string   `json:"default"`
+		Spec    string   `json:"spec"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &data))
+
+	// Scopes are the operation tags in page order; module groups such as
+	// hik or leads are not scopes.
+	var names []string
+	for _, tag := range data.Tags {
+		names = append(names, tag.Name)
+		require.NotEmpty(t, tag.Nodes)
+	}
+	require.Equal(t, []string{
+		"Access Control", "Amenities", "CRM", "Finance", "Operations", "Organizations",
+		"Packages", "People", "Property", "Safety", "Users", "Visitors",
+	}, names)
+	require.Equal(t, "Access Control", data.Default)
+	require.NotEmpty(t, data.Spec)
+
+	hubs := 0
+	for _, n := range data.Nodes {
+		if n.Hub {
+			hubs++
+		}
+	}
+	require.Equal(t, 6, hubs, "hub flags reach the page")
+}
+
+func TestDefaultScope(t *testing.T) {
+	require.Equal(t, "", defaultScope(nil))
+	require.Equal(t, "", defaultScope([]mapTag{{Name: "a", Nodes: []string{"X"}}}))
+	require.Equal(t, "b", defaultScope([]mapTag{
+		{Name: "a", Nodes: []string{"X"}},
+		{Name: "b", Nodes: []string{"X", "Y"}},
+		{Name: "c", Nodes: []string{"X", "Y", "Z"}},
+	}))
 }
 
 func TestRenderSchemaMapEscapesScript(t *testing.T) {

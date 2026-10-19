@@ -14,10 +14,15 @@ type mapView struct {
 }
 
 // mapData is the JSON payload. Tags lists, per operation tag, the entities
-// its operations send or receive, for the scope selector.
+// its operations send or receive: the scopes of the map besides all
+// entities. Default is the scope the map opens on, the first tag with at
+// least two entities ("" for all of them). Spec names the document (title
+// and version) so saved card positions stay with it.
 type mapData struct {
 	*Graph
-	Tags []mapTag `json:"tags,omitempty"`
+	Tags    []mapTag `json:"tags,omitempty"`
+	Default string   `json:"default,omitempty"`
+	Spec    string   `json:"spec"`
 }
 
 type mapTag struct {
@@ -51,6 +56,8 @@ func (b *builder) buildMap(tags []*tagView) *mapView {
 	}
 
 	data := mapData{Graph: g, Tags: b.mapTags(tags, entities)}
+	data.Default = defaultScope(data.Tags)
+	data.Spec = strings.TrimSpace(b.d.Info.Title + " " + b.d.Info.Version)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -89,6 +96,17 @@ func (b *builder) mapTags(tags []*tagView, entities map[string]bool) []mapTag {
 		}
 	}
 	return out
+}
+
+// defaultScope returns the first tag that reaches at least two entities: one
+// card alone shows no relation.
+func defaultScope(tags []mapTag) string {
+	for _, tag := range tags {
+		if len(tag.Nodes) >= 2 {
+			return tag.Name
+		}
+	}
+	return ""
 }
 
 func (b *builder) operationEntities(op *Operation, entities map[string]bool) []string {

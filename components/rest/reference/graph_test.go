@@ -2,6 +2,7 @@ package reference
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -302,4 +303,36 @@ func TestGraphInferenceNames(t *testing.T) {
 	require.Equal(t, "a_models_crm_Category", index.match("category", "other"))
 	require.Equal(t, "a_models_crm_Category", index.match("parent_category", "crm"))
 	require.Equal(t, "a_models_crm_Category", index.match("crm_category", ""))
+}
+
+func TestGraphHubs(t *testing.T) {
+	// Org is pointed at by nine entities, Team by eight and by itself.
+	schemas := `"Org": {"type": "object", "properties": {"id": {"type": "string"}}},
+    "Team": {"type": "object", "properties": {"id": {"type": "string"}, "parent_team_id": {"type": "string"}}}`
+	for i := 0; i < 9; i++ {
+		team := ""
+		if i < 8 {
+			team = `, "team_id": {"type": "string"}`
+		}
+		schemas += fmt.Sprintf(`,
+    "Thing%d": {"type": "object", "properties": {"id": {"type": "string"}, "org_id": {"type": "string"}%s}}`, i, team)
+	}
+	g := parseGraph(t, `{"openapi": "3.1.0", "info": {"title": "t", "version": "1"}, "components": {"schemas": {`+schemas+`}}}`)
+
+	require.True(t, graphNode(g, "Org").Hub)
+	require.False(t, graphNode(g, "Team").Hub, "eight sources and a self reference are not a hub")
+	require.NotNil(t, graphEdge(g, "Team", "Team", "parent_team_id"))
+	require.False(t, graphNode(g, "Thing0").Hub)
+	require.NotNil(t, graphEdge(g, "Thing0", "Org", "org_id"), "hub edges stay in the graph")
+}
+
+func TestGraphHubsEmma(t *testing.T) {
+	g := loadEmma(t, "emma.yaml").Graph()
+	var hubs []string
+	for _, n := range g.Nodes {
+		if n.Hub {
+			hubs = append(hubs, n.Short)
+		}
+	}
+	require.ElementsMatch(t, []string{"Complex", "User", "Unit", "Cluster", "Organization", "Space"}, hubs)
 }

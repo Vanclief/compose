@@ -1942,10 +1942,15 @@
 })();
 
 /* ---- map ---- */
-// Schema map: the entity graph embedded once as JSON, drawn as cards in rank
-// columns with orthogonal edges in one SVG behind them. Pan and zoom move a
-// single CSS transform. The click listener runs in the capture phase so map
-// links and the view switcher are handled before the reference's own links.
+// Schema map: the entity graph embedded once as JSON, drawn as an ER diagram
+// in the content pane. Cards sit in layered columns, models that hold keys on
+// the left and the models they point at to their right, hubs (models nearly
+// every other one points at) in the last column. Edges are curves from the
+// field holding the key to the target's header, routed through the gaps
+// between cards, in one SVG behind them. Edges into hubs stay hidden until a
+// card is hovered or selected. Pan and zoom move one CSS transform. The click
+// listener runs in the capture phase so map links and the view switch are
+// handled before the reference's own links.
 (() => {
   'use strict';
 
@@ -1962,31 +1967,33 @@
     return;
   }
 
-  const CARD_W = 264;
+  const CARD_W = 280;
   const COL_GAP = 140;
-  const SUB_GAP = 56;
-  const ROW_GAP = 28;
-  const MAX_COL_H = 1500;
+  const ROW_GAP = 48;
   const MAX_FIELDS = 12;
   const PAD = 48;
+  const LANE_MARGIN = 14;
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const canvas = section.querySelector('[data-map-canvas]');
   const world = section.querySelector('[data-map-world]');
   const svg = section.querySelector('[data-map-svg]');
   const scopeSelect = section.querySelector('[data-map-scope]');
-  const allBtn = section.querySelector('[data-map-all]');
+  const findInput = section.querySelector('[data-map-find]');
   const countEl = section.querySelector('[data-map-count]');
+  const hubsBox = section.querySelector('[data-map-hubs]');
+  const hubsCount = section.querySelector('[data-map-hubs-count]');
+  const pctEl = section.querySelector('[data-map-pct]');
 
   const nodes = new Map(data.nodes.map((n) => [n.name, n]));
   const edges = (data.edges || []).filter((e) => nodes.has(e.from) && nodes.has(e.to));
-  // Fields an edge starts from, per node: a collapsed card keeps them.
-  const edgeFields = new Map();
-  for (const e of edges) {
-    if (!edgeFields.has(e.from)) {
-      edgeFields.set(e.from, new Set());
-    }
-    edgeFields.get(e.from).add(e.fromField);
+
+  let store = null;
+  try {
+    store = window.localStorage;
+    store.getItem('reference.probe');
+  } catch (err) {
+    store = null;
   }
 
   function el(tag, cls, text) {
@@ -2008,98 +2015,224 @@
     return node;
   }
 
+  function setHash(id, push) {
+    try {
+      if (push) {
+        history.pushState(null, '', '#' + id);
+      } else {
+        history.replaceState(null, '', '#' + id);
+      }
+    } catch (err) {
+      // about:srcdoc and sandboxed frames may refuse history updates.
+    }
+  }
+
+  function decode(s) {
+    try {
+      return decodeURIComponent(s);
+    } catch (err) {
+      return s;
+    }
+  }
+
   // ------------------------------------------------------------- scopes
 
+  // Scopes are the operation tags, in page order, and all models.
   const scopes = new Map();
   scopes.set('all', { label: 'All models', names: data.nodes.map((n) => n.name) });
-  const groups = Array.from(new Set(data.nodes.map((n) => n.group).filter(Boolean))).sort();
-  for (const g of groups) {
-    scopes.set(g, { label: g, kind: 'Groups', names: data.nodes.filter((n) => n.group === g).map((n) => n.name) });
-  }
   for (const t of data.tags || []) {
-    scopes.set('tag:' + t.name, { label: t.name, kind: 'Tags', names: t.nodes.filter((n) => nodes.has(n)) });
+    const names = (t.nodes || []).filter((n) => nodes.has(n));
+    if (names.length && !scopes.has(t.name)) {
+      scopes.set(t.name, { label: t.name, names });
+    }
   }
-  const defaultScope = data.nodes.length <= 25 || !groups.length ? 'all' : groups[0];
-
-  function scopeOption(id) {
-    const s = scopes.get(id);
+  const defaultScope = scopes.has(data.default) ? data.default : 'all';
+  for (const [id, s] of scopes) {
     const o = el('option', '', s.label + ' (' + s.names.length + ')');
     o.value = id;
-    return o;
-  }
-  scopeSelect.appendChild(scopeOption('all'));
-  for (const kind of ['Groups', 'Tags']) {
-    const og = doc.createElement('optgroup');
-    og.label = kind;
-    for (const [id, s] of scopes) {
-      if (s.kind === kind) {
-        og.appendChild(scopeOption(id));
-      }
-    }
-    if (og.children.length) {
-      scopeSelect.appendChild(og);
-    }
+    scopeSelect.append(o);
   }
 
-  const state = { scope: defaultScope, focus: null, expanded: new Set(), x: 0, y: 0, k: 1 };
-  let boxes = new Map();
-  let drawn = [];
-  let size = { w: 0, h: 0 };
-  let hovered = null;
+  const state = { scope: defaultScope, selected: null, hover: null, expanded: new Set(), showHubs: false, x: 0, y: 0, k: 1 };
+  let cards = new Map(); // name -> { el, n, compact, x, y, w, h, headY, rows, moreY }
+  let links = [];
+  let lineLayer = null;
+  let labelLayer = null;
+  let near = new Map(); // name -> Set of names it shares an edge with
+  let rendered = null;
   let isOpen = false;
   let refHash = 'section/introduction';
+  let refScroll = 0;
 
-  // view returns the nodes to draw with how to draw each ('full', 'ghost'
-  // for a neighbour outside the scope: header only, 'link' for a neighbour
-  // of the focused node: header and the fields pointing at it) and the
-  // edges between them. A focused node shows only itself, its one-hop
-  // neighbours and the edges it is on.
-  function view() {
-    const shown = new Map();
-    if (state.focus) {
-      shown.set(state.focus, 'full');
-      const list = edges.filter((e) => e.from === state.focus || e.to === state.focus);
-      for (const e of list) {
-        for (const end of [e.from, e.to]) {
-          if (!shown.has(end)) {
-            shown.set(end, 'link');
-          }
+  function positionsKey() {
+    return 'reference.map.' + (data.spec || '') + '.' + state.scope;
+  }
+
+  function savedPositions() {
+    if (!store) {
+      return {};
+    }
+    try {
+      return JSON.parse(store.getItem(positionsKey()) || '{}') || {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function savePosition(c) {
+    if (!store) {
+      return;
+    }
+    const all = savedPositions();
+    all[c.n.name] = [Math.round(c.x), Math.round(c.y)];
+    try {
+      store.setItem(positionsKey(), JSON.stringify(all));
+    } catch (err) {
+      // Full or refused storage only loses the saved layout.
+    }
+  }
+
+  // -------------------------------------------------------------- cards
+
+  function keyIcon() {
+    const icon = svgEl('svg', { class: 'mf-key', viewBox: '0 0 16 16', 'aria-hidden': 'true' });
+    icon.append(svgEl('circle', { cx: '5', cy: '8', r: '3.2' }), svgEl('path', { d: 'M8.2 8H15M12.5 8v3M15 8v2.2' }));
+    return icon;
+  }
+
+  // fieldRow is one line per field (name, qualifiers, type or the model it
+  // points at), with enum values as chips below.
+  function fieldRow(f) {
+    const li = el('li', 'mf' + (f.deprecated ? ' deprecated' : ''));
+    li.dataset.field = f.name;
+    const line = el('div', 'mf-line');
+    const name = el('span', 'mf-name');
+    if (f.name === 'id') {
+      name.append(keyIcon());
+    }
+    name.append(f.name);
+    if (f.optional || f.nullable) {
+      name.append(el('span', 'mf-opt', '?'));
+    }
+    line.append(name);
+    li.append(line);
+    const quals = [];
+    if (f.readOnly) {
+      quals.push('read-only');
+    }
+    if (f.writeOnly) {
+      quals.push('write-only');
+    }
+    if (f.deprecated) {
+      quals.push('deprecated');
+    }
+    if (quals.length) {
+      line.append(el('span', 'mf-q', quals.join(' ')));
+    }
+    const target = f.ref ? nodes.get(f.ref) : null;
+    if (target) {
+      const ref = el('button', 'mf-ref', '→ ' + target.short + (/\[\]$/.test(f.type || '') ? '[]' : ''));
+      ref.type = 'button';
+      ref.dataset.mapRef = f.ref;
+      ref.title = 'Show ' + target.short;
+      line.append(ref);
+    } else if (f.type) {
+      const type = el('span', 'mf-type', f.type);
+      type.title = f.type;
+      line.append(type);
+    }
+    if (f.enum && f.enum.length) {
+      const chips = el('div', 'mf-enum');
+      chips.title = f.enum.map((v) => (v === '' ? '""' : v)).join(', ');
+      for (const v of f.enum.slice(0, 3)) {
+        chips.append(el('span', 'mchip', v === '' ? '""' : v));
+      }
+      if (f.enum.length > 3) {
+        chips.append(el('span', 'mchip more', '+' + (f.enum.length - 3)));
+      }
+      li.append(chips);
+    }
+    return li;
+  }
+
+  // makeCard builds a model card. A compact card (a model outside the scope
+  // that a card in it points at) shows its header only.
+  function makeCard(n, compact) {
+    const c = { n, compact, x: 0, y: 0, w: CARD_W, h: 0, headY: 0, rows: new Map(), moreY: 0 };
+    const box = el('div', 'mcard' + (compact ? ' compact' : '') + (n.hub ? ' hub' : ''));
+    box.dataset.node = n.name;
+    box.tabIndex = 0;
+    box.title = n.name;
+    box.style.width = CARD_W + 'px';
+    const head = el('div', 'mcard-head');
+    head.append(el('span', 'mcard-name', n.short));
+    if (n.hub) {
+      head.append(el('span', 'mcard-badge hub', 'hub'));
+    }
+    if (n.group) {
+      head.append(el('span', 'mcard-badge', n.group));
+    }
+    box.append(head);
+    const fields = n.fields || [];
+    if (compact) {
+      box.append(el('div', 'mcard-note', fields.length + ' fields, outside this scope'));
+    } else if (fields.length) {
+      // A collapsed card keeps the id and the fields that point at other
+      // models first, so its edges start at their own row, in field order.
+      const open = state.expanded.has(n.name);
+      const keep = new Set(fields.filter((f) => f.name === 'id' || f.ref).slice(0, MAX_FIELDS));
+      for (const f of fields) {
+        if (keep.size < MAX_FIELDS) {
+          keep.add(f);
         }
       }
-      return { shown, list };
-    }
-    const scope = scopes.get(state.scope) || scopes.get('all');
-    for (const name of scope.names) {
-      shown.set(name, 'full');
-    }
-    const list = [];
-    for (const e of edges) {
-      if (shown.get(e.from) !== 'full' && shown.get(e.to) !== 'full') {
-        continue;
-      }
-      list.push(e);
-      for (const end of [e.from, e.to]) {
-        if (!shown.has(end)) {
-          shown.set(end, 'ghost');
+      const ul = el('ul', 'mcard-fields');
+      for (const f of fields) {
+        if (open || keep.has(f)) {
+          ul.append(fieldRow(f));
         }
       }
+      box.append(ul);
+      if (fields.length > MAX_FIELDS) {
+        const more = el('button', 'mcard-more', open ? 'Show fewer fields' : '+' + (fields.length - MAX_FIELDS) + ' more');
+        more.type = 'button';
+        more.dataset.mapMore = n.name;
+        box.append(more);
+      }
     }
-    return { shown, list };
+    c.el = box;
+    return c;
+  }
+
+  // measure reads a card's height and where its edges attach: the middle of
+  // the header and of each field name (offsets inside the card).
+  function measure(c) {
+    c.h = c.el.offsetHeight;
+    const head = c.el.firstElementChild;
+    c.headY = head.offsetTop + head.offsetHeight / 2;
+    c.el.querySelectorAll('[data-field]').forEach((row) => {
+      const name = row.querySelector('.mf-name');
+      c.rows.set(row.dataset.field, name.offsetTop + name.offsetHeight / 2);
+    });
+    const more = c.el.querySelector('.mcard-more');
+    c.moreY = more ? more.offsetTop + more.offsetHeight / 2 : c.headY;
+  }
+
+  function setPos(c) {
+    c.el.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px)';
   }
 
   // ------------------------------------------------------------- layout
 
   // ranks places every node one column right of the furthest node pointing
-  // at it. Depth-first search from the roots (no incoming edge) drops the
-  // edges that close a cycle; its finish order reversed is topological.
+  // at it (longest path from the roots). Depth-first search drops the edges
+  // that close a cycle; its finish order reversed is topological.
   function ranks(names, list) {
     const adj = new Map(names.map((n) => [n, []]));
     const indeg = new Map(names.map((n) => [n, 0]));
     for (const e of list) {
-      if (e.from !== e.to) {
-        adj.get(e.from).push(e.to);
-        indeg.set(e.to, indeg.get(e.to) + 1);
-      }
+      adj.get(e.from).push(e.to);
+      indeg.set(e.to, indeg.get(e.to) + 1);
     }
     const mark = new Map();
     const order = [];
@@ -2117,8 +2250,7 @@
       mark.set(n, 2);
       order.push(n);
     };
-    const byOut = names.slice().sort((a, b) => adj.get(b).length - adj.get(a).length);
-    for (const n of names.filter((m) => indeg.get(m) === 0).concat(byOut)) {
+    for (const n of names.filter((m) => indeg.get(m) === 0).concat(names)) {
       if (!mark.has(n)) {
         visit(n);
       }
@@ -2132,468 +2264,742 @@
     return rank;
   }
 
-  function fieldRow(f) {
-    const li = el('li', f.deprecated ? 'mf deprecated' : 'mf');
-    li.dataset.field = f.name;
-    const name = el('span', 'mf-name', f.name);
-    if (f.optional || f.nullable) {
-      name.appendChild(el('span', 'mf-opt', '?'));
-    }
-    li.appendChild(name);
-    const quals = [];
-    if (f.readOnly) {
-      quals.push('read-only');
-    }
-    if (f.writeOnly) {
-      quals.push('write-only');
-    }
-    if (f.deprecated) {
-      quals.push('deprecated');
-    }
-    if (quals.length) {
-      li.appendChild(el('span', 'mf-q', quals.join(' ')));
-    }
-    const target = f.ref ? nodes.get(f.ref) : null;
-    if (target) {
-      const ref = el('button', 'mf-ref', '→ ' + target.short + (/\[\]$/.test(f.type || '') ? '[]' : ''));
-      ref.type = 'button';
-      ref.dataset.mapRef = f.ref;
-      ref.title = 'Focus ' + target.short;
-      li.appendChild(ref);
-    } else if (f.type) {
-      li.appendChild(el('span', 'mf-type', f.type));
-    }
-    if (f.enum && f.enum.length) {
-      const chips = el('span', 'mf-enum');
-      chips.title = f.enum.join(', ');
-      for (const v of f.enum.slice(0, 3)) {
-        chips.appendChild(el('span', 'mchip', v));
-      }
-      if (f.enum.length > 3) {
-        chips.appendChild(el('span', 'mchip more', '+' + (f.enum.length - 3) + ' values'));
-      }
-      li.appendChild(chips);
-    }
-    return li;
-  }
-
-  function card(n, mode) {
-    const c = el('div', 'mcard' + (mode === 'ghost' ? ' ghost' : '') + (n.name === state.focus ? ' focus' : ''));
-    c.dataset.node = n.name;
-    c.tabIndex = 0;
-    c.title = n.name;
-    c.style.width = CARD_W + 'px';
-    const head = el('div', 'mcard-head');
-    head.appendChild(el('span', 'mcard-name', n.short));
-    if (n.group) {
-      head.appendChild(el('span', 'mcard-group', n.group));
-    }
-    c.appendChild(head);
-    if (mode === 'ghost') {
-      return c;
-    }
-    const fields = n.fields || [];
-    if (mode === 'link') {
-      const ul = el('ul', 'mcard-fields');
-      for (const f of fields) {
-        if (f.ref === state.focus) {
-          ul.appendChild(fieldRow(f));
+  // order sorts each layer by the mean position of its neighbours in the
+  // layers before it, then after it, a few times over (barycenter method).
+  // Hubs do not pull on the layers before them.
+  function order(layers, hubLayer) {
+    const at = new Map();
+    const index = (layer, li) => {
+      layer.forEach((n, i) => at.set(n, [li, (i + 0.5) / layer.length]));
+    };
+    layers.forEach(index);
+    const sweep = (li, before) => {
+      const layer = layers[li];
+      const key = new Map();
+      layer.forEach((n, i) => {
+        let sum = 0;
+        let count = 0;
+        for (const m of near.get(n) || []) {
+          const p = at.get(m);
+          if (!p || (before ? p[0] >= li : p[0] <= li) || (li < hubLayer && p[0] === hubLayer)) {
+            continue;
+          }
+          sum += p[1];
+          count++;
         }
+        key.set(n, count ? sum / count : (i + 0.5) / layer.length);
+      });
+      layer.sort((a, b) => key.get(a) - key.get(b));
+      index(layer, li);
+    };
+    for (let pass = 0; pass < 4; pass++) {
+      for (let li = 1; li < layers.length; li++) {
+        sweep(li, true);
       }
-      if (ul.children.length) {
-        c.appendChild(ul);
+      for (let li = layers.length - 2; li >= 0; li--) {
+        sweep(li, false);
       }
-      return c;
     }
-    const all = state.expanded.has(n.name);
-    let rows = fields;
-    if (!all && fields.length > MAX_FIELDS) {
-      // Keep id, then the fields edges start from, then other references,
-      // then the rest; show the kept ones in document order.
-      const linked = edgeFields.get(n.name) || new Set();
-      const weight = (f) => (f.name === 'id' ? 0 : linked.has(f.name) ? 1 : f.ref ? 2 : 3);
-      const keep = new Set(fields
-        .map((f, i) => ({ f, i, w: weight(f) }))
-        .sort((a, b) => a.w - b.w || a.i - b.i)
-        .slice(0, MAX_FIELDS)
-        .map((x) => x.f));
-      rows = fields.filter((f) => keep.has(f));
-    }
-    const ul = el('ul', 'mcard-fields');
-    for (const f of rows) {
-      ul.appendChild(fieldRow(f));
-    }
-    c.appendChild(ul);
-    if (fields.length > MAX_FIELDS) {
-      const more = el('button', 'mcard-more', all ? 'Show fewer' : '+' + (fields.length - MAX_FIELDS) + ' more');
-      more.type = 'button';
-      more.dataset.mapMore = n.name;
-      c.appendChild(more);
-    }
-    return c;
   }
 
-  function layout(shown, list) {
-    world.querySelectorAll('.mcard').forEach((c) => c.remove());
-    boxes = new Map();
-    const names = Array.from(shown.keys());
-    for (const name of names) {
-      const c = card(nodes.get(name), shown.get(name));
-      world.appendChild(c);
-      boxes.set(name, { el: c, x: 0, y: 0, h: 0 });
+  // layout ranks the cards over the edges between non-hub cards, puts hubs
+  // in a column after them and the cards only hubs point at after the hubs.
+  // It orders the layers and stacks each one in a column, wrapping a tall
+  // layer into several columns. A card in a single-column layer moves down
+  // to line its header up with the fields pointing at it.
+  function layout(list) {
+    const names = Array.from(cards.keys());
+    const isHub = (n) => nodes.get(n).hub;
+    const plainSource = new Set();
+    const toPlain = new Set();
+    for (const e of list) {
+      if (e.from !== e.to && !isHub(e.from)) {
+        plainSource.add(e.to);
+      }
+      if (e.from !== e.to && !isHub(e.to)) {
+        toPlain.add(e.from);
+      }
     }
-    for (const b of boxes.values()) {
-      b.h = b.el.offsetHeight;
-    }
-
-    const rank = ranks(names, list);
-    const cols = [];
-    for (const n of names) {
+    const hubs = names.filter(isHub);
+    const tail = names.filter((n) => !isHub(n) && !plainSource.has(n) && !toPlain.has(n) && list.some((e) => e.to === n && e.from !== n));
+    const rest = names.filter((n) => !isHub(n) && !tail.includes(n));
+    const plain = new Set(rest);
+    const rank = ranks(rest, list.filter((e) => e.from !== e.to && plain.has(e.from) && plain.has(e.to)));
+    const layers = [];
+    for (const n of rest) {
       const r = rank.get(n);
-      (cols[r] = cols[r] || []).push(n);
+      while (layers.length <= r) {
+        layers.push([]);
+      }
+      layers[r].push(n);
     }
-    // Order each column by the mean position of its neighbours, sweeping
-    // right then left, to keep edges short and crossings few.
-    const pred = new Map(names.map((n) => [n, []]));
-    const succ = new Map(names.map((n) => [n, []]));
+    const hubLayer = hubs.length ? layers.length : -1;
+    for (const layer of [hubs, tail]) {
+      if (layer.length) {
+        layers.push(layer);
+      }
+    }
+    order(layers, hubLayer);
+
+    let area = 0;
+    for (const c of cards.values()) {
+      area += (c.h + ROW_GAP) * (CARD_W + COL_GAP);
+    }
+    const maxH = Math.max(1100, Math.sqrt(area * 0.9));
+    const incoming = new Map();
     for (const e of list) {
       if (e.from !== e.to) {
-        succ.get(e.from).push(e.to);
-        pred.get(e.to).push(e.from);
+        if (!incoming.has(e.to)) {
+          incoming.set(e.to, []);
+        }
+        incoming.get(e.to).push(e);
       }
     }
-    const pos = new Map();
-    const settle = (col) => col.forEach((n, i) => pos.set(n, (i + 0.5) / col.length));
-    const sortBy = (col, nb) => {
-      const score = new Map(col.map((n) => {
-        const ps = nb.get(n);
-        return [n, ps.length ? ps.reduce((t, m) => t + pos.get(m), 0) / ps.length : pos.get(n)];
-      }));
-      col.sort((a, b) => score.get(a) - score.get(b));
-      settle(col);
-    };
-    cols.forEach(settle);
-    for (let pass = 0; pass < 2; pass++) {
-      for (let r = 1; r < cols.length; r++) {
-        sortBy(cols[r], pred);
-      }
-      for (let r = cols.length - 2; r >= 0; r--) {
-        sortBy(cols[r], succ);
-      }
-    }
-
-    // Stack each column; a column taller than MAX_COL_H wraps into
-    // sub-columns side by side.
-    const placed = [];
-    let x = PAD;
-    let maxH = 0;
-    for (const col of cols) {
-      const subs = [[]];
+    const placed = new Set();
+    let x = 0;
+    for (const layer of layers) {
+      const cols = [];
+      let col = [];
       let h = 0;
-      for (const n of col) {
-        const bh = boxes.get(n).h;
-        if (h + bh > MAX_COL_H && subs[subs.length - 1].length) {
-          subs.push([]);
+      for (const n of layer) {
+        const ch = cards.get(n).h + ROW_GAP;
+        if (col.length && h + ch > maxH) {
+          cols.push(col);
+          col = [];
           h = 0;
         }
-        subs[subs.length - 1].push(n);
-        h += bh + ROW_GAP;
+        col.push(n);
+        h += ch;
       }
-      subs.forEach((sub, i) => {
-        const colH = sub.reduce((t, n) => t + boxes.get(n).h + ROW_GAP, -ROW_GAP);
-        placed.push({ x, sub, h: colH });
-        maxH = Math.max(maxH, colH);
-        x += CARD_W + (i < subs.length - 1 ? SUB_GAP : COL_GAP);
-      });
-    }
-    for (const c of placed) {
-      let y = PAD + (maxH - c.h) / 2;
-      for (const n of c.sub) {
-        const b = boxes.get(n);
-        b.x = c.x;
-        b.y = y;
-        b.el.style.left = b.x + 'px';
-        b.el.style.top = b.y + 'px';
-        y += b.h + ROW_GAP;
+      if (col.length) {
+        cols.push(col);
       }
-    }
-    size = { w: x - COL_GAP + PAD, h: maxH + 2 * PAD };
-  }
-
-  // anchorY is where an edge meets a card: the row of its field, the
-  // "+N more" row when that field is collapsed, otherwise the header.
-  function anchorY(name, field) {
-    const b = boxes.get(name);
-    let row = field ? b.el.querySelector('[data-field="' + CSS.escape(field) + '"]') : null;
-    if (field && !row) {
-      row = b.el.querySelector('.mcard-more');
-    }
-    const target = row || b.el.querySelector('.mcard-head');
-    return b.y + target.offsetTop + target.offsetHeight / 2;
-  }
-
-  // laneRoom is the narrowest gap a group of edges crosses.
-  function laneRoom(lane) {
-    let room = COL_GAP;
-    for (const it of lane) {
-      if (it.side !== 's') {
-        room = Math.min(room, Math.abs(it.x2 - it.x1));
-      }
-    }
-    return room;
-  }
-
-  function draw(list) {
-    svg.textContent = '';
-    svg.setAttribute('width', size.w);
-    svg.setAttribute('height', size.h);
-    drawn = [];
-    const items = list.map((e) => {
-      const s = boxes.get(e.from);
-      const t = boxes.get(e.to);
-      const it = { e, y1: anchorY(e.from, e.fromField), y2: anchorY(e.to, '') };
-      if (e.from !== e.to && t.x > s.x + CARD_W) {
-        Object.assign(it, { side: 'r', x1: s.x + CARD_W, x2: t.x });
-      } else if (e.from !== e.to && t.x + CARD_W < s.x) {
-        Object.assign(it, { side: 'l', x1: s.x, x2: t.x + CARD_W });
-      } else {
-        Object.assign(it, { side: 's', x1: s.x + CARD_W, x2: t.x + CARD_W });
-      }
-      return it;
-    });
-    // Edges entering the same gap get their own vertical lane in it.
-    const lanes = new Map();
-    for (const it of items) {
-      const key = it.side + Math.round(it.x2);
-      if (!lanes.has(key)) {
-        lanes.set(key, []);
-      }
-      lanes.get(key).push(it);
-    }
-    for (const lane of lanes.values()) {
-      lane.sort((a, b) => a.y1 - b.y1);
-      const step = lane.length > 1 ? Math.max(4, Math.min(12, (laneRoom(lane) - 32) / (lane.length - 1))) : 0;
-      lane.forEach((it, i) => {
-        const off = 16 + i * step;
-        if (it.side === 'r') {
-          it.mid = it.x2 - off;
-        } else if (it.side === 'l') {
-          it.mid = it.x2 + off;
-        } else {
-          it.mid = Math.max(it.x1, it.x2) + off;
-        }
-      });
-    }
-    // Labels avoid cards and each other; one with no free spot along its
-    // segment only shows while its edge is highlighted.
-    const taken = Array.from(boxes.values(), (b) => ({ x: b.x, y: b.y, w: CARD_W, h: b.h }));
-    const free = (r) => !taken.some((o) => r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h);
-    for (const it of items) {
-      const g = svgEl('g', { class: 'medge' + (it.e.inferred ? ' inferred' : '') });
-      g.appendChild(svgEl('path', { d: 'M' + it.x1 + ' ' + it.y1 + 'H' + it.mid + 'V' + it.y2 + 'H' + it.x2 }));
-      g.appendChild(svgEl('circle', { cx: it.x2, cy: it.y2, r: 3 }));
-      const text = it.e.cardinality;
-      const w = text.length * 6.4 + 8;
-      const spots = [];
-      if (Math.abs(it.y2 - it.y1) < 24) {
-        spots.push([(it.x1 + it.mid) / 2, it.y1 - 8]);
-      } else {
-        const lo = Math.min(it.y1, it.y2) + 10;
-        const hi = Math.max(it.y1, it.y2) - 10;
-        for (const d of [0, 16, -16, 32, -32, 56, -56, 88, -88]) {
-          const y = (it.y1 + it.y2) / 2 + d;
-          if (y >= lo && y <= hi) {
-            spots.push([it.mid, y]);
+      for (const names of cols) {
+        let bottom = -ROW_GAP;
+        let drift = 0;
+        let wanted = 0;
+        for (const n of names) {
+          const c = cards.get(n);
+          let y = bottom + ROW_GAP;
+          const ys = [];
+          for (const e of cols.length === 1 ? incoming.get(n) || [] : []) {
+            const s = cards.get(e.from);
+            if (placed.has(e.from)) {
+              ys.push(s.y + fieldY(s, e.fromField) - c.headY);
+            }
           }
+          if (ys.length) {
+            const want = ys.reduce((a, b) => a + b, 0) / ys.length;
+            y = Math.max(y, want);
+            drift += y - want;
+            wanted++;
+          }
+          c.x = x;
+          c.y = y;
+          bottom = y + c.h;
+          placed.add(n);
+        }
+        // Cards pushed below where they want to be lift the column back, no
+        // higher than the top of the first column.
+        const lift = wanted ? Math.min(drift / wanted, Math.max(0, cards.get(names[0]).y)) : 0;
+        for (const n of names) {
+          cards.get(n).y -= lift;
+        }
+        x += CARD_W + COL_GAP;
+      }
+    }
+
+    const saved = savedPositions();
+    for (const [name, c] of cards) {
+      const p = saved[name];
+      if (Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1])) {
+        c.x = p[0];
+        c.y = p[1];
+      }
+      setPos(c);
+    }
+  }
+
+  function fieldY(c, field) {
+    if (c.rows.has(field)) {
+      return c.rows.get(field);
+    }
+    return c.compact ? c.headY : c.moreY;
+  }
+
+  // -------------------------------------------------------------- edges
+
+  // makeLink builds an edge: its line and end marks in the line layer and
+  // its cardinality pill in the label layer above every line.
+  function makeLink(e, lineLayer, labelLayer) {
+    const hub = nodes.get(e.to).hub && e.from !== e.to;
+    const g = svgEl('g', { class: 'medge' + (e.inferred ? ' inferred' : '') });
+    const line = svgEl('path', { class: 'mline' });
+    const ends = svgEl('path', { class: 'mends' });
+    const rings = svgEl('path', { class: 'mring' });
+    g.append(line, ends, rings);
+    const label = svgEl('g', { class: 'mlabel' });
+    const rect = svgEl('rect', { height: '18', y: '-9', rx: '9' });
+    const text = svgEl('text', {});
+    text.textContent = e.cardinality;
+    label.append(rect, text);
+    lineLayer.append(g);
+    labelLayer.append(label);
+    const parts = e.cardinality.split(' : ');
+    return { e, g, line, ends, rings, label, rect, text, w: 0, from: parts[0] || '', to: parts[1] || '', hub };
+  }
+
+  // glyph draws the cardinality mark where an edge meets a card at (x, y);
+  // dir points away from the card. One is a bar, many a crow's foot, 0..1 a
+  // bar and a ring.
+  function glyph(kind, x, y, dir) {
+    const p = (dx, dy) => (x + dx * dir) + ' ' + (y + dy);
+    if (kind === 'many') {
+      return { d: 'M' + p(0, -6) + 'L' + p(12, 0) + 'M' + p(0, 6) + 'L' + p(12, 0), ring: '' };
+    }
+    if (kind === '0..1') {
+      const cx = x + 17 * dir;
+      return { d: 'M' + p(8, -6) + 'L' + p(8, 6), ring: 'M' + (cx - 3.5) + ' ' + y + 'a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0' };
+    }
+    return { d: 'M' + p(8, -6) + 'L' + p(8, 6), ring: '' };
+  }
+
+  // freeY returns want, or the middle of the nearest gap between the cards
+  // of a lane when want falls on one of them.
+  function freeY(list, want) {
+    const blocks = list.map((c) => [c.y - LANE_MARGIN, c.y + c.h + LANE_MARGIN]).sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const b of blocks) {
+      const last = merged[merged.length - 1];
+      if (last && b[0] <= last[1]) {
+        last[1] = Math.max(last[1], b[1]);
+      } else {
+        merged.push(b.slice());
+      }
+    }
+    for (let i = 0; i < merged.length; i++) {
+      const [y0, y1] = merged[i];
+      if (want <= y0 || want >= y1) {
+        continue;
+      }
+      const up = i > 0 ? (merged[i - 1][1] + y0) / 2 : y0;
+      const down = i < merged.length - 1 ? (y1 + merged[i + 1][0]) / 2 : y1;
+      return want - up < down - want ? up : down;
+    }
+    return want;
+  }
+
+  // waypoints returns the points where an edge from sx to tx crosses each
+  // lane of cards between them (cards whose columns overlap): a straight
+  // stretch through the gap nearest to the direct line.
+  function waypoints(a, b, sx, sy, tx, ty) {
+    const lo = Math.min(sx, tx);
+    const hi = Math.max(sx, tx);
+    const inside = [];
+    for (const c of cards.values()) {
+      if (c !== a && c !== b && c.x < hi - 1 && c.x + c.w > lo + 1) {
+        inside.push(c);
+      }
+    }
+    if (!inside.length) {
+      return [];
+    }
+    inside.sort((p, q) => p.x - q.x);
+    const lanes = [];
+    for (const c of inside) {
+      const last = lanes[lanes.length - 1];
+      if (last && c.x < last.x1) {
+        last.x1 = Math.max(last.x1, c.x + c.w);
+        last.cards.push(c);
+      } else {
+        lanes.push({ x0: c.x, x1: c.x + c.w, cards: [c] });
+      }
+    }
+    const dir = tx > sx ? 1 : -1;
+    if (dir < 0) {
+      lanes.reverse();
+    }
+    const pts = [];
+    for (const lane of lanes) {
+      const x0 = Math.max(lane.x0, lo);
+      const x1 = Math.min(lane.x1, hi);
+      const enter = dir > 0 ? x0 : x1;
+      const leave = dir > 0 ? x1 : x0;
+      const t = ((enter + leave) / 2 - sx) / (tx - sx);
+      const y = freeY(lane.cards, sy + (ty - sy) * t);
+      pts.push([enter, y], [leave, y]);
+    }
+    return pts;
+  }
+
+  // route draws one edge: from the side of the source card facing the
+  // target, at the field row, to the facing side of the target at its
+  // header; a self reference loops on the right.
+  function route(l) {
+    const a = cards.get(l.e.from);
+    const b = cards.get(l.e.to);
+    const sy = a.y + fieldY(a, l.e.fromField);
+    const ty = b.y + b.headY;
+    let d = '';
+    let sx;
+    let tx;
+    let sdir;
+    let tdir;
+    if (a === b || (b.x < a.x + a.w && b.x + b.w > a.x)) {
+      sx = a.x + a.w;
+      tx = b.x + b.w;
+      sdir = 1;
+      tdir = 1;
+      const out = Math.max(sx, tx) + (a === b ? 44 : 64);
+      d = 'M' + sx + ' ' + sy + 'C' + out + ' ' + sy + ' ' + out + ' ' + ty + ' ' + tx + ' ' + ty;
+    } else {
+      sdir = b.x >= a.x + a.w ? 1 : -1;
+      tdir = -sdir;
+      sx = sdir > 0 ? a.x + a.w : a.x;
+      tx = sdir > 0 ? b.x : b.x + b.w;
+      d = 'M' + sx + ' ' + sy;
+      let px = sx;
+      let py = sy;
+      for (const [x, y] of waypoints(a, b, sx, sy, tx, ty).concat([[tx, ty]])) {
+        if (py === y || Math.abs(x - px) < 1) {
+          d += 'L' + x + ' ' + y;
+        } else {
+          const m = (x - px) / 2;
+          d += 'C' + (px + m) + ' ' + py + ' ' + (x - m) + ' ' + y + ' ' + x + ' ' + y;
+        }
+        px = x;
+        py = y;
+      }
+    }
+    l.line.setAttribute('d', d);
+    const g1 = glyph(l.from, sx, sy, sdir);
+    const g2 = glyph(l.to, tx, ty, tdir);
+    l.ends.setAttribute('d', g1.d + g2.d);
+    l.rings.setAttribute('d', g1.ring + g2.ring);
+  }
+
+  function overlaps(a, b) {
+    return a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+  }
+
+  // placeLabels puts the pill of each visible edge (the highlighted ones
+  // while a card has focus) at the middle of the edge, or the nearest point
+  // along it that covers no card and no other pill. A pill with no free
+  // spot is hidden until its edge is highlighted.
+  function placeLabels() {
+    const f = focused();
+    const blocks = [];
+    for (const c of cards.values()) {
+      blocks.push([c.x - 4, c.y - 4, c.x + c.w + 4, c.y + c.h + 4]);
+    }
+    const taken = [];
+    const steps = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82];
+    for (const l of links) {
+      const on = f ? l.e.from === f || l.e.to === f : !l.hub || state.showHubs;
+      if (!on) {
+        continue;
+      }
+      const len = l.line.getTotalLength();
+      let spot = null;
+      let free = false;
+      for (const t of steps) {
+        const p = l.line.getPointAtLength(len * t);
+        const r = [p.x - l.w / 2, p.y - 9, p.x + l.w / 2, p.y + 9];
+        if (!spot) {
+          spot = r;
+        }
+        if (!blocks.some((b) => overlaps(b, r)) && !taken.some((b) => overlaps(b, r))) {
+          spot = r;
+          free = true;
+          break;
         }
       }
-      let spot = spots.find(([x, y]) => free({ x: x - w / 2, y: y - 7, w, h: 14 }));
-      const crowded = !spot;
-      spot = spot || spots[0] || [it.mid, (it.y1 + it.y2) / 2];
-      if (!crowded) {
-        taken.push({ x: spot[0] - w / 2, y: spot[1] - 7, w, h: 14 });
+      l.label.setAttribute('transform', 'translate(' + (spot[0] + l.w / 2) + ' ' + (spot[1] + 9) + ')');
+      l.label.classList.toggle('crowded', !free);
+      if (free) {
+        taken.push([spot[0] - 3, spot[1] - 3, spot[2] + 3, spot[3] + 3]);
       }
-      const label = svgEl('text', { x: spot[0], y: spot[1], class: crowded ? 'crowded' : '' });
-      label.textContent = text;
-      g.appendChild(label);
-      const title = svgEl('title', {});
-      title.textContent = nodes.get(it.e.from).short + '.' + (it.e.fromField || '') + ' → ' + nodes.get(it.e.to).short + (it.e.inferred ? ' (inferred)' : '');
-      g.appendChild(title);
-      svg.appendChild(g);
-      drawn.push({ e: it.e, g });
     }
   }
 
-  function render(refit) {
-    const { shown, list } = view();
-    layout(shown, list);
-    draw(list);
-    hovered = undefined;
-    highlight(null);
-    let ghosts = 0;
-    shown.forEach((mode) => {
-      ghosts += mode === 'ghost' ? 1 : 0;
-    });
-    countEl.textContent = (shown.size - ghosts) + ' models · ' + list.length + ' relations' + (ghosts ? ' · ' + ghosts + ' linked from elsewhere' : '');
-    if (refit) {
-      fit(0.3);
+  function redraw() {
+    for (const l of links) {
+      route(l);
+    }
+    placeLabels();
+  }
+
+  let frame = 0;
+  function redrawSoon() {
+    if (!frame) {
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        redraw();
+      });
     }
   }
 
-  // ------------------------------------------------------- pan and zoom
+  // ------------------------------------------------------------- render
 
-  function apply() {
-    world.style.transform = 'translate(' + state.x + 'px, ' + state.y + 'px) scale(' + state.k + ')';
+  // render draws the current scope: its models as full cards, the models
+  // they point at from outside it as compact cards, and their edges.
+  function render(keepCamera) {
+    world.querySelectorAll('.mcard').forEach((node) => node.remove());
+    svg.textContent = '';
+    cards = new Map();
+    near = new Map();
+    const scope = scopes.get(state.scope);
+    const full = new Set(scope.names);
+    const shown = scope.names.slice();
+    const seen = new Set(shown);
+    const list = [];
+    for (const e of edges) {
+      if (!full.has(e.from)) {
+        continue;
+      }
+      if (!seen.has(e.to)) {
+        seen.add(e.to);
+        shown.push(e.to);
+      }
+      list.push(e);
+      for (const [p, q] of [[e.from, e.to], [e.to, e.from]]) {
+        if (!near.has(p)) {
+          near.set(p, new Set());
+        }
+        if (p !== q) {
+          near.get(p).add(q);
+        }
+      }
+    }
+
+    const frag = doc.createDocumentFragment();
+    for (const name of shown) {
+      const c = makeCard(nodes.get(name), !full.has(name));
+      cards.set(name, c);
+      frag.append(c.el);
+    }
+    world.append(frag);
+    for (const c of cards.values()) {
+      measure(c);
+    }
+    layout(list);
+
+    lineLayer = svgEl('g', {});
+    labelLayer = svgEl('g', {});
+    svg.append(lineLayer, labelLayer);
+    links = list.map((e) => makeLink(e, lineLayer, labelLayer));
+    const widths = new Map();
+    for (const l of links) {
+      const label = l.text.textContent;
+      if (!widths.has(label)) {
+        widths.set(label, l.text.getComputedTextLength() + 16);
+      }
+      l.w = widths.get(label);
+      l.rect.setAttribute('width', String(l.w));
+      l.rect.setAttribute('x', String(-l.w / 2));
+      if (l.hub) {
+        l.g.classList.add('hub');
+        l.label.classList.add('hub');
+      }
+    }
+    redraw();
+
+    const hubLinks = links.filter((l) => l.hub).length;
+    const outside = shown.length - full.size;
+    countEl.textContent = full.size + (full.size === 1 ? ' model' : ' models') + ' · ' + list.length + (list.length === 1 ? ' relation' : ' relations') + (outside ? ' · ' + outside + ' linked from outside' : '');
+    hubsCount.textContent = hubLinks ? '(' + hubLinks + ')' : '';
+    rendered = state.scope;
+    if (!keepCamera) {
+      home();
+    }
+    if (findInput.value) {
+      find(false);
+    }
+    applyFocus();
+  }
+
+  // ---------------------------------------------------------- highlight
+
+  // applyFocus highlights the hovered card, or else the selected one, with
+  // its neighbours and all its edges (hub ones included), dimming the rest.
+  function focused() {
+    return state.hover && cards.has(state.hover) ? state.hover : state.selected;
+  }
+
+  function applyFocus() {
+    const f = focused();
+    const around = f ? near.get(f) || new Set() : null;
+    world.classList.toggle('focus', Boolean(f));
+    for (const [name, c] of cards) {
+      c.el.classList.toggle('hl', Boolean(f) && (name === f || around.has(name)));
+      c.el.classList.toggle('sel', name === state.selected);
+    }
+    for (const l of links) {
+      const on = Boolean(f) && (l.e.from === f || l.e.to === f);
+      if (on !== l.g.classList.contains('on')) {
+        l.g.classList.toggle('on', on);
+        l.label.classList.toggle('on', on);
+      }
+      if (on) {
+        lineLayer.append(l.g);
+        labelLayer.append(l.label);
+      }
+    }
+    placeLabels();
+  }
+
+  function select(name, center) {
+    state.selected = name && cards.has(name) ? name : null;
+    applyFocus();
+    if (state.selected && center) {
+      centerOn(state.selected);
+    }
+    if (isOpen) {
+      setHash(hashFor(), false);
+    }
+  }
+
+  // ------------------------------------------------------------- camera
+
+  function transform() {
+    world.style.transform = 'translate(' + state.x + 'px,' + state.y + 'px) scale(' + state.k + ')';
+    world.classList.toggle('far', state.k < 0.8);
+    pctEl.textContent = Math.round(state.k * 100) + '%';
+  }
+
+  function glide() {
+    world.classList.add('glide');
+    setTimeout(() => world.classList.remove('glide'), 280);
+  }
+
+  function bounds() {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const c of cards.values()) {
+      x0 = Math.min(x0, c.x);
+      y0 = Math.min(y0, c.y);
+      x1 = Math.max(x1, c.x + c.w);
+      y1 = Math.max(y1, c.y + c.h);
+    }
+    if (x0 === Infinity) {
+      return { x0: 0, y0: 0, w: 1, h: 1 };
+    }
+    return { x0, y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  // home shows the scope at zoom 1, centred when it fits and from its top
+  // left corner when it does not.
+  function home() {
+    const b = bounds();
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    state.k = 1;
+    state.x = b.w + 2 * PAD <= W ? (W - b.w) / 2 - b.x0 : PAD - b.x0;
+    state.y = b.h + 2 * PAD <= H ? (H - b.h) / 2 - b.y0 : PAD - b.y0;
+    transform();
+  }
+
+  function fit() {
+    const b = bounds();
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    const k = Math.max(0.15, Math.min(1, (W - 2 * PAD) / b.w, (H - 2 * PAD) / b.h));
+    state.k = k;
+    state.x = (W - b.w * k) / 2 - b.x0 * k;
+    state.y = Math.max(PAD / 2, (H - b.h * k) / 2) - b.y0 * k;
+    glide();
+    transform();
   }
 
   function zoomAt(k, cx, cy) {
-    const next = Math.min(2, Math.max(0.1, k));
+    const next = Math.min(2, Math.max(0.15, k));
     state.x = cx - (cx - state.x) * next / state.k;
     state.y = cy - (cy - state.y) * next / state.k;
     state.k = next;
-    apply();
+    transform();
   }
 
-  // fit scales the drawing into the canvas above the legend; below min it
-  // keeps min and starts at the top left instead.
-  function fit(min) {
-    const legend = section.querySelector('.map-legend');
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight - (legend ? legend.offsetHeight + 14 : 0);
-    const k = Math.min(1, w / size.w, h / size.h);
-    if (k < min) {
-      state.k = min;
-      state.x = 0;
-      state.y = 0;
-    } else {
-      state.k = k;
-      state.x = (w - size.w * k) / 2;
-      state.y = Math.max(0, (h - size.h * k) / 2);
+  // centerOn brings a card to the middle of the view, or its top near the
+  // top when it is taller than the view.
+  function centerOn(name) {
+    const c = cards.get(name);
+    if (!c) {
+      return;
     }
-    apply();
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    const k = state.k;
+    state.x = W / 2 - (c.x + c.w / 2) * k;
+    state.y = c.h * k < H - 2 * PAD ? H / 2 - (c.y + c.h / 2) * k : PAD - c.y * k;
+    glide();
+    transform();
   }
 
-  canvas.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    const speed = e.deltaMode === 1 ? 0.05 : 0.0015;
-    zoomAt(state.k * Math.exp(-e.deltaY * speed), e.clientX - r.left, e.clientY - r.top);
-  }, { passive: false });
+  // --------------------------------------------------------------- find
+
+  function find(center) {
+    const q = findInput.value.trim().toLowerCase();
+    let best = null;
+    let bestScore = 0;
+    for (const [name, c] of cards) {
+      const short = c.n.short.toLowerCase();
+      let score = 0;
+      if (q && short === q) {
+        score = 3;
+      } else if (q && short.startsWith(q)) {
+        score = 2;
+      } else if (q && (short.includes(q) || name.toLowerCase().includes(q))) {
+        score = 1;
+      }
+      c.el.classList.toggle('match', score > 0);
+      if (score > bestScore) {
+        best = name;
+        bestScore = score;
+      }
+    }
+    world.classList.toggle('finding', Boolean(q));
+    findInput.classList.toggle('miss', Boolean(q) && !best);
+    if (best && center) {
+      centerOn(best);
+    }
+    return best;
+  }
+
+  findInput.addEventListener('input', () => find(true));
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const best = find(true);
+      if (best) {
+        findInput.value = '';
+        findInput.blur();
+        find(false);
+        select(best, true);
+      }
+    } else if (e.key === 'Escape') {
+      e.stopPropagation();
+      findInput.value = '';
+      find(false);
+    }
+  });
+
+  // -------------------------------------------------------- interaction
 
   let drag = null;
   let suppressClick = false;
-  canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || e.target.closest('button, select, a')) {
-      return;
-    }
-    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: state.x, y: state.y, moved: false };
-  });
-  canvas.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) {
-      return;
-    }
-    const dx = e.clientX - drag.sx;
-    const dy = e.clientY - drag.sy;
-    if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) {
+
+  function onMove(e) {
+    const dx = e.clientX - drag.px;
+    const dy = e.clientY - drag.py;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) {
       return;
     }
     if (!drag.moved) {
       drag.moved = true;
-      canvas.setPointerCapture(e.pointerId);
-      canvas.classList.add('panning');
-      highlight(null);
+      canvas.classList.add(drag.card ? 'dragging' : 'panning');
+      if (drag.card) {
+        world.append(drag.card.el);
+      }
     }
-    state.x = drag.x + dx;
-    state.y = drag.y + dy;
-    apply();
-  });
-  const endDrag = (e) => {
-    if (!drag || e.pointerId !== drag.id) {
-      return;
+    if (drag.card) {
+      drag.card.x = drag.x0 + dx / state.k;
+      drag.card.y = drag.y0 + dy / state.k;
+      setPos(drag.card);
+      redrawSoon();
+    } else {
+      state.x = drag.x0 + dx;
+      state.y = drag.y0 + dy;
+      transform();
     }
-    if (drag.moved) {
-      suppressClick = true;
-      setTimeout(() => {
-        suppressClick = false;
-      }, 0);
-      canvas.classList.remove('panning');
+  }
+
+  function onUp() {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    if (drag.moved && drag.card) {
+      savePosition(drag.card);
     }
+    suppressClick = drag.moved;
+    canvas.classList.remove('dragging', 'panning');
     drag = null;
-  };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
-
-  // ------------------------------------------------- hover and focus
-
-  function highlight(name) {
-    if (name === hovered) {
-      return;
-    }
-    hovered = name;
-    world.classList.toggle('dim', Boolean(name));
-    const near = new Set(name ? [name] : []);
-    for (const d of drawn) {
-      const on = Boolean(name) && (d.e.from === name || d.e.to === name);
-      d.g.classList.toggle('hl', on);
-      if (on) {
-        near.add(d.e.from);
-        near.add(d.e.to);
-      }
-    }
-    for (const [n, b] of boxes) {
-      b.el.classList.toggle('hl', near.has(n));
-    }
   }
-  canvas.addEventListener('pointerover', (e) => {
-    if (drag && drag.moved) {
-      return;
-    }
-    const c = e.target.closest('.mcard');
-    highlight(c ? c.dataset.node : null);
+
+  // The camera is the only scroll: focusing a card must not scroll the
+  // clipped canvas, and a mouse press on a card does not focus it.
+  canvas.addEventListener('scroll', () => {
+    canvas.scrollTop = 0;
+    canvas.scrollLeft = 0;
   });
-  canvas.addEventListener('pointerleave', () => highlight(null));
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.mcard') && !e.target.closest('button')) {
+      e.preventDefault();
+    }
+  });
 
-  function setFocus(name) {
-    state.focus = name && nodes.has(name) ? name : null;
-    allBtn.hidden = !state.focus;
-    render(true);
-    setHash(hashFor(), false);
-  }
-
-  function openModel(name) {
-    const n = nodes.get(name);
-    if (!n) {
+  // Dragging a card moves it; dragging the background pans.
+  canvas.addEventListener('pointerdown', (e) => {
+    suppressClick = false;
+    if (e.button !== 0 || drag || e.target.closest('button, a, input, select')) {
       return;
     }
-    close();
-    // The reference's own link handler scrolls, marks the sidebar and
-    // updates the hash.
-    const a = el('a');
-    a.href = '#' + n.anchor;
-    a.hidden = true;
-    doc.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
+    const cardEl = e.target.closest('.mcard');
+    const card = cardEl ? cards.get(cardEl.dataset.node) : null;
+    drag = { card, px: e.clientX, py: e.clientY, x0: card ? card.x : state.x, y0: card ? card.y : state.y, moved: false };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
 
-  let clickTimer = 0;
+  // A scroll pans (two-finger scroll on a trackpad); with Ctrl or Cmd, or a
+  // pinch (which browsers report as Ctrl + wheel), it zooms at the pointer.
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
+    if (e.ctrlKey || e.metaKey) {
+      const r = canvas.getBoundingClientRect();
+      const delta = Math.max(-60, Math.min(60, e.deltaY * unit));
+      zoomAt(state.k * Math.exp(-delta * 0.01), e.clientX - r.left, e.clientY - r.top);
+      return;
+    }
+    state.x -= e.deltaX * unit;
+    state.y -= e.deltaY * unit;
+    transform();
+  }, { passive: false });
+
+  canvas.addEventListener('pointerover', (e) => {
+    if (drag) {
+      return;
+    }
+    const cardEl = e.target.closest('.mcard');
+    const name = cardEl ? cardEl.dataset.node : null;
+    if (name !== state.hover) {
+      state.hover = name;
+      applyFocus();
+    }
+  });
+  canvas.addEventListener('pointerleave', () => {
+    if (state.hover && !drag) {
+      state.hover = null;
+      applyFocus();
+    }
+  });
+
   section.addEventListener('click', (e) => {
-    const t = e.target;
-    if (suppressClick || !(t instanceof Element)) {
+    const t = e.target instanceof Element ? e.target : null;
+    if (!t) {
       return;
     }
-    const zoom = t.closest('[data-map-zoom]');
-    if (zoom) {
-      const dir = Number(zoom.dataset.mapZoom);
-      if (dir === 0) {
-        fit(0.1);
-      } else {
-        zoomAt(state.k * (dir > 0 ? 1.25 : 0.8), canvas.clientWidth / 2, canvas.clientHeight / 2);
-      }
+    // The click that ends a drag or a pan is not a click on a card.
+    if (suppressClick && t.closest('[data-map-canvas]')) {
+      suppressClick = false;
       return;
     }
-    if (t.closest('[data-map-all]')) {
-      setFocus(null);
+    suppressClick = false;
+    const ref = t.closest('[data-map-ref]');
+    if (ref) {
+      select(ref.dataset.mapRef, true);
       return;
     }
     const more = t.closest('[data-map-more]');
@@ -2604,83 +3010,101 @@
       } else {
         state.expanded.add(name);
       }
+      render(true);
+      return;
+    }
+    const zoom = t.closest('[data-map-zoom]');
+    if (zoom) {
+      const how = zoom.dataset.mapZoom;
+      if (how === 'fit') {
+        fit();
+      } else {
+        zoomAt(state.k * (how === 'in' ? 1.25 : 0.8), canvas.clientWidth / 2, canvas.clientHeight / 2);
+      }
+      return;
+    }
+    if (t.closest('[data-map-reset]')) {
+      if (store) {
+        store.removeItem(positionsKey());
+      }
       render(false);
       return;
     }
-    const ref = t.closest('[data-map-ref]');
-    if (ref) {
-      setFocus(ref.dataset.mapRef);
-      return;
-    }
-    const c = t.closest('.mcard');
-    if (c && c.dataset.node !== state.focus) {
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => setFocus(c.dataset.node), 240);
+    const cardEl = t.closest('.mcard');
+    if (cardEl) {
+      select(cardEl.dataset.node, false);
+    } else if (t.closest('[data-map-canvas]')) {
+      select(null, false);
     }
   });
+
   section.addEventListener('dblclick', (e) => {
-    const c = e.target instanceof Element ? e.target.closest('.mcard') : null;
-    if (c) {
-      clearTimeout(clickTimer);
-      openModel(c.dataset.node);
+    const cardEl = e.target instanceof Element ? e.target.closest('.mcard') : null;
+    if (cardEl && !e.target.closest('button')) {
+      openInReference(cardEl.dataset.node);
     }
   });
+
   section.addEventListener('keydown', (e) => {
-    const c = e.target instanceof Element ? e.target.closest('.mcard') : null;
-    if (e.key === 'Enter' && c && e.target === c) {
-      setFocus(c.dataset.node);
-    } else if (e.key === 'Escape' && state.focus) {
-      setFocus(null);
+    const cardEl = e.target instanceof Element ? e.target.closest('.mcard') : null;
+    if (cardEl && e.target === cardEl && e.key === 'Enter') {
+      e.preventDefault();
+      select(cardEl.dataset.node, true);
     }
   });
+
+  doc.addEventListener('keydown', (e) => {
+    if (isOpen && e.key === 'Escape' && state.selected && !doc.querySelector('.mmodal-back')) {
+      select(null, false);
+    }
+  });
+
   scopeSelect.addEventListener('change', () => {
     state.scope = scopeSelect.value;
-    setFocus(null);
+    state.selected = null;
+    state.hover = null;
+    render(false);
+    setHash(hashFor(), false);
   });
 
-  // ------------------------------------------------- open, close, hash
+  hubsBox.addEventListener('change', () => {
+    state.showHubs = hubsBox.checked;
+    world.classList.toggle('hubs', state.showHubs);
+    placeLabels();
+  });
 
-  function setHash(id, push) {
-    try {
-      if (push) {
-        history.pushState(null, '', '#' + id);
-      } else {
-        history.replaceState(null, '', '#' + id);
-      }
-    } catch (err) {
-      // about:srcdoc and sandboxed frames may refuse history updates.
+  // openInReference closes the map and shows the model card, through its
+  // sidebar link when there is one so the reference updates as usual.
+  function openInReference(name) {
+    const n = nodes.get(name);
+    if (!n) {
+      return;
+    }
+    const link = Array.from(doc.querySelectorAll('.sidebar a.nav-model')).find((a) => decode(a.getAttribute('href').slice(1)) === n.anchor);
+    if (link) {
+      link.click();
+      return;
+    }
+    close();
+    const target = doc.getElementById(n.anchor);
+    if (target) {
+      target.scrollIntoView({ block: 'start' });
+      setHash(n.anchor, true);
     }
   }
 
-  function hashFor() {
-    let id = 'map/' + encodeURIComponent(state.scope);
-    if (state.focus) {
-      id += '/' + encodeURIComponent(state.focus);
-    }
-    return id;
-  }
+  // ------------------------------------------------------- open / close
 
   function isMapHash(h) {
     return h === '#map' || h.startsWith('#map/');
   }
 
-  function decode(s) {
-    try {
-      return decodeURIComponent(s);
-    } catch (err) {
-      return s;
+  function hashFor() {
+    let h = 'map/' + encodeURIComponent(state.scope);
+    if (state.selected) {
+      h += '/' + encodeURIComponent(state.selected);
     }
-  }
-
-  // place lays the map over the content pane, beside the sidebar and below
-  // the mobile top bar, whatever their size.
-  function place() {
-    const sidebar = doc.getElementById('sidebar');
-    const bar = doc.querySelector('.topbar');
-    const left = sidebar && getComputedStyle(sidebar).position !== 'fixed' ? sidebar.getBoundingClientRect().right : 0;
-    const top = bar && bar.offsetParent !== null ? bar.getBoundingClientRect().bottom : 0;
-    section.style.left = Math.max(0, left) + 'px';
-    section.style.top = Math.max(0, top) + 'px';
+    return h;
   }
 
   function setSwitch(map) {
@@ -2693,28 +3117,44 @@
     });
   }
 
-  // open shows the map; push is true to add a history entry, false to
+  // open shows the map on a scope ('' keeps the current one) with a card
+  // selected ('' for none); push is true to add a history entry, false to
   // replace the current one and null to leave the hash alone.
   function open(scope, focus, push) {
     if (!isOpen) {
       if (location.hash.length > 1 && !isMapHash(location.hash)) {
         refHash = location.hash.slice(1);
       }
+      refScroll = window.scrollY;
       isOpen = true;
       section.hidden = false;
       doc.body.classList.add('map-open');
       setSwitch(true);
       const sidebar = doc.getElementById('sidebar');
-      if (sidebar) {
-        sidebar.classList.remove('open');
+      const menu = doc.querySelector('[data-menu]');
+      if (sidebar && menu && sidebar.classList.contains('open')) {
+        menu.click();
       }
-      place();
+      window.scrollTo(0, 0);
     }
-    state.scope = scopes.has(scope) ? scope : state.scope;
-    state.focus = focus && nodes.has(focus) ? focus : null;
-    scopeSelect.value = state.scope;
-    allBtn.hidden = !state.focus;
-    render(true);
+    let next = state.scope;
+    if (scopes.has(scope)) {
+      next = scope;
+    }
+    if (next !== rendered) {
+      state.scope = next;
+      state.selected = null;
+      scopeSelect.value = next;
+      render(false);
+    }
+    if (focus && cards.has(focus)) {
+      state.selected = focus;
+      applyFocus();
+      centerOn(focus);
+    } else if (!focus && state.selected) {
+      state.selected = null;
+      applyFocus();
+    }
     if (push !== null) {
       setHash(hashFor(), push);
     }
@@ -2730,10 +3170,11 @@
       return;
     }
     isOpen = false;
+    state.hover = null;
     section.hidden = true;
     doc.body.classList.remove('map-open');
     setSwitch(false);
-    highlight(null);
+    window.scrollTo(0, refScroll);
   }
 
   doc.addEventListener('click', (e) => {
@@ -2746,7 +3187,7 @@
       e.preventDefault();
       e.stopPropagation();
       if (sw.dataset.view === 'map') {
-        open('', '', true);
+        open('', isOpen ? state.selected || '' : '', !isOpen);
       } else if (isOpen) {
         close();
         setHash(refHash, true);
@@ -2771,11 +3212,6 @@
       openHash(location.hash, null);
     } else {
       close();
-    }
-  });
-  window.addEventListener('resize', () => {
-    if (isOpen) {
-      place();
     }
   });
 
