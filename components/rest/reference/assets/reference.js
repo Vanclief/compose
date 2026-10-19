@@ -997,6 +997,140 @@
     send(form);
   });
 
+  // ------------------------------------------------- pretty response view
+
+  // Response samples render as labeled values instead of JSON. The raw JSON
+  // stays in the page for Copy and the JSON toggle; the view is built from it
+  // when the card nears the viewport.
+
+  function pvScalar(v) {
+    if (v === null) {
+      return el('span', 'pv-v pv-null', 'null');
+    }
+    if (typeof v === 'boolean') {
+      return el('span', 'pv-v pv-bool', String(v));
+    }
+    if (typeof v === 'number') {
+      return el('span', 'pv-v pv-num', String(v));
+    }
+    if (v === '') {
+      return el('span', 'pv-v pv-empty', 'empty');
+    }
+    // "string" is the generator's placeholder for unformatted strings.
+    return el('span', v === 'string' ? 'pv-v pv-ph' : 'pv-v pv-str', String(v));
+  }
+
+  function pvIsNode(v) {
+    return v !== null && typeof v === 'object' && Object.keys(v).length > 0 &&
+      !(Array.isArray(v) && v.every((item) => item === null || typeof item !== 'object'));
+  }
+
+  function pvSummary(v) {
+    if (Array.isArray(v)) {
+      return 'list · ' + v.length + (v.length === 1 ? ' item' : ' items');
+    }
+    const n = Object.keys(v).length;
+    return n + (n === 1 ? ' field' : ' fields');
+  }
+
+  function pvRows(v, depth) {
+    const box = el('div', 'pv-rows');
+    if (Array.isArray(v)) {
+      v.forEach((item, i) => {
+        if (v.length === 1 && pvIsNode(item) && !Array.isArray(item)) {
+          box.append(...pvRows(item, depth).childNodes);
+          return;
+        }
+        box.append(pvRow('#' + (i + 1), item, depth));
+      });
+      return box;
+    }
+    for (const key of Object.keys(v)) {
+      box.append(pvRow(key, v[key], depth));
+    }
+    return box;
+  }
+
+  function pvRow(key, v, depth) {
+    const row = el('div', 'pv-row');
+    if (!pvIsNode(v)) {
+      row.append(el('span', 'pv-k', key));
+      if (Array.isArray(v)) {
+        const list = el('span', 'pv-v pv-list');
+        if (v.length === 0) {
+          list.append(el('span', 'pv-empty', 'empty list'));
+        }
+        v.forEach((item) => list.append(pvScalar(item)));
+        row.append(list);
+      } else if (v !== null && typeof v === 'object') {
+        row.append(el('span', 'pv-v pv-empty', 'empty object'));
+      } else {
+        row.append(pvScalar(v));
+      }
+      return row;
+    }
+    row.classList.add('pv-nest');
+    const open = depth < 2;
+    const btn = el('button', 'pv-k pv-tg', key);
+    btn.type = 'button';
+    btn.setAttribute('aria-expanded', String(open));
+    row.append(btn, el('span', 'pv-sum', pvSummary(v)));
+    const kids = pvRows(v, depth + 1);
+    kids.classList.add('pv-kids');
+    kids.hidden = !open;
+    row.append(kids);
+    return row;
+  }
+
+  function renderPretty(box) {
+    if (box.dataset.done) {
+      return;
+    }
+    box.dataset.done = '1';
+    const code = box.parentElement.querySelector('pre.raw code');
+    let v;
+    try {
+      v = JSON.parse(code.textContent);
+    } catch (err) {
+      box.closest('.tabpanel').classList.add('pv-off');
+      return;
+    }
+    if (pvIsNode(v)) {
+      box.append(pvRows(v, 0));
+    } else {
+      box.append(pvRow('value', v, 0));
+    }
+  }
+
+  const pvObserver = 'IntersectionObserver' in window
+    ? new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          pvObserver.unobserve(entry.target);
+          renderPretty(entry.target);
+        }
+      }
+    }, { rootMargin: '800px 0px' })
+    : null;
+
+  doc.querySelectorAll('[data-pv]').forEach((box) => {
+    if (pvObserver) {
+      pvObserver.observe(box);
+    } else {
+      renderPretty(box);
+    }
+  });
+
+  function toggleRaw(btn) {
+    const card = btn.closest('.card');
+    const raw = !card.classList.contains('show-raw');
+    card.classList.toggle('show-raw', raw);
+    btn.setAttribute('aria-pressed', String(raw));
+    if (raw) {
+      highlightWithin(card);
+    }
+  }
+
   // ------------------------------------------------------ delegated clicks
 
   doc.addEventListener('click', (e) => {
@@ -1009,6 +1143,12 @@
     if (btn) {
       if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
+      } else if (btn.matches('.pv-tg')) {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        btn.parentElement.querySelector(':scope > .pv-kids').hidden = !open;
+      } else if (btn.matches('[data-raw]')) {
+        toggleRaw(btn);
       } else if (btn.matches('[role="tab"]')) {
         selectTab(btn, false);
       } else if (btn.matches('[data-copy]')) {

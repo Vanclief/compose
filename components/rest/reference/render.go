@@ -548,7 +548,10 @@ func (t *tree) row(r rowSpec, depth int) {
 			hasKids = false
 		}
 	}
-	open := hasKids && depth < 1
+	// Response trees start fully collapsed: nested objects show their field
+	// names in the row head until opened.
+	collapsed := t.filter && t.mode == ForResponse
+	open := hasKids && depth < 1 && !collapsed
 
 	name := esc(r.name)
 	if r.key {
@@ -577,6 +580,9 @@ func (t *tree) row(r rowSpec, depth int) {
 		t.w(`<span class="mk req">required</span>`)
 	}
 	t.w(t.markers(s, f, r.deprecated))
+	if hasKids {
+		t.w(t.kidSummary(kid))
+	}
 	if recursive {
 		anchor, ok := t.b.models[kidName]
 		if ok {
@@ -609,6 +615,25 @@ func (t *tree) row(r rowSpec, depth int) {
 		t.w(`</div>`)
 	}
 	t.w(`</div>`)
+}
+
+// kidSummary lists the field names of an expandable row's object, shown by
+// CSS only while the row is collapsed.
+func (t *tree) kidSummary(kid *Schema) string {
+	names, more := fieldNames(t.d, kid, t.mode)
+	if len(names) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(`<span class="kid-sum">`)
+	for _, name := range names {
+		sb.WriteString(`<code class="chip">` + esc(name) + `</code>`)
+	}
+	if more > 0 {
+		sb.WriteString(`<span class="more">+` + strconv.Itoa(more) + `</span>`)
+	}
+	sb.WriteString(`</span>`)
+	return sb.String()
 }
 
 func (t *tree) markers(s, f *Schema, deprecated bool) string {

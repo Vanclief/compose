@@ -1039,18 +1039,27 @@ func (b *builder) summary(s *Schema, mode ExampleMode) summaryView {
 	if f == nil {
 		return sv
 	}
+	sv.Fields, sv.MoreFields = fieldNames(b.d, f, mode)
+	return sv
+}
+
+// fieldNames lists up to summaryFieldsMax property names of the flattened
+// object f that apply in mode, and how many more there are.
+func fieldNames(d *Document, f *Schema, mode ExampleMode) ([]string, int) {
+	var names []string
+	more := 0
 	for _, key := range f.Properties.Keys {
-		p := b.d.Flatten(f.Properties.Map[key])
+		p := d.Flatten(f.Properties.Map[key])
 		if p != nil && (mode == ForRequest && p.ReadOnly || mode == ForResponse && p.WriteOnly) {
 			continue
 		}
-		if len(sv.Fields) == summaryFieldsMax {
-			sv.MoreFields++
+		if len(names) == summaryFieldsMax {
+			more++
 			continue
 		}
-		sv.Fields = append(sv.Fields, key)
+		names = append(names, key)
 	}
-	return sv
+	return names, more
 }
 
 func (b *builder) buildModels() []*modelView {

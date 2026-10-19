@@ -278,6 +278,10 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, getPet, `<div class="resp-sum"><span class="ty">object (<a class="ref" href="#model/Pet" title="Pet">Pet</a>)</span><code class="chip">name</code>`)
 	require.Contains(t, getPet, `<span class="more">+1</span>`)
 	require.NotContains(t, getPet, `class="tg rs" aria-expanded="true"`)
+	// Nested response objects start collapsed and list their fields.
+	require.Contains(t, getPet, `<button type="button" class="tg pn" aria-expanded="false">contact</button><span class="ty">object</span><span class="kid-sum"><code class="chip">email</code><code class="chip">phone</code></span>`)
+	// The response card renders a pretty view from the raw JSON it keeps.
+	require.Contains(t, getPet, `<div class="pv" data-pv></div><pre class="raw"><code class="json">`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
 	require.Contains(t, getPet, `<span class="pp">{pet_id}</span>`)
