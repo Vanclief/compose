@@ -198,7 +198,10 @@ func TestRenderEmmaInline(t *testing.T) {
 	require.Contains(t, html, `href="#operation/auth-login"`)
 	require.Contains(t, html, `id="model/StandardError"`)
 	require.Contains(t, html, `href="#model/StandardError"`)
-	require.Contains(t, html, `id="tag/access-control"`)
+	// Groups follow the URL: access control lives under complexes.
+	require.Contains(t, html, `id="path/complexes"`)
+	require.Less(t, strings.Index(html, `id="path/complexes"`), strings.Index(html, `id="operation/accesscontrol-listaccesspoints"`))
+	require.Less(t, strings.Index(html, `id="operation/accesscontrol-listaccesspoints"`), strings.Index(html, `id="path/crm"`))
 	require.Contains(t, html, `id="operation/visitors-getaccesscodepublic"`)
 
 	auth := html[strings.Index(html, `id="section/authentication"`):]
@@ -258,12 +261,14 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.NotContains(t, html, "<img")
 	require.NotContains(t, html, "onerror=alert")
 
-	// Anchors: slugged operationIds, -2 on collision, tags and models.
+	// Anchors: slugged operationIds, -2 on collision, path groups and models.
 	require.Contains(t, html, `id="operation/pets-getpet"`)
 	require.Contains(t, html, `id="operation/dup-op"`)
 	require.Contains(t, html, `id="operation/dup-op-2"`)
-	require.Contains(t, html, `id="tag/pets"`)
-	require.Contains(t, html, `id="tag/other"`)
+	require.Contains(t, html, `id="path/pets"`)
+	require.Contains(t, html, `id="path/tree"`)
+	// The pets group is exactly the Pets tag, so it takes its description.
+	require.Contains(t, section(t, html, `id="path/pets"`), "Everything about pets.")
 	require.Contains(t, html, `id="model/Pet"`)
 
 	getPet := section(t, html, `id="operation/pets-getpet"`)

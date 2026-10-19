@@ -28,7 +28,7 @@ type pageView struct {
 	SpecURL     string
 	Schemes     []*schemeView
 	Global      []requirementView
-	Tags        []*tagView
+	Groups      []*groupView
 	Models      []*modelView
 	Map         *mapView
 	Diff        *changesView
@@ -93,16 +93,17 @@ type schemeRef struct {
 	Scopes string
 }
 
-type tagView struct {
+// groupView is the operations under one first path segment, /complexes or
+// /users, in document order: one sidebar group and one page section.
+type groupView struct {
 	Name        string
 	Anchor      string
 	Description template.HTML
-	Ops         []*opView // operations rendered under this tag
-	Nav         []*opView // sidebar entries, including operations rendered under another tag
+	Ops         []*opView
 	NavTree     *navFolder
 }
 
-// navFolder is one level of a tag's sidebar tree: operations first, in
+// navFolder is one level of a group's sidebar tree: operations first, in
 // document order, then sub-folders by name. Count includes every operation
 // beneath the folder.
 type navFolder struct {
@@ -113,7 +114,7 @@ type navFolder struct {
 	scope   bool
 }
 
-// navFlatMax is the largest tag that is always listed flat: a handful of
+// navFlatMax is the largest group that is always listed flat: a handful of
 // operations reads better without folders.
 const navFlatMax = 8
 
@@ -287,12 +288,12 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 
 	p.Schemes = b.buildSchemes()
 	p.Global = b.requirements(d.Security)
-	p.Tags = b.buildTags()
+	p.Groups = b.buildGroups()
 	p.Models = b.buildModels()
 	p.Flow = b.flow.JSON
 	p.ModelSamples = b.modelSamplesJSON()
 	p.TypeNotes = b.typeNotesJSON()
-	p.Map = b.buildMap(p.Tags)
+	p.Map = b.buildMap()
 	p.Diff = b.changesView(p)
 
 	return p
@@ -526,74 +527,116 @@ func securityKey(reqs []map[string][]string) string {
 	return string(data)
 }
 
-func (b *builder) buildTags() []*tagView {
-	byName := map[string]*tagView{}
-	var declared []*tagView
-	for _, t := range b.d.Tags {
-		_, exists := byName[t.Name]
-		if exists {
-			continue
-		}
-		tv := &tagView{Name: t.Name, Description: markdown(t.Description)}
-		byName[t.Name] = tv
-		declared = append(declared, tv)
-	}
-
-	var extra []*tagView
-	tagFor := func(name string) *tagView {
-		tv, ok := byName[name]
-		if ok {
-			return tv
-		}
-		tv = &tagView{Name: name}
-		byName[name] = tv
-		extra = append(extra, tv)
-		return tv
-	}
-
+// buildGroups groups the operations the way their URLs nest: by first path
+// segment, so /complexes/{complex_id}/invoices sits in complexes, with the
+// groups sorted by name. Tags only describe: a group whose operations are
+// exactly one tag's takes that tag's description, and an operation's tags
+// stay searchable.
+func (b *builder) buildGroups() []*groupView {
+	byName := map[string]*groupView{}
+	var groups []*groupView
 	var ops []*opView
+	// tag is the first tag shared by all of a group's operations, if any.
+	tag := map[*groupView]string{}
+	mixed := map[*groupView]bool{}
+	tagOps := map[string]int{}
 	for _, ref := range b.pageOperations() {
-		tags := ref.Operation.Tags
-		if len(tags) == 0 {
-			tags = []string{"Other"}
-		}
-		ov := b.operationView(ref, tags)
+		ov := b.operationView(ref, ref.Operation.Tags)
 		// Removed operations (diff mode) belong to the base document and
 		// take no part in the head's production chains.
 		if b.diff == nil || !b.diff.removed[ref.Operation] {
 			ops = append(ops, ov)
 		}
-		for i, name := range tags {
-			tv := tagFor(name)
-			tv.Nav = append(tv.Nav, ov)
-			if i == 0 {
-				tv.Ops = append(tv.Ops, ov)
-			}
+
+		name := pathGroup(ref.Path)
+		g, ok := byName[name]
+		if !ok {
+			g = &groupView{Name: name}
+			byName[name] = g
+			groups = append(groups, g)
+		}
+		g.Ops = append(g.Ops, ov)
+
+		first := ""
+		if len(ref.Operation.Tags) > 0 {
+			first = ref.Operation.Tags[0]
+		}
+		tagOps[first]++
+		if len(g.Ops) == 1 {
+			tag[g] = first
+		} else if tag[g] != first {
+			mixed[g] = true
 		}
 	}
 
 	b.buildFlow(ops)
 
-	sort.SliceStable(extra, func(i, j int) bool {
-		if extra[i].Name == "Other" || extra[j].Name == "Other" {
-			return extra[j].Name == "Other" && extra[i].Name != "Other"
+	descriptions := map[string]string{}
+	for _, t := range b.d.Tags {
+		_, exists := descriptions[t.Name]
+		if !exists {
+			descriptions[t.Name] = t.Description
 		}
-		return strings.ToLower(extra[i].Name) < strings.ToLower(extra[j].Name)
-	})
+	}
 
-	var out []*tagView
-	for _, tv := range append(declared, extra...) {
-		if len(tv.Nav) == 0 {
-			continue
+	sort.SliceStable(groups, func(i, j int) bool {
+		return strings.ToLower(groups[i].Name) < strings.ToLower(groups[j].Name)
+	})
+	for _, g := range groups {
+		g.Anchor = b.anchor("path", slugify(g.Name))
+		g.NavTree = navTree(g.Ops)
+		name := tag[g]
+		if name != "" && !mixed[g] && tagOps[name] == len(g.Ops) {
+			g.Description = markdown(descriptions[name])
 		}
-		tv.Anchor = b.anchor("tag", slugify(tv.Name))
-		tv.NavTree = navTree(tv.Nav)
-		out = append(out, tv)
+	}
+	return groups
+}
+
+// pathGroup is the group of a path: its first segment, or / for the root.
+func pathGroup(path string) string {
+	segs := pathSegments(path)
+	if len(segs) == 0 {
+		return "/"
+	}
+	return segs[0]
+}
+
+// tagNames lists the operation tags in the order the document declares them,
+// then undeclared ones by name, and Other last for untagged operations.
+func (b *builder) tagNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range b.d.Tags {
+		if !seen[t.Name] {
+			seen[t.Name] = true
+			out = append(out, t.Name)
+		}
+	}
+	var extra []string
+	other := false
+	for _, ref := range b.d.Operations() {
+		if len(ref.Operation.Tags) == 0 {
+			other = true
+		}
+		for _, name := range ref.Operation.Tags {
+			if !seen[name] {
+				seen[name] = true
+				extra = append(extra, name)
+			}
+		}
+	}
+	sort.SliceStable(extra, func(i, j int) bool {
+		return strings.ToLower(extra[i]) < strings.ToLower(extra[j])
+	})
+	out = append(out, extra...)
+	if other && !seen["Other"] {
+		out = append(out, "Other")
 	}
 	return out
 }
 
-// navTree groups a tag's operations into folders by path, the way a file
+// navTree groups a group's operations into folders by path, the way a file
 // browser would. The path prefix every operation shares is dropped, so the
 // first level is the resource. Parameter segments such as {id} never make a
 // folder; their operations belong to the static segment above them. A static
@@ -602,10 +645,10 @@ func (b *builder) buildTags() []*tagView {
 //
 //   - a top-level folder that only scopes its children by id, like
 //     complexes in /complexes/{complex_id}/invoices when a few operations of
-//     the tag live elsewhere, is dissolved into the top level;
+//     the group live elsewhere, is dissolved into the top level;
 //   - a folder whose only content is one sub-folder is shown as one compact
 //     folder, finance/utilities;
-//   - tags of up to navFlatMax operations, and tags whose operations all end
+//   - groups of up to navFlatMax operations, and groups whose operations all end
 //     up on one level, stay a flat list.
 func navTree(ops []*opView) *navFolder {
 	if len(ops) <= navFlatMax {
@@ -643,7 +686,7 @@ func navTree(ops []*opView) *navFolder {
 	out := root.fold(order)
 	out.Folders = hoistScopes(out.Folders)
 	out.compact()
-	// A lone folder at the top says nothing the tag name does not.
+	// A lone folder at the top says nothing the group name does not.
 	for len(out.Ops) == 0 && len(out.Folders) == 1 {
 		out = &navFolder{Count: out.Count, Ops: out.Folders[0].Ops, Folders: out.Folders[0].Folders}
 	}

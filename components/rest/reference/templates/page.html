@@ -18,7 +18,7 @@
 {{template "sidebar" .}}
 <main class="content" id="main" tabindex="-1">
 {{template "intro" .}}
-{{if .Diff}}{{template "changes" .Diff}}{{end}}{{range .Tags}}{{template "tag" .}}{{end}}
+{{if .Diff}}{{template "changes" .Diff}}{{end}}{{range .Groups}}{{template "group" .}}{{end}}
 {{if .Models}}{{template "models" .}}{{end}}
 {{if .Map}}{{template "map" .Map}}{{end}}
 <footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
@@ -47,8 +47,8 @@
 {{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
 {{if .Map}}<li><a class="nav-link nav-map" href="#map" data-view="map"><svg class="ico-map" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2" width="5" height="4" rx="1"/><rect x="9.5" y="10" width="5" height="4" rx="1"/><path d="M6.5 4h2.5v8h.5"/></svg>Schema map</a></li>{{end}}
 {{if .Diff}}{{template "diff-nav-link" .Diff}}{{end}}</ul>
-{{range .Tags}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
+{{range .Groups}}<div class="nav-group">
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Ops}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .NavTree}}</ul>
 </div>
@@ -110,9 +110,9 @@
 <div class="side-col"></div>
 </section>{{end}}{{end}}
 
-{{define "tag"}}<section class="tag">
+{{define "group"}}<section class="tag">
 <div class="tag-head" id="{{.Anchor}}" data-anchor>
-<h2><a href="{{href .Anchor}}">{{.Name}}</a></h2>
+<h2 class="group-path"><a href="{{href .Anchor}}">{{if ne .Name "/"}}/{{end}}{{.Name}}</a></h2>
 {{if .Description}}<div class="md">{{.Description}}</div>{{end}}
 </div>
 {{range .Ops}}{{template "operation" .}}{{end}}

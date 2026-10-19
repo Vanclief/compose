@@ -236,6 +236,8 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 }
 .nav-group-tg { font-weight: 600; }
 .nav-folder-tg { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+/* Groups are first path segments, named like the folders under them. */
+.nav-group-tg { font-family: var(--mono); font-size: 13px; }
 .nav-group-tg:hover, .nav-folder-tg:hover { background: var(--bg-hover); color: var(--text); }
 /* Chevrons: a rotated corner, right when closed and down when open. */
 .nav-group-tg::before, .nav-folder-tg::before { content: ""; position: absolute; left: 9px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(-45deg); transition: transform .15s; }
@@ -333,6 +335,7 @@ h5 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 /* Tags and operations */
 .tag-head { padding: 48px 40px 8px; border-bottom: 1px solid var(--border); }
 .tag-head h2 { font-size: 26px; }
+.tag-head h2.group-path { font-family: var(--mono); font-size: 24px; font-weight: 600; }
 .tag-head h2 a, .op-title a, .model-title a { color: inherit; }
 .op-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 /* Method and path read as one address bar. */

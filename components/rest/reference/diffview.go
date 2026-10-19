@@ -328,7 +328,7 @@ func (b *builder) changesView(p *pageView) *changesView {
 		}
 	}
 
-	for _, tv := range p.Tags {
+	for _, tv := range p.Groups {
 		g := &changeGroupView{Name: tv.Name}
 		for _, ov := range tv.Ops {
 			if ov.Diff == nil || ov.Diff.op == nil {

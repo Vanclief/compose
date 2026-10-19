@@ -40,7 +40,7 @@ func escapeScriptJSON(s string) string {
 
 // buildMap returns nil when the document has no entities, which leaves the
 // map and its view switcher out of the page.
-func (b *builder) buildMap(tags []*tagView) *mapView {
+func (b *builder) buildMap() *mapView {
 	g := b.d.Graph()
 	if len(g.Nodes) == 0 {
 		return nil
@@ -55,7 +55,7 @@ func (b *builder) buildMap(tags []*tagView) *mapView {
 		}
 	}
 
-	data := mapData{Graph: g, Tags: b.mapTags(tags, entities)}
+	data := mapData{Graph: g, Tags: b.mapTags(entities)}
 	data.Default = defaultScope(data.Tags)
 	data.Spec = strings.TrimSpace(b.d.Info.Title + " " + b.d.Info.Version)
 	var buf bytes.Buffer
@@ -70,9 +70,9 @@ func (b *builder) buildMap(tags []*tagView) *mapView {
 }
 
 // mapTags collects the entities each tag's operations reach through their
-// request bodies and responses, in the order the page lists the tags.
+// request bodies and responses, in the document's tag order, see tagNames.
 // Walking stops at an entity: what it points at is one hop away on the map.
-func (b *builder) mapTags(tags []*tagView, entities map[string]bool) []mapTag {
+func (b *builder) mapTags(entities map[string]bool) []mapTag {
 	reached := map[string][]string{}
 	for _, ref := range b.d.Operations() {
 		names := b.operationEntities(ref.Operation, entities)
@@ -89,10 +89,10 @@ func (b *builder) mapTags(tags []*tagView, entities map[string]bool) []mapTag {
 	}
 
 	var out []mapTag
-	for _, tv := range tags {
-		names := reached[tv.Name]
+	for _, tag := range b.tagNames() {
+		names := reached[tag]
 		if len(names) > 0 {
-			out = append(out, mapTag{Name: tv.Name, Nodes: names})
+			out = append(out, mapTag{Name: tag, Nodes: names})
 		}
 	}
 	return out

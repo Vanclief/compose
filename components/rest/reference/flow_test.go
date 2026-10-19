@@ -129,7 +129,7 @@ func flowPage(t *testing.T) (*pageView, map[string]*opView) {
 	require.NoError(t, err)
 	p := buildPage(doc, Options{}, nil)
 	ops := map[string]*opView{}
-	for _, tag := range p.Tags {
+	for _, tag := range p.Groups {
 		for _, ov := range tag.Ops {
 			ops[ov.OperationID] = ov
 		}
