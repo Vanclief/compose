@@ -211,8 +211,8 @@ func (d *Document) exampleTypes(s *Schema, mode ExampleMode, display func(string
 }
 
 // modelExample is the example of a component schema s for its own page in
-// the model dialog, with its type notes: models it holds stay empty, as
-// they open in the dialog themselves.
+// the model dialog, with its type notes: models it holds stay empty, and the
+// inspector grafts in their own examples when they are expanded.
 func (d *Document) modelExample(s *Schema, display func(string) string) (any, []string) {
 	var notes []string
 	e := &exampler{doc: d, mode: ForResponse, stack: map[string]bool{}, notes: &notes, display: display, maxModels: 1}

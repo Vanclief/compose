@@ -1054,7 +1054,7 @@ func (b *builder) noteRef(notes string) int {
 }
 
 // modelSample is a model's example for the model dialog, which shows it as
-// the samples' field tree: Value is the example as JSON, Types the index of
+// the ObjectInspector: Value is the example as JSON, Types the index of
 // its type notes.
 type modelSample struct {
 	Value json.RawMessage `json:"v"`

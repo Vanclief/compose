@@ -278,8 +278,8 @@ func TestRenderSmallDocument(t *testing.T) {
 	// Responses have no panel: their output ports switch the Response card.
 	require.NotContains(t, getPet, `data-detail="out:`)
 	require.Contains(t, getPet, `<button type="submit" class="mc-play" title="Send GET /pets/{pet_id}"`)
-	// The response card renders a pretty view from the raw JSON it keeps.
-	require.Contains(t, getPet, `<div class="pv" data-pv data-types="0"></div><pre class="raw"><code class="json">`)
+	// The response card renders an ObjectInspector from the raw JSON it keeps.
+	require.Contains(t, getPet, `<div class="oi" data-oi data-types="0"></div><pre class="raw"><code class="json">`)
 	require.Contains(t, getPet, `<span class="mk dep">deprecated</span>`)
 	require.Contains(t, getPet, `<code class="chip">alive</code><code class="chip">sold</code>`)
 	// Output ports switch the Response card, which has a tab per status.

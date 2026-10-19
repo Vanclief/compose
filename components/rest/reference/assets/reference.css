@@ -626,7 +626,7 @@ html.modal-open { overflow: hidden; }
 .mmodal { cursor: auto; }
 .mm-body { overflow: auto; padding: 12px 18px 18px; }
 .mm-body .model-name { margin-bottom: 8px; }
-.mm-sample > .pv { max-height: none; padding: 8px 12px; }
+.mm-sample > .oi { max-height: none; padding: 8px 12px; }
 
 /* Tracing: hovering a model lights everything that makes or takes it. */
 .model-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }
@@ -748,62 +748,62 @@ button.pn:hover { color: var(--accent); }
 .card pre { margin: 0; padding: 12px; overflow: auto; max-height: 480px; font-size: 12.5px; line-height: 1.5; }
 .card code { color: var(--sample-text); white-space: pre; }
 
-/* JSON samples as a file tree. --tl is the connector color, --row the line
+/* ObjectInspector: an object as a file tree of fields. --tl is the connector color, --row the line
    height that connectors meet at. */
-.pvp:not(.show-raw):not(.pv-off) > pre.raw, .pvp.show-raw > .pv, .pv-off > .pv, .pv-off .raw-tg { display: none; }
+.oi-panel:not(.show-raw):not(.oi-off) > pre.raw, .oi-panel.show-raw > .oi, .oi-off > .oi, .oi-off .raw-tg { display: none; }
 /* The content type is the panel's own header strip. */
 .card .tabpanel > .ct { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--sample-border); background: color-mix(in srgb, var(--sample-head) 45%, var(--sample-bg)); font-family: var(--mono); font-size: 11.5px; }
 .raw-tg { padding: 1px 8px; border: 1px solid var(--sample-border); border-radius: 4px; background: none; color: var(--sample-muted); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
 .raw-tg:hover, .raw-tg[aria-pressed="true"] { color: var(--sample-text); border-color: var(--sample-muted); }
-.pv { --tl: var(--sample-line); --row: 28px; padding: 8px 12px 12px; max-height: 480px; overflow: auto; font-family: var(--mono); font-size: 12.5px; }
-.jt { list-style: none; margin: 0 0 0 9px; padding: 0; border-left: 1px solid var(--tl); }
-.jt.jt-root { margin: 0; border: 0; }
-.jt > li { position: relative; padding-left: 14px; }
-.jt.jt-root > li { padding-left: 0; }
-.jt:not(.jt-root) > li::before { content: ""; position: absolute; left: 0; top: calc(var(--row) / 2); width: 10px; border-top: 1px solid var(--tl); }
+.oi { --tl: var(--sample-line); --row: 28px; padding: 8px 12px 12px; max-height: 480px; overflow: auto; font-family: var(--mono); font-size: 12.5px; }
+.oi-list { list-style: none; margin: 0 0 0 9px; padding: 0; border-left: 1px solid var(--tl); }
+.oi-list.oi-root { margin: 0; border: 0; }
+.oi-list > li { position: relative; padding-left: 14px; }
+.oi-list.oi-root > li { padding-left: 0; }
+.oi-list:not(.oi-root) > li::before { content: ""; position: absolute; left: 0; top: calc(var(--row) / 2); width: 10px; border-top: 1px solid var(--tl); }
 /* The last child ends its parent's connector at its elbow. */
-.jt:not(.jt-root) > li:last-child::after { content: ""; position: absolute; left: -1px; top: calc(var(--row) / 2 + 1px); bottom: 0; border-left: 1px solid var(--sample-bg); }
-.jt-line { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--row); padding: 2px 6px 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--sample-text); font: inherit; text-align: left; }
-.jt-k { flex: none; color: var(--sample-muted); }
-.jt-tg { position: relative; padding-left: 20px; cursor: pointer; }
-.jt-tg:hover, .jt-line.jt-cols:hover { background: var(--sample-hover); }
-.jt-tg .jt-k { color: var(--sample-text); }
-.jt-tg::before { content: ""; position: absolute; left: 6px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.5px solid var(--sample-muted); border-bottom: 1.5px solid var(--sample-muted); transform: rotate(-45deg); transition: transform .15s; }
-.jt-tg[aria-expanded="true"]::before { margin-top: -5px; transform: rotate(45deg); }
-.jt-ico { flex: none; font-weight: 700; letter-spacing: -.05em; }
-.jt-obj { color: var(--j-num); }
-.jt-arr { color: var(--j-null); }
+.oi-list:not(.oi-root) > li:last-child::after { content: ""; position: absolute; left: -1px; top: calc(var(--row) / 2 + 1px); bottom: 0; border-left: 1px solid var(--sample-bg); }
+.oi-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--row); padding: 2px 6px 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--sample-text); font: inherit; text-align: left; }
+.oi-k { flex: none; color: var(--sample-muted); }
+.oi-tg { position: relative; padding-left: 20px; cursor: pointer; }
+.oi-tg:hover, .oi-row.oi-cols:hover { background: var(--sample-hover); }
+.oi-tg .oi-k { color: var(--sample-text); }
+.oi-tg::before { content: ""; position: absolute; left: 6px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.5px solid var(--sample-muted); border-bottom: 1.5px solid var(--sample-muted); transform: rotate(-45deg); transition: transform .15s; }
+.oi-tg[aria-expanded="true"]::before { margin-top: -5px; transform: rotate(45deg); }
+.oi-ico { flex: none; font-weight: 700; letter-spacing: -.05em; }
+.oi-obj { color: var(--j-num); }
+.oi-arr { color: var(--j-null); }
 .pill { flex: none; padding: 0 8px; border: 1px solid var(--tl); border-radius: 999px; font-family: var(--font); font-size: 11.5px; line-height: 18px; color: var(--sample-muted); }
-.pv-v { min-width: 0; overflow-wrap: anywhere; }
+.oi-val { min-width: 0; overflow-wrap: anywhere; }
 /* With type notes a row reads name, type, example, and the whole tree
    shares one type column and one example column: --kw (set on the root)
    is the key column at depth 0, and each level (--d) indents 24px, which
    its key cell gives back. A folder's chevron takes 14px more. Types are
    colored like a typed language's: primitives, models and the enum
    keyword; examples are JSON literals on a chip of their own color. */
-.jt-line.jt-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
-.jt-tg.jt-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
-.jt-cols > .jt-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.jt-k > .jt-ico { margin-right: 7px; }
-.pv-t { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-t.t-prim { color: var(--t-prim); }
-.pv-t.t-model { color: var(--t-model); }
-.pv-t.t-kw { color: var(--t-kw); font-style: italic; }
-.pv-t[data-model] { text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; cursor: pointer; }
-.pv-t[data-model]:hover { text-decoration: underline; }
-.pv-ex { justify-self: start; max-width: 100%; padding: 1px 7px; border-radius: 5px; background: color-mix(in srgb, currentColor 12%, transparent); line-height: 18px; }
-.jt-cols > .pv-v:not(.pv-enum) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-enum { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.pv-enum > .pv-ex { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-more { padding: 1px 7px; border: 1px dashed var(--sample-line); border-radius: 5px; background: none; color: var(--sample-muted); font: inherit; line-height: 18px; cursor: pointer; }
-.pv-more:hover { border-style: solid; color: var(--sample-text); }
+.oi-row.oi-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
+.oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
+.oi-cols > .oi-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-k > .oi-ico { margin-right: 7px; }
+.oi-type { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-type.t-prim { color: var(--t-prim); }
+.oi-type.t-model { color: var(--t-model); }
+.oi-type.t-kw { color: var(--t-kw); font-style: italic; }
+.oi-type[data-model] { text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; cursor: pointer; }
+.oi-type[data-model]:hover { text-decoration: underline; }
+.oi-ex { justify-self: start; max-width: 100%; padding: 1px 7px; border-radius: 5px; background: color-mix(in srgb, currentColor 12%, transparent); line-height: 18px; }
+.oi-cols > .oi-val:not(.oi-enum) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-enum { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.oi-enum > .oi-ex { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-more { padding: 1px 7px; border: 1px dashed var(--sample-line); border-radius: 5px; background: none; color: var(--sample-muted); font: inherit; line-height: 18px; cursor: pointer; }
+.oi-more:hover { border-style: solid; color: var(--sample-text); }
 .j-p { color: var(--sample-muted); }
-.pv-str { color: var(--j-str); }
-.pv-num { color: var(--j-num); }
-.pv-bool { color: var(--j-bool); }
-.pv-null, .pv-empty, .pv-ph { color: var(--sample-muted); font-style: italic; }
-.pv-list { display: flex; flex-wrap: wrap; gap: 4px; }
-.pv-list > .pv-v { flex: none; padding: 0 6px; border-radius: 4px; background: var(--sample-fill); }
+.oi-str { color: var(--j-str); }
+.oi-num { color: var(--j-num); }
+.oi-bool { color: var(--j-bool); }
+.oi-null, .oi-empty, .oi-ph { color: var(--sample-muted); font-style: italic; }
+.oi-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.oi-chips > .oi-val { flex: none; padding: 0 6px; border-radius: 4px; background: var(--sample-fill); }
 .copy {
   margin-left: auto;
   padding: 2px 8px;
@@ -844,17 +844,17 @@ button.pn:hover { color: var(--accent); }
 .popt .pin-v { margin-top: 3px; }
 .pedit { margin: 6px 0 2px 16px; padding: 1px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
 .pedit:hover, .pedit[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); }
-/* The body port's fields: the sample tree in page colors, an input per
+/* The body port's fields: the ObjectInspector in page colors, an input per
    value. */
 .btree { --tl: var(--border-strong); --row: 30px; margin: 6px 0 2px; font-family: var(--mono); font-size: 12.5px; }
-.btree .jt-line { gap: 10px; padding: 1px 0 1px 4px; color: var(--text); }
-.btree .jt-tg { padding-left: 20px; }
-.btree .jt-tg:hover { background: var(--bg-soft); }
-.btree .jt-tg .jt-k { color: var(--text); }
-.btree .jt-tg::before { border-color: var(--muted); }
-.btree .jt-k { color: var(--muted); }
-.btree .jt:not(.jt-root) > li:last-child::after { border-left-color: var(--bg); }
-.btree li[data-port] > .jt-line > .jt-k { color: var(--text); }
+.btree .oi-row { gap: 10px; padding: 1px 0 1px 4px; color: var(--text); }
+.btree .oi-tg { padding-left: 20px; }
+.btree .oi-tg:hover { background: var(--bg-soft); }
+.btree .oi-tg .oi-k { color: var(--text); }
+.btree .oi-tg::before { border-color: var(--muted); }
+.btree .oi-k { color: var(--muted); }
+.btree .oi-list:not(.oi-root) > li:last-child::after { border-left-color: var(--bg); }
+.btree li[data-port] > .oi-row > .oi-k { color: var(--text); }
 .btree .src { flex: none; margin: 0; padding: 0; font-family: var(--font); }
 .bt-v { flex: 1 1 auto; min-width: 60px; height: 24px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-soft); color: var(--text); font: inherit; }
 .bt-v::placeholder { color: var(--faint); }

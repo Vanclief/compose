@@ -12,7 +12,7 @@
 <aside class="op-samples" aria-label="Samples for {{.Title}}">
 {{if .ResSamples}}<div class="card tabset">
 <div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
-{{range $i, $s := .ResSamples}}<div class="tabpanel pvp" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="pv" data-pv{{with $s.Types}} data-types="{{.}}"{{end}}></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
+{{range $i, $s := .ResSamples}}<div class="tabpanel oi-panel" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="oi" data-oi{{with $s.Types}} data-types="{{.}}"{{end}}></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
 {{end}}</div>
 {{end}}</aside>
 </article>

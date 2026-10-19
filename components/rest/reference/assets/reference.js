@@ -780,9 +780,10 @@
     }
   });
 
-  // The body port opens the raw JSON editor. With a field tree, the editor
-  // starts from what the tree holds and hands its JSON back on close;
-  // without one it starts from the example.
+  // The body port opens the raw JSON editor. With a field tree (the
+  // ObjectInspector with inputs), the editor starts from what the tree
+  // holds and hands its JSON back on close; without one it starts from the
+  // example.
   function toggleBodyEditor(btn) {
     const form = btn.closest('form.try');
     const box = form ? form.querySelector('.mc-body') : null;
@@ -790,7 +791,7 @@
       return;
     }
     const open = box.hidden;
-    const tree = form.querySelector('[data-btree] > .jt');
+    const tree = form.querySelector('[data-btree] > .oi-list');
     const body = box.querySelector('[data-body]');
     if (tree && !open) {
       let v;
@@ -853,7 +854,7 @@
       return;
     }
     const root = btList(v, 0, '');
-    root.classList.add('jt-root');
+    root.classList.add('oi-root');
     box.append(root);
     // Body ids keep the operations they come from, on their own rows.
     const fields = box.parentElement.querySelector('.pfields');
@@ -869,7 +870,7 @@
         }
         const src = li.querySelector('.src');
         if (src) {
-          row.querySelector('.jt-line').append(src);
+          row.querySelector('.oi-row').append(src);
         }
       });
       fields.remove();
@@ -887,7 +888,7 @@
   }
 
   function btList(v, depth, path) {
-    const ul = el('ul', 'jt');
+    const ul = el('ul', 'oi-list');
     for (const key of Object.keys(v)) {
       ul.append(btItem(key, v[key], depth, path ? path + '.' + key : key));
     }
@@ -902,12 +903,12 @@
     if (item || (!isList && v !== null && typeof v === 'object' && Object.keys(v).length > 0)) {
       // A list of objects is edited as its first item, sent as a list of one.
       const open = depth < 1;
-      const line = el('button', 'jt-line jt-tg');
+      const line = el('button', 'oi-row oi-tg');
       line.type = 'button';
       line.setAttribute('aria-expanded', String(open));
       line.append(
-        el('span', item ? 'jt-ico jt-arr' : 'jt-ico jt-obj', item ? '[]' : '{}'),
-        el('span', 'jt-k', key),
+        el('span', item ? 'oi-ico oi-arr' : 'oi-ico oi-obj', item ? '[]' : '{}'),
+        el('span', 'oi-k', key),
       );
       const kids = btList(item || v, depth + 1, path);
       kids.hidden = !open;
@@ -915,8 +916,8 @@
       li.append(line, kids);
       return li;
     }
-    const line = el('label', 'jt-line');
-    line.append(el('span', 'jt-k', key));
+    const line = el('label', 'oi-row');
+    line.append(el('span', 'oi-k', key));
     let input;
     if (typeof v === 'boolean') {
       input = el('select', 'bt-v');
@@ -979,7 +980,7 @@
     for (const li of ul.children) {
       let v;
       if (li.dataset.shape) {
-        const kids = treeValue(li.querySelector(':scope > .jt'));
+        const kids = treeValue(li.querySelector(':scope > .oi-list'));
         v = kids !== undefined && li.dataset.shape === 'list' ? [kids] : kids;
       } else {
         const input = li.querySelector('.bt-v');
@@ -1003,7 +1004,7 @@
         if (li.dataset.shape === 'list' && Array.isArray(x)) {
           x = x[0];
         }
-        fillTree(li.querySelector(':scope > .jt'), x);
+        fillTree(li.querySelector(':scope > .oi-list'), x);
         continue;
       }
       const input = li.querySelector('.bt-v');
@@ -1024,7 +1025,7 @@
   function bodyText(form) {
     const box = form.querySelector('.mc-body');
     const textarea = box ? box.querySelector('[data-body]') : null;
-    const tree = form.querySelector('[data-btree] > .jt');
+    const tree = form.querySelector('[data-btree] > .oi-list');
     if (tree && box && box.hidden) {
       const v = treeValue(tree);
       return v === undefined ? '' : JSON.stringify(v, null, 2);
@@ -1434,35 +1435,37 @@
     send(form);
   });
 
-  // ------------------------------------------------- pretty response view
+  // ------------------------------------------------------ ObjectInspector
 
-  // Response samples render as labeled values instead of JSON. The raw JSON
-  // stays in the page for Copy and the JSON toggle; the view is built from it
-  // when the card nears the viewport.
+  // The ObjectInspector shows an object as a tree of fields, each with its
+  // name, type and example. Response samples and the model dialog use it,
+  // and the body port's editor is the same tree with inputs. A response
+  // sample keeps its raw JSON in the page for Copy and the JSON toggle; its
+  // inspector is built from it when the card nears the viewport.
 
-  function pvScalar(v) {
+  function oiScalar(v) {
     if (v === null) {
-      return el('span', 'pv-v pv-null', 'null');
+      return el('span', 'oi-val oi-null', 'null');
     }
     if (typeof v === 'boolean') {
-      return el('span', 'pv-v pv-bool', String(v));
+      return el('span', 'oi-val oi-bool', String(v));
     }
     if (typeof v === 'number') {
-      return el('span', 'pv-v pv-num', String(v));
+      return el('span', 'oi-val oi-num', String(v));
     }
     if (v === '') {
-      return el('span', 'pv-v pv-empty', 'empty');
+      return el('span', 'oi-val oi-empty', 'empty');
     }
     // "string" is the generator's placeholder for unformatted strings.
-    return el('span', v === 'string' ? 'pv-v pv-ph' : 'pv-v pv-str', String(v));
+    return el('span', v === 'string' ? 'oi-val oi-ph' : 'oi-val oi-str', String(v));
   }
 
-  function pvIsNode(v) {
+  function oiIsNode(v) {
     return v !== null && typeof v === 'object' && Object.keys(v).length > 0 &&
       !(Array.isArray(v) && v.every((item) => item === null || typeof item !== 'object'));
   }
 
-  function pvSummary(v) {
+  function oiSummary(v) {
     if (Array.isArray(v)) {
       return v.length + (v.length === 1 ? ' item' : ' items');
     }
@@ -1540,21 +1543,37 @@
     return modelAnchors.get(name.replace(/\[\]$/, '')) || '';
   }
 
+  // Each model's own example and type notes, by anchor, for the model
+  // dialog and for models the inspector opens on demand.
+  let modelSamples = null;
+
+  function modelSample(anchor) {
+    if (!modelSamples) {
+      const node = doc.getElementById('model-samples');
+      try {
+        modelSamples = JSON.parse(node ? node.textContent : '{}') || {};
+      } catch (err) {
+        modelSamples = {};
+      }
+    }
+    return modelSamples[anchor] || null;
+  }
+
   // Types read like a typed language: primitives in one color, models in
   // another, enums as the union of their values. Models open in the model
   // dialog: a link on a value row, a marked span inside a folder's button.
-  function pvType(t, folder) {
+  function oiType(t, folder) {
     if (t.kind === 'e') {
-      return el('span', 'pv-t t-kw', 'enum');
+      return el('span', 'oi-type t-kw', 'enum');
     }
     if (t.kind !== 'm' && t.kind !== 'l') {
-      return el('span', 'pv-t t-prim', t.label);
+      return el('span', 'oi-type t-prim', t.label);
     }
     const anchor = modelAnchor(t.label);
     if (!anchor) {
-      return el('span', 'pv-t t-model', t.label);
+      return el('span', 'oi-type t-model', t.label);
     }
-    const link = el(folder ? 'span' : 'a', 'pv-t t-model', t.label);
+    const link = el(folder ? 'span' : 'a', 'oi-type t-model', t.label);
     link.dataset.model = anchor;
     link.title = 'Open ' + t.label.replace(/\[\]$/, '');
     if (!folder) {
@@ -1563,16 +1582,16 @@
     return link;
   }
 
-  // pvLit renders a value as a highlighted JSON literal.
-  function pvLit(v) {
+  // oiLit renders a value as a highlighted JSON literal.
+  function oiLit(v) {
     if (Array.isArray(v)) {
-      const span = el('span', 'pv-v');
+      const span = el('span', 'oi-val');
       span.append(el('span', 'j-p', '['));
       v.forEach((item, i) => {
         if (i > 0) {
           span.append(el('span', 'j-p', ', '));
         }
-        span.append(pvLit(item));
+        span.append(oiLit(item));
       });
       span.append(el('span', 'j-p', ']'));
       return span;
@@ -1593,26 +1612,26 @@
   }
 
   // An enum shows its values as a union.
-  const pvEnumMax = 4;
-  function pvEnum(t) {
+  const oiEnumMax = 4;
+  function oiEnum(t) {
     let values = [];
     try {
       values = JSON.parse(t.label);
     } catch (err) {
       values = [];
     }
-    const span = el('span', 'pv-v pv-enum');
+    const span = el('span', 'oi-val oi-enum');
     const chip = (v) => {
-      const c = pvLit(v);
-      c.classList.add('pv-ex');
+      const c = oiLit(v);
+      c.classList.add('oi-ex');
       c.title = JSON.stringify(v);
       return c;
     };
     // Long enums show their first values and expand on click.
-    const shown = values.length > pvEnumMax + 1 ? pvEnumMax : values.length;
+    const shown = values.length > oiEnumMax + 1 ? oiEnumMax : values.length;
     values.slice(0, shown).forEach((v) => span.append(chip(v)));
     if (shown < values.length) {
-      const more = el('button', 'pv-more', '+' + (values.length - shown));
+      const more = el('button', 'oi-more', '+' + (values.length - shown));
       more.type = 'button';
       more.title = 'Show all ' + values.length + ' values';
       more.onclick = () => {
@@ -1624,109 +1643,153 @@
     return span;
   }
 
-  // pvExample is the example column: enums list their values, empty
+  // oiExample is the example column: enums list their values, empty
   // containers and the generator's bare "string" say nothing the type
   // does not.
-  function pvExample(v, t) {
+  function oiExample(v, t) {
     if (t.kind === 'e') {
-      return pvEnum(t);
+      return oiEnum(t);
     }
     if (v !== null && typeof v === 'object' && Object.keys(v).length === 0) {
       return null;
     }
-    if (!t.own && v === 'string') {
+    if (!t.own && (v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => x === 'string')))) {
       return null;
     }
-    const span = pvLit(v);
-    span.classList.add('pv-v', 'pv-ex');
+    const span = oiLit(v);
+    span.classList.add('oi-val', 'oi-ex');
     span.title = typeof v === 'string' ? v : JSON.stringify(v);
     return span;
   }
 
-  // Samples render as a file tree: objects and lists are folders with a
+  // The inspector is a file tree: objects and lists are folders with a
   // chevron, an icon and their type; values are leaves on elbow connectors
   // with their type and, when the spec gives one, their example.
-  function pvList(v, depth, t) {
-    const ul = el('ul', 'jt');
-    if (Array.isArray(v) && v.length === 1 && pvIsNode(v[0]) && !Array.isArray(v[0])) {
+  function oiList(v, depth, t) {
+    const ul = el('ul', 'oi-list');
+    if (Array.isArray(v) && v.length === 1 && oiIsNode(v[0]) && !Array.isArray(v[0])) {
       // A list of one object reads better as that object's fields.
       v = v[0];
       t = typeKid(t, '[]');
     }
     if (Array.isArray(v)) {
-      v.forEach((item, i) => ul.append(pvItem('#' + (i + 1), item, depth, typeKid(t, '[]'))));
+      v.forEach((item, i) => ul.append(oiItem('#' + (i + 1), item, depth, typeKid(t, '[]'))));
     } else {
       for (const key of Object.keys(v)) {
-        ul.append(pvItem(key, v[key], depth, typeKid(t, key)));
+        ul.append(oiItem(key, v[key], depth, typeKid(t, key)));
       }
     }
     return ul;
   }
 
   // The whole tree shares one type column and one example column. Each
-  // level indents by pvIndent (about 3ch), so a row's key cell is the
-  // shared width less its depth; pvCols collects the widest key, counted
+  // level indents by oiIndent (about 3ch), so a row's key cell is the
+  // shared width less its depth; oiCols collects the widest key, counted
   // with its indent, and the widest type while a tree renders. The shared
-  // key width is capped at pvKeyMax: a row whose key needs more (--kl)
+  // key width is capped by oiKeyCap: a row whose key needs more (--kl)
   // takes it and pushes only its own type over.
-  const pvIndent = 3;
-  const pvKeyMax = 22;
-  let pvCols = { k: 1, t: 4 };
+  const oiIndent = 3;
+  const oiKeyMax = 22;
 
-  function pvColumns(line, key, depth, t, folder) {
+  // oiKeyCap lets the key column take up to 38% of an inspector width px
+  // wide (7.5px is the 12.5px monospace ch), and never less than oiKeyMax.
+  function oiKeyCap(width) {
+    return Math.max(oiKeyMax, Math.floor(width * 0.38 / 7.5));
+  }
+  let oiCols = { k: 1, t: 4 };
+
+  function oiColumns(line, key, depth, t, folder) {
     const need = key.length + (folder ? 3 : 0);
-    line.classList.add('jt-cols');
+    line.classList.add('oi-cols');
     line.style.setProperty('--d', String(depth));
     line.style.setProperty('--kl', need + 'ch');
-    pvCols.k = Math.max(pvCols.k, need + depth * pvIndent + (folder ? 2 : 0) + 1);
-    pvCols.t = Math.max(pvCols.t, t.kind === 'e' ? 4 : t.label.length);
+    oiCols.k = Math.max(oiCols.k, need + depth * oiIndent + (folder ? 2 : 0) + 1);
+    oiCols.t = Math.max(oiCols.t, t.kind === 'e' ? 4 : t.label.length);
   }
 
-  function pvItem(key, v, depth, t) {
+  // A model the example stopped at (left empty for depth, or because the
+  // dialog's samples hold one level) still opens: its own example and type
+  // notes graft in on first expand, a level at a time, so models that hold
+  // each other never recurse. oiModel is that sample, or null.
+  const oiLazy = new WeakMap();
+
+  function oiModel(v, t) {
+    if (!t || t.own || (t.kind !== 'm' && t.kind !== 'l') || oiIsNode(v)) {
+      return null;
+    }
+    const anchor = modelAnchor(t.label);
+    const sample = anchor ? modelSample(anchor) : null;
+    return sample && oiIsNode(sample.v) ? sample : null;
+  }
+
+  function oiGraft(kids, sample, depth) {
+    const root = kids.closest('.oi-root');
+    oiCols = { k: Number(root.dataset.k) || 1, t: Number(root.dataset.t) || 4 };
+    kids.append(...oiList(sample.v, depth, typeTree(String(sample.t))).childNodes);
+    oiSetCols(root, oiKeyCap(root.clientWidth));
+  }
+
+  // oiSetCols sizes the shared columns from oiCols, keeping the counts on
+  // the root for rows grafted in later.
+  function oiSetCols(root, keyMax) {
+    root.dataset.k = String(oiCols.k);
+    root.dataset.t = String(oiCols.t);
+    root.style.setProperty('--kw', Math.min(keyMax, oiCols.k) + 'ch');
+    root.style.setProperty('--tw', Math.min(24, oiCols.t) + 'ch');
+  }
+
+  function oiItem(key, v, depth, t) {
     const li = el('li');
-    if (!pvIsNode(v)) {
-      const line = el('div', 'jt-line');
-      line.append(el('span', 'jt-k', key));
+    const model = oiModel(v, t);
+    if (!oiIsNode(v) && !model) {
+      const line = el('div', 'oi-row');
+      line.append(el('span', 'oi-k', key));
       if (t) {
-        pvColumns(line, key, depth, t, false);
-        line.append(pvType(t, false));
-        const ex = pvExample(v, t);
+        oiColumns(line, key, depth, t, false);
+        line.append(oiType(t, false));
+        const ex = oiExample(v, t);
         if (ex) {
           line.append(ex);
         }
       } else if (Array.isArray(v)) {
-        const list = el('span', 'pv-v pv-list');
+        const list = el('span', 'oi-val oi-chips');
         if (v.length === 0) {
-          list.append(el('span', 'pv-empty', 'empty list'));
+          list.append(el('span', 'oi-empty', 'empty list'));
         }
-        v.forEach((item) => list.append(pvScalar(item)));
+        v.forEach((item) => list.append(oiScalar(item)));
         line.append(list);
       } else if (v !== null && typeof v === 'object') {
-        line.append(el('span', 'pv-v pv-empty', 'empty object'));
+        line.append(el('span', 'oi-val oi-empty', 'empty object'));
       } else {
-        line.append(pvScalar(v));
+        line.append(oiScalar(v));
       }
       li.append(line);
       return li;
     }
-    const open = depth < 2;
-    const isList = Array.isArray(v);
-    const line = el('button', 'jt-line jt-tg');
+    const open = !model && depth < 2;
+    const isList = model ? t.kind === 'l' : Array.isArray(v);
+    const line = el('button', 'oi-row oi-tg');
     line.type = 'button';
     line.setAttribute('aria-expanded', String(open));
-    const name = el('span', 'jt-k');
-    name.append(el('span', isList ? 'jt-ico jt-arr' : 'jt-ico jt-obj', isList ? '[]' : '{}'), key);
-    line.append(name, t && !t.own ? pvType(t, true) : el('span', 'pill', pvSummary(v)));
+    const name = el('span', 'oi-k');
+    name.append(el('span', isList ? 'oi-ico oi-arr' : 'oi-ico oi-obj', isList ? '[]' : '{}'), key);
+    line.append(name, t && !t.own ? oiType(t, true) : el('span', 'pill', oiSummary(v)));
     if (t && !t.own) {
-      pvColumns(line, key, depth, t, true);
+      oiColumns(line, key, depth, t, true);
     }
-    const kids = pvList(v, depth + 1, t);
+    let kids;
+    if (model) {
+      kids = el('ul', 'oi-list');
+      oiLazy.set(kids, () => oiGraft(kids, model, depth + 1));
+    } else {
+      kids = oiList(v, depth + 1, t);
+    }
     kids.hidden = !open;
     li.append(line, kids);
     return li;
   }
 
-  function renderPretty(box) {
+  function renderInspector(box) {
     if (box.dataset.done) {
       return;
     }
@@ -1736,59 +1799,43 @@
     try {
       v = JSON.parse(code.textContent);
     } catch (err) {
-      box.parentElement.classList.add('pv-off');
+      box.parentElement.classList.add('oi-off');
       return;
     }
-    box.append(pvTree(v, typeTree(box.dataset.types)));
+    box.append(inspectorTree(v, typeTree(box.dataset.types), oiKeyCap(box.clientWidth)));
   }
 
-  // pvTree is the field tree of the value v typed by t, its shared key
+  // inspectorTree is the inspector of the value v typed by t, its shared key
   // column at most keyMax ch wide.
-  function pvTree(v, t, keyMax) {
-    if (!pvIsNode(v)) {
+  function inspectorTree(v, t, keyMax) {
+    if (!oiIsNode(v)) {
       v = { value: v };
       t = t ? { kids: new Map([['value', t]]) } : null;
     }
-    pvCols = { k: 1, t: 4 };
-    const root = pvList(v, 0, t);
-    root.classList.add('jt-root');
-    root.style.setProperty('--kw', Math.min(keyMax || pvKeyMax, pvCols.k) + 'ch');
-    root.style.setProperty('--tw', Math.min(24, pvCols.t) + 'ch');
+    oiCols = { k: 1, t: 4 };
+    const root = oiList(v, 0, t);
+    root.classList.add('oi-root');
+    oiSetCols(root, keyMax || oiKeyMax);
     return root;
   }
 
-  // Each model's own example and type notes, by anchor, for the model
-  // dialog.
-  let modelSamples = null;
 
-  function modelSample(anchor) {
-    if (!modelSamples) {
-      const node = doc.getElementById('model-samples');
-      try {
-        modelSamples = JSON.parse(node ? node.textContent : '{}') || {};
-      } catch (err) {
-        modelSamples = {};
-      }
-    }
-    return modelSamples[anchor] || null;
-  }
-
-  const pvObserver = 'IntersectionObserver' in window
+  const oiObserver = 'IntersectionObserver' in window
     ? new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          pvObserver.unobserve(entry.target);
-          renderPretty(entry.target);
+          oiObserver.unobserve(entry.target);
+          renderInspector(entry.target);
         }
       }
     }, { rootMargin: '800px 0px' })
     : null;
 
-  doc.querySelectorAll('[data-pv]').forEach((box) => {
-    if (pvObserver) {
-      pvObserver.observe(box);
+  doc.querySelectorAll('[data-oi]').forEach((box) => {
+    if (oiObserver) {
+      oiObserver.observe(box);
     } else {
-      renderPretty(box);
+      renderInspector(box);
     }
   });
 
@@ -2426,8 +2473,8 @@
     head.append(open, close);
     box.append(head);
 
-    // The fields read like a response sample's: name, type and example,
-    // with the models they hold opening here in turn.
+    // The model's ObjectInspector, as in a response sample: the models it
+    // holds expand in place, and their types open here in turn.
     const body = el('div', 'mm-body');
     const sample = modelSample(anchor);
     ['.model-name', '.model-flow', sample ? '' : ':scope > .tree'].forEach((sel) => {
@@ -2437,10 +2484,10 @@
       }
     });
     if (sample) {
-      const pv = el('div', 'pv');
-      pv.append(pvTree(sample.v, typeTree(String(sample.t)), 32));
+      const oi = el('div', 'oi');
+      oi.append(inspectorTree(sample.v, typeTree(String(sample.t)), oiKeyCap(box.clientWidth - 60)));
       const frame = el('div', 'card mm-sample');
-      frame.append(pv);
+      frame.append(oi);
       body.append(frame);
     }
     box.append(body);
@@ -2488,7 +2535,7 @@
     hideCard();
 
     // A model type in a sample opens its model, even inside a folder row.
-    const typeLink = t.closest('.pv-t[data-model]');
+    const typeLink = t.closest('.oi-type[data-model]');
     if (typeLink) {
       e.preventDefault();
       closePop();
@@ -2508,8 +2555,13 @@
         showDetail(btn.closest('.machine'), '');
       } else if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
-      } else if (btn.matches('.jt-tg')) {
+      } else if (btn.matches('.oi-tg')) {
         const open = btn.getAttribute('aria-expanded') !== 'true';
+        const graft = oiLazy.get(btn.nextElementSibling);
+        if (open && graft) {
+          oiLazy.delete(btn.nextElementSibling);
+          graft();
+        }
         btn.setAttribute('aria-expanded', String(open));
         btn.nextElementSibling.hidden = !open;
       } else if (btn.matches('[data-raw]')) {
