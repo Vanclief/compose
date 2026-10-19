@@ -1027,38 +1027,35 @@
 
   function pvSummary(v) {
     if (Array.isArray(v)) {
-      return 'list · ' + v.length + (v.length === 1 ? ' item' : ' items');
+      return v.length + (v.length === 1 ? ' item' : ' items');
     }
     const n = Object.keys(v).length;
     return n + (n === 1 ? ' field' : ' fields');
   }
 
-  function pvRows(v, depth) {
-    const box = el('div', 'pv-rows');
+  // Samples render as a file tree: objects and lists are folders with a
+  // chevron, an icon and a count; values are leaves on elbow connectors.
+  function pvList(v, depth) {
+    const ul = el('ul', 'jt');
+    if (Array.isArray(v) && v.length === 1 && pvIsNode(v[0]) && !Array.isArray(v[0])) {
+      // A list of one object reads better as that object's fields.
+      v = v[0];
+    }
     if (Array.isArray(v)) {
-      v.forEach((item, i) => {
-        if (v.length === 1 && pvIsNode(item) && !Array.isArray(item)) {
-          box.append(...pvRows(item, depth).childNodes);
-          return;
-        }
-        box.append(pvRow('#' + (i + 1), item, depth));
-      });
-      return box;
+      v.forEach((item, i) => ul.append(pvItem('#' + (i + 1), item, depth)));
+    } else {
+      for (const key of Object.keys(v)) {
+        ul.append(pvItem(key, v[key], depth));
+      }
     }
-    for (const key of Object.keys(v)) {
-      box.append(pvRow(key, v[key], depth));
-    }
-    return box;
+    return ul;
   }
 
-  // Rows read as an outline: a bullet, the key, then the value. Objects and
-  // lists toggle from their line, Workflowy style, or from the thread line
-  // along their children, Reddit style.
-  function pvRow(key, v, depth) {
-    const row = el('div', 'pv-row');
+  function pvItem(key, v, depth) {
+    const li = el('li');
     if (!pvIsNode(v)) {
-      const line = el('div', 'pv-line');
-      line.append(el('span', 'pv-dot'), el('span', 'pv-k', key));
+      const line = el('div', 'jt-line');
+      line.append(el('span', 'jt-k', key));
       if (Array.isArray(v)) {
         const list = el('span', 'pv-v pv-list');
         if (v.length === 0) {
@@ -1071,38 +1068,23 @@
       } else {
         line.append(pvScalar(v));
       }
-      row.append(line);
-      return row;
+      li.append(line);
+      return li;
     }
-    row.classList.add('pv-nest');
     const open = depth < 2;
-    const line = el('button', 'pv-line pv-tg');
+    const isList = Array.isArray(v);
+    const line = el('button', 'jt-line jt-tg');
     line.type = 'button';
     line.setAttribute('aria-expanded', String(open));
-    line.append(el('span', 'pv-dot'), el('span', 'pv-k', key), el('span', 'pv-sum', pvSummary(v)));
-    const kids = pvRows(v, depth + 1);
-    kids.classList.add('pv-kids');
+    line.append(
+      el('span', isList ? 'jt-ico jt-arr' : 'jt-ico jt-obj', isList ? '[]' : '{}'),
+      el('span', 'jt-k', key),
+      el('span', 'pill', pvSummary(v)),
+    );
+    const kids = pvList(v, depth + 1);
     kids.hidden = !open;
-    const thread = el('button', 'pv-thread');
-    thread.type = 'button';
-    thread.title = 'Collapse ' + key;
-    thread.setAttribute('aria-label', 'Collapse ' + key);
-    kids.prepend(thread);
-    row.append(line, kids);
-    return row;
-  }
-
-  function pvToggle(row, open) {
-    const line = row.querySelector(':scope > .pv-tg');
-    line.setAttribute('aria-expanded', String(open));
-    row.querySelector(':scope > .pv-kids').hidden = !open;
-    if (!open) {
-      // Collapsing from a long thread can leave the row above the fold.
-      const box = row.closest('.pv');
-      if (box && line.offsetTop < box.scrollTop) {
-        box.scrollTop = line.offsetTop - 8;
-      }
-    }
+    li.append(line, kids);
+    return li;
   }
 
   function renderPretty(box) {
@@ -1115,14 +1097,15 @@
     try {
       v = JSON.parse(code.textContent);
     } catch (err) {
-      box.closest('.tabpanel').classList.add('pv-off');
+      box.parentElement.classList.add('pv-off');
       return;
     }
-    if (pvIsNode(v)) {
-      box.append(pvRows(v, 0));
-    } else {
-      box.append(pvRow('value', v, 0));
+    if (!pvIsNode(v)) {
+      v = { value: v };
     }
+    const root = pvList(v, 0);
+    root.classList.add('jt-root');
+    box.append(root);
   }
 
   const pvObserver = 'IntersectionObserver' in window
@@ -1145,12 +1128,12 @@
   });
 
   function toggleRaw(btn) {
-    const card = btn.closest('.card');
-    const raw = !card.classList.contains('show-raw');
-    card.classList.toggle('show-raw', raw);
+    const panel = btn.closest('.tabpanel');
+    const raw = !panel.classList.contains('show-raw');
+    panel.classList.toggle('show-raw', raw);
     btn.setAttribute('aria-pressed', String(raw));
     if (raw) {
-      highlightWithin(card);
+      highlightWithin(panel);
     }
   }
 
@@ -1166,10 +1149,10 @@
     if (btn) {
       if (btn.matches('.tg, .nav-group-tg, .nav-folder-tg')) {
         toggle(btn);
-      } else if (btn.matches('.pv-tg')) {
-        pvToggle(btn.parentElement, btn.getAttribute('aria-expanded') !== 'true');
-      } else if (btn.matches('.pv-thread')) {
-        pvToggle(btn.parentElement.parentElement, false);
+      } else if (btn.matches('.jt-tg')) {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        btn.nextElementSibling.hidden = !open;
       } else if (btn.matches('[data-raw]')) {
         toggleRaw(btn);
       } else if (btn.matches('[role="tab"]')) {

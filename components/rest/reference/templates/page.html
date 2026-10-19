@@ -42,22 +42,22 @@
 {{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>{{end}}
 </ul>
 {{range .Tags}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Nav}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .NavTree}}</ul>
 </div>
 {{end}}{{if .Models}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false"><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">Models</span><span class="count">{{len .Models}}</span></button>
 <ul class="nav" hidden>
-{{range .Models}}<li><a class="nav-model" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{.Short}}</a></li>
+{{range .Models}}<li><a class="nav-model" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span></a></li>
 {{end}}</ul>
 </div>{{end}}
 <p class="no-results" hidden>No matches.</p>
 </nav>
 </aside>{{end}}
 
-{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="nav-title">{{.Title}}</span></a></li>
-{{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
+{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op" href="{{href .Anchor}}" data-search="{{.Search}}"><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span><span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
+{{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
 <ul class="nav" hidden>
 {{template "navfolder" .}}</ul>
 </li>

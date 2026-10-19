@@ -44,11 +44,11 @@
 {{if or .Curl .ReqSamples}}<div class="card tabset">
 <div class="card-head"><span>Request</span><div class="tablist" role="tablist">{{if .Curl}}<button type="button" role="tab" class="tab" aria-selected="true">curl</button>{{end}}{{range $i, $s := .ReqSamples}}<button type="button" role="tab" class="tab" aria-selected="{{if and (eq $i 0) (not $.Curl)}}true{{else}}false{{end}}" title="{{$s.Type}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
 {{if .Curl}}<div class="tabpanel" role="tabpanel"><pre><code class="sh">{{.Curl}}</code></pre></div>
-{{end}}{{range $i, $s := .ReqSamples}}<div class="tabpanel" role="tabpanel"{{if or $.Curl (ne $i 0)}} hidden{{end}}><pre><code class="json"{{if eq $i 0}} data-req-example{{end}}>{{$s.Example}}</code></pre></div>
+{{end}}{{range $i, $s := .ReqSamples}}<div class="tabpanel pvp" role="tabpanel"{{if or $.Curl (ne $i 0)}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="pv" data-pv></div><pre class="raw"><code class="json"{{if eq $i 0}} data-req-example{{end}}>{{$s.Example}}</code></pre></div>
 {{end}}</div>
-{{end}}{{if .ResSamples}}<div class="card tabset res">
-<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-raw aria-pressed="false" title="Show raw JSON">JSON</button><button type="button" class="copy" data-copy>Copy</button></div>
-{{range $i, $s := .ResSamples}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}</div><div class="pv" data-pv></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
+{{end}}{{if .ResSamples}}<div class="card tabset">
+<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
+{{range $i, $s := .ResSamples}}<div class="tabpanel pvp" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct">{{$s.Type}}<button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="pv" data-pv></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
 {{end}}</div>
 {{end}}</aside>
 </article>
