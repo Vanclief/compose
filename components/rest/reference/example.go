@@ -200,9 +200,10 @@ type exampler struct {
 // one. Kinds are s string, f formatted string, n number, b boolean, e enum,
 // o object, m model (a component schema object, labelled display(name)),
 // a array, l list of models and x anything. An array's label is its item's
-// with "[]"; an enum's label is its values as a JSON list, at most
-// maxEnumNote of them. A value the spec describes ends its note with a tab
-// and the description, see noteDescription. A list of pets reads
+// with "[]"; an enum's is "enum", or its name when named. A value the spec
+// describes ends its note with a tab and the description, see
+// noteDescription, and a note with a detail (see noteDetail) adds a tab and
+// that, after an empty description if need be. A list of pets reads
 // "\tm:ListResponse", " items\tl:Pet[]", "  []\tm:Pet", "   id\tn:int64".
 func (d *Document) exampleTypes(s *Schema, mode ExampleMode, display func(string) string) []string {
 	var notes []string
@@ -247,26 +248,42 @@ func (e *exampler) note(s *Schema, explicit bool) {
 	if flat == nil {
 		return
 	}
-	kind, label := e.typeNote(s, flat)
-	if kind == "a" && flat.Items != nil {
-		itemKind, itemLabel := e.typeNote(flat.Items, e.doc.Flatten(flat.Items))
-		switch itemKind {
-		case "m":
-			kind = "l"
-		case "e":
-			itemLabel = "enum"
-		}
-		label = itemLabel + "[]"
-	}
+	kind, label, detail := e.typeNote(s, flat)
 	if explicit {
 		label += "!"
 	}
 	note := strings.Repeat(" ", e.level) + e.step + "\t" + kind + ":" + label
 	desc := e.noteDescription(s, flat)
-	if desc != "" {
+	extra := detail.json()
+	if desc != "" || extra != "" {
 		note += "\t" + desc
 	}
+	if extra != "" {
+		note += "\t" + extra
+	}
 	*e.notes = append(*e.notes, note)
+}
+
+// noteDetail is what a type note's label leaves out, written after the
+// description as JSON: Base is the type a named schema that is not a model
+// stands for (UnixTimestamp is an int64), Values an enum's values, at most
+// maxEnumNote of them, and Descs their descriptions from x-enum-descriptions
+// in the same order ("" for a value without one).
+type noteDetail struct {
+	Base   string   `json:"b,omitempty"`
+	Values []any    `json:"v,omitempty"`
+	Descs  []string `json:"d,omitempty"`
+}
+
+func (d noteDetail) json() string {
+	if d.Base == "" && len(d.Values) == 0 {
+		return ""
+	}
+	out, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // noteDescription is the description of the value at the current path, on
@@ -299,19 +316,81 @@ func ownNote(note string) string {
 	return out
 }
 
-// typeNote is the kind and short label of s, flattened as flat: a named
-// object is a model, kind m, labelled with its display name.
-func (e *exampler) typeNote(s, flat *Schema) (string, string) {
+// typeNote is the kind, short label and detail of s, flattened as flat. A
+// named object is a model, kind m, labelled with its display name. Any other
+// named schema keeps its kind and is labelled with its display name too, its
+// base type in the detail unless it is an enum, whose values say more. An array is labelled as its items with "[]" and
+// carries their enum values; a list of models is kind l.
+func (e *exampler) typeNote(s, flat *Schema) (string, string, noteDetail) {
 	kind, label := typeNote(flat)
-	name := e.doc.SchemaName(s)
-	if name != "" && kind == "o" {
-		return "m", e.display(name)
+	var detail noteDetail
+	if kind == "e" {
+		label = "enum"
+		detail.Values, detail.Descs = enumNote(flat)
 	}
-	return kind, label
+	if kind == "a" && flat.Items != nil {
+		itemKind, itemLabel, itemDetail := e.typeNote(flat.Items, e.doc.Flatten(flat.Items))
+		if itemKind == "m" {
+			kind = "l"
+		}
+		label = itemLabel + "[]"
+		detail = itemDetail
+		if detail.Base != "" {
+			detail.Base += "[]"
+		}
+	}
+	name := e.doc.SchemaName(s)
+	switch {
+	case name == "" || kind == "l":
+		return kind, label, detail
+	case kind == "o":
+		return "m", e.display(name), noteDetail{}
+	}
+	if kind != "e" {
+		detail.Base = label
+	}
+	return kind, e.display(name), detail
 }
 
 // maxEnumNote caps the enum values a type note lists.
-const maxEnumNote = 12
+const maxEnumNote = 50
+
+// enumNote is the values of the enum s, at most maxEnumNote of them, and
+// their descriptions, or nil when s describes none. Descriptions come from
+// x-enum-descriptions or x-enumDescriptions, either a list in the order of
+// the values or a map from value to description.
+func enumNote(s *Schema) ([]any, []string) {
+	values := s.Enum
+	if len(values) > maxEnumNote {
+		values = values[:maxEnumNote]
+	}
+	raw, ok := s.Extensions["x-enum-descriptions"]
+	if !ok {
+		raw = s.Extensions["x-enumDescriptions"]
+	}
+	descs := make([]string, len(values))
+	described := false
+	for i, v := range values {
+		var desc any
+		switch list := raw.(type) {
+		case []any:
+			if i < len(list) {
+				desc = list[i]
+			}
+		case map[string]any:
+			desc = list[fmt.Sprint(v)]
+		}
+		text, _ := desc.(string)
+		descs[i] = strings.Join(strings.Fields(text), " ")
+		if descs[i] != "" {
+			described = true
+		}
+	}
+	if !described {
+		descs = nil
+	}
+	return values, descs
+}
 
 // typeNote is the kind and short label of a flattened schema.
 func typeNote(s *Schema) (string, string) {
@@ -596,10 +675,22 @@ func explicitExample(s *Schema) (any, bool) {
 	if s.Const != nil {
 		return s.Const, true
 	}
+	// An enum's first value that says something: "" is often the zero value
+	// of the generator's language rather than a value anyone sends.
+	var first any
 	for _, v := range s.Enum {
-		if v != nil {
+		if v == nil {
+			continue
+		}
+		if v != "" {
 			return v, true
 		}
+		if first == nil {
+			first = v
+		}
+	}
+	if first != nil {
+		return first, true
 	}
 	return nil, false
 }

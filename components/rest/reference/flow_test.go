@@ -291,7 +291,7 @@ func TestExampleTypes(t *testing.T) {
 	require.Equal(t, []string{"\tm:petlist", " pets\tl:pet[]", " next\ts:string"}, notes)
 
 	enum := &Schema{Type: TypeList{"string"}, Enum: []any{"", "a b"}, Example: "a b"}
-	require.Equal(t, []string{"\te:[\"\",\"a b\"]!"}, doc.exampleTypes(enum, ForResponse, strings.ToLower))
+	require.Equal(t, []string{"\te:enum!\t\t{\"v\":[\"\",\"a b\"]}"}, doc.exampleTypes(enum, ForResponse, strings.ToLower))
 
 	// Fields carry their description on one line; a field holding a model
 	// is described by the field alone, and the root not at all.
@@ -315,4 +315,46 @@ func TestExampleTypes(t *testing.T) {
 	}, doc.exampleTypes(described, ForResponse, strings.ToLower))
 	require.Equal(t, " name\ts:string!\tShown to people.", ownNote(" name\ts:string\tShown to people."))
 	require.Equal(t, " id\tn:integer!", ownNote(" id\tn:integer!"))
+	require.Equal(t, " id\te:enum!\t\t{}", ownNote(" id\te:enum\t\t{}"))
+}
+
+// TestExampleTypesNamed covers named schemas that are not models: enums
+// and scalars keep their kind and take their name as the label, their base
+// type and enum values in the detail, with x-enum-descriptions as a list or
+// a map.
+func TestExampleTypesNamed(t *testing.T) {
+	doc, err := Parse([]byte(`{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1"},
+  "paths": {},
+  "components": {"schemas": {
+    "Card": {"type": "object", "properties": {
+      "format": {"$ref": "#/components/schemas/CardFormat"},
+      "formats": {"type": "array", "items": {"$ref": "#/components/schemas/CardFormat"}},
+      "vendor": {"$ref": "#/components/schemas/Vendor", "description": "Who made it."},
+      "seen": {"$ref": "#/components/schemas/UnixTimestamp"},
+      "stamps": {"type": "array", "items": {"$ref": "#/components/schemas/UnixTimestamp"}},
+      "size": {"type": "string", "enum": ["s", "m"]}
+    }},
+    "CardFormat": {"type": "string", "enum": ["", "wiegand", "raw"],
+      "x-enum-descriptions": ["Not set", "26-bit Wiegand"]},
+    "Vendor": {"type": "string", "enum": ["hik", "zk"], "x-enumDescriptions": {"zk": "ZKTeco"}},
+    "UnixTimestamp": {"type": "integer", "format": "int64"}
+  }}
+}`))
+	require.NoError(t, err)
+	v, notes := doc.modelExample(&Schema{Ref: "#/components/schemas/Card"}, func(name string) string { return name })
+	require.Equal(t, []string{
+		"\tm:Card",
+		" format\te:CardFormat!\t\t" + `{"v":["","wiegand","raw"],"d":["Not set","26-bit Wiegand",""]}`,
+		" formats\ta:CardFormat[]\t\t" + `{"v":["","wiegand","raw"],"d":["Not set","26-bit Wiegand",""]}`,
+		"  []\te:CardFormat!\t\t" + `{"v":["","wiegand","raw"],"d":["Not set","26-bit Wiegand",""]}`,
+		" vendor\te:Vendor!\tWho made it.\t" + `{"v":["hik","zk"],"d":["","ZKTeco"]}`,
+		" seen\tn:UnixTimestamp\t\t" + `{"b":"int64"}`,
+		" stamps\ta:UnixTimestamp[]\t\t" + `{"b":"int64[]"}`,
+		"  []\tn:UnixTimestamp\t\t" + `{"b":"int64"}`,
+		" size\te:enum!\t\t" + `{"v":["s","m"]}`,
+	}, notes)
+	// An enum's example skips the empty value.
+	require.Contains(t, ToJSON(v), `"format": "wiegand"`)
 }

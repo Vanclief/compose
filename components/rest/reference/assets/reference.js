@@ -1599,10 +1599,11 @@
 
   // Type notes describe a sample's values: one line per value, indented by
   // depth, naming its step from the parent ("[]" for list items), then a tab,
-  // its kind and label (an enum's values as JSON), "!" when the value is the
-  // author's example rather than a generated one, and a tab and the spec's
-  // description when it has one. They parse into a tree that walks
-  // alongside the sample.
+  // its kind and label (a named schema's name), "!" when the value is the
+  // author's example rather than a generated one, a tab and the spec's
+  // description when it has one, and a tab and a JSON detail when there is
+  // more: b the base type of a named schema, v an enum's values and d their
+  // descriptions. They parse into a tree that walks alongside the sample.
   let typeNotes = null;
 
   function typeTree(ref) {
@@ -1631,11 +1632,26 @@
       const head = line.slice(0, cut);
       const step = head.trimStart();
       const level = head.length - step.length;
-      const rest = line.slice(cut + 1);
-      const tab = rest.indexOf('\t');
-      const note = tab < 0 ? rest : rest.slice(0, tab);
+      const [note, desc = '', extra = ''] = line.slice(cut + 1).split('\t');
       const own = note.endsWith('!');
-      const node = { kind: note.charAt(0), label: note.slice(2, own ? -1 : undefined), own, desc: tab < 0 ? '' : rest.slice(tab + 1), kids: new Map() };
+      let detail = {};
+      if (extra) {
+        try {
+          detail = JSON.parse(extra) || {};
+        } catch (err) {
+          detail = {};
+        }
+      }
+      const node = {
+        kind: note.charAt(0),
+        label: note.slice(2, own ? -1 : undefined),
+        own,
+        desc,
+        base: detail.b || '',
+        values: detail.v || null,
+        valueDescs: detail.d || null,
+        kids: new Map(),
+      };
       if (level === 0) {
         Object.assign(root, node, { kids: root.kids });
         stack.length = 1;
@@ -1687,20 +1703,20 @@
   }
 
   // Types read like a typed language: primitives in one color, models in
-  // another, enums as the union of their values. Models open in the model
+  // another, enums in a third. A named schema shows its name, a scalar one
+  // followed by the type it stands for. Named schemas open in the model
   // dialog: a link on a value row, a marked span inside a folder's button.
   function oiType(t, folder) {
-    if (t.kind === 'e') {
-      return el('span', 'oi-type t-kw', 'enum');
+    const model = t.kind === 'm' || t.kind === 'l';
+    const cls = 'oi-type ' + (model ? 't-model' : t.kind === 'e' ? (t.label === 'enum' ? 't-kw' : 't-enum') : 't-prim');
+    const anchor = model || t.base || (t.kind === 'e' && t.label !== 'enum') ? modelAnchor(t.label) : '';
+    const link = el(anchor && !folder ? 'a' : 'span', cls, t.label);
+    if (t.base) {
+      link.append(el('span', 'oi-base', t.base));
     }
-    if (t.kind !== 'm' && t.kind !== 'l') {
-      return el('span', 'oi-type t-prim', t.label);
-    }
-    const anchor = modelAnchor(t.label);
     if (!anchor) {
-      return el('span', 'oi-type t-model', t.label);
+      return link;
     }
-    const link = el(folder ? 'span' : 'a', 'oi-type t-model', t.label);
     link.dataset.model = anchor;
     link.title = 'Open ' + t.label.replace(/\[\]$/, '');
     if (!folder) {
@@ -1738,20 +1754,23 @@
     return el('span', 'j-p', JSON.stringify(v));
   }
 
-  // An enum shows its values as a union.
+  // An enum lists its values, each with its description when the spec
+  // gives one (x-enum-descriptions).
   const oiEnumMax = 4;
   function oiEnum(t) {
-    let values = [];
-    try {
-      values = JSON.parse(t.label);
-    } catch (err) {
-      values = [];
-    }
-    const span = el('span', 'oi-val oi-enum');
+    const values = t.values || [];
+    const descs = t.valueDescs || [];
+    const span = el('span', 'oi-enum');
     const chip = (v) => {
-      const c = oiLit(v);
-      c.classList.add('oi-ex');
-      c.title = JSON.stringify(v);
+      const i = values.indexOf(v);
+      const c = el('code', 'oi-chip', v === '' ? 'empty' : String(v));
+      if (v === '') {
+        c.classList.add('oi-chip-empty');
+      }
+      c.title = JSON.stringify(v) + (descs[i] ? ': ' + descs[i] : '');
+      if (descs[i]) {
+        c.classList.add('oi-chip-d');
+      }
       return c;
     };
     // Long enums show their first values and expand on click.
@@ -1770,13 +1789,9 @@
     return span;
   }
 
-  // oiExample is the example column: enums list their values, empty
-  // containers and the generator's bare "string" say nothing the type
-  // does not.
+  // oiExample is the example column: empty containers and the generator's
+  // bare "string" say nothing the type does not.
   function oiExample(v, t) {
-    if (t.kind === 'e') {
-      return oiEnum(t);
-    }
     if (v !== null && typeof v === 'object' && Object.keys(v).length === 0) {
       return null;
     }
@@ -1787,6 +1802,14 @@
     span.classList.add('oi-val', 'oi-ex');
     span.title = typeof v === 'string' ? v : JSON.stringify(v);
     return span;
+  }
+
+  // oiExampleWidth is the width in ch the example column needs for v.
+  function oiExampleWidth(v) {
+    if (v === undefined || (v !== null && typeof v === 'object' && Object.keys(v).length === 0)) {
+      return 0;
+    }
+    return JSON.stringify(v).length + 2;
   }
 
   // The inspector is a file tree: objects and lists are folders with a
@@ -1809,7 +1832,8 @@
     return ul;
   }
 
-  // The whole tree shares one type column and one example column. Each
+  // The whole tree shares one type column, one example column and, when a
+  // field has a description or enum values, a description column. Each
   // level indents by oiIndent (about 3ch), so a row's key cell is the
   // shared width less its depth; oiCols collects the widest key, counted
   // with its indent, and the widest type while a tree renders. The shared
@@ -1823,7 +1847,10 @@
   function oiKeyCap(width) {
     return Math.max(oiKeyMax, Math.floor(width * 0.38 / 7.5));
   }
-  let oiCols = { k: 1, t: 4 };
+  // The example column is at most oiExampleMax ch wide; longer examples are
+  // cut, the full value in their title.
+  const oiExampleMax = 30;
+  let oiCols = { k: 1, t: 4, e: 0, d: false };
 
   function oiColumns(line, key, depth, t, folder) {
     const need = key.length + (folder ? 3 : 0);
@@ -1831,7 +1858,24 @@
     line.style.setProperty('--d', String(depth));
     line.style.setProperty('--kl', need + 'ch');
     oiCols.k = Math.max(oiCols.k, need + depth * oiIndent + (folder ? 2 : 0) + 1);
-    oiCols.t = Math.max(oiCols.t, t.kind === 'e' ? 4 : t.label.length);
+    oiCols.t = Math.max(oiCols.t, t.label.length + (t.base ? t.base.length + 1 : 0));
+  }
+
+  // oiDescribe adds the description column to a row: the spec's description
+  // of the field, then an enum's values.
+  function oiDescribe(line, t) {
+    if (!t || (!t.desc && !(t.values && t.values.length))) {
+      return;
+    }
+    oiCols.d = true;
+    const cell = el('span', 'oi-desc');
+    if (t.desc) {
+      cell.append(el('span', 'oi-desc-text', t.desc));
+    }
+    if (t.values && t.values.length) {
+      cell.append(oiEnum(t));
+    }
+    line.append(cell);
   }
 
   // A model the example stopped at (left empty for depth, or because the
@@ -1851,7 +1895,7 @@
 
   function oiGraft(kids, sample, depth) {
     const root = kids.closest('.oi-root');
-    oiCols = { k: Number(root.dataset.k) || 1, t: Number(root.dataset.t) || 4 };
+    oiCols = { k: Number(root.dataset.k) || 1, t: Number(root.dataset.t) || 4, e: Number(root.dataset.e) || 0, d: root.classList.contains('oi-4') };
     kids.append(...oiList(sample.v, depth, typeTree(String(sample.t))).childNodes);
     oiSetCols(root, oiKeyCap(root.clientWidth));
   }
@@ -1861,8 +1905,11 @@
   function oiSetCols(root, keyMax) {
     root.dataset.k = String(oiCols.k);
     root.dataset.t = String(oiCols.t);
+    root.dataset.e = String(oiCols.e);
+    root.classList.toggle('oi-4', oiCols.d);
     root.style.setProperty('--kw', Math.min(keyMax, oiCols.k) + 'ch');
     root.style.setProperty('--tw', Math.min(24, oiCols.t) + 'ch');
+    root.style.setProperty('--ew', Math.max(4, Math.min(oiExampleMax, oiCols.e)) + 'ch');
   }
 
   function oiItem(key, v, depth, t) {
@@ -1876,8 +1923,10 @@
         line.append(oiType(t, false));
         const ex = oiExample(v, t);
         if (ex) {
+          oiCols.e = Math.max(oiCols.e, oiExampleWidth(v));
           line.append(ex);
         }
+        oiDescribe(line, t);
       } else if (Array.isArray(v)) {
         const list = el('span', 'oi-val oi-chips');
         if (v.length === 0) {
@@ -1891,7 +1940,6 @@
         line.append(oiScalar(v));
       }
       li.append(line);
-      oiDescribe(li, t, false);
       return li;
     }
     const open = !model && depth < 2;
@@ -1911,6 +1959,7 @@
     }
     if (t && !t.own) {
       oiColumns(line, key, depth, t, true);
+      oiDescribe(line, t);
     }
     let kids;
     if (model) {
@@ -1920,17 +1969,8 @@
       kids = oiList(v, depth + 1, t);
     }
     kids.hidden = !open;
-    li.append(line);
-    oiDescribe(li, t, true);
-    li.append(kids);
+    li.append(line, kids);
     return li;
-  }
-
-  // oiDescribe adds the spec's description of a field under its row.
-  function oiDescribe(li, t, folder) {
-    if (t && t.desc) {
-      li.append(el('div', folder ? 'oi-desc oi-desc-tg' : 'oi-desc', t.desc));
-    }
   }
 
   function renderInspector(box) {
@@ -1956,7 +1996,7 @@
       v = { value: v };
       t = t ? { kids: new Map([['value', t]]) } : null;
     }
-    oiCols = { k: 1, t: 4 };
+    oiCols = { k: 1, t: 4, e: 0, d: false };
     const root = oiList(v, 0, t);
     root.classList.add('oi-root');
     oiSetCols(root, keyMax || oiKeyMax);
