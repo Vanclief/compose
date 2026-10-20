@@ -69,11 +69,9 @@ func TestSpec31(t *testing.T) {
 	require.NotContains(t, item, "put", "hidden operation leaked")
 	require.NotContains(t, dig(t, doc, "components", "schemas"), "fixture.ArchiveRequest")
 
-	require.Equal(t, true, dig(t, doc, "paths", "/legacy/{id}", "post", "x-compose-legacy"))
-	require.NotContains(t, dig(t, doc, "paths", "/runs/{id}", "get"), "x-compose-legacy")
-
 	require.Equal(t, []any{map[string]any{"apiKey": []any{}}}, dig(t, doc, "paths", "/runs", "get", "security"))
 	require.NotContains(t, dig(t, doc, "paths", "/health", "get"), "security")
+	require.Equal(t, true, dig(t, doc, "paths", "/health", "get", "deprecated"))
 	require.Equal(t, "API-KEY", dig(t, doc, "components", "securitySchemes", "apiKey", "name"))
 
 	require.Equal(t, "#/components/schemas/handler.ErrorResponse",
@@ -99,7 +97,7 @@ func TestSpec31(t *testing.T) {
 	require.Equal(t, []any{"pending", "running", "completed", "failed", "cancelled"},
 		dig(t, doc, "components", "schemas", "fixture.RunStatus", "enum"))
 	require.Equal(t, []any{
-		map[string]any{"name": "health"}, map[string]any{"name": "legacy"}, map[string]any{"name": "runs"},
+		map[string]any{"name": "health"}, map[string]any{"name": "runs"},
 	}, doc["tags"])
 
 	// Only maps declare additionalProperties; objects never close it.
@@ -166,12 +164,11 @@ func TestSpecGolden(t *testing.T) {
 func TestOperations(t *testing.T) {
 	s := newServer(t)
 	ops := s.reg.Operations()
-	require.Len(t, ops, 8)
+	require.Len(t, ops, 7)
 	require.Equal(t, api.OperationInfo{
 		Method: http.MethodPatch, Path: "/runs/:id", SpecPath: "/runs/{id}", OperationID: "runs.update", Tag: "runs",
 	}, ops[3])
 	require.True(t, ops[4].Hidden)
-	require.True(t, ops[6].Legacy)
 }
 
 func TestTags(t *testing.T) {
@@ -212,6 +209,11 @@ type bytesParamRequest struct {
 type mapParamRequest struct {
 	requests.NoRules
 	Filter map[string]string `json:"-" query:"filter"`
+}
+
+type runIDRequest struct {
+	requests.NoRules
+	RunID string `json:"-" path:"run_id"`
 }
 
 type noDashRequest struct {
@@ -288,13 +290,6 @@ func TestRegistrationFailures(t *testing.T) {
 	}
 
 	_, g = newGroup()
-	api.POST[searchRequest, fixture.Run](g, "/search", "search")
-	msg = panicMessage(t, func() {
-		api.Legacy[searchRequest, fixture.Run](g, http.MethodGet, "/legacy", "legacy", func(c echo.Context) error { return nil })
-	})
-	require.Contains(t, msg, "GET requests cannot have a body")
-
-	_, g = newGroup()
 	msg = panicMessage(t, func() {
 		api.GET[bytesParamRequest, fixture.Run](g, "", "get")
 	})
@@ -315,10 +310,9 @@ func TestRegistrationFailures(t *testing.T) {
 
 	// Echo treats routes differing only by placeholder name as one route.
 	_, g = newGroup()
-	noop := func(c echo.Context) error { return nil }
-	api.Legacy[struct{}, fixture.Run](g, http.MethodPost, "/:id", "touch", noop)
+	api.POST[fixture.GetRequest, fixture.Run](g, "/:id", "touch")
 	msg = panicMessage(t, func() {
-		api.Legacy[struct{}, fixture.Run](g, http.MethodPost, "/:run_id", "poke", noop)
+		api.POST[runIDRequest, fixture.Run](g, "/:run_id", "poke")
 	})
 	require.Contains(t, msg, "duplicate route, already registered as runs.touch")
 

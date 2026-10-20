@@ -55,14 +55,6 @@
         ],
         "type": "object"
       },
-      "fixture.LegacyRequest": {
-        "properties": {
-          "note": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
       "fixture.ListResponse": {
         "properties": {
           "has_next_page": {
@@ -211,6 +203,7 @@
   "paths": {
     "/health": {
       "get": {
+        "deprecated": true,
         "operationId": "health.check",
         "responses": {
           "200": {
@@ -237,62 +230,6 @@
         "tags": [
           "health"
         ]
-      }
-    },
-    "/legacy/{id}": {
-      "post": {
-        "deprecated": true,
-        "operationId": "legacy.touch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/fixture.LegacyRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/fixture.Run"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/handler.ErrorResponse"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "security": [
-          {
-            "apiKey": []
-          }
-        ],
-        "tags": [
-          "legacy"
-        ],
-        "x-compose-legacy": true
       }
     },
     "/runs": {
@@ -544,9 +481,6 @@
   "tags": [
     {
       "name": "health"
-    },
-    {
-      "name": "legacy"
     },
     {
       "name": "runs"

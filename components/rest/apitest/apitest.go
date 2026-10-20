@@ -25,7 +25,7 @@ type Contract struct {
 	errors    *validate.Schema
 }
 
-// New compiles one validator per operation's 200 response (hidden and legacy
+// New compiles one validator per operation's 200 response (hidden
 // operations included) and one for the error envelope.
 func New(t testing.TB, reg *api.Registry) *Contract {
 	t.Helper()

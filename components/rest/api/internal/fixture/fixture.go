@@ -91,12 +91,6 @@ type Config struct {
 	Retries int `json:"retries" minimum:"0"`
 }
 
-// LegacyRequest is used by the legacy operation.
-type LegacyRequest struct {
-	requests.NoRules
-	Note string `json:"note"`
-}
-
 // ArchiveRequest is only used by a hidden operation, so its component is
 // absent from the public spec but still validated.
 type ArchiveRequest struct {

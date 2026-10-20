@@ -48,13 +48,8 @@ func newServer(t *testing.T) *server {
 	api.PUT[fixture.UpdateRequest, fixture.Run](rg, "/:id", "replace", api.Hidden())
 	api.POST[fixture.ArchiveRequest, fixture.Run](rg, "/archive", "archive", api.Hidden(), api.MaxBodyBytes(1024))
 
-	lg := reg.Group("/legacy")
-	api.Legacy[fixture.LegacyRequest, fixture.Run](lg, http.MethodPost, "/:id", "touch", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"legacy": true})
-	}, api.Deprecated())
-
 	hg := reg.Group("/health")
-	api.GET[fixture.HealthRequest, fixture.HealthResponse](hg, "", "check", api.Public())
+	api.GET[fixture.HealthRequest, fixture.HealthResponse](hg, "", "check", api.Public(), api.Deprecated())
 
 	err := reg.Ready()
 	require.NoError(t, err)
@@ -252,15 +247,10 @@ func TestCreate(t *testing.T) {
 	require.Equal(t, "abc", got.Trace)
 }
 
-func TestLegacyAndPublic(t *testing.T) {
+func TestPublic(t *testing.T) {
 	s := newServer(t)
 
-	// Legacy routes run the given handler untouched.
-	rec := s.do(http.MethodPost, "/legacy/anything", `not json`)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `{"legacy":true}`, rec.Body.String())
-
-	rec = s.do(http.MethodGet, "/health", "")
+	rec := s.do(http.MethodGet, "/health", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"ok":true}`, rec.Body.String())
 }

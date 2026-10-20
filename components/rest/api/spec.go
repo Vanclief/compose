@@ -15,7 +15,7 @@ import (
 
 var paramLocations = []string{"path", "query", "header"}
 
-// Ready finalizes the reflector, compiles every typed operation's validator
+// Ready finalizes the reflector, compiles every operation's validator
 // and builds the documents. Registering after Ready panics; requests that
 // arrive before Ready fail with EINTERNAL. Idempotent: later calls return
 // the first result.
@@ -88,9 +88,6 @@ func (r *Registry) finalize() error {
 	}
 
 	for _, op := range r.ops {
-		if op.legacy {
-			continue
-		}
 		err = op.compile(compiler, res)
 		if err != nil {
 			return err
@@ -282,9 +279,6 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 
 	if r.apiKeyHeader != "" && !op.public {
 		o.Security = []map[string][]string{{securitySchemeName: {}}}
-	}
-	if op.legacy {
-		o.Extensions = map[string]any{"x-compose-legacy": true}
 	}
 
 	return o

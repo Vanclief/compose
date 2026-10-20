@@ -22,10 +22,6 @@ var (
 	timeType            = reflect.TypeFor[time.Time]()
 )
 
-func stringSchema() *huma.Schema {
-	return &huma.Schema{Type: huma.TypeString}
-}
-
 // kindOf derives the coercion kind of a parameter schema, resolving $refs
 // (enum components are strings).
 func kindOf(s *huma.Schema, comps map[string]*huma.Schema) validate.Kind {

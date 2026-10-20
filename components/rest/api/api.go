@@ -5,7 +5,7 @@
 //
 // Registration is boot-time: invalid registrations (lint errors, path
 // placeholders without a path:"x" field, duplicate operationIds, ...) panic,
-// and Handle/Legacy after Ready panic. Call Ready once every route is
+// and Handle after Ready panics. Call Ready once every route is
 // registered, before serving traffic.
 //
 // Tags: an operation's tag is the last non-parameter segment of its group's
@@ -156,7 +156,6 @@ type OperationInfo struct {
 	SpecPath    string // OpenAPI syntax, /runs/{id}
 	OperationID string
 	Tag         string
-	Legacy      bool
 	Hidden      bool
 }
 
@@ -173,7 +172,6 @@ func (r *Registry) Operations() []OperationInfo {
 			SpecPath:    specPath(op.path),
 			OperationID: op.id,
 			Tag:         op.tag,
-			Legacy:      op.legacy,
 			Hidden:      op.hidden,
 		}
 	}

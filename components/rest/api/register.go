@@ -39,7 +39,6 @@ type operation struct {
 	id     string
 	tag    string
 
-	legacy      bool
 	hidden      bool
 	public      bool
 	deprecated  bool
@@ -68,7 +67,7 @@ func Handle[Req, Res any, P interface {
 	*Req
 	requests.Body
 }](g *Group, method, path, name string, opts ...Option) {
-	g.register(method, path, name, reflect.TypeFor[Req](), reflect.TypeFor[Res](), nil, opts)
+	g.register(method, path, name, reflect.TypeFor[Req](), reflect.TypeFor[Res](), opts)
 }
 
 // GET registers a typed GET operation.
@@ -111,20 +110,9 @@ func DELETE[Req, Res any, P interface {
 	Handle[Req, Res, P](g, http.MethodDelete, path, name, opts...)
 }
 
-// Legacy registers an existing Echo handler with typed metadata only: no
-// validation and no param extraction. The spec documents Req's body (if it
-// has body properties), the path placeholders and Res as the 200 response,
-// and marks the operation x-compose-legacy. Use struct{} for "no body".
-func Legacy[Req, Res any](g *Group, method, path, name string, fn echo.HandlerFunc, opts ...Option) {
-	if fn == nil {
-		panic(ez.New(ez.EINVALID, "api: Legacy handler is nil", nil))
-	}
-	g.register(method, path, name, reflect.TypeFor[Req](), reflect.TypeFor[Res](), fn, opts)
-}
-
 // register validates and records an operation and mounts it on Echo. Any
 // problem panics: registration happens at boot.
-func (g *Group) register(method, path, name string, reqType, resType reflect.Type, legacy echo.HandlerFunc, opts []Option) {
+func (g *Group) register(method, path, name string, reqType, resType reflect.Type, opts []Option) {
 	r := g.reg
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -135,7 +123,6 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 		path:    g.prefix + path,
 		name:    name,
 		tag:     g.tag,
-		legacy:  legacy != nil,
 		reqType: reqType,
 		resType: resType,
 		maxBody: r.maxBody,
@@ -160,11 +147,7 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 	r.ids[op.id] = true
 	r.routes[routeKey(op.method, op.path)] = op.id
 
-	h := legacy
-	if h == nil {
-		h = op.serve
-	}
-	g.echo.Add(op.method, path, h, op.middleware...)
+	g.echo.Add(op.method, path, op.serve, op.middleware...)
 }
 
 // check runs every registration rule and reflects the operation's types.
@@ -203,11 +186,6 @@ func (r *Registry) check(op *operation) error {
 	err = checkNoBody(op.method, op.reqType)
 	if err != nil {
 		return err
-	}
-
-	if op.legacy {
-		op.params = legacyParams(op.path, params)
-		return nil
 	}
 
 	op.params = params
@@ -291,23 +269,6 @@ func checkPathParams(path string, params []openapi.Param) error {
 		return ez.New(ez.EINVALID, strings.Join(problems, "; "), nil)
 	}
 	return nil
-}
-
-// legacyParams documents the placeholders of a legacy path, typed from Req's
-// path fields when declared, plain strings otherwise. Query and header
-// fields are not documented.
-func legacyParams(path string, params []openapi.Param) []openapi.Param {
-	var out []openapi.Param
-	for _, name := range placeholdersOf(path) {
-		param := openapi.Param{Name: name, In: "path", Required: true, Schema: stringSchema()}
-		for _, p := range params {
-			if p.In == "path" && p.Name == name {
-				param = p
-			}
-		}
-		out = append(out, param)
-	}
-	return out
 }
 
 func placeholdersOf(path string) []string {
