@@ -638,7 +638,7 @@ body[data-mode="docs"] .search { display: none; }
 /* Model dialog: a model opens over the page instead of leaving it. */
 html.modal-open { overflow: hidden; }
 .mmodal-back { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; background: rgba(8, 10, 14, .55); backdrop-filter: blur(2px); }
-.mmodal { display: flex; flex-direction: column; width: min(780px, 100%); max-height: 88vh; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .6); }
+.mmodal { display: flex; flex-direction: column; width: min(1000px, 100%); max-height: 88vh; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .6); }
 .mm-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
 .mm-heading { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 8px; row-gap: 1px; flex: 1; min-width: 0; }
 .mm-heading > .ico-obj { color: var(--accent); font-family: var(--mono); font-size: 13px; font-weight: 700; }
@@ -814,17 +814,22 @@ button.pn:hover { color: var(--accent); }
    keyword; examples are JSON literals on a chip of their own color. */
 .oi-row.oi-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
-/* A tree with descriptions has a fourth column for them; narrow trees put
-   them under the row instead, from the type column on. */
+/* A tree with descriptions has a fourth column for them. Narrow trees leave
+   it out: the field name's title carries the description, and an enum's
+   values are a click away on its type. */
 .oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
 .oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
 .oi-desc { grid-column: 4; display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; min-width: 0; color: var(--sample-muted); font-family: var(--font); font-size: 12px; line-height: 1.45; white-space: normal; }
 .oi-desc-text { max-width: 76ch; }
-@container (max-width: 760px) {
+@container (max-width: 699px) {
   .oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
   .oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
-  .oi-desc { grid-column: 2 / -1; margin-top: -2px; padding-bottom: 3px; }
+  .oi-desc { display: none; }
 }
+.oi-values { margin: 10px 6px 2px; border-collapse: collapse; font-size: 12px; line-height: 1.45; }
+.oi-values th { padding: 0 18px 4px 0; color: var(--sample-muted); font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.oi-values td { padding: 5px 18px 5px 0; border-top: 1px solid var(--sample-line); vertical-align: baseline; }
+.oi-values td + td { color: var(--sample-text); font-family: var(--font); }
 .oi-cols > .oi-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oi-k > .oi-ico { margin-right: 7px; }
 .oi-type { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

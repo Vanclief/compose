@@ -1862,12 +1862,16 @@
   }
 
   // oiDescribe adds the description column to a row: the spec's description
-  // of the field, then an enum's values.
+  // of the field, then an enum's values. The field name's title carries the
+  // description too, for inspectors too narrow for the column.
   function oiDescribe(line, t) {
     if (!t || (!t.desc && !(t.values && t.values.length))) {
       return;
     }
     oiCols.d = true;
+    if (t.desc) {
+      line.querySelector('.oi-k').title = t.desc;
+    }
     const cell = el('span', 'oi-desc');
     if (t.desc) {
       cell.append(el('span', 'oi-desc-text', t.desc));
@@ -1991,8 +1995,15 @@
 
   // inspectorTree is the inspector of the value v typed by t, its shared key
   // column at most keyMax ch wide.
+  // An enum on its own, such as an enum model in its dialog, is followed by
+  // a table of its values and their descriptions.
   function inspectorTree(v, t, keyMax) {
+    let values = null;
     if (!oiIsNode(v)) {
+      if (t && t.values && t.values.length) {
+        values = oiValueTable(t);
+        t = Object.assign({}, t, { values: null });
+      }
       v = { value: v };
       t = t ? { kids: new Map([['value', t]]) } : null;
     }
@@ -2000,7 +2011,30 @@
     const root = oiList(v, 0, t);
     root.classList.add('oi-root');
     oiSetCols(root, keyMax || oiKeyMax);
-    return root;
+    if (!values) {
+      return root;
+    }
+    const frag = doc.createDocumentFragment();
+    frag.append(root, values);
+    return frag;
+  }
+
+  function oiValueTable(t) {
+    const descs = t.valueDescs || [];
+    const table = el('table', 'oi-values');
+    const head = el('tr');
+    head.append(el('th', '', 'Value'), el('th', '', descs.length ? 'Description' : ''));
+    table.append(head);
+    t.values.forEach((v, i) => {
+      const row = el('tr');
+      const chip = el('code', 'oi-chip' + (v === '' ? ' oi-chip-empty' : ''), v === '' ? 'empty' : String(v));
+      chip.title = JSON.stringify(v);
+      const value = el('td');
+      value.append(chip);
+      row.append(value, el('td', '', descs[i] || ''));
+      table.append(row);
+    });
+    return table;
   }
 
 
