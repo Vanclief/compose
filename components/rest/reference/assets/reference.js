@@ -2684,6 +2684,13 @@
       line.title = 'Schema name in the spec: #/components/schemas/' + specName.textContent;
       heading.append(line);
     }
+    const table = card.querySelector('.model-table');
+    if (table) {
+      const line = el('span', 'mm-table');
+      line.title = table.title;
+      line.append(...[...table.childNodes].map((n) => n.cloneNode(true)));
+      heading.append(line);
+    }
     head.append(heading);
     const open = el('a', 'btn ghost mm-open', 'Open in Models');
     open.href = '#' + anchor;
@@ -3106,7 +3113,7 @@
     const box = el('div', 'mcard' + (compact ? ' compact' : '') + (n.hub ? ' hub' : ''));
     box.dataset.node = n.name;
     box.tabIndex = 0;
-    box.title = n.name;
+    box.title = n.table ? n.name + '\nTable: ' + n.table : n.name;
     box.style.width = CARD_W + 'px';
     const head = el('div', 'mcard-head');
     head.append(el('span', 'mcard-name', n.short));

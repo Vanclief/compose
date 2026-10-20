@@ -339,6 +339,25 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
 }
 
+func TestRenderModelTables(t *testing.T) {
+	doc, err := Parse([]byte(tablesSpec))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	require.Contains(t, html, "5 schemas in the document, 2 of them stored in database tables.")
+	org := section(t, html, `id="model/Org"`)
+	require.Contains(t, org, `<span class="model-table" title="Stored in the database table orgs"><svg class="ico-table"`)
+	require.Contains(t, org, `<code>orgs</code></span>`)
+	require.NotContains(t, section(t, html, `id="model/Address"`), "model-table")
+	// Stored models carry the table icon in the sidebar, and their table
+	// name is searchable.
+	require.Contains(t, html, `<a class="nav-model" href="#model/AuditBody" data-search="auditbody auditbody audit_bodies" title="AuditBody"><svg class="ico-table"`)
+	require.Contains(t, html, `<a class="nav-model" href="#model/Address" data-search="address address" title="Address"><span class="ico-obj"`)
+}
+
 // TestRenderAllOfWrapperRecursion guards against the schema tree blowing up
 // exponentially when a model refers to itself through allOf wrappers (the
 // 3.0 idiom for adding a description to a $ref): the wrapper must count as

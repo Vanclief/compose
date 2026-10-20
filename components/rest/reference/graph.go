@@ -16,14 +16,16 @@ type Graph struct {
 
 // Node is one entity. Name is the component name, Short its display name,
 // Group the module it belongs to ("" when the names carry none) and Anchor
-// the id of its model card in the reference page. Hub marks an entity that
-// most others point at (see hubSources); the map leaves its edges out until
-// asked.
+// the id of its model card in the reference page. Table is the database
+// table the schema declares with x-table ("" when it declares none). Hub
+// marks an entity that most others point at (see hubSources); the map leaves
+// its edges out until asked.
 type Node struct {
 	Name   string  `json:"name"`
 	Short  string  `json:"short"`
 	Group  string  `json:"group,omitempty"`
 	Anchor string  `json:"anchor"`
+	Table  string  `json:"table,omitempty"`
 	Hub    bool    `json:"hub,omitempty"`
 	Fields []Field `json:"fields"`
 }
@@ -73,11 +75,14 @@ var wrapperSuffixes = []string{"Request", "Response", "Params", "Query", "Body"}
 
 // Graph builds the entity graph of the component schemas.
 //
-// An entity is a component schema that flattens to an object (not an enum)
-// and either has an id property or is referenced by a property of another
-// entity. Names ending in Request, Response, Params, Query or Body are never
-// entities, and a wrapper that only operations use has no id and no entity
-// pointing at it, so it is left out as well.
+// When any component schema declares the table it is stored in with an
+// x-table extension (see Document.Table), the entities are exactly those
+// schemas. Otherwise they are guessed: an entity is a component schema that
+// flattens to an object (not an enum) and either has an id property or is
+// referenced by a property of another entity. Names ending in Request,
+// Response, Params, Query or Body are never guessed entities, and a wrapper
+// that only operations use has no id and no entity pointing at it, so it is
+// left out as well.
 //
 // Edges come, in order of confidence, from an x-ref extension on a property
 // (a $ref string naming the target), from a property that is a $ref to an
@@ -87,8 +92,9 @@ var wrapperSuffixes = []string{"Request", "Response", "Params", "Query", "Body"}
 // (marked Inferred).
 func (d *Document) Graph() *Graph {
 	short := shortNames(d.Components.Schemas.Keys)
-	objects := d.graphObjects()
-	entities := d.graphEntities(objects)
+	declared := d.declaresTables()
+	objects := d.graphObjects(declared)
+	entities := d.graphEntities(objects, declared)
 
 	g := &Graph{}
 	nodes := map[string]*Node{}
@@ -101,6 +107,7 @@ func (d *Document) Graph() *Graph {
 			Short:  short[name],
 			Group:  schemaGroup(name),
 			Anchor: "model/" + modelSlug(name),
+			Table:  d.Table(name),
 		}
 		nodes[name] = node
 		g.Nodes = append(g.Nodes, node)
@@ -143,13 +150,36 @@ func markHubs(g *Graph) {
 	}
 }
 
+// Table returns the database table the component schema called name is
+// stored in, as declared by its x-table extension, or "" when it declares
+// none. Schemas without one are shapes that only travel over HTTP.
+func (d *Document) Table(name string) string {
+	s := d.Components.Schemas.Map[name]
+	if s == nil {
+		return ""
+	}
+	table, _ := s.Extensions["x-table"].(string)
+	return strings.TrimSpace(table)
+}
+
+// declaresTables reports whether any component schema declares an x-table.
+func (d *Document) declaresTables() bool {
+	for _, name := range d.Components.Schemas.Keys {
+		if d.Table(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // graphObjects returns the flattened component schemas that can be entities:
-// objects that are not enums and whose name is not a wrapper name.
-func (d *Document) graphObjects() map[string]*Schema {
+// objects that are not enums and, unless the document declares its tables,
+// whose name is not a wrapper name.
+func (d *Document) graphObjects(declared bool) map[string]*Schema {
 	out := map[string]*Schema{}
 	for _, name := range d.Components.Schemas.Keys {
 		s := d.Components.Schemas.Map[name]
-		if s == nil || isWrapperName(name) {
+		if s == nil || (!declared && isWrapperName(name)) {
 			continue
 		}
 		f := d.Flatten(s)
@@ -170,10 +200,20 @@ func isWrapperName(name string) bool {
 	return false
 }
 
-// graphEntities picks the objects with an id property, then keeps adding the
-// objects a property of an entity points at until nothing changes.
-func (d *Document) graphEntities(objects map[string]*Schema) map[string]bool {
+// graphEntities picks the objects that declare a table when the document
+// declares any. Otherwise it picks the objects with an id property, then
+// keeps adding the objects a property of an entity points at until nothing
+// changes.
+func (d *Document) graphEntities(objects map[string]*Schema, declared bool) map[string]bool {
 	entities := map[string]bool{}
+	if declared {
+		for name := range objects {
+			if d.Table(name) != "" {
+				entities[name] = true
+			}
+		}
+		return entities
+	}
 	var queue []string
 	for _, name := range d.Components.Schemas.Keys {
 		f, ok := objects[name]

@@ -205,11 +205,13 @@ type tryParam struct {
 // modelView is one model of the Models view. Its fields show in an
 // ObjectInspector built from its sample (see addModelSample) when it has
 // one, and in Tree, the full schema with every constraint. A changed model
-// (diff mode) opens on the tree, which marks the changes.
+// (diff mode) opens on the tree, which marks the changes. Table is the
+// database table it is stored in (see Document.Table).
 type modelView struct {
 	Name        string
 	Short       string
 	Anchor      string
+	Table       string
 	Description template.HTML
 	Tree        template.HTML
 	Inspector   bool
@@ -223,10 +225,12 @@ type modelView struct {
 
 // modelNav is the Models sidebar: models whose generated names carry a
 // module (see schemaGroup) in a folder per module, the rest loose above
-// them, each sorted by display name.
+// them, each sorted by display name. Tables counts the models stored in a
+// database table.
 type modelNav struct {
 	Loose   []*modelView
 	Modules []modelModule
+	Tables  int
 }
 
 type modelModule struct {
@@ -1208,14 +1212,16 @@ func (b *builder) buildModels() []*modelView {
 			continue
 		}
 		short := b.short[name]
+		table := b.d.Table(name)
 		b.addModelSample(name)
 		mv := &modelView{
 			Name:        name,
 			Short:       short,
 			Anchor:      b.models[name],
+			Table:       table,
 			Description: markdown(s.Description),
 			Tree:        b.newTree(ForResponse, false).root(s, name),
-			Search:      strings.ToLower(short + " " + name),
+			Search:      strings.ToLower(strings.TrimSpace(short + " " + name + " " + table)),
 			MadeBy:      len(b.flow.producers[name]),
 			UsedBy:      len(b.flow.consumers[name]),
 			Trace:       b.flow.ids[name],
@@ -1232,6 +1238,9 @@ func buildModelNav(models []*modelView) modelNav {
 	var nav modelNav
 	byModule := map[string]int{}
 	for _, m := range models {
+		if m.Table != "" {
+			nav.Tables++
+		}
 		module := schemaGroup(m.Name)
 		if module == "" {
 			nav.Loose = append(nav.Loose, m)

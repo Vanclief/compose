@@ -336,3 +336,58 @@ func TestGraphHubsEmma(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"Complex", "User", "Unit", "Cluster", "Organization", "Space"}, hubs)
 }
+
+// tablesSpec declares where two of its models are stored: the graph takes
+// exactly those as entities, wrapper names included, and leaves out the id
+// carrying shapes that declare no table.
+const tablesSpec = `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1"},
+  "paths": {},
+  "components": {"schemas": {
+    "Org": {"type": "object", "x-table": "orgs", "properties": {"id": {"type": "string"}}},
+    "AuditBody": {
+      "type": "object",
+      "x-table": " audit_bodies ",
+      "properties": {"id": {"type": "string"}, "org_id": {"type": "string"}, "address": {"$ref": "#/components/schemas/Address"}}
+    },
+    "Address": {"type": "object", "properties": {"street": {"type": "string"}}},
+    "OrgSummary": {"type": "object", "properties": {"id": {"type": "string"}, "org": {"$ref": "#/components/schemas/Org"}}},
+    "Blank": {"type": "object", "x-table": "", "properties": {"id": {"type": "string"}}}
+  }}
+}`
+
+func TestGraphDeclaredTables(t *testing.T) {
+	doc, err := Parse([]byte(tablesSpec))
+	require.NoError(t, err)
+	require.Equal(t, "orgs", doc.Table("Org"))
+	require.Equal(t, "audit_bodies", doc.Table("AuditBody"))
+	require.Equal(t, "", doc.Table("Address"))
+	require.Equal(t, "", doc.Table("Blank"))
+	require.Equal(t, "", doc.Table("Missing"))
+
+	g := doc.Graph()
+	require.Len(t, g.Nodes, 2)
+	require.Equal(t, "orgs", graphNode(g, "Org").Table)
+	require.Equal(t, "audit_bodies", graphNode(g, "AuditBody").Table)
+	require.Nil(t, graphNode(g, "Address"), "embedded, not stored")
+	require.Nil(t, graphNode(g, "OrgSummary"), "has an id but no table")
+	require.Nil(t, graphNode(g, "Blank"))
+
+	e := graphEdge(g, "AuditBody", "Org", "org_id")
+	require.NotNil(t, e)
+	require.True(t, e.Inferred)
+	require.Len(t, g.Edges, 1)
+
+	// Without any x-table the entities are guessed as before.
+	g = parseGraph(t, `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1"},
+  "components": {"schemas": {
+    "Org": {"type": "object", "properties": {"id": {"type": "string"}}},
+    "OrgResponse": {"type": "object", "properties": {"id": {"type": "string"}}}
+  }}
+}`)
+	require.Len(t, g.Nodes, 1)
+	require.Empty(t, g.Nodes[0].Table)
+}

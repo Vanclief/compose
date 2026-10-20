@@ -79,7 +79,7 @@
 </nav>
 </aside>{{end}}
 
-{{define "navmodel"}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}"><span class="ico-obj" aria-hidden="true">{}</span><span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
+{{define "navmodel"}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{if .Table}}{{template "ico-table"}}{{else}}<span class="ico-obj" aria-hidden="true">{}</span>{{end}}<span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
 {{end}}
 
 {{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
@@ -138,11 +138,13 @@
 {{range .Ops}}{{template "operation" .}}{{end}}
 </section>{{end}}
 
+{{define "ico-table"}}<svg class="ico-table" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.6" rx="5.5" ry="2"/><path d="M2.5 3.6v8.8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V3.6M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"/></svg>{{end}}
+
 {{define "models"}}<section class="models" id="section/models">
-<div class="tag-head"><h2>Models</h2><p class="muted">{{len .Models}} schemas in the document. A field holding another model expands in place, and its type opens that model.</p></div>
+<div class="tag-head"><h2>Models</h2><p class="muted">{{len .Models}} schemas in the document{{with .ModelNav.Tables}}, {{.}} of them stored in database tables{{end}}. A field holding another model expands in place, and its type opens that model.</p></div>
 {{range .Models}}<article class="model{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor>
 <h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a>{{with .Diff}} {{template "diff-badge" .}}{{end}}</h3>
-{{if ne .Short .Name}}<div class="model-name"><code>{{.Name}}</code></div>{{end}}
+{{if or (ne .Short .Name) .Table}}<div class="model-name">{{if ne .Short .Name}}<code>{{.Name}}</code>{{end}}{{with .Table}}<span class="model-table" title="Stored in the database table {{.}}">{{template "ico-table"}}<code>{{.}}</code></span>{{end}}</div>{{end}}
 {{if .Description}}<div class="md model-desc">{{.Description}}</div>{{end}}
 <div class="model-bar">{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
 </div>
