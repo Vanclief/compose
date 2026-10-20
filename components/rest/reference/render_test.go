@@ -339,6 +339,30 @@ func TestRenderSmallDocument(t *testing.T) {
 	require.Contains(t, node, `<a class="mk rec" href="#model/Node">recursive</a>`)
 }
 
+func TestRenderInternalOperations(t *testing.T) {
+	data, err := os.ReadFile("testdata/internal.yaml")
+	require.NoError(t, err)
+	doc, err := Parse(data)
+	require.NoError(t, err)
+	out, err := Render(doc, Options{})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	// The internal operation carries the badge in its header and in the
+	// sidebar, and the class the Show internal toggle hides it by.
+	upgrade := section(t, html, `id="operation/system-upgrade"`)
+	require.Contains(t, html, `<article class="op is-internal" id="operation/system-upgrade"`)
+	require.Contains(t, upgrade, `<span class="mk int">internal</span>`)
+	require.Contains(t, html, `<a class="nav-op is-internal" href="#operation/system-upgrade"`)
+	require.Contains(t, html, `<span class="nav-title">Upgrade the system</span><span class="mk int">internal</span>`)
+	require.NotContains(t, section(t, html, `id="operation/widgets-listwidgets"`), "internal")
+	require.Contains(t, html, `<input type="checkbox" data-internal-toggle checked> Show internal</label>`)
+
+	// Without internal operations there is no toggle.
+	require.NotContains(t, renderTestDoc(t, Options{AssetsURL: "/assets"}), "data-internal-toggle")
+}
+
 func TestRenderModelTables(t *testing.T) {
 	doc, err := Parse([]byte(tablesSpec))
 	require.NoError(t, err)

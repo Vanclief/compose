@@ -4916,3 +4916,39 @@
     }
   });
 })();
+
+// ---- internal ----
+// The Show internal toggle, rendered when some operation is x-internal: off,
+// body.hide-internal hides the internal operations (in CSS). The choice
+// persists in localStorage.
+(() => {
+  'use strict';
+
+  const toggle = document.querySelector('[data-internal-toggle]');
+  if (!toggle) {
+    return;
+  }
+
+  const key = 'reference.hideInternal';
+  let store = null;
+  try {
+    store = window.localStorage;
+    store.getItem(key);
+  } catch (err) {
+    store = null;
+  }
+
+  function setShown(shown) {
+    toggle.checked = shown;
+    document.body.classList.toggle('hide-internal', !shown);
+  }
+
+  toggle.addEventListener('change', () => {
+    setShown(toggle.checked);
+    if (store) {
+      store.setItem(key, toggle.checked ? '0' : '1');
+    }
+  });
+
+  setShown(!store || store.getItem(key) !== '1');
+})();

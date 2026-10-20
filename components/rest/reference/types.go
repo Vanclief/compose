@@ -140,7 +140,10 @@ type Operation struct {
 	RequestBody *RequestBody       `json:"requestBody" yaml:"requestBody"`
 	Responses   Ordered[*Response] `json:"responses" yaml:"responses"`
 	Deprecated  bool               `json:"deprecated" yaml:"deprecated"`
-	Servers     []Server           `json:"servers" yaml:"servers"`
+	// Internal is the x-internal extension: the operation is documented for
+	// the team, not for API consumers.
+	Internal bool     `json:"x-internal" yaml:"x-internal"`
+	Servers  []Server `json:"servers" yaml:"servers"`
 	// Security is nil when the operation inherits the document security, and
 	// an empty slice when the operation is explicitly public.
 	Security *[]map[string][]string `json:"security" yaml:"security"`

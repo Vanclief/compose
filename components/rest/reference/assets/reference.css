@@ -1358,3 +1358,16 @@ body.diff .mlabel.d-d text { fill: var(--diff-del); }
 .lg-d.d-a { background: var(--diff-add-bg); color: var(--diff-add); }
 .lg-d.d-c { background: var(--diff-chg-bg); color: var(--diff-chg); }
 .lg-d.d-d { background: var(--diff-del-bg); color: var(--diff-del); }
+
+/* ---- internal ---- */
+/* Operations marked x-internal carry an internal badge; the sidebar's Show
+   internal toggle, off, sets body.hide-internal, which hides them and the
+   sidebar groups, folders and page sections left empty. */
+.mk.int { color: var(--accent); border-style: dashed; }
+.nav-op .mk.int { flex: none; padding: 0 4px; font-size: 9.5px; line-height: 15px; }
+.internal-toggle { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; padding: 4px 8px; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+.internal-toggle input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+body.hide-internal .op.is-internal, body.hide-internal .nav li:has(> .nav-op.is-internal),
+body.hide-internal [data-pane="endpoints"] .nav-folder:not(:has(.nav-op:not(.is-internal))),
+body.hide-internal [data-pane="endpoints"] .nav-group:not(:has(.nav-op:not(.is-internal))),
+body.hide-internal section.tag:not(:has(.op:not(.is-internal))) { display: none; }

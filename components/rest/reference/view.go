@@ -29,6 +29,7 @@ type pageView struct {
 	Schemes     []*schemeView
 	Global      []requirementView
 	Groups      []*groupView
+	HasInternal bool // some operation is x-internal: the sidebar offers Show internal
 	Models      []*modelView
 	ModelNav    modelNav
 	Map         *mapView
@@ -134,6 +135,7 @@ type opView struct {
 	Title       string
 	OperationID string
 	Deprecated  bool
+	Internal    bool
 	Description template.HTML
 	Security    []requirementView
 	NoAuth      bool
@@ -349,6 +351,11 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Schemes = b.buildSchemes()
 	p.Global = b.requirements(d.Security)
 	p.Groups = b.buildGroups()
+	for _, g := range p.Groups {
+		for _, ov := range g.Ops {
+			p.HasInternal = p.HasInternal || ov.Internal
+		}
+	}
 	p.Models = b.buildModels()
 	p.ModelNav = b.buildModelNav(p.Models)
 	p.Models = p.ModelNav.order()
@@ -914,6 +921,7 @@ func (b *builder) buildOperation(ref OperationRef, tags []string) *opView {
 		Title:       op.Summary,
 		OperationID: op.OperationID,
 		Deprecated:  op.Deprecated,
+		Internal:    op.Internal,
 		Description: markdown(op.Description),
 		ref:         ref,
 	}
