@@ -3595,7 +3595,6 @@
   const CARD_W = 280;
   const COL_GAP = 140;
   const ROW_GAP = 48;
-  const MAX_FIELDS = 12;
   const PAD = 48;
   const LANE_MARGIN = 14;
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -3609,6 +3608,7 @@
   const hubsBox = section.querySelector('[data-map-hubs]');
   const hubsCount = section.querySelector('[data-map-hubs-count]');
   const pctEl = section.querySelector('[data-map-pct]');
+  const foldAll = section.querySelector('[data-map-fold-all]');
 
   const nodes = new Map(data.nodes.map((n) => [n.name, n]));
   const edges = (data.edges || []).filter((e) => nodes.has(e.from) && nodes.has(e.to));
@@ -3687,8 +3687,8 @@
     scopeSelect.append(o);
   }
 
-  const state = { scope: 'all', selected: null, hover: null, expanded: new Set(), showHubs: false, x: 0, y: 0, k: 1 };
-  let cards = new Map(); // name -> { el, n, compact, x, y, w, h, headY, rows, moreY }
+  const state = { scope: 'all', selected: null, hover: null, collapsed: new Set(), showHubs: false, x: 0, y: 0, k: 1 };
+  let cards = new Map(); // name -> { el, n, compact, x, y, w, h, headY, rows, foldY }
   let links = [];
   let lineLayer = null;
   let labelLayer = null;
@@ -3709,6 +3709,39 @@
       return JSON.parse(store.getItem(positionsKey()) || '{}') || {};
     } catch (err) {
       return {};
+    }
+  }
+
+  // A card shows all its fields or, collapsed, its header and a summary
+  // line; the collapsed cards of a scope are kept next to its positions.
+  function collapsedKey() {
+    return positionsKey() + '.collapsed';
+  }
+
+  function savedCollapsed() {
+    if (!store) {
+      return new Set();
+    }
+    try {
+      const list = JSON.parse(store.getItem(collapsedKey()) || '[]');
+      return new Set(Array.isArray(list) ? list : []);
+    } catch (err) {
+      return new Set();
+    }
+  }
+
+  function saveCollapsed() {
+    if (!store) {
+      return;
+    }
+    try {
+      if (state.collapsed.size) {
+        store.setItem(collapsedKey(), JSON.stringify(Array.from(state.collapsed)));
+      } else {
+        store.removeItem(collapsedKey());
+      }
+    } catch (err) {
+      // Full or refused storage only loses the saved layout.
     }
   }
 
@@ -3788,11 +3821,36 @@
     return li;
   }
 
-  // makeCard builds a model card. A compact card (a model outside the scope
+  // foldIcon is the chevron of a card's fold button.
+  function foldIcon() {
+    const icon = svgEl('svg', { class: 'mcard-chev', viewBox: '0 0 12 12', 'aria-hidden': 'true' });
+    icon.append(svgEl('path', { d: 'M3 4.5L6 7.5L9 4.5' }));
+    return icon;
+  }
+
+  // fieldSummary is a collapsed card's line: its field count and, in diff
+  // mode, how many fields were added, changed and removed.
+  function fieldSummary(fields) {
+    const line = el('div', 'mcard-sum', fields.length + (fields.length === 1 ? ' field' : ' fields'));
+    if (diffOn()) {
+      for (const [d, sign] of [['a', '+'], ['c', '~'], ['d', '\u2212']]) {
+        const n = fields.filter((f) => f.diff === d).length;
+        if (n) {
+          line.append(el('span', 'mcard-sum-d d-' + d, sign + n));
+        }
+      }
+    }
+    return line;
+  }
+
+  // makeCard builds a model card: all its fields, or its header and a
+  // summary line when collapsed. A compact card (a model outside the scope
   // that a card in it points at) shows its header only.
   function makeCard(n, compact) {
-    const c = { n, compact, x: 0, y: 0, w: CARD_W, h: 0, headY: 0, rows: new Map(), moreY: 0 };
-    const box = el('div', 'mcard' + (compact ? ' compact' : '') + (n.hub ? ' hub' : '') + (n.diff ? ' d-' + n.diff : ''));
+    const c = { n, compact, x: 0, y: 0, w: CARD_W, h: 0, headY: 0, rows: new Map(), foldY: 0 };
+    const fields = (n.fields || []).filter(live);
+    const folded = !compact && fields.length > 0 && state.collapsed.has(n.name);
+    const box = el('div', 'mcard' + (compact ? ' compact' : '') + (folded ? ' folded' : '') + (n.hub ? ' hub' : '') + (n.diff ? ' d-' + n.diff : ''));
     box.dataset.node = n.name;
     box.tabIndex = 0;
     box.title = n.table ? n.name + '\nTable: ' + n.table : n.name;
@@ -3808,40 +3866,35 @@
     if (n.group) {
       head.append(el('span', 'mcard-badge', n.group));
     }
+    if (!compact && fields.length) {
+      const fold = el('button', 'mcard-fold');
+      fold.type = 'button';
+      fold.dataset.mapFold = n.name;
+      fold.setAttribute('aria-expanded', String(!folded));
+      fold.title = folded ? 'Show the ' + fields.length + (fields.length === 1 ? ' field' : ' fields') : 'Hide the fields';
+      fold.setAttribute('aria-label', fold.title);
+      fold.append(foldIcon());
+      head.append(fold);
+    }
     box.append(head);
-    const fields = (n.fields || []).filter(live);
     if (compact) {
       box.append(el('div', 'mcard-note', fields.length + ' fields, outside this scope'));
+    } else if (folded) {
+      box.append(fieldSummary(fields));
     } else if (fields.length) {
-      // A collapsed card keeps the id and the fields that point at other
-      // models first, so its edges start at their own row, in field order.
-      const open = state.expanded.has(n.name);
-      const keep = new Set(fields.filter((f) => f.name === 'id' || f.ref).slice(0, MAX_FIELDS));
-      for (const f of fields) {
-        if (keep.size < MAX_FIELDS) {
-          keep.add(f);
-        }
-      }
       const ul = el('ul', 'mcard-fields');
       for (const f of fields) {
-        if (open || keep.has(f)) {
-          ul.append(fieldRow(f));
-        }
+        ul.append(fieldRow(f));
       }
       box.append(ul);
-      if (fields.length > MAX_FIELDS) {
-        const more = el('button', 'mcard-more', open ? 'Show fewer fields' : '+' + (fields.length - MAX_FIELDS) + ' more');
-        more.type = 'button';
-        more.dataset.mapMore = n.name;
-        box.append(more);
-      }
     }
     c.el = box;
     return c;
   }
 
   // measure reads a card's height and where its edges attach: the middle of
-  // the header and of each field name (offsets inside the card).
+  // the header and of each field name, or of a collapsed card's summary
+  // line (offsets inside the card).
   function measure(c) {
     c.h = c.el.offsetHeight;
     const head = c.el.firstElementChild;
@@ -3850,8 +3903,8 @@
       const name = row.querySelector('.mf-name');
       c.rows.set(row.dataset.field, name.offsetTop + name.offsetHeight / 2);
     });
-    const more = c.el.querySelector('.mcard-more');
-    c.moreY = more ? more.offsetTop + more.offsetHeight / 2 : c.headY;
+    const sum = c.el.querySelector('.mcard-sum');
+    c.foldY = sum ? sum.offsetTop + sum.offsetHeight / 2 : c.headY;
   }
 
   function setPos(c) {
@@ -4060,7 +4113,7 @@
     if (c.rows.has(field)) {
       return c.rows.get(field);
     }
-    return c.compact ? c.headY : c.moreY;
+    return c.compact ? c.headY : c.foldY;
   }
 
   // -------------------------------------------------------------- edges
@@ -4284,6 +4337,9 @@
     svg.textContent = '';
     cards = new Map();
     near = new Map();
+    if (rendered !== state.scope) {
+      state.collapsed = savedCollapsed();
+    }
     const scope = scopes.get(state.scope);
     const names = scope.names.filter((name) => live(nodes.get(name)));
     const full = new Set(names);
@@ -4347,6 +4403,8 @@
     const models = full.size - removed;
     countEl.textContent = models + (models === 1 ? ' model' : ' models') + (removed ? ' + ' + removed + ' removed' : '') + ' · ' + list.length + (list.length === 1 ? ' relation' : ' relations') + (outside ? ' · ' + outside + ' linked from outside' : '');
     hubsCount.textContent = hubLinks ? '(' + hubLinks + ')' : '';
+    foldAll.textContent = state.collapsed.size ? 'Expand all' : 'Collapse all';
+    foldAll.title = state.collapsed.size ? 'Show every card\'s fields' : 'Show only each card\'s header';
     rendered = state.scope;
     if (!keepCamera) {
       home();
@@ -4641,14 +4699,40 @@
       select(ref.dataset.mapRef, true);
       return;
     }
-    const more = t.closest('[data-map-more]');
-    if (more) {
-      const name = more.dataset.mapMore;
-      if (state.expanded.has(name)) {
-        state.expanded.delete(name);
+    const fold = t.closest('[data-map-fold]');
+    if (fold) {
+      const name = fold.dataset.mapFold;
+      if (state.collapsed.has(name)) {
+        state.collapsed.delete(name);
       } else {
-        state.expanded.add(name);
+        state.collapsed.add(name);
       }
+      saveCollapsed();
+      // The layout moves with the new height; the camera follows the card
+      // so it stays under the pointer.
+      const before = cards.get(name);
+      const bx = before ? before.x : 0;
+      const by = before ? before.y : 0;
+      render(true);
+      const after = cards.get(name);
+      if (before && after) {
+        state.x -= (after.x - bx) * state.k;
+        state.y -= (after.y - by) * state.k;
+        transform();
+      }
+      return;
+    }
+    if (t.closest('[data-map-fold-all]')) {
+      if (state.collapsed.size) {
+        state.collapsed.clear();
+      } else {
+        for (const c of cards.values()) {
+          if (c.el.querySelector('[data-map-fold]')) {
+            state.collapsed.add(c.n.name);
+          }
+        }
+      }
+      saveCollapsed();
       render(true);
       return;
     }
@@ -4665,7 +4749,9 @@
     if (t.closest('[data-map-reset]')) {
       if (store) {
         store.removeItem(positionsKey());
+        store.removeItem(collapsedKey());
       }
+      state.collapsed.clear();
       render(false);
       return;
     }

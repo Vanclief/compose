@@ -173,6 +173,7 @@ func TestSchemaMapDiff(t *testing.T) {
 	require.Len(t, matches, 1)
 	require.NotContains(t, matches[0][1], `"diff"`, "no diff states without a base")
 	require.NotContains(t, plain, `lg-diff`)
+	require.Contains(t, plain, `data-map-fold-all`, "cards show all their fields or collapse, all at once from the toolbar")
 
 	out, err := Render(doc, Options{Base: []byte(base)})
 	require.NoError(t, err)

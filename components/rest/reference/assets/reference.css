@@ -1128,8 +1128,16 @@ body.map-open .content > :not(.map) { display: none !important; }
 .mf-enum { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0 3px; }
 .mchip { padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--code-bg); color: var(--muted); font-size: 11px; line-height: 16px; }
 .mchip.more { border-style: dashed; background: none; color: var(--faint); font-family: var(--font); }
-.mcard-more { display: block; width: 100%; padding: 5px 12px 7px; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 10px 10px; background: none; color: var(--muted); font: 12px var(--font); text-align: left; cursor: pointer; }
-.mcard-more:hover { background: var(--bg-hover); color: var(--accent); }
+.mcard-fold { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin: -2px -6px -2px 0; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--faint); cursor: pointer; }
+.mcard-fold:hover { background: var(--bg-hover); color: var(--text); }
+.mcard-fold:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.mcard-chev { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.mcard-fold[aria-expanded="false"] .mcard-chev { transform: rotate(-90deg); }
+.mcard-sum { display: flex; align-items: center; gap: 8px; padding: 5px 12px 6px; color: var(--faint); font-size: 12px; }
+.mcard-sum-d { font: 600 11.5px var(--mono); }
+.mcard-sum-d.d-a { color: var(--diff-add); }
+.mcard-sum-d.d-c { color: var(--diff-chg); }
+.mcard-sum-d.d-d { color: var(--diff-del); }
 
 .map-legend { position: absolute; bottom: 12px; left: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; max-width: calc(100% - 24px); padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--muted); font-size: 12px; pointer-events: none; }
 .map-legend span { display: inline-flex; align-items: center; gap: 6px; }
