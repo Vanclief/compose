@@ -2,6 +2,7 @@ package generator
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -329,5 +330,20 @@ func TestOpenAPIAtLeast(t *testing.T) {
 		if openAPIAtLeast(version, 3, 2) != want {
 			t.Fatalf("openAPIAtLeast(%q, 3, 2) != %v", version, want)
 		}
+	}
+}
+
+// Resource tags come from the Go types, so a namer that drops the package (and the "_"
+// separator goTypeName used to split on) names them the same.
+func TestResourceTagsWithSchemaNameHook(t *testing.T) {
+	document := generateShop(t, func(cfg *Config) {
+		cfg.SchemaName = func(importPath string, typeName string) string {
+			return strings.ReplaceAll(strings.TrimPrefix(importPath, "example.com/"), "/", "") + typeName
+		}
+	})
+
+	want := generateShop(t, nil)["tags"]
+	if !reflect.DeepEqual(document["tags"], want) {
+		t.Fatalf("expected the default naming's tags %v, got %v", want, document["tags"])
 	}
 }

@@ -386,8 +386,8 @@ func (g *generator) paginates(method string, requestSchema map[string]any) bool 
 	}
 
 	schemas := g.builder.schemas
-	cursorRequest := g.builder.wellKnownName(paginationImportPath, "CursorRequest")
-	hasCursorRequest := schemaUsesComponent(requestSchema, cursorRequest, schemas, map[string]bool{})
+	cursorRequest := g.builder.componentOf(paginationImportPath, "CursorRequest")
+	hasCursorRequest := cursorRequest != "" && schemaUsesComponent(requestSchema, cursorRequest, schemas, map[string]bool{})
 	hasCursorProperty := schemaHasProperty(requestSchema, cursorParameter, schemas, map[string]bool{})
 	hasLimitProperty := schemaHasProperty(requestSchema, limitParameter, schemas, map[string]bool{})
 

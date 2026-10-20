@@ -99,6 +99,12 @@ type schemaBuilder struct {
 	// derivedRequired holds the first element of every required list the value-typed,
 	// non-omitempty rule produced (see markDerived).
 	derivedRequired map[*string]bool
+	// namer is Config.SchemaName.
+	namer func(importPath string, typeName string) string
+	// named maps each component name handed out to the type it names.
+	named map[string]typeRef
+	// collisions are the names handed out to several types.
+	collisions []string
 }
 
 func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
@@ -143,6 +149,8 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 		origins:               map[string]typeRef{},
 		variantOf:             map[string]string{},
 		derivedRequired:       map[*string]bool{},
+		namer:                 cfg.SchemaName,
+		named:                 map[string]typeRef{},
 	}, nil
 }
 
@@ -751,9 +759,50 @@ func (b *schemaBuilder) schemaRef(ref typeRef) map[string]any {
 	}
 }
 
-// schemaName is the component name of a type: its import path relative to the module, with
-// SchemaNameAliases and SchemaPrefixCollapse applied, `/ . -` turned into `_`, then the name.
+// schemaName is the component name of a type: Config.SchemaName's, else defaultSchemaName's.
+// Two types given one name are recorded as a collision, which fails generation.
 func (b *schemaBuilder) schemaName(ref typeRef) string {
+	name := ""
+	if b.namer != nil {
+		name = b.namer(ref.ImportPath, ref.Name)
+	} else {
+		name = b.defaultSchemaName(ref)
+	}
+
+	if b.named == nil {
+		b.named = map[string]typeRef{}
+	}
+	previous, ok := b.named[name]
+	if !ok {
+		b.named[name] = ref
+	} else if previous != ref {
+		b.collisions = appendUnique(b.collisions, "component "+name+" names both "+typeKey(previous)+" and "+typeKey(ref))
+	}
+
+	return name
+}
+
+// collisionError lists the component names given to several types, and those given to a type
+// and to one of the generator's own components (the error envelope).
+func (b *schemaBuilder) collisionError() error {
+	collisions := append([]string(nil), b.collisions...)
+	for _, reserved := range []string{errorResponseSchemaName, standardErrorSchemaName} {
+		ref, ok := b.named[reserved]
+		if ok {
+			collisions = append(collisions, "component "+reserved+" names both "+typeKey(ref)+" and compose's error envelope")
+		}
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+
+	sort.Strings(collisions)
+	return ez.New(ez.EINVALID, "schema name collisions, spec not written:\n  "+strings.Join(collisions, "\n  "), nil)
+}
+
+// defaultSchemaName is a type's import path relative to the module, with SchemaNameAliases and
+// SchemaPrefixCollapse applied, `/ . -` turned into `_`, then the type name.
+func (b *schemaBuilder) defaultSchemaName(ref typeRef) string {
 	pathPart := strings.TrimPrefix(ref.ImportPath, b.modulePath)
 	pathPart = strings.TrimPrefix(pathPart, "/")
 	pathPart = aliasedSchemaPath(pathPart, b.nameAliases)
@@ -1158,9 +1207,17 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 	return nil, false
 }
 
-// wellKnownName is the component name of a type the generator describes itself.
-func (b *schemaBuilder) wellKnownName(importPath string, name string) string {
-	return b.schemaName(typeRef{ImportPath: importPath, Name: name})
+// componentOf is the component built from a Go type, "" when none is.
+func (b *schemaBuilder) componentOf(importPath string, name string) string {
+	ref := typeRef{ImportPath: importPath, Name: name}
+	for _, component := range sortedKeys(b.origins) {
+		_, isVariant := b.variantOf[component]
+		if b.origins[component] == ref && !isVariant {
+			return component
+		}
+	}
+
+	return ""
 }
 
 func (b *schemaBuilder) wellKnownSchema(ref typeRef) (map[string]any, bool) {

@@ -45,9 +45,10 @@ func (g *generator) tagResources(document map[string]any, routes []Route, facts 
 	byName := map[string][]*resource{}
 	for _, res := range resources {
 		res.entity = mostReturned(res, g.builder.origins)
-		name := resourceName(goTypeName(res.entity), res.pkgPath)
+		entity := g.builder.origins[res.entity].Name
+		name := resourceName(entity, res.pkgPath)
 		if g.cfg.ResourceTag != nil {
-			name = g.cfg.ResourceTag(res.pkgPath, goTypeName(res.entity), name)
+			name = g.cfg.ResourceTag(res.pkgPath, entity, name)
 		}
 		if name == "" || sameName(name, res.tag) {
 			continue
@@ -186,7 +187,7 @@ func mostReturned(res *resource, origins map[string]typeRef) string {
 			best = name
 			continue
 		}
-		if res.returns[name] == res.returns[best] && namedLike(name, res.pkgPath) && !namedLike(best, res.pkgPath) {
+		if res.returns[name] == res.returns[best] && namedLike(origins[name].Name, res.pkgPath) && !namedLike(origins[best].Name, res.pkgPath) {
 			best = name
 		}
 	}
@@ -213,7 +214,7 @@ func modelOwners(resources []*resource, origins map[string]typeRef) map[string]*
 
 		var alike []*resource
 		for _, res := range candidates {
-			if namedLike(name, res.pkgPath) {
+			if namedLike(origins[name].Name, res.pkgPath) {
 				alike = append(alike, res)
 			}
 		}
@@ -241,15 +242,9 @@ func modelOwners(resources []*resource, origins map[string]typeRef) map[string]*
 	return owners
 }
 
-// namedLike reports a component whose Go type is named like the package: BankAccount and
-// bankaccounts.
-func namedLike(component string, pkgPath string) bool {
-	return sameName(goTypeName(component), pkgPath[strings.LastIndex(pkgPath, "/")+1:])
-}
-
-// goTypeName is the Go type a component schema is named after, the part after its package.
-func goTypeName(component string) string {
-	return component[strings.LastIndex(component, "_")+1:]
+// namedLike reports a Go type named like the package: BankAccount and bankaccounts.
+func namedLike(typeName string, pkgPath string) bool {
+	return sameName(typeName, pkgPath[strings.LastIndex(pkgPath, "/")+1:])
 }
 
 // resourceName humanises and pluralises the entity ("BankAccount" is "Bank accounts", "APIKey"

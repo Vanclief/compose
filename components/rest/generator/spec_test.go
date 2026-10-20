@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"path"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -193,5 +195,62 @@ func TestCursorRequestSchemaLeavesOutServerSideFilters(t *testing.T) {
 	}
 	if len(builder.schemas) != 1 {
 		t.Fatalf("expected no query.Filter component, got %v", sortedKeys(builder.schemas))
+	}
+}
+
+// A custom namer names every component; the generator's own lookups (pagination, models,
+// resources) follow the Go types, not the names.
+func TestSchemaNameHook(t *testing.T) {
+	root := writeFixture(t, nestedFixture)
+	cfg := nestedFixtureConfig(root)
+	cfg.SchemaName = func(importPath string, typeName string) string {
+		return path.Base(importPath) + typeName
+	}
+
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas := componentSchemas(spec.Document)
+
+	for _, name := range []string{"widgetWidget", "widgetKind", "catalogListRequest", "paginationCursorRequest", "paginationCursorResponse"} {
+		_, ok := schemas[name]
+		if !ok {
+			t.Fatalf("expected component %s, got %v", name, sortedKeys(schemas))
+		}
+	}
+	if !reflect.DeepEqual(schemas["widgetWidget"]["required"], []string{"id", "name", "kind"}) {
+		t.Fatalf("expected the model's required list, got %v", schemas["widgetWidget"])
+	}
+	list := operation(t, spec.Document, "/widgets", "get")
+	if !reflect.DeepEqual(parameterNames(list), []string{"limit", "cursor", "search"}) {
+		t.Fatalf("expected the pagination parameters through the renamed CursorRequest, got %v", parameterNames(list))
+	}
+}
+
+func TestSchemaNameCollisionsFail(t *testing.T) {
+	root := writeFixture(t, nestedFixture)
+	cfg := nestedFixtureConfig(root)
+	cfg.SchemaName = func(importPath string, typeName string) string {
+		switch typeName {
+		case "Widget":
+			return "ErrorResponse"
+		case "GetRequest", "DeleteRequest":
+			return "Request"
+		}
+		return typeName
+	}
+
+	_, err := Generate(cfg)
+	if err == nil {
+		t.Fatal("expected colliding schema names to fail")
+	}
+	for _, want := range []string{
+		"component Request names both example.com/app/modules/catalog.",
+		"component ErrorResponse names both example.com/app/models/widget.Widget and compose's error envelope",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected %q in %v", want, err)
+		}
 	}
 }

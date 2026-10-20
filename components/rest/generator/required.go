@@ -150,7 +150,7 @@ func (b *schemaBuilder) splitRequestSide(handlerSchemas map[string]handlerSchema
 			variantName := name + RequestVariantSuffix
 			_, taken := schemas[variantName]
 			if taken {
-				return ez.New(ez.EINVALID, "request variant "+variantName+" of "+name+" collides with an existing component", nil)
+				return ez.New(ez.EINVALID, "request variant "+variantName+" of "+typeKey(b.origins[name])+" collides with an existing component", nil)
 			}
 			variant := cloneSchema(schema)
 			b.stripRequired(variant)

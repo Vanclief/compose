@@ -71,6 +71,13 @@ type Config struct {
 	// SchemaNameAliases maps a module-relative package path to the schema name prefix its types
 	// (and its subpackages' types) keep, so moving a package does not rename its schemas.
 	SchemaNameAliases map[string]string
+	// SchemaName names the component of a Go type, replacing the default name (the import
+	// path relative to the module with SchemaNameAliases and SchemaPrefixCollapse applied, then
+	// the type name, e.g. application_models_finance_Invoice). Generation fails when it gives
+	// two types the same name, or a type the name of the error envelope (ErrorResponse,
+	// StandardError). The generator finds its own types (pagination.CursorRequest, models,
+	// resources) by the Go type a component was built from, so any naming works.
+	SchemaName func(importPath string, typeName string) string
 	// DocComments turns Go comments into descriptions: a type's doc comment on its component
 	// schema, a struct field's doc and line comments on its property, an enum constant's line
 	// comment (or a doc comment starting with its name) in x-enum-descriptions and

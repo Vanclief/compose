@@ -94,6 +94,10 @@ func Generate(cfg Config) (*Spec, error) {
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
+	err = builder.collisionError()
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
 
 	if cfg.Schemas != nil {
 		cfg.Schemas(builder.schemas)
