@@ -9,10 +9,12 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// CursorRequest represents a cursor paginated request
+// CursorRequest represents a cursor paginated request. Limit and Cursor are
+// query parameters, never body fields, so they carry json:"-" and the OpenAPI
+// registry documents them as parameters.
 type CursorRequest struct {
-	Limit  int            `json:"limit"`
-	Cursor string         `json:"cursor"`
+	Limit  int            `json:"-" query:"limit" minimum:"0" maximum:"1000" doc:"Page size, defaults to 50"`
+	Cursor string         `json:"-" query:"cursor" doc:"Opaque cursor from the previous page"`
 	Filter []query.Filter `json:"-"` // Server-side only: Field and Comparison are interpolated into SQL and must never come from client input
 }
 

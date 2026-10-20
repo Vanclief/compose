@@ -1,0 +1,404 @@
+{
+  "fixture.Config": {
+    "properties": {
+      "notify": {
+        "format": "email",
+        "type": "string"
+      },
+      "retries": {
+        "format": "int64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "timeout": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "retries"
+    ],
+    "type": "object"
+  },
+  "fixture.ConfigInput": {
+    "properties": {
+      "notify": {
+        "format": "email",
+        "type": "string"
+      },
+      "retries": {
+        "format": "int64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "timeout": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "fixture.CreateRequest": {
+    "properties": {
+      "config": {
+        "$ref": "#/components/schemas/fixture.ConfigInput"
+      },
+      "name": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "fixture.Flags": {
+    "properties": {
+      "big": {
+        "format": "int64",
+        "maximum": 4294967295,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "choice": {
+        "enum": [
+          "x",
+          "y",
+          null
+        ],
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "count": {
+        "format": "int64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "mode": {
+        "$ref": "#/components/schemas/fixture.Mode"
+      },
+      "nmode": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/fixture.Mode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "omode": {
+        "$ref": "#/components/schemas/fixture.Mode"
+      },
+      "pmode": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/fixture.Mode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "pmodes": {
+        "items": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/fixture.Mode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "small": {
+        "format": "int32",
+        "maximum": 2147483647,
+        "minimum": -2147483648,
+        "type": "integer"
+      },
+      "tiny": {
+        "format": "int32",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "wide": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "mode",
+      "pmode",
+      "nmode",
+      "pmodes",
+      "choice",
+      "small",
+      "tiny",
+      "big",
+      "count",
+      "wide"
+    ],
+    "type": "object"
+  },
+  "fixture.ListResponse": {
+    "properties": {
+      "has_next_page": {
+        "type": "boolean"
+      },
+      "hash": {
+        "type": "string"
+      },
+      "next_cursor": {
+        "type": "string"
+      },
+      "runs": {
+        "items": {
+          "$ref": "#/components/schemas/fixture.Run"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "runs",
+      "has_next_page"
+    ],
+    "type": "object"
+  },
+  "fixture.Meta": {
+    "properties": {
+      "labels": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "source"
+    ],
+    "type": "object"
+  },
+  "fixture.Mode": {
+    "enum": [
+      "a",
+      "b"
+    ],
+    "type": "string"
+  },
+  "fixture.Node": {
+    "properties": {
+      "children": {
+        "items": {
+          "$ref": "#/components/schemas/fixture.Node"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "label": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "fixture.NodeInput": {
+    "properties": {
+      "children": {
+        "items": {
+          "$ref": "#/components/schemas/fixture.NodeInput"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "label": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "fixture.Page_fixture.Run": {
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/components/schemas/fixture.Run"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "type": "object"
+  },
+  "fixture.Page_other.Run": {
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/components/schemas/other.Run"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "type": "object"
+  },
+  "fixture.Run": {
+    "properties": {
+      "config": {
+        "$ref": "#/components/schemas/fixture.Config"
+      },
+      "created_at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "metadata": {
+        "$ref": "#/components/schemas/fixture.Meta"
+      },
+      "score": {
+        "format": "double",
+        "type": "number"
+      },
+      "status": {
+        "$ref": "#/components/schemas/fixture.RunStatus"
+      },
+      "tags": {
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "id",
+      "status",
+      "created_at",
+      "tags",
+      "config"
+    ],
+    "type": "object"
+  },
+  "fixture.RunStatus": {
+    "enum": [
+      "pending",
+      "running",
+      "completed",
+      "failed",
+      "cancelled"
+    ],
+    "type": "string"
+  },
+  "fixture.Tree": {
+    "properties": {
+      "root": {
+        "$ref": "#/components/schemas/fixture.Node"
+      }
+    },
+    "required": [
+      "root"
+    ],
+    "type": "object"
+  },
+  "fixture.UpdateRequest": {
+    "properties": {
+      "code_snapshot_id": {
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "failure_reason": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "max_total_runs": {
+        "format": "int64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "status": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/fixture.RunStatus",
+            "enum": [
+              "failed",
+              "cancelled"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "other.Run": {
+    "properties": {
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  }
+}

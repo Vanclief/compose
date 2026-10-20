@@ -4,17 +4,64 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
+	"sync"
 
 	"github.com/vanclief/ez"
 )
 
+// registry keeps every enum's allowed values by Go type, in declaration order,
+// so the OpenAPI reflector can emit one named enum component per Go type.
+var registry = struct {
+	sync.RWMutex
+	values map[reflect.Type][]string
+}{values: map[reflect.Type][]string{}}
+
+// Set builds the allowed-values set for an enum type and records the values
+// by type for OpenAPI generation. Calling it more than once for the same type
+// (for example a full set and a request-only subset) records the union in
+// first-seen order, so the published enum component always lists every value
+// the type can carry. Narrow a single field with the `enum:"a,b"` struct tag.
 func Set[Enum ~string](vals []Enum) map[Enum]struct{} {
 	set := make(map[Enum]struct{}, len(vals))
 	for _, value := range vals {
 		set[value] = struct{}{}
 	}
+
+	t := reflect.TypeFor[Enum]()
+
+	registry.Lock()
+	defer registry.Unlock()
+
+	seen := make(map[string]bool, len(registry.values[t]))
+	for _, value := range registry.values[t] {
+		seen[value] = true
+	}
+	for _, value := range vals {
+		if seen[string(value)] {
+			continue
+		}
+		seen[string(value)] = true
+		registry.values[t] = append(registry.values[t], string(value))
+	}
+
 	return set
+}
+
+// Values returns the allowed values recorded by Set for the given type, in
+// declaration order, and whether the type is a registered enum.
+func Values(t reflect.Type) ([]string, bool) {
+	registry.RLock()
+	values, ok := registry.values[t]
+	registry.RUnlock()
+	if !ok {
+		return nil, false
+	}
+
+	out := make([]string, len(values))
+	copy(out, values)
+	return out, true
 }
 
 func Validate[Enum ~string](value Enum, allowed map[Enum]struct{}) error {

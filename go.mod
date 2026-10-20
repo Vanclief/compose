@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.10
 	github.com/aws/smithy-go v1.25.1
 	github.com/carlware/promtail-go v0.1.1
+	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/getsentry/sentry-go v0.27.0
 	github.com/go-ozzo/ozzo-validation v3.6.0+incompatible
 	github.com/google/uuid v1.6.0
@@ -18,6 +19,7 @@ require (
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/mitchellh/mapstructure v1.4.3
 	github.com/rs/zerolog v1.34.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/viper v1.10.1
 	github.com/stretchr/testify v1.11.1
 	github.com/uptrace/bun v1.2.18
@@ -27,7 +29,7 @@ require (
 	github.com/uptrace/bun/extra/bundebug v1.2.18
 	github.com/vanclief/ez v1.6.0
 	github.com/ziflex/lecho/v3 v3.5.0
-	golang.org/x/text v0.38.0
+	golang.org/x/text v0.40.0
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
 	modernc.org/sqlite v1.56.0
 )
@@ -67,7 +69,7 @@ require (
 	github.com/spf13/afero v1.9.2 // indirect
 	github.com/spf13/cast v1.4.1 // indirect
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
@@ -76,13 +78,13 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
