@@ -51,9 +51,15 @@ func (h *Handler) Search(c echo.Context) error {
 	return h.JSONResponse(c, "Gadgets.Search", nil, &shared.SearchRequest{})
 }
 
+// GetGadget returns one gadget.
+//
+// TODO: cache it.
 func (h *Handler) GetGadget(c echo.Context) error {
 	return h.JSONResponse(c, "Gadgets.GetGadget", nil, &gadget.GetRequest{})
 }
+`
+	files["api/handler/gadgets/doc.go"] = `// Package gadgets serves the gadget catalog.
+package gadgets
 `
 	files["api/routes_widgets.go"] = `package api
 
@@ -89,6 +95,7 @@ type SearchResponse struct {
 	Hits int64 ` + "`json:\"hits\"`" + `
 }
 
+// Search finds the catalog entries matching a query.
 func Search(ctx context.Context, request *SearchRequest) (*SearchResponse, error) { return nil, nil }
 `
 	files["models/gadget/gadget.go"] = `package gadget
@@ -145,6 +152,12 @@ type Widget struct {
 func generateDocumented(t *testing.T, configure func(*Config)) map[string]map[string]any {
 	t.Helper()
 
+	return componentSchemas(generateDocumentedSpec(t, configure).Document)
+}
+
+func generateDocumentedSpec(t *testing.T, configure func(*Config)) *Spec {
+	t.Helper()
+
 	root := writeFixture(t, documentedFixture())
 	cfg := nestedFixtureConfig(root)
 	if configure != nil {
@@ -155,7 +168,44 @@ func generateDocumented(t *testing.T, configure func(*Config)) map[string]map[st
 		t.Fatal(err)
 	}
 
-	return componentSchemas(spec.Document)
+	return spec
+}
+
+func TestOperationAndTagDescriptions(t *testing.T) {
+	describe := func(cfg *Config) {
+		cfg.DocComments = true
+		cfg.TagDescriptions = map[string]string{"Widgets": "Widgets for sale."}
+	}
+	document := generateDocumentedSpec(t, describe).Document
+
+	// The handler's doc comment, without maintainer notes; else the module function's.
+	cases := map[string]string{
+		"/gadgets/{id}":   "GetGadget returns one gadget.",
+		"/gadgets/search": "Search finds the catalog entries matching a query.",
+		"/widgets/{id}":   "",
+	}
+	for path, want := range cases {
+		op := operation(t, document, path, "get")
+		got, _ := op["description"].(string)
+		if got != want {
+			t.Errorf("%s: expected description %q, got %q", path, want, got)
+		}
+	}
+
+	descriptions := map[string]any{}
+	for _, raw := range document["tags"].([]any) {
+		tag := raw.(map[string]any)
+		descriptions[tag["name"].(string)] = tag["description"]
+	}
+	if descriptions["Gadgets"] != "Package gadgets serves the gadget catalog." || descriptions["Widgets"] != "Widgets for sale." {
+		t.Fatalf("expected the package doc and the configured description, got %v", descriptions)
+	}
+
+	plain := generateDocumentedSpec(t, nil).Document
+	_, described := operation(t, plain, "/gadgets/{id}", "get")["description"]
+	if described {
+		t.Fatal("expected no operation description without DocComments")
+	}
 }
 
 func TestBunModelTable(t *testing.T) {
@@ -206,9 +256,12 @@ func TestDocComments(t *testing.T) {
 		t.Fatalf("expected the field doc, got %v", name)
 	}
 	kind := properties["kind"].(map[string]any)
-	want := map[string]any{"$ref": "#/components/schemas/models_widget_Kind", "description": "Defaults to small."}
+	want := map[string]any{
+		"allOf":       []any{map[string]any{"$ref": "#/components/schemas/models_widget_Kind"}},
+		"description": "Defaults to small.",
+	}
 	if !reflect.DeepEqual(kind, want) {
-		t.Fatalf("expected the line comment beside the $ref, got %v", kind)
+		t.Fatalf("expected the line comment beside the $ref wrapped in allOf, got %v", kind)
 	}
 	_, ok := properties["id"].(map[string]any)["description"]
 	if ok {
@@ -222,6 +275,13 @@ func TestDocComments(t *testing.T) {
 	wantDescs := []any{"Fits in a pocket.", "LargeKind needs both hands.", ""}
 	if !reflect.DeepEqual(enum["x-enum-descriptions"], wantDescs) {
 		t.Fatalf("expected line comments and name-led docs, not group headings, got %v", enum["x-enum-descriptions"])
+	}
+	wantByValue := map[string]any{"small": "Fits in a pocket.", "large": "LargeKind needs both hands."}
+	if !reflect.DeepEqual(enum["x-enumDescriptions"], wantByValue) {
+		t.Fatalf("expected the documented values keyed by value, got %v", enum["x-enumDescriptions"])
+	}
+	if !reflect.DeepEqual(enum["x-enum-varnames"], []any{"SmallKind", "LargeKind", "OddKind"}) {
+		t.Fatalf("expected the constant names aligned with enum, got %v", enum["x-enum-varnames"])
 	}
 }
 
@@ -297,5 +357,20 @@ func TestSameName(t *testing.T) {
 		if got != c.want {
 			t.Fatalf("sameName(%q, %q) = %v, want %v", c.pkg, c.namespace, got, c.want)
 		}
+	}
+}
+
+// A component a Schemas hook made a bare $ref alias is wrapped in allOf before it gets x-tags:
+// OpenAPI 3.0 ignores the siblings of a $ref.
+func TestSetSchemaTagsWrapsReferences(t *testing.T) {
+	alias := map[string]any{"$ref": "#/components/schemas/Other"}
+	setSchemaTags(alias, []string{"Widgets"})
+
+	want := map[string]any{
+		"allOf":  []any{map[string]any{"$ref": "#/components/schemas/Other"}},
+		"x-tags": []string{"Widgets"},
+	}
+	if !reflect.DeepEqual(alias, want) {
+		t.Fatalf("expected %v, got %v", want, alias)
 	}
 }

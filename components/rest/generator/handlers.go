@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"mime"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,28 @@ type handlerFacts struct {
 	// pathFields holds, per handler, the request struct fields its composite literal fills
 	// from a path parameter getter; they never travel in the body.
 	pathFields map[string][]string
+	// responses holds, per handler, the content types its compose response calls serve.
+	responses map[string]handlerResponse
+	// docs holds, per handler, its method's doc comment.
+	docs map[string]string
+	// namespaceDocs holds, per namespace, its handler package's doc comment (nested mode).
+	namespaceDocs map[string]string
+}
+
+// handlerResponse is what a handler's compose response calls say about its content types.
+type handlerResponse struct {
+	// encoded are the content types the module result is encoded as: application/json for
+	// JSONResponse and BindedJSONResponse, application/xml for BindedXMLResponse.
+	encoded []string
+	// blobs are the constant content types BlobResponse serves the result's bytes as.
+	blobs []string
+	// open reports a BlobResponse whose content type is computed at run time (negotiated).
+	open bool
+}
+
+// known reports a handler whose content types the generator could pin down.
+func (r handlerResponse) known() bool {
+	return len(r.encoded) > 0 || len(r.blobs) > 0
 }
 
 // loadHandlerSources parses every handler source once. In nested mode each handler package
@@ -53,7 +76,7 @@ func (g *generator) loadHandlerSources() error {
 		if strings.HasSuffix(filePath, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filePath, nil, 0)
+		file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
 		if err != nil {
 			return ez.Wrap(err)
 		}
@@ -88,12 +111,15 @@ func (g *generator) loadHandlerSources() error {
 
 func (g *generator) handlerFacts() handlerFacts {
 	facts := handlerFacts{
-		bindsBody:    map[string]struct{}{},
-		negotiates:   map[string]struct{}{},
-		pathParams:   map[string]map[string]map[string]any{},
-		queryParams:  map[string]map[string]map[string]any{},
-		requestTypes: map[string]typeRef{},
-		pathFields:   map[string][]string{},
+		bindsBody:     map[string]struct{}{},
+		negotiates:    map[string]struct{}{},
+		pathParams:    map[string]map[string]map[string]any{},
+		queryParams:   map[string]map[string]map[string]any{},
+		requestTypes:  map[string]typeRef{},
+		pathFields:    map[string][]string{},
+		responses:     map[string]handlerResponse{},
+		docs:          map[string]string{},
+		namespaceDocs: map[string]string{},
 	}
 
 	helpersByPackage := g.packageHelpers()
@@ -101,6 +127,11 @@ func (g *generator) handlerFacts() handlerFacts {
 	for _, source := range g.sources {
 		imports := importMap(source.File)
 		pkgPath := packagePathForFile(g.cfg.Root, g.builder.modulePath, source.Path)
+
+		packageDoc := commentText(source.File.Doc)
+		if !g.cfg.flat() && packageDoc != "" && facts.namespaceDocs[source.Namespace] == "" {
+			facts.namespaceDocs[source.Namespace] = packageDoc
+		}
 
 		for _, decl := range source.File.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -115,6 +146,11 @@ func (g *generator) handlerFacts() handlerFacts {
 				continue
 			}
 
+			doc := commentText(fn.Doc)
+			if doc != "" {
+				facts.docs[name] = doc
+			}
+
 			if functionUsesSelector(fn.Body, g.cfg.BodyBinders) {
 				facts.bindsBody[name] = struct{}{}
 			}
@@ -127,6 +163,11 @@ func (g *generator) handlerFacts() handlerFacts {
 				facts.pathParams[name] = pathParams
 			}
 
+			response := g.functionResponse(fn.Body, imports, pkgPath)
+			if response.known() || response.open {
+				facts.responses[name] = response
+			}
+
 			queryParams := g.functionQueryParameterSchemas(fn.Body, imports)
 			if len(queryParams) > 0 {
 				facts.queryParams[name] = queryParams
@@ -135,7 +176,7 @@ func (g *generator) handlerFacts() handlerFacts {
 			ref, ok := g.requestTypeFromHandler(fn.Body, imports, pkgPath, helpersByPackage[pkgPath])
 			if ok {
 				facts.requestTypes[name] = ref
-				fields := g.pathFilledFields(fn.Body, ref, imports, pkgPath)
+				fields := g.pathFilledFields(fn.Body, ref, imports, pkgPath, helpersByPackage[pkgPath])
 				if len(fields) > 0 {
 					facts.pathFields[name] = fields
 				}
@@ -149,6 +190,15 @@ func (g *generator) handlerFacts() handlerFacts {
 	fillAliases(facts.queryParams, g.aliases)
 	fillAliases(facts.requestTypes, g.aliases)
 	fillAliases(facts.pathFields, g.aliases)
+	fillAliases(facts.responses, g.aliases)
+	// An alias documented itself keeps its own doc.
+	for alias, target := range g.aliases {
+		_, documented := facts.docs[alias]
+		doc, ok := facts.docs[target]
+		if !documented && ok {
+			facts.docs[alias] = doc
+		}
+	}
 
 	return facts
 }
@@ -403,13 +453,110 @@ func functionUsesSelector(body *ast.BlockStmt, names []string) bool {
 	return found
 }
 
+// functionResponse reads the content types off the compose response calls of a handler body.
+// BlobResponse(c, op, request, contentType, body) serves contentType when it is a string
+// literal or a constant; any other expression (a negotiated variable) leaves it open.
+func (g *generator) functionResponse(body *ast.BlockStmt, imports map[string]string, pkgPath string) handlerResponse {
+	var response handlerResponse
+
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel == nil {
+			return true
+		}
+
+		switch selector.Sel.Name {
+		case "JSONResponse", "BindedJSONResponse":
+			response.encoded = appendUnique(response.encoded, "application/json")
+		case "BindedXMLResponse":
+			response.encoded = appendUnique(response.encoded, "application/xml")
+		case "BlobResponse":
+			if len(call.Args) < 2 {
+				return true
+			}
+			contentType, ok := g.constantString(call.Args[len(call.Args)-2], imports, pkgPath)
+			if !ok {
+				response.open = true
+				return true
+			}
+			response.blobs = appendUnique(response.blobs, mediaType(contentType))
+		}
+
+		return true
+	})
+
+	return response
+}
+
+// constantString resolves a string literal, or a constant of the handler's package or an
+// imported one, to its value.
+func (g *generator) constantString(expr ast.Expr, imports map[string]string, pkgPath string) (string, bool) {
+	literal, ok := stringLiteralValue(expr)
+	if ok {
+		return literal, true
+	}
+
+	importPath := pkgPath
+	name := ""
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		name = typed.Name
+	case *ast.SelectorExpr:
+		pkgIdent, ok := typed.X.(*ast.Ident)
+		if !ok {
+			return "", false
+		}
+		importPath = imports[pkgIdent.Name]
+		name = typed.Sel.Name
+	default:
+		return "", false
+	}
+	if importPath == "" {
+		return "", false
+	}
+
+	pkg, err := g.builder.loadPackage(importPath)
+	if err != nil {
+		return "", false
+	}
+	value, ok := pkg.Consts[name]
+
+	return value, ok
+}
+
+// mediaType drops the parameters of a content type: "text/plain; charset=utf-8" is
+// "text/plain".
+func mediaType(contentType string) string {
+	parsed, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return strings.TrimSpace(contentType)
+	}
+
+	return parsed
+}
+
+func appendUnique(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
+	}
+
+	return append(values, value)
+}
+
 // functionQueryParameterSchemas derives a handler's query interface from the query reads in
 // its body. Handlers bind query params by hand, so the c.QueryParam and helper calls are the
 // source of truth, not the request struct (names diverge: "clusters" binds ClusterIDs, date
 // bounds become filters). Reads with a non-literal name cannot be attributed and are skipped,
-// as are enum reads whose parse function does not resolve to an imported type.
+// as are enum reads whose parse function does not resolve to an imported type. A name read
+// several times keeps its first read, except that a typed getter wins over a plain
+// c.QueryParam (`if c.QueryParam("unit_id") != "" { h.GetQueryParamInt64(c, "unit_id") }`).
 func (g *generator) functionQueryParameterSchemas(body *ast.BlockStmt, imports map[string]string) map[string]map[string]any {
 	params := map[string]map[string]any{}
+	plain := map[string]bool{}
 
 	ast.Inspect(body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -452,24 +599,40 @@ func (g *generator) functionQueryParameterSchemas(body *ast.BlockStmt, imports m
 			return true
 		}
 
+		isPlain := selector.Sel.Name == plainQueryGetter
 		_, exists := params[name]
-		if exists {
+		if exists && (isPlain || !plain[name]) {
 			return true
 		}
 
 		params[name] = schema
+		plain[name] = isPlain
 		return true
 	})
 
 	return params
 }
 
+// plainQueryGetter is echo's untyped query read, which any typed getter of the same name
+// refines.
+const plainQueryGetter = "QueryParam"
+
 // queryGetterSchema is the getter's fixed schema or, for an enum getter such as
 // ParseEnumQueryParams(c, name, pkg.<Type>FromString), an array of $refs to the enum's
 // component schema, named by the parse-function argument.
 func (g *generator) queryGetterSchema(getter QueryGetter, call *ast.CallExpr, imports map[string]string) (map[string]any, bool) {
 	if getter.EnumArg <= 0 {
-		return cloneSchema(getter.Schema), true
+		schema := cloneSchema(getter.Schema)
+		if getter.DefaultArg > 0 && len(call.Args) > getter.DefaultArg {
+			value, ok := intLiteralValue(call.Args[getter.DefaultArg])
+			if ok {
+				schema["default"] = value
+			}
+		}
+		if schema["type"] == "integer" && getter.Name == limitParameter && g.cfg.MaxPageSize > 0 {
+			schema["maximum"] = g.cfg.MaxPageSize
+		}
+		return schema, true
 	}
 
 	if len(call.Args) <= getter.EnumArg {
@@ -553,13 +716,62 @@ func (g *generator) pathParameterCall(call *ast.CallExpr) (string, ParamGetter, 
 	return name, getter, true
 }
 
-// pathFilledFields returns the fields of the request type's composite literals that are
-// filled straight from a path parameter getter, as in `&Request{ID: c.Param("id")}`.
-func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports map[string]string, pkgPath string) []string {
+// pathFilledFields returns the fields of the request type filled from a path parameter, either
+// straight from a ParamGetters call or through a variable assigned from one, in a composite
+// literal (`&Request{ID: c.Param("id")}`, `&Request{ComplexID: complexID}`) or an assignment
+// to a request variable (`request.ComplexID = complexID`).
+func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports map[string]string, pkgPath string, helpers map[string]funcInfo) []string {
+	pathVars := map[string]bool{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		assign, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		// `id, err := h.GetParameterInt64(c, "id")` and `id := c.Param("id")`.
+		if len(assign.Rhs) == 1 && len(assign.Lhs) >= 1 {
+			ident, isIdent := assign.Lhs[0].(*ast.Ident)
+			if isIdent && g.isPathParameterCall(assign.Rhs[0]) {
+				pathVars[ident.Name] = true
+			}
+		}
+		return true
+	})
+
+	fromPath := func(expr ast.Expr) bool {
+		ident, ok := expr.(*ast.Ident)
+		if ok {
+			return pathVars[ident.Name]
+		}
+		return g.isPathParameterCall(expr)
+	}
+
+	varTypes := localVariableTypes(body, imports, pkgPath, helpers)
+
 	var fields []string
 	seen := map[string]bool{}
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			fields = append(fields, name)
+		}
+	}
 
 	ast.Inspect(body, func(node ast.Node) bool {
+		assign, ok := node.(*ast.AssignStmt)
+		if ok && len(assign.Lhs) == len(assign.Rhs) {
+			for i, left := range assign.Lhs {
+				selector, ok := left.(*ast.SelectorExpr)
+				if !ok || !fromPath(assign.Rhs[i]) {
+					continue
+				}
+				target, ok := selector.X.(*ast.Ident)
+				if ok && varTypes[target.Name] == ref {
+					add(selector.Sel.Name)
+				}
+			}
+			return true
+		}
+
 		literal, ok := node.(*ast.CompositeLit)
 		if !ok {
 			return true
@@ -576,25 +788,40 @@ func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports m
 				continue
 			}
 			key, ok := keyValue.Key.(*ast.Ident)
-			if !ok {
-				continue
+			if ok && fromPath(keyValue.Value) {
+				add(key.Name)
 			}
-			call, ok := keyValue.Value.(*ast.CallExpr)
-			if !ok {
-				continue
-			}
-			_, _, ok = g.pathParameterCall(call)
-			if !ok || seen[key.Name] {
-				continue
-			}
-			seen[key.Name] = true
-			fields = append(fields, key.Name)
 		}
 
 		return true
 	})
 
 	return fields
+}
+
+// isPathParameterCall reports a ParamGetters call with a literal parameter name.
+func (g *generator) isPathParameterCall(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	_, _, ok = g.pathParameterCall(call)
+
+	return ok
+}
+
+func intLiteralValue(expr ast.Expr) (int, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.INT {
+		return 0, false
+	}
+
+	value, err := strconv.Atoi(lit.Value)
+	if err != nil {
+		return 0, false
+	}
+
+	return value, true
 }
 
 func stringLiteralValue(expr ast.Expr) (string, bool) {

@@ -33,7 +33,7 @@ func (g *generator) tagSchemas(routes []Route, facts handlerFacts) {
 	}
 
 	for name, schema := range g.builder.schemas {
-		pkgPath := g.builder.origins[name]
+		pkgPath := g.builder.origins[name].ImportPath
 		derived := deriveSchemaTags(pkgPath, g.builder.modulePath, byPackage, namespaces)
 
 		tags := derived
@@ -46,8 +46,19 @@ func (g *generator) tagSchemas(routes []Route, facts handlerFacts) {
 			delete(schema, "x-tags")
 			continue
 		}
-		schema["x-tags"] = tags
+		setSchemaTags(schema, tags)
 	}
+}
+
+// setSchemaTags writes a component's x-tags. A component that is a bare $ref (an alias a
+// Schemas hook wrote) becomes an allOf wrapper first: OpenAPI 3.0 ignores the siblings of a $ref.
+func setSchemaTags(schema map[string]any, tags []string) {
+	ref, isRef := schema["$ref"]
+	if isRef {
+		delete(schema, "$ref")
+		schema["allOf"] = []any{map[string]any{"$ref": ref}}
+	}
+	schema["x-tags"] = tags
 }
 
 // deriveSchemaTags returns the tags of a package's schemas, sorted:

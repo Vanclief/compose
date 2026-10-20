@@ -6,111 +6,10 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
-
-func TestStripRequestSideRequiredKeepsOnlyReadOnly(t *testing.T) {
-	schemas := map[string]map[string]any{
-		// Hand-curated request wrapper (modules package): its own list is not
-		// the models rule's and must survive.
-		"application_modules_finance_invoices_CreateRequest": {
-			"type": "object",
-			"properties": map[string]any{
-				"bank_account_id": map[string]any{
-					"type":   "string",
-					"format": "uuid",
-				},
-				"adjustment": map[string]any{
-					"$ref": "#/components/schemas/application_models_finance_Adjustment",
-				},
-				"incomes_to_invoices": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"$ref": "#/components/schemas/application_models_finance_IncomeToInvoice",
-					},
-				},
-			},
-			"required": []any{"bank_account_id"},
-		},
-		"application_models_finance_Adjustment": {
-			"type": "object",
-			"properties": map[string]any{
-				"percentage": map[string]any{"type": "integer"},
-				"amount":     map[string]any{"type": "integer"},
-			},
-			"required": []string{"percentage", "amount"},
-		},
-		"application_models_finance_IncomeToInvoice": {
-			"allOf": []any{
-				map[string]any{
-					"$ref": "#/components/schemas/github_com_uptrace_bun_BaseModel",
-				},
-				map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"applied_amount": map[string]any{
-							"$ref": "#/components/schemas/application_types_MonetaryValue",
-						},
-						"assignment_date": map[string]any{
-							"allOf": []any{
-								map[string]any{"$ref": "#/components/schemas/application_types_UnixTimestamp"},
-							},
-							"readOnly": true,
-						},
-					},
-					"required": []string{"applied_amount", "assignment_date"},
-				},
-			},
-		},
-		// Response-only model: it references Adjustment but is never reached
-		// from a request, so its own list stays.
-		"application_models_finance_Invoice": {
-			"type": "object",
-			"properties": map[string]any{
-				"adjustment": map[string]any{
-					"$ref": "#/components/schemas/application_models_finance_Adjustment",
-				},
-				"total": map[string]any{"type": "integer"},
-			},
-			"required": []string{"adjustment", "total"},
-		},
-	}
-
-	handlerSchemas := map[string]handlerSchema{
-		"finance.CreateInvoice": {
-			Request:  map[string]any{"$ref": "#/components/schemas/application_modules_finance_invoices_CreateRequest"},
-			Response: map[string]any{"$ref": "#/components/schemas/application_models_finance_Invoice"},
-		},
-	}
-
-	stripRequestSideRequired(handlerSchemas, schemas, "application_models_")
-
-	// Reached directly from the request: the either/or Adjustment loses its
-	// whole list (nothing is readOnly).
-	_, hasRequired := schemas["application_models_finance_Adjustment"]["required"]
-	if hasRequired {
-		t.Fatalf("expected Adjustment to have no required fields, got %v", schemas["application_models_finance_Adjustment"]["required"])
-	}
-
-	// Reached through the request's array items: only the readOnly field stays.
-	members := schemas["application_models_finance_IncomeToInvoice"]["allOf"].([]any)
-	member := members[1].(map[string]any)
-	required, ok := member["required"].([]string)
-	if !ok || len(required) != 1 || required[0] != "assignment_date" {
-		t.Fatalf("expected IncomeToInvoice to require assignment_date only, got %v", member["required"])
-	}
-
-	// The hand-curated wrapper and the response-only model are untouched.
-	wrapperRequired, ok := schemas["application_modules_finance_invoices_CreateRequest"]["required"].([]any)
-	if !ok || len(wrapperRequired) != 1 || wrapperRequired[0] != "bank_account_id" {
-		t.Fatalf("expected the request wrapper's required list to survive, got %v", schemas["application_modules_finance_invoices_CreateRequest"]["required"])
-	}
-	invoiceRequired, ok := schemas["application_models_finance_Invoice"]["required"].([]string)
-	if !ok || len(invoiceRequired) != 2 {
-		t.Fatalf("expected the response-only Invoice to keep its required list, got %v", schemas["application_models_finance_Invoice"]["required"])
-	}
-}
 
 func TestSchemaForStructRequiresAlwaysSerializedModelFields(t *testing.T) {
 	src := "package models\n" +
@@ -163,19 +62,21 @@ func TestSchemaForStructRequiresAlwaysSerializedModelFields(t *testing.T) {
 		}
 	}
 
-	// The same struct outside application/models (a request/response wrapper)
-	// keeps every field optional: Go unmarshals missing request keys as zero
-	// values, so requiring them would be wrong.
-	requestSchema := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/modules/entities")
-	_, hasRequired := requestSchema["required"]
-	if hasRequired {
-		t.Fatalf("expected no required list outside models packages, got %v", requestSchema["required"])
+	// The same struct outside application/models (a module wrapper) follows the same rule;
+	// splitRequestSide strips it again where a request reaches the type.
+	wrapperSchema := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/modules/entities")
+	if !reflect.DeepEqual(wrapperSchema["required"], []string{"id", "name", "active"}) {
+		t.Fatalf("expected the same required list outside models packages, got %v", wrapperSchema["required"])
+	}
+	if !builder.isDerived(wrapperSchema["required"]) {
+		t.Fatal("expected the list recorded as derived")
 	}
 }
 
 // A Go "Deprecated:" paragraph keeps the field in the contract, flagged, and still required on a
-// model because the server still sends it; a looser mention of deprecation drops the field.
-func TestDeprecatedFieldsAreFlaggedOrDropped(t *testing.T) {
+// model because the server still sends it; a looser mention of deprecation (a TODO) changes
+// nothing, the field is served and documented like any other.
+func TestDeprecatedFieldsAreFlaggedNeverDropped(t *testing.T) {
 	src := "package entity\n" +
 		"type Entity struct {\n" +
 		"\t// Label mirrors the category's name.\n" +
@@ -220,14 +121,18 @@ func TestDeprecatedFieldsAreFlaggedOrDropped(t *testing.T) {
 		t.Fatalf("expected label to stay a string flagged deprecated, got %v", label)
 	}
 
-	_, hasOld := properties["old"]
-	if hasOld {
-		t.Fatalf("expected the loosely deprecated field to be dropped, got %v", properties["old"])
+	old, ok := properties["old"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected the field with a TODO about deprecation kept, got %v", properties)
+	}
+	_, oldDeprecated := old["deprecated"]
+	if oldDeprecated || old["type"] != "string" {
+		t.Fatalf("expected old to be a plain string, got %v", old)
 	}
 
 	required, ok := schema["required"].([]string)
-	if !ok || len(required) != 1 || required[0] != "label" {
-		t.Fatalf("expected label required, got %v", schema["required"])
+	if !ok || !reflect.DeepEqual(required, []string{"label", "old"}) {
+		t.Fatalf("expected label and old required, got %v", schema["required"])
 	}
 
 	// OpenAPI 3.0 ignores keywords beside a $ref, so a deprecated reference is wrapped
@@ -243,6 +148,9 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 	src := "package handlers\n" +
 		"func (h *Handler) List(c echo.Context) error {\n" +
 		"\tsearch := c.QueryParam(\"search\")\n" +
+		"\tif c.QueryParam(\"unit_id\") != \"\" {\n" +
+		"\t\t_, _ = h.GetQueryParamInt64(c, \"unit_id\")\n" +
+		"\t}\n" +
 		"\t_ = c.QueryParam(\"search\")\n" +
 		"\tamenityID := int64(h.GetNumericQueryParam(c, \"amenity_id\", 0))\n" +
 		"\tclusters, _ := h.GetQueryParamInt64s(c, \"clusters\")\n" +
@@ -286,6 +194,8 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		"bank_account_ids": "array",
 		"category":         "array",
 		"role":             "array",
+		// Read by c.QueryParam first, then by a typed getter: the typed one wins.
+		"unit_id": "integer",
 	}
 	if len(params) != len(wantTypes) {
 		t.Fatalf("expected %d params, got %v", len(wantTypes), params)
@@ -324,8 +234,8 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		map[string]any{"name": "search", "in": "query", "required": false, "schema": map[string]any{"type": "string"}},
 		map[string]any{"name": "complex_id", "in": "path", "required": true},
 	}
-	derived := derivedQueryParameters(params, existing)
-	wantOrder := []string{"amenity_id", "bank_account_ids", "category", "clusters", "date_from", "limit", "role"}
+	derived := derivedQueryParameters(params, existing, nil)
+	wantOrder := []string{"amenity_id", "bank_account_ids", "category", "clusters", "date_from", "limit", "role", "unit_id"}
 	if len(derived) != len(wantOrder) {
 		t.Fatalf("expected %d derived params, got %v", len(wantOrder), derived)
 	}
@@ -454,13 +364,13 @@ func TestBuildSchemaFailsWhenTypeIsNotDeclared(t *testing.T) {
 func TestBuildSchemaKeepsStandardLibraryTypesOpaque(t *testing.T) {
 	builder := newTestSchemaBuilder(t, t.TempDir())
 
-	builder.schemaRef(typeRef{ImportPath: "mime/multipart", Name: "FileHeader"})
+	builder.schemaRef(typeRef{ImportPath: "net/url", Name: "URL"})
 
 	err := builder.unresolvedError()
 	if err != nil {
 		t.Fatalf("expected standard-library types to stay opaque without error, got %v", err)
 	}
-	schema := builder.schemas["mime_multipart_FileHeader"]
+	schema := builder.schemas["net_url_URL"]
 	if schema == nil || schema["type"] != "object" || schema["properties"] != nil {
 		t.Fatalf("expected an opaque object schema, got %v", schema)
 	}
@@ -590,9 +500,129 @@ const DefaultSlug Slug = "default"
 		}
 	}
 
+	// The constants' names align with enum: the accepted empty Kind keeps its name, the
+	// unaccepted empty Mode is left out of both.
+	wantNames := map[string][]any{
+		"application_models_shape_Kind":  {"UndefinedKind", "RoundKind", "SquareKind"},
+		"application_models_shape_Mode":  {"EnabledMode"},
+		"application_models_shape_Stage": {"FirstStage", "LastStage"},
+	}
+	for name, names := range wantNames {
+		if !reflect.DeepEqual(builder.schemas[name]["x-enum-varnames"], names) {
+			t.Fatalf("expected %s x-enum-varnames %v, got %v", name, names, builder.schemas[name]["x-enum-varnames"])
+		}
+	}
+
 	slug := builder.schemas["application_models_shape_Slug"]
 	_, hasEnum := slug["enum"]
 	if hasEnum || slug["type"] != "string" {
 		t.Fatalf("expected a string type without enums.Set to stay an open string, got %v", slug)
+	}
+}
+
+// OpenAPI 3.0 ignores the siblings of a $ref: a pointer field to a component is an allOf
+// wrapper typed like the component, its array items and map values are not nullable, and
+// neither is a pointer result.
+func TestPointerReferencesAreWrappedNotSiblings(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.22\n",
+		"api/routes.go": `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.GET("/things/:id", h.GetThing)
+}
+`,
+		"api/handler.go": `package api
+
+import (
+	"github.com/labstack/echo/v4"
+
+	"example.com/app/things"
+)
+
+type Handler struct{}
+
+func (h *Handler) GetThing(c echo.Context) error {
+	return h.JSONResponse(c, "GetThing", nil, &things.GetRequest{})
+}
+`,
+		"things/things.go": `package things
+
+import "context"
+
+type Kind string
+
+type Part struct {
+	SKU string ` + "`json:\"sku\"`" + `
+}
+
+type Thing struct {
+	Part   *Part            ` + "`json:\"part\"`" + `
+	Kind   *Kind            ` + "`json:\"kind\"`" + `
+	Parts  []*Part          ` + "`json:\"parts\"`" + `
+	ByName map[string]*Part ` + "`json:\"by_name\"`" + `
+	Note   *string          ` + "`json:\"note\"`" + `
+}
+
+type GetRequest struct{}
+
+func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil, nil }
+`,
+	})
+
+	spec, err := Generate(Config{Root: root, RoutesGlob: "api/routes.go", HandlerGlob: "api/*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	partRef := map[string]any{"$ref": "#/components/schemas/things_Part"}
+	properties := componentSchemas(spec.Document)["things_Thing"]["properties"].(map[string]any)
+	want := map[string]any{
+		"part":    map[string]any{"allOf": []any{partRef}, "nullable": true, "type": "object"},
+		"kind":    map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/things_Kind"}}, "nullable": true, "type": "string"},
+		"parts":   map[string]any{"type": "array", "items": partRef},
+		"by_name": map[string]any{"type": "object", "additionalProperties": partRef},
+		"note":    map[string]any{"type": "string", "nullable": true},
+	}
+	if !reflect.DeepEqual(properties, want) {
+		t.Fatalf("expected %v, got %v", want, properties)
+	}
+
+	get := operation(t, spec.Document, "/things/{id}", "get")
+	body := get["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"]
+	if !reflect.DeepEqual(body, map[string]any{"$ref": "#/components/schemas/things_Thing"}) {
+		t.Fatalf("expected a pointer result to be a bare $ref, got %v", body)
+	}
+}
+
+// The module function is the exported one returning (T, error), not a helper declared before
+// it that also takes the request.
+func TestResponseFunctionPrefersValueAndError(t *testing.T) {
+	root := writeFixture(t, thingFixture(`package things
+
+import "context"
+
+type Thing struct {
+	ID int64 `+"`json:\"id\"`"+`
+}
+
+type GetRequest struct{}
+
+func valid(request *GetRequest) (bool, error) { return true, nil }
+
+func SignatureVerified(request *GetRequest) bool { return true }
+
+func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil, nil }
+`, nil))
+
+	spec, err := Generate(thingConfig(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := operation(t, spec.Document, "/things/{id}", "get")
+	body := get["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"]
+	if !reflect.DeepEqual(body, map[string]any{"$ref": "#/components/schemas/things_Thing"}) {
+		t.Fatalf("expected Get's result, got %v", body)
 	}
 }

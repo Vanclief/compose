@@ -182,11 +182,11 @@ func TestCursorRequestSchemaLeavesOutServerSideFilters(t *testing.T) {
 		ImportPath: "github.com/vanclief/compose/drivers/databases/relational/postgres/pagination",
 		Name:       "CursorRequest",
 	})
-	if ref["$ref"] != schemaRefPrefix+cursorRequestSchemaName {
+	if ref["$ref"] != schemaRefPrefix+"github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_CursorRequest" {
 		t.Fatalf("expected a $ref to the CursorRequest component, got %v", ref)
 	}
 
-	properties := builder.schemas[cursorRequestSchemaName]["properties"].(map[string]any)
+	properties := builder.schemas["github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_CursorRequest"]["properties"].(map[string]any)
 	_, hasFilters := properties["filters"]
 	if hasFilters || len(properties) != 2 {
 		t.Fatalf("expected only limit and cursor, got %v", properties)

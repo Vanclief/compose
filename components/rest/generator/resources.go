@@ -68,7 +68,7 @@ func (g *generator) tagResources(document map[string]any, routes []Route, facts 
 	owner := map[string]*resource{}
 	for _, res := range named {
 		for name, schema := range schemas {
-			if g.builder.origins[name] == res.pkgPath && schema != nil {
+			if g.builder.origins[name].ImportPath == res.pkgPath && schema != nil {
 				owner[name] = res
 			}
 		}
@@ -104,7 +104,7 @@ func (g *generator) tagResources(document map[string]any, routes []Route, facts 
 	}
 
 	for name, res := range owner {
-		schemas[name]["x-tags"] = []string{res.name}
+		setSchemaTags(schemas[name], []string{res.name})
 	}
 
 	parentKey := "x-parent"
@@ -118,7 +118,17 @@ func (g *generator) tagResources(document map[string]any, routes []Route, facts 
 		return named[i].name < named[j].name
 	})
 	for _, res := range named {
-		tags = append(tags, map[string]any{"name": res.name, parentKey: res.tag})
+		tag := map[string]any{"name": res.name, parentKey: res.tag}
+		packageDoc := ""
+		pkg, ok := g.builder.packages[res.pkgPath]
+		if ok {
+			packageDoc = pkg.Doc
+		}
+		description := g.tagDescription(res.name, packageDoc)
+		if description != "" {
+			tag["description"] = description
+		}
+		tags = append(tags, tag)
 	}
 	document["tags"] = tags
 }
@@ -147,7 +157,7 @@ func (g *generator) collectResources(routes []Route, facts handlerFacts, handler
 		res.handlers++
 
 		returned := componentNameFromSchema(handlerSchemas[r.HandlerKey()].Response)
-		if returned != "" && g.builder.origins[returned] != ref.ImportPath {
+		if returned != "" && g.builder.origins[returned].ImportPath != ref.ImportPath {
 			res.returns[returned]++
 		}
 	}
@@ -169,7 +179,7 @@ func (g *generator) collectResources(routes []Route, facts handlerFacts, handler
 
 // mostReturned is the model a resource's handlers return most, ties broken by the one named
 // like the package, then by name.
-func mostReturned(res *resource, origins map[string]string) string {
+func mostReturned(res *resource, origins map[string]typeRef) string {
 	best := ""
 	for _, name := range sortedKeys(res.returns) {
 		if best == "" || res.returns[name] > res.returns[best] {
@@ -186,7 +196,7 @@ func mostReturned(res *resource, origins map[string]string) string {
 
 // modelOwners files every model the resources return under one of them: the one whose package
 // is named like the model, else the one returning it from most handlers. Ties are left out.
-func modelOwners(resources []*resource, origins map[string]string) map[string]*resource {
+func modelOwners(resources []*resource, origins map[string]typeRef) map[string]*resource {
 	returners := map[string][]*resource{}
 	for _, res := range resources {
 		for name := range res.returns {

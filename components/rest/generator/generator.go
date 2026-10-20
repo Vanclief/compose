@@ -98,7 +98,11 @@ func Generate(cfg Config) (*Spec, error) {
 	if cfg.Schemas != nil {
 		cfg.Schemas(builder.schemas)
 	}
-	stripRequestSideRequired(handlerSchemas, builder.schemas, modelsSchemaPrefix(cfg.RequiredPackagePrefix))
+	err = builder.splitRequestSide(handlerSchemas)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+	g.stripPathFields(handlerSchemas)
 
 	routes, err := parseRoutes(cfg)
 	if err != nil {
@@ -130,13 +134,14 @@ func Generate(cfg Config) (*Spec, error) {
 			continue
 		}
 		roots = append(roots, handler.Request, handler.Response)
-		if !g.internal(r.Method, toOpenAPIPath(r.Path)) {
+		if !r.Deprecated && !g.internal(r.Method, toOpenAPIPath(r.Path)) {
 			publicRoots = append(publicRoots, handler.Request, handler.Response)
 		}
 	}
 	pruneSchemas(document, builder.schemas, roots)
 	g.tagSchemas(routes, facts)
 	g.tagResources(document, routes, facts, handlerSchemas)
+	fillNullableTypes(document, builder.schemas)
 
 	err = validateRefs(document, builder.schemas)
 	if err != nil {
@@ -150,7 +155,9 @@ func Generate(cfg Config) (*Spec, error) {
 	}, nil
 }
 
-// Public returns a copy of the spec without its internal operations (`x-internal: true`).
+// Public returns a copy of the spec without its internal operations (`x-internal: true`),
+// deprecated routes included (see Config.DeprecatedWrapper), and without the x-source of the
+// remaining ones.
 // Path items left empty and tags no remaining operation uses are dropped, and component
 // schemas are pruned with Generate's rule computed over what is left: the schemas the
 // remaining operations reach plus the request and response types of every routed handler
@@ -176,6 +183,8 @@ func (s *Spec) Public() (*Spec, error) {
 				delete(item, method)
 				continue
 			}
+			// Where an operation is declared is for the backend's own readers.
+			delete(op, "x-source")
 			for _, tag := range operationTags(op) {
 				used[tag] = true
 			}
@@ -300,21 +309,14 @@ func writeSpec(spec *Spec, base string) error {
 	return nil
 }
 
-// modelsSchemaPrefix turns RequiredPackagePrefix ("/application/models/") into the component
-// name prefix of those packages ("application_models_").
-func modelsSchemaPrefix(packagePrefix string) string {
-	trimmed := strings.Trim(packagePrefix, "/")
-	if trimmed == "" {
-		return ""
-	}
-
-	return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(trimmed) + "_"
-}
-
-// pruneSchemas deletes every component schema that neither the paths nor the roots reach.
+// pruneSchemas deletes every component schema that neither the paths, the shared responses
+// and parameters, nor the roots reach.
 func pruneSchemas(document map[string]any, schemas map[string]map[string]any, roots []any) {
 	pending := map[string]bool{}
 	collectRefs(document["paths"], pending)
+	components, _ := document["components"].(map[string]any)
+	collectRefs(components["responses"], pending)
+	collectRefs(components["parameters"], pending)
 	for _, root := range roots {
 		collectRefs(root, pending)
 	}
@@ -347,15 +349,15 @@ func pruneSchemas(document map[string]any, schemas map[string]map[string]any, ro
 	}
 }
 
-// validateRefs fails when any $ref of the document names no component schema.
+// validateRefs fails when any $ref of the document names no component.
 func validateRefs(document map[string]any, schemas map[string]map[string]any) error {
 	refs := map[string]bool{}
 	collectRefs(document, refs)
+	components, _ := document["components"].(map[string]any)
 
 	var dangling []string
 	for name := range refs {
-		_, ok := schemas[name]
-		if !ok {
+		if !refResolves(name, schemas, components) {
 			dangling = append(dangling, name)
 		}
 	}
@@ -365,6 +367,28 @@ func validateRefs(document map[string]any, schemas map[string]map[string]any) er
 
 	sort.Strings(dangling)
 	return ez.New(ez.EINTERNAL, "unresolved $refs, spec not written:\n  "+strings.Join(dangling, "\n  "), nil)
+}
+
+// refResolves reports a collected $ref naming an existing component: a schema name, or a whole
+// #/components/<section>/<name> reference for the other sections (responses, parameters).
+func refResolves(name string, schemas map[string]map[string]any, components map[string]any) bool {
+	_, ok := schemas[name]
+	if ok {
+		return true
+	}
+
+	rest, ok := strings.CutPrefix(name, "#/components/")
+	if !ok {
+		return false
+	}
+	section, entry, ok := strings.Cut(rest, "/")
+	if !ok || section == "schemas" {
+		return false
+	}
+	entries, _ := components[section].(map[string]any)
+	_, ok = entries[entry]
+
+	return ok
 }
 
 // collectRefs adds the component name of every $ref under node to refs. A $ref outside

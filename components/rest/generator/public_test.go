@@ -197,8 +197,13 @@ func TestPublicFailsOnDanglingRefs(t *testing.T) {
 
 func TestPublicWithoutInternalOperationsEncodesTheFullSpec(t *testing.T) {
 	root := writeFixture(t, nestedFixture)
+	cfg := nestedFixtureConfig(root)
+	skip := cfg.Skip
+	cfg.Skip = func(method string, path string) bool {
+		return path == "/widgets/legacy" || skip(method, path)
+	}
 
-	spec, err := Generate(nestedFixtureConfig(root))
+	spec, err := Generate(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +212,12 @@ func TestPublicWithoutInternalOperationsEncodesTheFullSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The public spec leaves out where operations are declared.
+	for _, item := range spec.Document["paths"].(map[string]any) {
+		for _, op := range item.(map[string]any) {
+			delete(op.(map[string]any), "x-source")
+		}
+	}
 	fullJSON, err := spec.JSON()
 	if err != nil {
 		t.Fatal(err)
@@ -288,5 +299,58 @@ func TestRunWritesPublicAndInternalSpecs(t *testing.T) {
 		if bytes.Count(first[name], []byte("version: \"1.0\"")) != 1 {
 			t.Errorf("expected info.version exactly once in %s", name)
 		}
+	}
+}
+
+// The public spec leaves out deprecated routes and x-source; the info, external docs and
+// security scheme descriptions come from the config.
+func TestPublicSpecHygiene(t *testing.T) {
+	root := writeFixture(t, nestedFixture)
+	cfg := nestedFixtureConfig(root)
+	cfg.Info.TermsOfService = "https://example.com/terms"
+	cfg.Info.Contact = &Contact{Name: "API team", Email: "api@example.com"}
+	cfg.Info.License = &License{Name: "Proprietary", URL: "https://example.com/license"}
+	cfg.ExternalDocs = &ExternalDocs{Description: "Guides", URL: "https://example.com/docs"}
+	cfg.Security = []SecurityScheme{{Name: "ApiKeyAuth", Header: "API-KEY", Description: "The key POST /login returns."}}
+
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info := spec.Document["info"].(map[string]any)
+	if info["termsOfService"] != "https://example.com/terms" ||
+		!reflect.DeepEqual(info["contact"], map[string]any{"name": "API team", "email": "api@example.com"}) ||
+		!reflect.DeepEqual(info["license"], map[string]any{"name": "Proprietary", "url": "https://example.com/license"}) {
+		t.Fatalf("unexpected info %v", info)
+	}
+	if !reflect.DeepEqual(spec.Document["externalDocs"], map[string]any{"description": "Guides", "url": "https://example.com/docs"}) {
+		t.Fatalf("unexpected externalDocs %v", spec.Document["externalDocs"])
+	}
+	scheme := spec.Document["components"].(map[string]any)["securitySchemes"].(map[string]any)["ApiKeyAuth"].(map[string]any)
+	if scheme["description"] != "The key POST /login returns." {
+		t.Fatalf("expected the scheme's description, got %v", scheme)
+	}
+
+	public, err := spec.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := public.Document["paths"].(map[string]any)
+	_, ok := paths["/widgets/legacy"]
+	if ok {
+		t.Fatal("expected the deprecated route left out of the public spec")
+	}
+	for path, item := range paths {
+		for method, op := range item.(map[string]any) {
+			_, hasSource := op.(map[string]any)["x-source"]
+			if hasSource {
+				t.Fatalf("expected no x-source in the public spec, %s %s has one", method, path)
+			}
+		}
+	}
+	list := operation(t, spec.Document, "/widgets", "get")
+	if list["x-source"] == nil {
+		t.Fatal("expected the full spec to keep x-source")
 	}
 }

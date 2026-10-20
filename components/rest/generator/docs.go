@@ -75,17 +75,13 @@ func constDoc(spec *ast.ValueSpec, name string) string {
 }
 
 // describedSchema returns schema with description set, a copy so shared schemas stay
-// untouched. A $ref keeps the description beside it, as it keeps nullable: OpenAPI 3.1 and
-// the tools reading this document honour it.
+// untouched. A $ref is wrapped in allOf first: OpenAPI 3.0 ignores the siblings of a $ref.
 func describedSchema(schema map[string]any, description string) map[string]any {
 	if description == "" {
 		return schema
 	}
 
-	described := make(map[string]any, len(schema)+1)
-	for key, value := range schema {
-		described[key] = value
-	}
+	described := siblingSafe(schema)
 	described["description"] = description
 
 	return described

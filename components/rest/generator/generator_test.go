@@ -141,12 +141,12 @@ func (h *Handler) DeleteWidget(c echo.Context) error {
 }
 
 func (h *Handler) ExportWidget(c echo.Context) error {
-	_ = h.NegotiateContentType(c)
+	contentType := h.NegotiateContentType(c)
 	id, err := h.GetParameterInt64(c, "id")
 	if err != nil {
 		return err
 	}
-	return h.JSONResponse(c, "Widgets.ExportWidget", nil, &catalog.GetRequest{ID: id})
+	return h.BlobResponse(c, "Widgets.ExportWidget", nil, contentType, &catalog.ExportRequest{ID: id})
 }
 
 func (h *Handler) WidgetDetails(c echo.Context) error {
@@ -213,6 +213,12 @@ type StatsResponse struct {
 }
 
 func Stats(ctx context.Context, request *StatsRequest) (*StatsResponse, error) { return nil, nil }
+
+type ExportRequest struct {
+	ID int64 ` + "`json:\"id\"`" + `
+}
+
+func Export(ctx context.Context, request *ExportRequest) ([]byte, error) { return nil, nil }
 `,
 	"models/widget/widget.go": `package widget
 
@@ -275,10 +281,17 @@ func operation(t *testing.T, document map[string]any, path string, method string
 	return op
 }
 
+// parameterNames lists an operation's parameter names; a reference to a shared parameter
+// (#/components/parameters/Limit) counts as the parameter it names (limit).
 func parameterNames(op map[string]any) []string {
 	params, _ := op["parameters"].([]any)
 	names := []string{}
 	for _, param := range params {
+		ref, isRef := param.(map[string]any)["$ref"].(string)
+		if isRef {
+			names = append(names, lowerFirst(strings.TrimPrefix(ref, parameterRefPrefix)))
+			continue
+		}
 		names = append(names, param.(map[string]any)["name"].(string))
 	}
 
@@ -311,9 +324,15 @@ func TestGenerateNestedFixture(t *testing.T) {
 	}
 
 	paths := document["paths"].(map[string]any)
-	wantPaths := []string{"/widgets", "/widgets/{id}", "/widgets/{id}/details", "/widgets/{id}/export"}
+	wantPaths := []string{"/widgets", "/widgets/legacy", "/widgets/{id}", "/widgets/{id}/details", "/widgets/{id}/export"}
 	if !reflect.DeepEqual(sortedKeys(paths), wantPaths) {
-		t.Fatalf("expected skipped and deprecated routes left out, got %v", sortedKeys(paths))
+		t.Fatalf("expected skipped routes left out, got %v", sortedKeys(paths))
+	}
+
+	// A deprecated alias of a live handler: internal only, with its own operationId.
+	legacy := operation(t, document, "/widgets/legacy", "get")
+	if legacy["deprecated"] != true || legacy["x-internal"] != true || legacy["operationId"] != "widgets.listWidgetsDeprecated" {
+		t.Fatalf("unexpected deprecated operation %v", legacy)
 	}
 
 	list := operation(t, document, "/widgets", "get")
@@ -345,9 +364,8 @@ func TestGenerateNestedFixture(t *testing.T) {
 	}
 	getContent := get["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
 	getSchema := getContent["application/json"].(map[string]any)["schema"]
-	// A pointer result is nullable; OpenAPI 3.0 ignores nullable beside a $ref, which the
-	// generator emits as is (kept for byte compatibility with existing specs).
-	if !reflect.DeepEqual(getSchema, map[string]any{"$ref": "#/components/schemas/models_widget_Widget", "nullable": true}) {
+	// A pointer result is the body itself: never null on success, so a bare $ref.
+	if !reflect.DeepEqual(getSchema, map[string]any{"$ref": "#/components/schemas/models_widget_Widget"}) {
 		t.Fatalf("expected the module function's result as response, got %v", getSchema)
 	}
 	errorSchema := get["responses"].(map[string]any)["default"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"]
@@ -371,10 +389,16 @@ func TestGenerateNestedFixture(t *testing.T) {
 		t.Fatalf("expected a DELETE without a body binder to have no body, got %v", remove["requestBody"])
 	}
 
+	// A BlobResponse with a negotiated content type serves the module's bytes as every
+	// negotiated type: raw JSON, not base64, and text as a string.
 	export := operation(t, document, "/widgets/{id}/export", "get")
 	exportContent := export["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
-	if !reflect.DeepEqual(sortedKeys(exportContent), []string{"application/json", "text/csv"}) {
-		t.Fatalf("expected the negotiated content types, got %v", sortedKeys(exportContent))
+	wantExport := map[string]any{
+		"application/json": map[string]any{"schema": map[string]any{}},
+		"text/csv":         map[string]any{"schema": map[string]any{"type": "string"}},
+	}
+	if !reflect.DeepEqual(exportContent, wantExport) {
+		t.Fatalf("expected the negotiated content types, got %v", exportContent)
 	}
 
 	// WidgetDetails only returns h.GetWidget(c), so it inherits what GetWidget's body says.
@@ -403,7 +427,7 @@ func TestGenerateNestedFixture(t *testing.T) {
 
 	// Handler request types are kept although they travel as parameters, the skipped
 	// route's ones included; the Schemas hook is where an application hides them.
-	for _, name := range []string{"modules_catalog_GetRequest", "modules_catalog_StatsRequest", "modules_catalog_StatsResponse", "StandardError", "ErrorResponse", cursorRequestSchemaName} {
+	for _, name := range []string{"modules_catalog_GetRequest", "modules_catalog_StatsRequest", "modules_catalog_StatsResponse", "StandardError", "ErrorResponse", "github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_CursorRequest"} {
 		_, ok := schemas[name]
 		if !ok {
 			t.Errorf("expected component %s, got %v", name, sortedKeys(schemas))
@@ -463,19 +487,44 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	written, err := os.ReadFile(filepath.Join(root, "docs", "openapi.json"))
+	written, err := os.ReadFile(filepath.Join(root, "docs", "openapi.internal.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(written, firstJSON) {
 		t.Fatal("expected Run to write the generated JSON")
 	}
-	written, err = os.ReadFile(filepath.Join(root, "docs", "openapi.yaml"))
+	written, err = os.ReadFile(filepath.Join(root, "docs", "openapi.internal.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(written, firstYAML) {
 		t.Fatal("expected Run to write the generated YAML")
+	}
+
+	// The public spec is deterministic too.
+	firstPublic, err := first.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPublic, err := second.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPublicJSON, err := firstPublic.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPublicJSON, err := secondPublic.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err = os.ReadFile(filepath.Join(root, "docs", "openapi.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstPublicJSON, secondPublicJSON) || !bytes.Equal(written, firstPublicJSON) {
+		t.Fatal("expected the public spec to encode the same JSON every time")
 	}
 	if bytes.Count(firstYAML, []byte("version: \"1.0\"")) != 1 {
 		t.Fatalf("expected info.version exactly once in the YAML")
@@ -628,9 +677,10 @@ func TestRequestSchemaAndContentTypesHooks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a multipart body, got %v", content)
 	}
-	allOf := multipart["schema"].(map[string]any)["allOf"].([]any)
-	if allOf[0].(map[string]any)["properties"].(map[string]any)["file"] == nil {
-		t.Fatalf("expected the hook's request schema in the multipart body, got %v", allOf)
+	// The hook's schema names its own file part, so no default "files" part is added.
+	formSchema := multipart["schema"].(map[string]any)
+	if formSchema["properties"].(map[string]any)["file"] == nil {
+		t.Fatalf("expected the hook's request schema as the multipart body, got %v", formSchema)
 	}
 
 	export := operation(t, spec.Document, "/widgets/{id}/export", "get")
@@ -641,7 +691,153 @@ func TestRequestSchemaAndContentTypesHooks(t *testing.T) {
 	get := operation(t, spec.Document, "/widgets/{id}", "get")
 	getContent := get["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
 	if !reflect.DeepEqual(sortedKeys(getContent), []string{"application/json"}) {
-		t.Fatalf("expected a nil hook result to fall back to JSON, got %v", sortedKeys(getContent))
+		t.Fatalf("expected a JSONResponse to serve JSON, got %v", sortedKeys(getContent))
+	}
+}
+
+// The compose response call pins the content type; the ContentTypes hook only fills what it
+// leaves open.
+func TestResponseContentTypesFollowComposeCalls(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.22\n",
+		"api/routes.go": `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.POST("/files", h.UploadFile)
+	e.GET("/webhook", h.VerifyWebhook)
+	e.GET("/receipts/:id/pdf", h.ReceiptPDF)
+	e.GET("/reports", h.Report)
+	e.GET("/legacy", h.Legacy)
+}
+`,
+		"api/handler.go": `package api
+
+import (
+	"github.com/labstack/echo/v4"
+
+	"example.com/app/media"
+	"example.com/app/things"
+)
+
+const textPlain = "text/plain; charset=utf-8"
+
+type Handler struct{}
+
+func (h *Handler) UploadFile(c echo.Context) error {
+	return h.BindedJSONResponse(c, "UploadFile", nil, &things.UploadRequest{})
+}
+
+func (h *Handler) VerifyWebhook(c echo.Context) error {
+	return h.BlobResponse(c, "VerifyWebhook", nil, textPlain, &things.VerifyRequest{})
+}
+
+func (h *Handler) ReceiptPDF(c echo.Context) error {
+	return h.BlobResponse(c, "ReceiptPDF", nil, media.TypePDF, &things.ReceiptRequest{})
+}
+
+func (h *Handler) Report(c echo.Context) error {
+	contentType := h.NegotiateContentType(c)
+	if contentType == media.TypeJSON {
+		return h.JSONResponse(c, "Report", nil, &things.ReportRequest{})
+	}
+	return h.BlobResponse(c, "Report", nil, contentType, &things.ReportRequest{})
+}
+
+func (h *Handler) Legacy(c echo.Context) error {
+	return c.JSON(200, nil)
+}
+`,
+		"media/media.go": `package media
+
+const (
+	TypeJSON = "application/json"
+	TypePDF  = "application/pdf"
+)
+`,
+		"things/things.go": `package things
+
+import "context"
+
+type UploadRequest struct{}
+
+type UploadResponse struct {
+	Name string ` + "`json:\"name\"`" + `
+}
+
+func Upload(ctx context.Context, request *UploadRequest) (*UploadResponse, error) { return nil, nil }
+
+type VerifyRequest struct{}
+
+func Verify(ctx context.Context, request *VerifyRequest) ([]byte, error) { return nil, nil }
+
+type ReceiptRequest struct{}
+
+func Receipt(ctx context.Context, request *ReceiptRequest) ([]byte, error) { return nil, nil }
+
+type ReportRequest struct{}
+
+type Report struct {
+	Total int64 ` + "`json:\"total\"`" + `
+}
+
+func BuildReport(ctx context.Context, request *ReportRequest) (*Report, error) { return nil, nil }
+`,
+	})
+
+	cfg := Config{
+		Root:                   root,
+		RoutesGlob:             "api/routes.go",
+		HandlerGlob:            "api/*.go",
+		Negotiate:              "NegotiateContentType",
+		NegotiatedContentTypes: []string{"application/json", "text/csv", "application/pdf"},
+		// A path-substring hook like the ones that used to guess binaries: it cannot override
+		// what the compose calls pin down.
+		ContentTypes: func(r Route) []string {
+			if r.Path == "/legacy" {
+				return []string{"text/html"}
+			}
+			return []string{"application/octet-stream"}
+		},
+	}
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := func(path string) map[string]any {
+		method := "get"
+		if path == "/files" {
+			method = "post"
+		}
+		op := operation(t, spec.Document, path, method)
+		return op["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
+	}
+
+	cases := map[string]map[string]any{
+		"/files": {
+			"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/things_UploadResponse"}},
+		},
+		"/webhook": {
+			"text/plain": map[string]any{"schema": map[string]any{"type": "string"}},
+		},
+		"/receipts/{id}/pdf": {
+			"application/pdf": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+		},
+		// JSONResponse pins the JSON branch to the module result; the open BlobResponse adds
+		// what the hook returns.
+		"/reports": {
+			"application/json":         map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/things_Report"}},
+			"application/octet-stream": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+		},
+		"/legacy": {
+			"text/html": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+		},
+	}
+	for path, want := range cases {
+		got := content(path)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: expected %v, got %v", path, want, got)
+		}
 	}
 }
 
@@ -745,6 +941,8 @@ func (s *Server) Start() error {
 
 	snapshots := e.Group("/code_snapshots")
 	snapshots.POST("/:id/refresh", h.RefreshSnapshot)
+	snapshots.PUT("/:id", h.RenameSnapshot)
+	snapshots.POST("/:id/move/:project_id", h.MoveSnapshot)
 
 	return e.Start(":8080")
 }
@@ -785,6 +983,23 @@ func (h *Handler) UpdateProject(c echo.Context) error {
 
 func (h *Handler) RefreshSnapshot(c echo.Context) error {
 	return h.JSONResponse(c, "RefreshSnapshot", nil, &snapshots.RefreshRequest{ID: c.Param("id")})
+}
+
+func (h *Handler) RenameSnapshot(c echo.Context) error {
+	id := c.Param("id")
+	request := &snapshots.RenameRequest{ID: id}
+	return h.BindedJSONResponse(c, "RenameSnapshot", nil, request)
+}
+
+func (h *Handler) MoveSnapshot(c echo.Context) error {
+	request := &snapshots.MoveRequest{}
+	projectID, err := h.GetParameterInt64(c, "project_id")
+	if err != nil {
+		return err
+	}
+	request.ProjectID = projectID
+	request.ID = c.Param("id")
+	return h.BindedJSONResponse(c, "MoveSnapshot", nil, request)
 }
 `,
 	"projects/projects.go": `package projects
@@ -830,10 +1045,26 @@ type RefreshRequest struct {
 }
 
 type RefreshResponse struct {
-	Status string ` + "`json:\"status\"`" + `
+	Status string         ` + "`json:\"status\"`" + `
+	Last   *RenameRequest ` + "`json:\"last\"`" + `
 }
 
 func Refresh(ctx context.Context, request *RefreshRequest) (*RefreshResponse, error) { return nil, nil }
+
+type RenameRequest struct {
+	ID   string ` + "`json:\"id\"`" + `
+	Name string ` + "`json:\"name\"`" + `
+}
+
+func Rename(ctx context.Context, request *RenameRequest) (*RefreshResponse, error) { return nil, nil }
+
+type MoveRequest struct {
+	ID        string ` + "`json:\"id\"`" + `
+	ProjectID int64  ` + "`json:\"project_id\"`" + `
+	Note      string ` + "`json:\"note\"`" + `
+}
+
+func Move(ctx context.Context, request *MoveRequest) (*RefreshResponse, error) { return nil, nil }
 `,
 }
 
@@ -859,7 +1090,7 @@ func TestGenerateFlatFixture(t *testing.T) {
 	document := spec.Document
 
 	paths := document["paths"].(map[string]any)
-	wantPaths := []string{"/code_snapshots/{id}/refresh", "/projects", "/projects/{id}"}
+	wantPaths := []string{"/code_snapshots/{id}", "/code_snapshots/{id}/move/{project_id}", "/code_snapshots/{id}/refresh", "/projects", "/projects/{id}"}
 	if !reflect.DeepEqual(sortedKeys(paths), wantPaths) {
 		t.Fatalf("expected %v, got %v", wantPaths, sortedKeys(paths))
 	}
@@ -878,14 +1109,16 @@ func TestGenerateFlatFixture(t *testing.T) {
 		t.Fatalf("expected limit, loc, q, got %v", parameterNames(list))
 	}
 	params := list["parameters"].([]any)
-	if !reflect.DeepEqual(params[0].(map[string]any)["schema"], map[string]any{"type": "integer", "format": "int32"}) {
-		t.Fatalf("expected an int32 limit, got %v", params[0])
+	// GetListLimit(c, 50): its literal is the default, a page holds at least one item.
+	wantLimit := map[string]any{"type": "integer", "format": "int32", "minimum": 1, "default": 50}
+	if !reflect.DeepEqual(params[0].(map[string]any)["schema"], wantLimit) {
+		t.Fatalf("expected an int32 limit defaulting to 50, got %v", params[0])
 	}
 	if !reflect.DeepEqual(params[1].(map[string]any)["schema"], map[string]any{"type": "integer", "format": "int64"}) {
 		t.Fatalf("expected an int64 loc, got %v", params[1])
 	}
 	listResponse := list["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"]
-	if !reflect.DeepEqual(listResponse, map[string]any{"$ref": "#/components/schemas/projects_ListResponse", "nullable": true}) {
+	if !reflect.DeepEqual(listResponse, map[string]any{"$ref": "#/components/schemas/projects_ListResponse"}) {
 		t.Fatalf("expected the module response, got %v", listResponse)
 	}
 
@@ -904,14 +1137,15 @@ func TestGenerateFlatFixture(t *testing.T) {
 		t.Fatalf("expected method-suffixed operationIds, got %v and %v", patch["operationId"], put["operationId"])
 	}
 	// The id is filled from c.Param in the request literal, so it is not part of the body.
+	// Both handlers taking UpdateRequest fill it and nothing else references the type, so
+	// the component itself leaves it out and the body keeps its $ref.
 	patchBody := patch["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
-	patchProperties := patchBody["properties"].(map[string]any)
-	if !reflect.DeepEqual(sortedKeys(patchProperties), []string{"name"}) {
-		t.Fatalf("expected the body without the path-filled id, got %v", patchBody)
+	if !reflect.DeepEqual(patchBody, map[string]any{"$ref": "#/components/schemas/projects_UpdateRequest"}) {
+		t.Fatalf("expected the request component as body, got %v", patchBody)
 	}
 	update := componentSchemas(document)["projects_UpdateRequest"]
-	if !reflect.DeepEqual(sortedKeys(update["properties"].(map[string]any)), []string{"id", "name"}) {
-		t.Fatalf("expected the component to keep its fields, got %v", update)
+	if !reflect.DeepEqual(sortedKeys(update["properties"].(map[string]any)), []string{"name"}) {
+		t.Fatalf("expected the component without the path-filled id, got %v", update)
 	}
 
 	refresh := operation(t, document, "/code_snapshots/{id}/refresh", "post")
@@ -919,12 +1153,37 @@ func TestGenerateFlatFixture(t *testing.T) {
 		t.Fatalf("unexpected refresh operation %v", refresh)
 	}
 	refreshBody := refresh["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	refreshBody = componentSchemas(document)[componentNameFromSchema(refreshBody)]
 	if len(refreshBody["properties"].(map[string]any)) != 0 {
 		t.Fatalf("expected a body-less POST to document no body fields, got %v", refreshBody)
 	}
 	refreshID := refresh["parameters"].([]any)[0].(map[string]any)["schema"]
 	if !reflect.DeepEqual(refreshID, map[string]any{"type": "string"}) {
 		t.Fatalf("expected c.Param inside the literal to type the id, got %v", refreshID)
+	}
+
+	// Path parameters read into a variable first, then put in the literal or assigned to the
+	// request, stay out of the body too. RenameRequest is also a response field, so its
+	// component keeps the id and the body is a trimmed inline copy.
+	rename := componentSchemas(document)["snapshots_RenameRequest"]
+	if !reflect.DeepEqual(sortedKeys(rename["properties"].(map[string]any)), []string{"id", "name"}) {
+		t.Fatalf("expected the shared component to keep its fields, got %v", rename)
+	}
+	for path, method := range map[string]string{"/code_snapshots/{id}": "put", "/code_snapshots/{id}/move/{project_id}": "post"} {
+		op := operation(t, document, path, method)
+		body := op["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+		name := componentNameFromSchema(body)
+		if name != "" {
+			body = componentSchemas(document)[name]
+		}
+		properties := sortedKeys(body["properties"].(map[string]any))
+		want := []string{"name"}
+		if method == "post" {
+			want = []string{"note"}
+		}
+		if !reflect.DeepEqual(properties, want) {
+			t.Fatalf("%s %s: expected the body without path-filled fields, got %v", method, path, properties)
+		}
 	}
 }
 
@@ -939,5 +1198,237 @@ func TestGenerateFlatFixtureListsBareFunctionRoutes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "server.go:7 GET /health") {
 		t.Fatalf("expected the error to list the bare route, got %v", err)
+	}
+}
+
+// A multipart body lists the request's fields as parts: multipart.FileHeader fields are binary
+// file parts, path-filled fields are no parts, and a request without a file field gets the
+// default "files" part.
+func TestMultipartFormParts(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.22\n",
+		"api/routes.go": `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.POST("/complexes/:complex_id/files", h.UploadFile)
+	e.POST("/complexes/:complex_id/import", h.Import)
+}
+`,
+		"api/handler.go": `package api
+
+import (
+	"github.com/labstack/echo/v4"
+
+	"example.com/app/files"
+)
+
+type Handler struct{}
+
+func (h *Handler) UploadFile(c echo.Context) error {
+	complexID, err := h.GetParameterInt64(c, "complex_id")
+	if err != nil {
+		return err
+	}
+	request := &files.UploadRequest{ComplexID: complexID}
+	return h.BindedJSONResponse(c, "UploadFile", nil, request)
+}
+
+func (h *Handler) Import(c echo.Context) error {
+	return h.BindedJSONResponse(c, "Import", nil, &files.ImportRequest{})
+}
+`,
+		"files/files.go": `package files
+
+import (
+	"context"
+	"mime/multipart"
+)
+
+type UploadRequest struct {
+	ComplexID int64                   ` + "`json:\"complex_id\"`" + `
+	Category  string                  ` + "`json:\"category\"`" + `
+	Files     []*multipart.FileHeader ` + "`json:\"files\"`" + `
+	Cover     *multipart.FileHeader   ` + "`json:\"cover\"`" + `
+}
+
+type UploadResponse struct{}
+
+func Upload(ctx context.Context, request *UploadRequest) (*UploadResponse, error) { return nil, nil }
+
+type ImportRequest struct {
+	Mode string ` + "`json:\"mode\"`" + `
+}
+
+func Import(ctx context.Context, request *ImportRequest) (*UploadResponse, error) { return nil, nil }
+`,
+	})
+
+	cfg := Config{
+		Root:          root,
+		RoutesGlob:    "api/routes.go",
+		HandlerGlob:   "api/*.go",
+		MultipartPath: func(path string) bool { return true },
+	}
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	formSchema := func(path string) map[string]any {
+		op := operation(t, spec.Document, path, "post")
+		return op["requestBody"].(map[string]any)["content"].(map[string]any)["multipart/form-data"].(map[string]any)["schema"].(map[string]any)
+	}
+
+	upload := formSchema("/complexes/{complex_id}/files")
+	if !reflect.DeepEqual(upload, map[string]any{"$ref": "#/components/schemas/files_UploadRequest"}) {
+		t.Fatalf("expected the request component as form, got %v", upload)
+	}
+	upload = componentSchemas(spec.Document)["files_UploadRequest"]
+	wantUpload := map[string]any{
+		"category": map[string]any{"type": "string"},
+		"files":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "format": "binary"}},
+		"cover":    map[string]any{"type": "string", "format": "binary", "nullable": true},
+	}
+	if !reflect.DeepEqual(upload["properties"], wantUpload) {
+		t.Fatalf("expected the file parts without the path-filled complex_id, got %v", upload)
+	}
+	_, ok := componentSchemas(spec.Document)["mime_multipart_FileHeader"]
+	if ok {
+		t.Fatal("expected no FileHeader component")
+	}
+
+	imported := formSchema("/complexes/{complex_id}/import")
+	allOf, ok := imported["allOf"].([]any)
+	if !ok || len(allOf) != 2 || allOf[1].(map[string]any)["properties"].(map[string]any)["files"] == nil {
+		t.Fatalf("expected the default files part beside the request fields, got %v", imported)
+	}
+}
+
+// Error responses follow ManageError's ez code to status mapping: 400, 429 and 500 on every
+// operation, 401 and 403 unless it is public, 404 when its path has a parameter.
+func TestErrorResponsesPerStatus(t *testing.T) {
+	root := writeFixture(t, nestedFixture)
+
+	spec, err := Generate(nestedFixtureConfig(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := spec.Document
+
+	cases := map[string][]string{
+		"/widgets":      {"200", "400", "429", "500", "default"},
+		"/widgets/{id}": {"200", "400", "401", "403", "404", "429", "500", "default"},
+	}
+	for path, want := range cases {
+		responses := operation(t, document, path, "get")["responses"].(map[string]any)
+		if !reflect.DeepEqual(sortedKeys(responses), want) {
+			t.Fatalf("%s: expected responses %v, got %v", path, want, sortedKeys(responses))
+		}
+	}
+
+	get := operation(t, document, "/widgets/{id}", "get")["responses"].(map[string]any)
+	if !reflect.DeepEqual(get["404"], map[string]any{"$ref": "#/components/responses/NotFound"}) {
+		t.Fatalf("expected the shared NotFound response, got %v", get["404"])
+	}
+
+	shared := document["components"].(map[string]any)["responses"].(map[string]any)
+	if !reflect.DeepEqual(sortedKeys(shared), []string{"BadRequest", "Forbidden", "InternalError", "NotFound", "TooManyRequests", "Unauthorized"}) {
+		t.Fatalf("unexpected shared responses %v", sortedKeys(shared))
+	}
+	schema := shared["NotFound"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"]
+	if !reflect.DeepEqual(schema, map[string]any{"$ref": "#/components/schemas/ErrorResponse"}) {
+		t.Fatalf("expected the error envelope, got %v", schema)
+	}
+
+	code := componentSchemas(document)["StandardError"]["properties"].(map[string]any)["code"].(map[string]any)
+	enum, _ := code["enum"].([]any)
+	if !containsAny(enum, "not_found") || !containsAny(enum, "resource_exhausted") || len(enum) != 11 {
+		t.Fatalf("expected the ez codes as enum, got %v", code)
+	}
+
+	public, err := spec.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ok := public.Document["components"].(map[string]any)["responses"].(map[string]any)["NotFound"]
+	if !ok {
+		t.Fatal("expected the public spec to keep the shared responses")
+	}
+}
+
+func containsAny(values []any, value any) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Paginated operations reference the shared Limit and Cursor parameters; a handler with
+// another GetListLimit default declares its own limit.
+func TestSharedPaginationParameters(t *testing.T) {
+	files := map[string]string{}
+	for name, contents := range nestedFixture {
+		files[name] = contents
+	}
+	files["api/routes_widgets.go"] = strings.Replace(files["api/routes_widgets.go"], `	widgets.GET("", h.Widgets.ListWidgets)
+`, `	widgets.GET("", h.Widgets.ListWidgets)
+	widgets.GET("/all", h.Widgets.ListAllWidgets)
+`, 1)
+	files["api/handler/widgets/all.go"] = `package widgets
+
+import (
+	"github.com/labstack/echo/v4"
+	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
+
+	"example.com/app/modules/catalog"
+)
+
+func (h *Handler) ListAllWidgets(c echo.Context) error {
+	body := &catalog.ListRequest{
+		CursorRequest: pagination.CursorRequest{
+			Limit:  h.GetListLimit(c, 100),
+			Cursor: c.QueryParam("cursor"),
+		},
+	}
+	return h.JSONResponse(c, "Widgets.ListAllWidgets", nil, body)
+}
+`
+	root := writeFixture(t, files)
+	cfg := nestedFixtureConfig(root)
+	cfg.MaxPageSize = 200
+
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := spec.Document
+
+	list := operation(t, document, "/widgets", "get")["parameters"].([]any)
+	wantRefs := []any{
+		map[string]any{"$ref": "#/components/parameters/Limit"},
+		map[string]any{"$ref": "#/components/parameters/Cursor"},
+	}
+	if !reflect.DeepEqual(list[:2], wantRefs) {
+		t.Fatalf("expected the shared pagination parameters, got %v", list)
+	}
+
+	shared := document["components"].(map[string]any)["parameters"].(map[string]any)
+	limit := shared["Limit"].(map[string]any)
+	wantLimit := map[string]any{"type": "integer", "format": "int32", "minimum": 1, "maximum": 200, "default": 50}
+	if limit["name"] != "limit" || limit["in"] != "query" || !reflect.DeepEqual(limit["schema"], wantLimit) {
+		t.Fatalf("unexpected shared Limit %v", limit)
+	}
+
+	all := operation(t, document, "/widgets/all", "get")["parameters"].([]any)
+	ownLimit := all[0].(map[string]any)
+	wantOwn := map[string]any{"type": "integer", "format": "int32", "minimum": 1, "maximum": 200, "default": 100}
+	if ownLimit["name"] != "limit" || !reflect.DeepEqual(ownLimit["schema"], wantOwn) {
+		t.Fatalf("expected an inline limit defaulting to 100, got %v", ownLimit)
+	}
+	if !reflect.DeepEqual(all[1], wantRefs[1]) || len(all) != 2 {
+		t.Fatalf("expected the shared cursor and no repeated limit, got %v", all)
 	}
 }

@@ -42,11 +42,28 @@ type Config struct {
 	Info     Info
 	Servers  []Server
 	Security []SecurityScheme
+	// ExternalDocs links the document to documentation kept elsewhere.
+	ExternalDocs *ExternalDocs
 
-	// RequiredPackagePrefix marks the packages whose structs are server-serialized models: their
-	// non-omitempty, non-nilable fields are required. Matched as a substring of the import path,
-	// e.g. "/application/models/". Empty marks nothing required.
+	// RequiredPackagePrefix marks the packages whose structs are server-serialized models,
+	// matched as a substring of the import path, e.g. "/application/models/".
+	//
+	// Every struct's non-omitempty, non-nilable fields are required where only responses reach
+	// it, and nothing derived is required where a request reaches it (Go reads a missing key as
+	// the zero value). A model is always treated as server-serialized: when requests and
+	// responses share it, the component keeps its required list for the responses and the
+	// requests reference a copy without it, named with RequestVariantSuffix
+	// ("...IncomeToInvoiceInput"). A non-model type both sides share requires nothing.
+	// readOnly properties stay required on both sides, and required lists a Schemas hook wrote
+	// are left as they are.
 	RequiredPackagePrefix string
+	// TypeSchemas replaces the schema of a Go type, keyed by "importpath.TypeName", e.g.
+	// {"github.com/shopspring/decimal.Decimal": {"type": "string", "format": "decimal"}}. The
+	// type keeps its component, named as usual; the entry wins over the generator's mappings.
+	// A struct that defines MarshalJSON (or embeds one that does) and a generic type must be
+	// described here, generation fails otherwise. ExtendGenerated builds an entry from the
+	// derived schema.
+	TypeSchemas map[string]map[string]any
 	// SchemaPrefixCollapse maps a module-relative package path prefix to the path every package
 	// under it is named after, e.g. {"application/interfaces/rest/handler/":
 	// "application/interfaces/rest/handler"} names all handler subpackages' types alike.
@@ -55,9 +72,11 @@ type Config struct {
 	// (and its subpackages' types) keep, so moving a package does not rename its schemas.
 	SchemaNameAliases map[string]string
 	// DocComments turns Go comments into descriptions: a type's doc comment on its component
-	// schema, a struct field's doc and line comments on its property, and an enum constant's
-	// line comment (or a doc comment starting with its name) in x-enum-descriptions. Off by
-	// default: comments are often notes for maintainers rather than API documentation.
+	// schema, a struct field's doc and line comments on its property, an enum constant's line
+	// comment (or a doc comment starting with its name) in x-enum-descriptions and
+	// x-enumDescriptions, a handler method's doc comment (else its module function's) on its
+	// operation, and a package's doc comment on its tag (see TagDescriptions). Off by default:
+	// comments are often notes for maintainers rather than API documentation.
 	DocComments bool
 	// SchemaTags picks the operation tags a component schema is filed under, written as its
 	// x-tags. derived holds the tags deriveSchemaTags found for the schema's Go package (pkgPath)
@@ -74,8 +93,16 @@ type Config struct {
 	// SummaryVerbs are the leading words a summary is kept as is with; other GET and POST
 	// summaries get a "Get" or "Create" prefix. Defaults to DefaultSummaryVerbs.
 	SummaryVerbs []string
+	// MaxPageSize, when positive, is the largest limit a paginated list accepts, documented as
+	// the maximum of every limit query parameter.
+	MaxPageSize int
 	// TagNames overrides the tag of a namespace, e.g. {"crm": "CRM"}.
 	TagNames map[string]string
+	// TagDescriptions describes tags by name, operation tags and resource child tags alike.
+	// A tag without an entry is described, with DocComments, by its package's doc comment
+	// ("Package finance ..."): the handler package of a namespace in nested mode, the module
+	// package of a resource.
+	TagDescriptions map[string]string
 
 	// QueryGetters maps the name of a call reading a query parameter to its schema. Defaults to
 	// DefaultQueryGetters; extend that table to add an application's own helpers.
@@ -94,7 +121,9 @@ type Config struct {
 	Negotiate              string
 	NegotiatedContentTypes []string
 	// DeprecatedWrapper names the function wrapping deprecated route handlers, e.g.
-	// "logDeprecated". Deprecated routes are left out of the document.
+	// "logDeprecated". Deprecated routes are documented `deprecated: true` and
+	// `x-internal: true`: in the full spec for the clients still calling them, left out of the
+	// public one (see Spec.Public and DeprecatedOperationSuffix).
 	DeprecatedWrapper string
 
 	// Skip leaves an operation out of the document. path is the OpenAPI path ({id}, not :id).
@@ -106,8 +135,12 @@ type Config struct {
 	Public func(method string, path string) bool
 	// MultipartPath reports whether a path's request body is multipart/form-data with files.
 	MultipartPath func(path string) bool
-	// ContentTypes returns a route's response content types; nil falls back to the default
-	// (NegotiatedContentTypes for negotiating handlers, application/json otherwise).
+	// ContentTypes returns the response content types the handler's compose calls leave open:
+	// a BlobResponse whose content type is not a constant, or a handler without a compose
+	// response call. It cannot replace what the calls pin down (JSONResponse and
+	// BindedJSONResponse serve application/json, BlobResponse with a constant serves that
+	// type), only add to it. nil falls back to NegotiatedContentTypes for an open BlobResponse
+	// or a negotiating handler, application/json otherwise.
 	ContentTypes func(r Route) []string
 	// RequestSchema replaces the request schema of a handler, keyed by Route.HandlerKey.
 	RequestSchema func(handlerKey string) (map[string]any, bool)
@@ -122,9 +155,31 @@ type Config struct {
 
 // Info is the document's info object.
 type Info struct {
-	Title       string
-	Version     string
+	Title          string
+	Version        string
+	Description    string
+	TermsOfService string
+	Contact        *Contact
+	License        *License
+}
+
+// Contact is the info object's contact.
+type Contact struct {
+	Name  string
+	URL   string
+	Email string
+}
+
+// License is the info object's license.
+type License struct {
+	Name string
+	URL  string
+}
+
+// ExternalDocs is the document's externalDocs object.
+type ExternalDocs struct {
 	Description string
+	URL         string
 }
 
 // Server is one entry of the document's servers list. Variables maps each URL variable to
@@ -139,6 +194,8 @@ type Server struct {
 type SecurityScheme struct {
 	Name   string
 	Header string
+	// Description tells clients how to obtain and send the key.
+	Description string
 }
 
 // QueryGetter describes a call that reads one query parameter.
@@ -153,6 +210,9 @@ type QueryGetter struct {
 	// EnumArg, when positive, is the position of a `pkg.<Type>FromString` parse function; the
 	// parameter is then an array of the Type component and Schema is ignored.
 	EnumArg int
+	// DefaultArg, when positive, is the position of the default value the call falls back to;
+	// an integer literal there becomes the parameter's default (GetListLimit(c, 50)).
+	DefaultArg int
 }
 
 // ParamGetter describes a call that reads one path parameter.
@@ -195,8 +255,9 @@ func DefaultQueryGetters() map[string]QueryGetter {
 			NameArg: 1,
 		},
 		"GetListLimit": {
-			Schema: map[string]any{"type": "integer", "format": "int32"},
-			Name:   "limit",
+			Schema:     map[string]any{"type": "integer", "format": "int32", "minimum": 1},
+			Name:       "limit",
+			DefaultArg: 1,
 		},
 	}
 }

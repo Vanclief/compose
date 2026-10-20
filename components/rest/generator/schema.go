@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path"
@@ -29,6 +30,8 @@ type handlerSchema struct {
 	// PathFields are the request's JSON fields filled from path parameters, left out of the
 	// request body.
 	PathFields []string
+	// ModuleDoc is the doc comment of the module function handling the request.
+	ModuleDoc string
 }
 
 type packageInfo struct {
@@ -42,6 +45,15 @@ type packageInfo struct {
 	// EnumDocs holds, per type in Enums, each value's description (see constDoc), "" for an
 	// undocumented one.
 	EnumDocs map[string][]string
+	// EnumNames holds, per type in Enums, the name of each value's constant.
+	EnumNames map[string][]string
+	// Methods holds, per receiver type name, the names of its methods (value or pointer
+	// receiver).
+	Methods map[string]map[string]bool
+	// Consts holds the value of every package-level constant declared with a string literal.
+	Consts map[string]string
+	// Doc is the package's doc comment.
+	Doc string
 }
 
 type stringConst struct {
@@ -76,11 +88,17 @@ type schemaBuilder struct {
 	unresolved []string
 
 	requiredPackagePrefix string
+	typeSchemas           map[string]map[string]any
 	prefixCollapse        map[string]string
 	nameAliases           map[string]string
 	docComments           bool
-	// origins maps each component schema to the import path of the Go type it was built from.
-	origins map[string]string
+	// origins maps each component schema to the Go type it was built from.
+	origins map[string]typeRef
+	// variantOf maps each request variant (RequestVariantSuffix) to the component it copies.
+	variantOf map[string]string
+	// derivedRequired holds the first element of every required list the value-typed,
+	// non-omitempty rule produced (see markDerived).
+	derivedRequired map[*string]bool
 }
 
 func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
@@ -118,10 +136,13 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 		schemas:               map[string]map[string]any{},
 		building:              map[typeRef]bool{},
 		requiredPackagePrefix: cfg.RequiredPackagePrefix,
+		typeSchemas:           cfg.TypeSchemas,
 		prefixCollapse:        cfg.SchemaPrefixCollapse,
 		nameAliases:           cfg.SchemaNameAliases,
 		docComments:           cfg.DocComments,
-		origins:               map[string]string{},
+		origins:               map[string]typeRef{},
+		variantOf:             map[string]string{},
+		derivedRequired:       map[*string]bool{},
 	}, nil
 }
 
@@ -487,7 +508,7 @@ func (g *generator) buildHandlerSchemas(facts handlerFacts) (map[string]handlerS
 			reqSchema = builder.schemaRef(reqType)
 		}
 
-		respSchema, err := responseSchemaForRequest(builder, reqType)
+		respSchema, moduleDoc, err := responseSchemaForRequest(builder, reqType)
 		if err != nil {
 			return nil, ez.Wrap(err)
 		}
@@ -496,6 +517,7 @@ func (g *generator) buildHandlerSchemas(facts handlerFacts) (map[string]handlerS
 			Request:    reqSchema,
 			Response:   respSchema,
 			PathFields: builder.jsonFieldNames(reqType, facts.pathFields[name]),
+			ModuleDoc:  commentText(moduleDoc),
 		}
 	}
 
@@ -540,28 +562,24 @@ func (b *schemaBuilder) jsonFieldNames(ref typeRef, goNames []string) []string {
 	return names
 }
 
-func responseSchemaForRequest(builder *schemaBuilder, reqType typeRef) (map[string]any, error) {
-
+// responseSchemaForRequest is the schema of the result of the module function taking the
+// request type (see moduleFunction), with that function's doc comment.
+func responseSchemaForRequest(builder *schemaBuilder, reqType typeRef) (map[string]any, *ast.CommentGroup, error) {
 	pkg, err := builder.loadPackage(reqType.ImportPath)
 	if err != nil {
-		return nil, ez.Wrap(err)
+		return nil, nil, ez.Wrap(err)
 	}
 
-	for _, fn := range pkg.Funcs {
-		if fn.Decl == nil {
-			continue
-		}
-		if !funcHasRequestParam(fn.Decl, reqType) {
-			continue
-		}
-
+	fn, ok := moduleFunction(pkg, reqType)
+	if ok {
 		resultType := firstResultType(fn.Decl)
 		if resultType == nil {
-			return nil, nil
+			return nil, fn.Decl.Doc, nil
 		}
 
-		schema := builder.schemaForExpr(resultType, fn.Imports, pkg.ImportPath)
-		return schema, nil
+		// A pointer result is the response body itself, never null on success.
+		schema := builder.schemaForExpr(derefExpr(resultType), fn.Imports, pkg.ImportPath)
+		return schema, fn.Decl.Doc, nil
 	}
 
 	// A handler that decodes the raw body documents the wire payload, but the module function
@@ -571,7 +589,59 @@ func responseSchemaForRequest(builder *schemaBuilder, reqType typeRef) (map[stri
 		return responseSchemaForRequest(builder, moduleType)
 	}
 
-	return nil, nil
+	return nil, nil, nil
+}
+
+// moduleFunction picks the function of the request type's package that handles it: among the
+// functions taking the request type, an exported one returning (T, error) first, then any
+// exported one, then any, each in declaration order. A package also holds helpers taking the
+// request (SignatureVerified(*WebhookRequest) bool) besides the operation itself.
+func moduleFunction(pkg *packageInfo, reqType typeRef) (funcInfo, bool) {
+	best := funcInfo{}
+	bestRank := 3
+	for _, fn := range pkg.Funcs {
+		if fn.Decl == nil || !funcHasRequestParam(fn.Decl, reqType) {
+			continue
+		}
+
+		rank := 2
+		if fn.Decl.Name.IsExported() {
+			rank = 1
+			if returnsValueAndError(fn.Decl) {
+				rank = 0
+			}
+		}
+		if rank < bestRank {
+			best = fn
+			bestRank = rank
+		}
+	}
+
+	return best, bestRank < 3
+}
+
+// returnsValueAndError reports a function returning exactly (T, error).
+func returnsValueAndError(fn *ast.FuncDecl) bool {
+	if fn.Type == nil || fn.Type.Results == nil {
+		return false
+	}
+
+	var results []ast.Expr
+	for _, field := range fn.Type.Results.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for i := 0; i < count; i++ {
+			results = append(results, field.Type)
+		}
+	}
+	if len(results) != 2 {
+		return false
+	}
+	last, ok := results[1].(*ast.Ident)
+
+	return ok && last.Name == "error"
 }
 
 // decodedRequestType returns the type a decoder in pkg produces from the wire payload wireType.
@@ -638,11 +708,22 @@ func firstResultType(fn *ast.FuncDecl) ast.Expr {
 }
 
 func (b *schemaBuilder) schemaRef(ref typeRef) map[string]any {
+	_, overridden := b.typeSchemas[typeKey(ref)]
+	if overridden {
+		b.ensureSchema(ref)
+
+		return map[string]any{
+			"$ref": schemaRefPrefix + b.schemaName(ref),
+		}
+	}
+
 	componentSchema, ok := b.wellKnownComponentSchema(ref)
 	if ok {
 		name := b.schemaName(ref)
 		_, exists := b.schemas[name]
 		if !exists {
+			required, _ := componentSchema["required"].([]string)
+			b.markDerived(required)
 			b.schemas[name] = componentSchema
 			b.recordOrigin(name, ref)
 		}
@@ -742,18 +823,20 @@ func (b *schemaBuilder) ensureSchema(ref typeRef) {
 
 func (b *schemaBuilder) recordOrigin(name string, ref typeRef) {
 	if b.origins == nil {
-		b.origins = map[string]string{}
+		b.origins = map[string]typeRef{}
 	}
-	b.origins[name] = ref.ImportPath
+	b.origins[name] = ref
 }
 
 func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
-	// Standard-library types are not modeled; they stay opaque objects
-	// (mime/multipart.FileHeader is the only one in the spec today).
+	override, overridden := b.typeSchemas[typeKey(ref)]
+	if overridden && !isExtension(override) {
+		return cloneSchema(override)
+	}
+
+	// Standard-library types are not modeled; they stay opaque objects.
 	if isStandardLibraryImport(ref.ImportPath) {
-		return map[string]any{
-			"type": "object",
-		}
+		return extendedSchema(map[string]any{"type": "object"}, override, b)
 	}
 
 	pkg, err := b.loadPackage(ref.ImportPath)
@@ -772,6 +855,18 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 		}
 	}
 
+	// A struct that marshals itself has whatever shape its MarshalJSON writes; its fields say
+	// nothing reliable about it, so the generator refuses to guess.
+	if !overridden {
+		reason := b.customMarshalReason(pkg, info, ref)
+		if reason != "" {
+			b.recordUnresolved(ref, reason)
+			return map[string]any{
+				"type": "object",
+			}
+		}
+	}
+
 	schema := b.schemaForExpr(info.Spec.Type, info.Imports, pkg.ImportPath)
 
 	values, isEnum := pkg.Enums[ref.Name]
@@ -782,13 +877,28 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 		}
 		schema["enum"] = enum
 
+		// The constants' names, aligned with enum, for generators naming the members
+		// (openapi-generator's x-enum-varnames).
+		names := make([]any, 0, len(values))
+		for _, name := range pkg.EnumNames[ref.Name] {
+			names = append(names, name)
+		}
+		schema["x-enum-varnames"] = names
+
+		// The descriptions twice: aligned with enum for openapi-generator
+		// (x-enum-descriptions), keyed by value for Redocly and Scalar (x-enumDescriptions).
 		docs := pkg.EnumDocs[ref.Name]
 		if b.docComments && anyNonEmpty(docs) {
 			descriptions := make([]any, 0, len(docs))
-			for _, doc := range docs {
+			byValue := map[string]any{}
+			for i, doc := range docs {
 				descriptions = append(descriptions, doc)
+				if doc != "" {
+					byValue[values[i]] = doc
+				}
 			}
 			schema["x-enum-descriptions"] = descriptions
+			schema["x-enumDescriptions"] = byValue
 		}
 	}
 
@@ -800,7 +910,50 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 		}
 	}
 
-	return schema
+	return extendedSchema(schema, override, b)
+}
+
+// typeKey is a type's Config.TypeSchemas key, "importpath.TypeName".
+func typeKey(ref typeRef) string {
+	return ref.ImportPath + "." + ref.Name
+}
+
+// customMarshalReason explains why a struct type's fields do not describe its JSON: it defines
+// MarshalJSON, or embeds a type that does and so marshals as that type alone. "" when its
+// fields do.
+func (b *schemaBuilder) customMarshalReason(pkg *packageInfo, info typeSpecInfo, ref typeRef) string {
+	structure, ok := info.Spec.Type.(*ast.StructType)
+	if !ok {
+		return ""
+	}
+
+	hint := "; describe it with Config.TypeSchemas[" + strconv.Quote(typeKey(ref)) + "]"
+	if pkg.Methods[ref.Name]["MarshalJSON"] {
+		return "type " + ref.Name + " defines MarshalJSON" + hint
+	}
+
+	for _, field := range structure.Fields.List {
+		if len(field.Names) > 0 {
+			continue
+		}
+		embedded, ok := typeRefFromExpr(derefExpr(field.Type), info.Imports, pkg.ImportPath)
+		if !ok {
+			continue
+		}
+		_, described := b.typeSchemas[typeKey(embedded)]
+		if described || isStandardLibraryImport(embedded.ImportPath) {
+			continue
+		}
+		embeddedPkg, err := b.loadPackage(embedded.ImportPath)
+		if err != nil {
+			continue
+		}
+		if embeddedPkg.Methods[embedded.Name]["MarshalJSON"] {
+			return "type " + ref.Name + " embeds " + embedded.Name + ", which defines MarshalJSON, so it marshals as " + embedded.Name + " alone" + hint
+		}
+	}
+
+	return ""
 }
 
 func anyNonEmpty(values []string) bool {
@@ -846,9 +999,9 @@ func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, 
 	case *ast.Ident:
 		return b.schemaForIdent(t.Name, pkgPath)
 	case *ast.StarExpr:
-		schema := b.schemaForExpr(t.X, imports, pkgPath)
-		schema["nullable"] = true
-		return schema
+		// A pointer field marshals as null when nil. Array items, map values, embedded
+		// structs and results are dereferenced by their callers: those are not nullable.
+		return nullableSchema(b.schemaForExpr(t.X, imports, pkgPath))
 	case *ast.SelectorExpr:
 		pkgIdent, ok := t.X.(*ast.Ident)
 		if !ok {
@@ -866,23 +1019,46 @@ func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, 
 		}
 		return map[string]any{
 			"type":  "array",
-			"items": b.schemaForExpr(t.Elt, imports, pkgPath),
+			"items": b.schemaForExpr(derefExpr(t.Elt), imports, pkgPath),
 		}
 	case *ast.MapType:
 		return map[string]any{
 			"type":                 "object",
-			"additionalProperties": b.schemaForExpr(t.Value, imports, pkgPath),
+			"additionalProperties": b.schemaForExpr(derefExpr(t.Value), imports, pkgPath),
 		}
 	case *ast.StructType:
 		return b.schemaForStruct(t, imports, pkgPath)
 	case *ast.InterfaceType:
-		return map[string]any{
-			"type": "object",
-		}
+		// interface{} carries arbitrary JSON, like any.
+		return map[string]any{}
+	case *ast.IndexExpr:
+		return b.schemaForInstantiation(t.X, expr, imports, pkgPath)
+	case *ast.IndexListExpr:
+		return b.schemaForInstantiation(t.X, expr, imports, pkgPath)
 	default:
 		return map[string]any{
 			"type": "object",
 		}
+	}
+}
+
+// schemaForInstantiation is the schema of a generic type instantiation, Page[Item]. The
+// generator does not substitute type parameters, so the generic type must be described with
+// Config.TypeSchemas; every instantiation then shares that schema.
+func (b *schemaBuilder) schemaForInstantiation(generic ast.Expr, expr ast.Expr, imports map[string]string, pkgPath string) map[string]any {
+	ref, ok := typeRefFromExpr(generic, imports, pkgPath)
+	if ok {
+		_, described := b.typeSchemas[typeKey(ref)]
+		if described {
+			return b.schemaRef(ref)
+		}
+	} else {
+		ref = typeRef{ImportPath: pkgPath, Name: types.ExprString(generic)}
+	}
+
+	b.recordUnresolved(ref, "generic instantiation "+types.ExprString(expr)+" is not supported; describe it with Config.TypeSchemas["+strconv.Quote(typeKey(ref))+"]")
+	return map[string]any{
+		"type": "object",
 	}
 }
 
@@ -902,13 +1078,14 @@ func builtinSchema(name string) (map[string]any, bool) {
 		return map[string]any{"type": "string"}, true
 	case "bool":
 		return map[string]any{"type": "boolean"}, true
-	case "int", "int8", "int16", "int32":
+	case "int8", "int16", "int32":
 		return map[string]any{"type": "integer", "format": "int32"}, true
-	case "uint", "uint8", "uint16", "uint32":
+	case "uint8", "uint16", "uint32":
 		return map[string]any{"type": "integer", "format": "int32"}, true
-	case "int64":
+	case "int", "int64":
+		// Go's int is 64 bits on every platform these servers run on.
 		return map[string]any{"type": "integer", "format": "int64"}, true
-	case "uint64":
+	case "uint", "uint64":
 		return map[string]any{"type": "integer", "format": "int64"}, true
 	case "float32":
 		return map[string]any{"type": "number", "format": "float"}, true
@@ -926,7 +1103,7 @@ func builtinSchema(name string) (map[string]any, bool) {
 }
 
 func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, bool) {
-	if ref.ImportPath == "github.com/vanclief/compose/drivers/databases/relational/postgres/pagination" {
+	if ref.ImportPath == paginationImportPath {
 		switch ref.Name {
 		case "CursorRequest":
 			return map[string]any{
@@ -956,6 +1133,8 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 						"type": "string",
 					},
 				},
+				// HasNextPage has no omitempty; NextCursor and Hash do.
+				"required": []string{"has_next_page"},
 			}, true
 		}
 	}
@@ -979,6 +1158,11 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 	return nil, false
 }
 
+// wellKnownName is the component name of a type the generator describes itself.
+func (b *schemaBuilder) wellKnownName(importPath string, name string) string {
+	return b.schemaName(typeRef{ImportPath: importPath, Name: name})
+}
+
 func (b *schemaBuilder) wellKnownSchema(ref typeRef) (map[string]any, bool) {
 	if ref.ImportPath == "time" && ref.Name == "Time" {
 		return map[string]any{"type": "string", "format": "date-time"}, true
@@ -987,7 +1171,23 @@ func (b *schemaBuilder) wellKnownSchema(ref typeRef) (map[string]any, bool) {
 		return map[string]any{"type": "string", "format": "uuid"}, true
 	}
 	if ref.ImportPath == "encoding/json" && ref.Name == "RawMessage" {
-		return map[string]any{"type": "object"}, true
+		// Raw JSON of any shape.
+		return map[string]any{}, true
+	}
+	if ref.ImportPath == "mime/multipart" && ref.Name == "FileHeader" {
+		// A file part of a multipart form.
+		return map[string]any{"type": "string", "format": "binary"}, true
+	}
+	if ref.ImportPath == "time" && ref.Name == "Duration" {
+		return map[string]any{"type": "integer", "format": "int64", "description": "nanoseconds"}, true
+	}
+	if ref.ImportPath == "net" && ref.Name == "IP" {
+		// IP implements MarshalText.
+		return map[string]any{"type": "string"}, true
+	}
+	if ref.ImportPath == "math/big" && ref.Name == "Int" {
+		// Int's MarshalJSON writes a JSON number of any size.
+		return map[string]any{"type": "integer"}, true
 	}
 	if ref.ImportPath == "database/sql" {
 		switch ref.Name {
@@ -995,10 +1195,14 @@ func (b *schemaBuilder) wellKnownSchema(ref typeRef) (map[string]any, bool) {
 			return map[string]any{"type": "string", "nullable": true}, true
 		case "NullInt64":
 			return map[string]any{"type": "integer", "format": "int64", "nullable": true}, true
+		case "NullInt32", "NullInt16", "NullByte":
+			return map[string]any{"type": "integer", "format": "int32", "nullable": true}, true
 		case "NullBool":
 			return map[string]any{"type": "boolean", "nullable": true}, true
 		case "NullFloat64":
 			return map[string]any{"type": "number", "format": "double", "nullable": true}, true
+		case "NullTime":
+			return map[string]any{"type": "string", "format": "date-time", "nullable": true}, true
 		}
 	}
 
@@ -1033,95 +1237,6 @@ func schemaMembers(schema map[string]any) []map[string]any {
 		}
 	}
 	return members
-}
-
-// stripRequestSideRequired clears the required list of every models-package
-// component a request body can reach. schemaForStruct marks models required
-// because the server always serializes their value-typed fields, but a type
-// that also rides on a request (junction rows, invoice adjustments, expense
-// items, settings updates) cannot require anything on the way in — Go reads a
-// missing key as the zero value. Only server-stamped fields marked readOnly
-// stay required, which OpenAPI 3.0 scopes to responses. Hand-curated request
-// schemas (modules packages) are left alone. modelsPrefix is the component name
-// prefix of the models packages; empty strips nothing.
-func stripRequestSideRequired(handlerSchemas map[string]handlerSchema, schemas map[string]map[string]any, modelsPrefix string) {
-	if modelsPrefix == "" {
-		return
-	}
-
-	visited := map[string]bool{}
-
-	var visit func(node any)
-	visit = func(node any) {
-		switch typed := node.(type) {
-		case map[string]any:
-			ref, isRef := typed["$ref"].(string)
-			if isRef {
-				name := strings.TrimPrefix(ref, schemaRefPrefix)
-				if !visited[name] {
-					visited[name] = true
-					component, found := schemas[name]
-					if found {
-						if strings.HasPrefix(name, modelsPrefix) {
-							keepReadOnlyRequired(component)
-						}
-						visit(component)
-					}
-				}
-			}
-			for _, value := range typed {
-				visit(value)
-			}
-		case []any:
-			for _, value := range typed {
-				visit(value)
-			}
-		}
-	}
-
-	for _, handler := range handlerSchemas {
-		visit(handler.Request)
-	}
-}
-
-// keepReadOnlyRequired drops every required name except those whose property
-// is readOnly. The builder emits required as []string, tweaks as []any.
-func keepReadOnlyRequired(schema map[string]any) {
-	for _, member := range schemaMembers(schema) {
-		properties, _ := member["properties"].(map[string]any)
-
-		var kept []string
-		for _, name := range requiredNames(member["required"]) {
-			property, ok := properties[name].(map[string]any)
-			if ok && property["readOnly"] == true {
-				kept = append(kept, name)
-			}
-		}
-
-		if len(kept) == 0 {
-			delete(member, "required")
-			continue
-		}
-		member["required"] = kept
-	}
-}
-
-func requiredNames(required any) []string {
-	switch typed := required.(type) {
-	case []string:
-		return typed
-	case []any:
-		var names []string
-		for _, name := range typed {
-			text, ok := name.(string)
-			if ok {
-				names = append(names, text)
-			}
-		}
-		return names
-	default:
-		return nil
-	}
 }
 
 func cloneSchema(schema map[string]any) map[string]any {
@@ -1164,13 +1279,10 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 	var required []string
 	var allOf []any
 
-	// Models are server-serialized: a value-typed field without omitempty always
-	// has its key in the payload, so it is required. Request and response wrapper
-	// structs (modules, interfaces) keep every field optional — Go unmarshals a
-	// missing request key as the zero value, so requiring them would be wrong.
-	// Models that also ride on a request body get their list cleared again by
-	// stripRequestSideRequired once the request graph is known.
-	markRequired := b.requiredPackagePrefix != "" && strings.Contains(pkgPath, b.requiredPackagePrefix)
+	// A value-typed field without omitempty always has its key in the serialized payload, so
+	// it is required. That holds for what the server sends, not for what a request may leave
+	// out (Go reads a missing key as the zero value): splitRequestSide strips the list again on
+	// the request side once the request graph is known.
 	table := ""
 
 	for _, field := range st.Fields.List {
@@ -1178,9 +1290,6 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 			continue
 		}
 		flaggedDeprecated := hasDeprecatedParagraph(field)
-		if !flaggedDeprecated && isDeprecatedField(field) {
-			continue
-		}
 
 		if len(field.Names) == 0 {
 			// bun.BaseModel marshals nothing; its tag names the model's table.
@@ -1188,7 +1297,7 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 				table = bunTable(field)
 				continue
 			}
-			embedded := b.schemaForExpr(field.Type, imports, pkgPath)
+			embedded := b.schemaForExpr(derefExpr(field.Type), imports, pkgPath)
 			allOf = append(allOf, embedded)
 			continue
 		}
@@ -1210,10 +1319,12 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 		// Nil-able fields (pointers, slices, maps — directly or through a named
 		// type) marshal as null and stay optional; when in doubt the field stays
 		// optional, never falsely required.
-		if markRequired && !jsonFieldOmitsEmpty(field) && !b.isNilableFieldType(field.Type, imports, pkgPath, 0) {
+		if !jsonFieldOmitsEmpty(field) && !b.isNilableFieldType(field.Type, imports, pkgPath, 0) {
 			required = append(required, name)
 		}
 	}
+
+	b.markDerived(required)
 
 	var schema map[string]any
 	if len(allOf) > 0 {
@@ -1281,11 +1392,16 @@ func (b *schemaBuilder) isNilableFieldType(expr ast.Expr, imports map[string]str
 }
 
 func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
+	override, ok := b.typeSchemas[typeKey(ref)]
+	if ok && !isExtension(override) {
+		return override["nullable"] == true
+	}
+
 	// Well-known mapped types (time.Time, uuid.UUID, enum overrides) are value
 	// types that always serialize.
-	_, ok := b.wellKnownSchema(ref)
+	schema, ok := b.wellKnownSchema(ref)
 	if ok {
-		return false
+		return schema["nullable"] == true
 	}
 
 	pkg, err := b.loadPackage(ref.ImportPath)
@@ -1361,8 +1477,8 @@ func jsonFieldName(field *ast.Field) string {
 
 // hasDeprecatedParagraph reports a field documented the Go way, with a paragraph that starts
 // "Deprecated:". Such a field is still served and stays in the contract, flagged deprecated, so
-// clients keep compiling while they move off it. Any other mention of deprecation drops the field
-// from the contract (isDeprecatedField).
+// clients keep compiling while they move off it. Any other mention of deprecation (a TODO, a
+// note) changes nothing: the field is served, so it is documented like any other.
 func hasDeprecatedParagraph(field *ast.Field) bool {
 	if field == nil || field.Doc == nil {
 		return false
@@ -1377,45 +1493,131 @@ func hasDeprecatedParagraph(field *ast.Field) bool {
 	return false
 }
 
-// deprecatedSchema flags a property schema deprecated. OpenAPI 3.0 ignores keywords beside a
-// $ref, so a reference is wrapped in allOf first.
+// deprecatedSchema flags a property schema deprecated.
 func deprecatedSchema(schema map[string]any) map[string]any {
-	_, isRef := schema["$ref"]
-	if isRef {
-		return map[string]any{
-			"allOf":      []any{schema},
-			"deprecated": true,
-		}
-	}
-
-	flagged := make(map[string]any, len(schema)+1)
-	for key, value := range schema {
-		flagged[key] = value
-	}
+	flagged := siblingSafe(schema)
 	flagged["deprecated"] = true
 
 	return flagged
 }
 
-func isDeprecatedField(field *ast.Field) bool {
-	if field == nil {
-		return false
+// nullableSchema marks a pointer field's schema nullable. An empty schema already admits null.
+func nullableSchema(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return schema
 	}
 
-	comments := ""
-	if field.Doc != nil {
-		comments = comments + field.Doc.Text()
-	}
-	if field.Comment != nil {
-		comments = comments + field.Comment.Text()
+	flagged := siblingSafe(schema)
+	flagged["nullable"] = true
+
+	return flagged
+}
+
+// siblingSafe returns a copy of schema that sibling keywords (nullable, description,
+// deprecated) can be set on. OpenAPI 3.0 ignores every keyword beside a $ref, so a bare
+// reference is wrapped in allOf first; fillNullableTypes later gives a nullable wrapper the
+// type 3.0 requires beside nullable.
+func siblingSafe(schema map[string]any) map[string]any {
+	_, isRef := schema["$ref"]
+	if isRef {
+		return map[string]any{
+			"allOf": []any{schema},
+		}
 	}
 
-	comments = strings.ToLower(comments)
-	if strings.Contains(comments, "deprecat") {
-		return true
+	copied := make(map[string]any, len(schema)+1)
+	for key, value := range schema {
+		copied[key] = value
 	}
 
-	return false
+	return copied
+}
+
+// derefExpr strips the pointers off a type expression.
+func derefExpr(expr ast.Expr) ast.Expr {
+	for {
+		star, ok := expr.(*ast.StarExpr)
+		if !ok {
+			return expr
+		}
+		expr = star.X
+	}
+}
+
+// fillNullableTypes gives every nullable allOf wrapper of a single $ref the type of the
+// component it references: OpenAPI 3.0 only honours nullable beside a type. Wrappers whose
+// component has no single type (a oneOf of mixed types) are left as they are.
+func fillNullableTypes(node any, schemas map[string]map[string]any) {
+	switch typed := node.(type) {
+	case map[string]any:
+		_, hasType := typed["type"]
+		allOf, isAllOf := typed["allOf"].([]any)
+		if typed["nullable"] == true && !hasType && isAllOf && len(allOf) == 1 {
+			member, _ := allOf[0].(map[string]any)
+			name := componentNameFromSchema(member)
+			if name != "" {
+				kind := componentType(name, schemas, map[string]bool{})
+				if kind != "" {
+					typed["type"] = kind
+				}
+			}
+		}
+		for _, value := range typed {
+			fillNullableTypes(value, schemas)
+		}
+	case map[string]map[string]any:
+		for _, value := range typed {
+			fillNullableTypes(value, schemas)
+		}
+	case []any:
+		for _, value := range typed {
+			fillNullableTypes(value, schemas)
+		}
+	}
+}
+
+// componentType is the JSON type a component's values have, following references and
+// compositions whose members agree, or "" when it has none.
+func componentType(name string, schemas map[string]map[string]any, seen map[string]bool) string {
+	if seen[name] {
+		return ""
+	}
+	seen[name] = true
+
+	return schemaType(schemas[name], schemas, seen)
+}
+
+func schemaType(schema map[string]any, schemas map[string]map[string]any, seen map[string]bool) string {
+	if schema == nil {
+		return ""
+	}
+	kind, ok := schema["type"].(string)
+	if ok {
+		return kind
+	}
+	name := componentNameFromSchema(schema)
+	if name != "" {
+		return componentType(name, schemas, seen)
+	}
+
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
+		members, ok := schema[keyword].([]any)
+		if !ok || len(members) == 0 {
+			continue
+		}
+		agreed := ""
+		for _, entry := range members {
+			member, _ := entry.(map[string]any)
+			memberType := schemaType(member, schemas, seen)
+			if memberType == "" || (agreed != "" && memberType != agreed) {
+				return ""
+			}
+			agreed = memberType
+		}
+		return agreed
+	}
+
+	return ""
 }
 
 func readModuleInfo(path string) (string, map[string]string, error) {
@@ -1525,6 +1727,9 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 	consts := map[string][]stringConst{}
 	closedSets := map[string]bool{}
 	closedSetMembers := map[string]bool{}
+	methods := map[string]map[string]bool{}
+	stringConsts := map[string]string{}
+	packageDoc := ""
 	var funcs []funcInfo
 
 	for _, filePath := range files {
@@ -1537,6 +1742,9 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 		}
 
 		imports := importMap(file)
+		if packageDoc == "" {
+			packageDoc = commentText(file.Doc)
+		}
 
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -1545,6 +1753,13 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 					Decl:    fn,
 					Imports: imports,
 				})
+				receiver := receiverTypeName(fn)
+				if receiver != "" {
+					if methods[receiver] == nil {
+						methods[receiver] = map[string]bool{}
+					}
+					methods[receiver][fn.Name.Name] = true
+				}
 				continue
 			}
 
@@ -1572,6 +1787,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 				}
 			case token.CONST:
 				collectTypedStringConsts(gen, consts)
+				collectStringConsts(gen, stringConsts)
 			case token.VAR:
 				collectClosedSetTypes(gen, closedSets, closedSetMembers)
 			}
@@ -1580,6 +1796,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 
 	enums := map[string][]string{}
 	enumDocs := map[string][]string{}
+	enumNames := map[string][]string{}
 	for name := range closedSets {
 		seen := map[string]bool{}
 		for _, constant := range consts[name] {
@@ -1592,6 +1809,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 			seen[constant.Value] = true
 			enums[name] = append(enums[name], constant.Value)
 			enumDocs[name] = append(enumDocs[name], constant.Doc)
+			enumNames[name] = append(enumNames[name], constant.Name)
 		}
 	}
 
@@ -1602,11 +1820,53 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 		Funcs:      funcs,
 		Enums:      enums,
 		EnumDocs:   enumDocs,
+		EnumNames:  enumNames,
+		Methods:    methods,
+		Consts:     stringConsts,
+		Doc:        packageDoc,
 	}
 
 	b.packages[importPath] = pkg
 
 	return pkg, nil
+}
+
+// receiverTypeName is the type a method is declared on, T for both `(t T)` and `(t *T)`, ""
+// for a function.
+func receiverTypeName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ""
+	}
+	expr := derefExpr(fn.Recv.List[0].Type)
+	index, ok := expr.(*ast.IndexExpr)
+	if ok {
+		expr = index.X
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+
+	return ident.Name
+}
+
+// collectStringConsts records every `Name = "value"` constant, typed or not.
+func collectStringConsts(gen *ast.GenDecl, out map[string]string) {
+	for _, spec := range gen.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		for i, value := range valueSpec.Values {
+			if i >= len(valueSpec.Names) {
+				break
+			}
+			text, ok := stringLiteralValue(value)
+			if ok {
+				out[valueSpec.Names[i].Name] = text
+			}
+		}
+	}
 }
 
 // collectTypedStringConsts records `Name T = "value"` constants under T.

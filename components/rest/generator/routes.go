@@ -23,7 +23,7 @@ type Route struct {
 	Handler    string
 	SourceFile string
 	SourceLine int
-	// Deprecated routes are wrapped in Config.DeprecatedWrapper and left out of the document.
+	// Deprecated routes are wrapped in Config.DeprecatedWrapper; only the full spec documents them.
 	Deprecated bool
 	// BindsBody reports a handler calling one of Config.BodyBinders.
 	BindsBody bool
