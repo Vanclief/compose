@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -214,12 +215,54 @@ func (b *builder) mapTags(entities map[string]bool) []mapTag {
 		}
 	}
 
+	// A child tag (see Tag) scopes the entities its operations reach and
+	// those filed under it or its own children, as Models files them. It
+	// follows its outermost parent, named by its path.
+	parents := b.d.tagParents()
+	children := map[string][]mapTag{}
+	var roots []string
+	if len(parents) > 0 {
+		filed := map[string][]string{}
+		for name, tag := range b.d.modelTags() {
+			if entities[name] {
+				for _, up := range tagPath(tag, parents) {
+					filed[up] = append(filed[up], name)
+				}
+			}
+		}
+		for _, tag := range b.d.tagNames() {
+			path := tagPath(tag, parents)
+			if len(path) < 2 {
+				continue
+			}
+			sort.Strings(filed[tag])
+			names := appendUnique(append([]string{}, reached[tag]...), filed[tag]...)
+			if len(names) == 0 {
+				continue
+			}
+			if len(children[path[0]]) == 0 {
+				roots = append(roots, path[0])
+			}
+			children[path[0]] = append(children[path[0]], mapTag{Name: strings.Join(path, " › "), Nodes: names})
+		}
+	}
+
 	var out []mapTag
 	for _, tag := range b.d.tagNames() {
+		if len(tagPath(tag, parents)) > 1 {
+			continue
+		}
 		names := reached[tag]
 		if len(names) > 0 {
 			out = append(out, mapTag{Name: tag, Nodes: names})
 		}
+		out = append(out, children[tag]...)
+		delete(children, tag)
+	}
+	// Children of a parent no operation or declaration names come last.
+	for _, root := range roots {
+		out = append(out, children[root]...)
+		delete(children, root)
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package reference
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -127,17 +128,25 @@ components:
         stores: {type: array, items: {$ref: '#/components/schemas/Store'}}
 `
 
-// groupList prints the Models sidebar groups as Name[models] entries.
+// groupList prints the Models sidebar groups as Name[folders models]
+// entries, folders nested the same way.
 func groupList(groups []modelGroup) string {
 	var parts []string
 	for _, g := range groups {
-		var names []string
-		for _, m := range g.Models {
-			names = append(names, m.Short)
-		}
-		parts = append(parts, g.Name+"["+strings.Join(names, " ")+"]")
+		parts = append(parts, groupEntry(g))
 	}
 	return strings.Join(parts, " ")
+}
+
+func groupEntry(g modelGroup) string {
+	var names []string
+	for _, f := range g.Folders {
+		names = append(names, groupEntry(*f))
+	}
+	for _, m := range g.Models {
+		names = append(names, m.Short)
+	}
+	return g.Name + "[" + strings.Join(names, " ") + "]"
 }
 
 func TestModelTags(t *testing.T) {
@@ -267,4 +276,199 @@ func TestRenderModelTagGroups(t *testing.T) {
 	require.Less(t, strings.Index(pane, `href="#model/PetStatus"`), strings.Index(pane, `href="#model/Store"`))
 	require.Less(t, strings.Index(html, `id="model/PetStatus"`), strings.Index(html, `id="model/Store"`))
 	require.Less(t, strings.Index(html, `id="model/Audit"`), strings.Index(html, `id="model/Address"`))
+}
+
+// childTagsSpec nests tags the way the generator files resources: Bank
+// accounts under Finance through x-parent (OpenAPI 3.0), Transfers under
+// Bank accounts through parent (3.2), Both names both and parent wins, Loop
+// A and Loop B are each other's parent, and Empty child has no operations
+// or models. Operations only carry Finance.
+const childTagsSpec = `openapi: 3.0.3
+info: {title: Emma, version: "1"}
+tags:
+  - name: Finance
+  - name: Bank accounts
+    x-parent: Finance
+  - name: Transfers
+    parent: Bank accounts
+  - name: Loop A
+    parent: Loop B
+  - name: Loop B
+    parent: Loop A
+  - name: Empty child
+    parent: Finance
+  - name: Both
+    parent: Finance
+    x-parent: Loop A
+paths:
+  /bank-accounts:
+    get:
+      tags: [Finance]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/application_models_finance_BankAccount'}}
+    post:
+      tags: [Finance]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/application_modules_finance_bankaccounts_CreateRequest'}
+      responses:
+        "201": {description: created}
+  /invoices:
+    get:
+      tags: [Finance]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invoice'}
+components:
+  schemas:
+    application_models_finance_BankAccount:
+      type: object
+      x-table: bank_accounts
+      x-tags: [Bank accounts]
+      properties:
+        id: {type: string}
+        type: {$ref: '#/components/schemas/application_models_finance_BankAccountType'}
+    application_models_finance_BankAccountType:
+      type: string
+      enum: [checking, savings]
+      x-tags: [Bank accounts]
+    application_modules_finance_bankaccounts_CreateRequest:
+      type: object
+      x-tags: [Bank accounts]
+      properties:
+        type: {$ref: '#/components/schemas/application_models_finance_BankAccountType'}
+    Transfer:
+      type: object
+      x-table: transfers
+      x-tags: Transfers
+      properties:
+        id: {type: string}
+    Invoice:
+      type: object
+      x-table: invoices
+      properties:
+        id: {type: string}
+    Loopy:
+      type: object
+      x-tags: [Loop A]
+    Duo:
+      type: object
+      x-tags: [Both]
+`
+
+func TestTagPath(t *testing.T) {
+	doc, err := Parse([]byte(childTagsSpec))
+	require.NoError(t, err)
+	parents := doc.tagParents()
+	require.Equal(t, map[string]string{
+		"Bank accounts": "Finance",       // x-parent
+		"Transfers":     "Bank accounts", // parent
+		"Loop A":        "Loop B",
+		"Loop B":        "Loop A",
+		"Empty child":   "Finance",
+		"Both":          "Finance", // parent wins over x-parent
+	}, parents)
+	require.Equal(t, []string{"Finance"}, tagPath("Finance", parents))
+	require.Equal(t, []string{"Finance", "Bank accounts", "Transfers"}, tagPath("Transfers", parents))
+	require.Equal(t, []string{"Loop A"}, tagPath("Loop A", parents), "a cycle stands alone")
+	require.Equal(t, []string{"Self"}, tagPath("Self", map[string]string{"Self": "Self"}))
+}
+
+func TestModelChildTagGroups(t *testing.T) {
+	doc, err := Parse([]byte(childTagsSpec))
+	require.NoError(t, err)
+	p := buildPage(doc, Options{}, nil)
+	// Child tags are folders of their parent's group, before its own models
+	// and in document order; stored models lead each folder; the empty
+	// child makes no folder and the cycle's tag stands alone.
+	require.Equal(t, "Finance[Bank accounts[Transfers[Transfer] BankAccount BankAccountType CreateRequest] Both[Duo] Invoice] Loop A[Loopy]", groupList(p.ModelNav.Groups))
+	require.Equal(t, 6, p.ModelNav.Groups[0].Count())
+
+	// The Models page follows the sidebar.
+	var order []string
+	for _, m := range p.Models {
+		order = append(order, m.Short)
+	}
+	require.Equal(t, []string{"Transfer", "BankAccount", "BankAccountType", "CreateRequest", "Duo", "Invoice", "Loopy"}, order)
+}
+
+func TestRenderModelChildTags(t *testing.T) {
+	doc, err := Parse([]byte(childTagsSpec))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{AssetsURL: "/assets"})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	pane := section(t, html, `data-pane="models"`)
+	require.Contains(t, pane, `<span class="nav-group-name">Finance</span><span class="count">6</span></button>
+<ul class="nav" hidden>
+<li class="nav-folder nav-subtag"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">Bank accounts</span><span class="count">4</span></button>
+<ul class="nav" hidden>
+<li class="nav-folder nav-subtag">`)
+	require.Contains(t, pane, `<span class="nav-folder-name">Transfers</span><span class="count">1</span>`)
+	require.NotContains(t, pane, `Empty child`)
+
+	// The endpoint sidebar groups by path; child tags make no groups there.
+	start := strings.Index(html, `<div class="nav-pane" data-pane="endpoints">`)
+	end := strings.Index(html, `<div class="nav-pane" data-pane="models">`)
+	require.True(t, start >= 0 && end > start)
+	endpoints := html[start:end]
+	for _, tag := range []string{"Bank accounts", "Transfers", "Empty child", "Loop A"} {
+		require.NotContains(t, endpoints, tag)
+	}
+
+	// Map scopes: a child tag follows its outermost parent, named by its
+	// path, with the entities filed under it; empty ones are left out.
+	matches := mapDataPattern.FindAllStringSubmatch(html, -1)
+	require.Len(t, matches, 1)
+	var data struct {
+		Tags []mapTag `json:"tags"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &data))
+	var scopes []string
+	for _, tag := range data.Tags {
+		scopes = append(scopes, tag.Name+"["+strings.Join(tag.Nodes, " ")+"]")
+	}
+	require.Equal(t, []string{
+		"Finance[application_models_finance_BankAccount Invoice]",
+		"Finance › Bank accounts[Transfer application_models_finance_BankAccount]",
+		"Finance › Bank accounts › Transfers[Transfer]",
+	}, scopes)
+}
+
+func TestModelChildTagGroupsDiff(t *testing.T) {
+	// The head drops Transfer, so its Transfers folder lives on from the
+	// base, and gives BankAccountType a third value.
+	head := strings.Replace(childTagsSpec, "enum: [checking, savings]", "enum: [checking, savings, payroll]", 1)
+	head = strings.Replace(head, `    Transfer:
+      type: object
+      x-table: transfers
+      x-tags: Transfers
+      properties:
+        id: {type: string}
+`, "", 1)
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+	diff, err := newDiffState(doc, []byte(childTagsSpec))
+	require.NoError(t, err)
+	p := buildPage(doc, Options{}, diff)
+	require.Equal(t, "Finance[Bank accounts[Transfers[Transfer] BankAccount BankAccountType CreateRequest] Both[Duo] Invoice] Loop A[Loopy]", groupList(p.ModelNav.Groups))
+
+	// Folders sum up their own changes, groups everything inside them.
+	accounts := p.ModelNav.Groups[0].Folders[0]
+	require.Equal(t, []groupChange{
+		{Class: "diff-changed", Letter: "C", Label: "changed", Count: 3},
+		{Class: "diff-removed", Letter: "R", Label: "removed", Count: 1},
+	}, accounts.Changes)
+	require.Equal(t, []groupChange{{Class: "diff-removed", Letter: "R", Label: "removed", Count: 1}}, accounts.Folders[0].Changes)
+	require.Equal(t, accounts.Changes, p.ModelNav.Groups[0].Changes)
 }

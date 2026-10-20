@@ -74,9 +74,9 @@
 {{with .ModelNav}}{{if .Loose}}<ul class="nav nav-loose">
 {{range .Loose}}{{template "navmodel" .}}{{end}}</ul>
 {{end}}{{range .Groups}}<div class="nav-group{{if .Shared}} nav-shared{{end}}">
-<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{len .Models}}</span></button>
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{.Count}}</span></button>
 <ul class="nav" hidden>
-{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
+{{template "navmodelfolders" .Folders}}{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
 </div>
 {{end}}{{end}}</div>
 {{end}}<p class="no-results" hidden>No matches.</p>
@@ -87,6 +87,13 @@
 {{end}}
 
 {{/* How many models of a collapsed group changed, by diff state. */}}
+{{/* The folders of a model group's child tags, nested like the tags. */}}
+{{define "navmodelfolders"}}{{range .}}<li class="nav-folder nav-subtag"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{.Count}}</span></button>
+<ul class="nav" hidden>
+{{template "navmodelfolders" .Folders}}{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
+</li>
+{{end}}{{end}}
+
 {{define "group-changes"}}{{if .}}<span class="nav-group-diff">{{range .}}<span class="diff-dot {{.Class}}" title="{{.Count}} {{.Label}}">{{.Count}}{{.Letter}}</span>{{end}}</span>{{end}}{{end}}
 
 {{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{if .Internal}} is-internal{{end}}{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{if .Internal}}<span class="mk int">internal</span>{{end}}{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>

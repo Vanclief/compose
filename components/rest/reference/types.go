@@ -77,9 +77,13 @@ func (s Server) Expand() string {
 }
 
 // Tag is one entry of tags. Operations are grouped under tags in the sidebar.
+// Parent (OpenAPI 3.2) or, in older documents, the x-parent extension names
+// the tag a child tag nests under; see Document.tagPath.
 type Tag struct {
 	Name        string `json:"name" yaml:"name"`
 	Description string `json:"description" yaml:"description"`
+	Parent      string `json:"parent" yaml:"parent"`
+	XParent     string `json:"x-parent" yaml:"x-parent"`
 }
 
 // Components holds the reusable objects $ref points at.

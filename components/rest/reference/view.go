@@ -266,7 +266,7 @@ type modelNav struct {
 func (nav modelNav) order() []*modelView {
 	out := append([]*modelView{}, nav.Loose...)
 	for _, g := range nav.Groups {
-		out = append(out, g.Models...)
+		out = append(out, g.all()...)
 	}
 	return out
 }

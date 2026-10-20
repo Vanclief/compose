@@ -18,18 +18,38 @@ import (
 // and otherwise, used by several tags equally or alone in its module, goes
 // to the Shared group. A document without tags keeps the module folders, see
 // schemaGroup.
+//
+// A child tag, one that declares a parent (see Tag), is a folder inside its
+// parent's group, so x-tags can file a model under a resource of a tag, like
+// Bank accounts under Finance.
 
 // sharedGroup names the group of the models no one tag claims.
 const sharedGroup = "Shared"
 
 // modelGroup is one folder of the Models sidebar: a tag (or, without tags, a
-// module) and its models. Changes sums up their diff states, for when the
-// folder is collapsed.
+// module), the folders of its child tags and its own models. Changes sums up
+// the diff states of all of them, for when the folder is collapsed.
 type modelGroup struct {
 	Name    string
 	Shared  bool
+	Folders []*modelGroup
 	Models  []*modelView
 	Changes []groupChange
+}
+
+// all lists the group's models as the sidebar does: its folders' first,
+// then its own.
+func (g modelGroup) all() []*modelView {
+	var out []*modelView
+	for _, f := range g.Folders {
+		out = append(out, f.all()...)
+	}
+	return append(out, g.Models...)
+}
+
+// Count is the number of models in the group and its folders.
+func (g modelGroup) Count() int {
+	return len(g.all())
 }
 
 // groupChange counts the models of a group in one diff state.
@@ -89,6 +109,37 @@ func schemaTags(s *Schema) []string {
 		}
 	}
 	return tags
+}
+
+// tagParents returns the parent each child tag of d names: its parent field
+// or, failing that, x-parent.
+func (d *Document) tagParents() map[string]string {
+	out := map[string]string{}
+	for _, t := range d.Tags {
+		parent := strings.TrimSpace(t.Parent)
+		if parent == "" {
+			parent = strings.TrimSpace(t.XParent)
+		}
+		if parent != "" && out[t.Name] == "" {
+			out[t.Name] = parent
+		}
+	}
+	return out
+}
+
+// tagPath returns tag and the tags it nests under, outermost first. A tag on
+// a cycle of parents stands alone.
+func tagPath(tag string, parents map[string]string) []string {
+	path := []string{tag}
+	seen := map[string]bool{tag: true}
+	for up := parents[tag]; up != ""; up = parents[up] {
+		if seen[up] {
+			return []string{tag}
+		}
+		seen[up] = true
+		path = append([]string{up}, path...)
+	}
+	return path
 }
 
 // hasModelTags reports whether d can file its models by tag: an operation
@@ -251,27 +302,30 @@ func (d *Document) operationSchemas(ref OperationRef) map[string]bool {
 }
 
 // tagGroups files models by tag: the head document's tags in their order,
-// then any tag only removed models or x-tags name, then the Shared group.
-// Inside a group the models stored in a table come first, then by display
-// name. Removed models (diff mode) are filed by the base document.
+// then any tag only removed models or x-tags name, then the Shared group. A
+// child tag is a folder of its parent's group, the folders first in the same
+// order. Inside a group or folder the models stored in a table come first,
+// then by display name. Removed models (diff mode) are filed by the base
+// document.
 func (b *builder) tagGroups(models []*modelView) []modelGroup {
 	tagOf := b.d.modelTags()
+	parents := b.d.tagParents()
 	removed := map[string]bool{}
 	var baseTags map[string]string
 	if b.diff != nil {
 		baseTags = b.diff.base.modelTags()
+		for name, parent := range b.diff.base.tagParents() {
+			if parents[name] == "" {
+				parents[name] = parent
+			}
+		}
 		for _, name := range b.diff.removedModels(b.d) {
 			removed[name] = true
 		}
 	}
 
-	names := b.d.tagNames()
-	index := map[string]int{}
-	for i, name := range names {
-		index[name] = i
-	}
-	var groups []modelGroup
-	byTag := map[string]int{}
+	root := &modelGroup{}
+	byPath := map[string]*modelGroup{}
 	var shared []*modelView
 	for _, m := range models {
 		tag := tagOf[m.Name]
@@ -282,13 +336,25 @@ func (b *builder) tagGroups(models []*modelView) []modelGroup {
 			shared = append(shared, m)
 			continue
 		}
-		i, ok := byTag[tag]
-		if !ok {
-			i = len(groups)
-			byTag[tag] = i
-			groups = append(groups, modelGroup{Name: tag})
+		g := root
+		key := ""
+		for _, name := range tagPath(tag, parents) {
+			key += "\x00" + name
+			child, ok := byPath[key]
+			if !ok {
+				child = &modelGroup{Name: name}
+				byPath[key] = child
+				g.Folders = append(g.Folders, child)
+			}
+			g = child
 		}
-		groups[i].Models = append(groups[i].Models, m)
+		g.Models = append(g.Models, m)
+	}
+
+	names := b.d.tagNames()
+	index := map[string]int{}
+	for i, name := range names {
+		index[name] = i
 	}
 	rank := func(tag string) int {
 		i, ok := index[tag]
@@ -297,21 +363,36 @@ func (b *builder) tagGroups(models []*modelView) []modelGroup {
 		}
 		return i
 	}
-	sort.SliceStable(groups, func(i, j int) bool {
-		return rank(groups[i].Name) < rank(groups[j].Name)
-	})
-	if len(shared) > 0 {
-		groups = append(groups, modelGroup{Name: sharedGroup, Shared: true, Models: shared})
-	}
-	for i := range groups {
-		list := groups[i].Models
+	var finish func(g *modelGroup)
+	finish = func(g *modelGroup) {
+		sort.SliceStable(g.Folders, func(i, j int) bool {
+			x, y := g.Folders[i].Name, g.Folders[j].Name
+			if rank(x) != rank(y) {
+				return rank(x) < rank(y)
+			}
+			return strings.ToLower(x) < strings.ToLower(y)
+		})
+		for _, f := range g.Folders {
+			finish(f)
+		}
+		list := g.Models
 		sort.SliceStable(list, func(i, j int) bool {
 			if (list[i].Table != "") != (list[j].Table != "") {
 				return list[i].Table != ""
 			}
 			return strings.ToLower(list[i].Short) < strings.ToLower(list[j].Short)
 		})
-		groups[i].Changes = groupChanges(list)
+		g.Changes = groupChanges(g.all())
+	}
+	finish(root)
+	if len(shared) > 0 {
+		g := &modelGroup{Name: sharedGroup, Shared: true, Models: shared}
+		finish(g)
+		root.Folders = append(root.Folders, g)
+	}
+	var groups []modelGroup
+	for _, g := range root.Folders {
+		groups = append(groups, *g)
 	}
 	return groups
 }

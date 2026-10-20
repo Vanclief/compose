@@ -282,7 +282,9 @@ body[data-mode="docs"] .search { display: none; }
 .nav-group-diff .diff-dot { min-width: 0; padding: 0 3px; background: none; box-shadow: inset 0 0 0 1px currentColor; }
 .nav-group-diff .diff-dot + .diff-dot { margin-left: 0; }
 .nav-group-diff + .count { margin-left: 0; }
-.nav-group-tg[aria-expanded="true"] > .nav-group-diff { display: none; }
+.nav-group-tg[aria-expanded="true"] > .nav-group-diff, .nav-folder-tg[aria-expanded="true"] > .nav-group-diff { display: none; }
+/* A child tag's folder reads as a tag, not a path segment. */
+.nav-subtag > .nav-folder-tg { font-family: var(--font); font-size: 13px; }
 .no-results { padding: 8px 16px; color: var(--muted); }
 
 /* Buttons */
@@ -1185,7 +1187,8 @@ body.map-open .content > :not(.map) { display: none !important; }
 body:not(.diff) .diff-badge, body:not(.diff) .diff-dot, body:not(.diff) .diff-log, body:not(.diff) .diff-navlink,
 body:not(.diff) .row.diff-del, body:not(.diff) .chip.diff-del, body:not(.diff) .mk.diff-inside,
 body:not(.diff) .op.diff-removed, body:not(.diff) .nav li:has(> .diff-removed),
-body:not(.diff) [data-pane="models"] .nav-group:not(:has(.nav-model:not(.diff-removed))) { display: none; }
+body:not(.diff) [data-pane="models"] .nav-group:not(:has(.nav-model:not(.diff-removed))),
+body:not(.diff) [data-pane="models"] .nav-folder:not(:has(.nav-model:not(.diff-removed))) { display: none; }
 
 /* Badges */
 .diff-badge { display: inline-block; padding: 0 7px; border: 1px solid currentColor; border-radius: 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; line-height: 18px; white-space: nowrap; }
