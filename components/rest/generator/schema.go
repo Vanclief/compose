@@ -39,16 +39,22 @@ type packageInfo struct {
 	// Enums holds, per closed-set string type (one with an enums.Set declaration),
 	// the accepted typed constants in declaration order.
 	Enums map[string][]string
+	// EnumDocs holds, per type in Enums, each value's description (see constDoc), "" for an
+	// undocumented one.
+	EnumDocs map[string][]string
 }
 
 type stringConst struct {
 	Name  string
 	Value string
+	Doc   string
 }
 
 type typeSpecInfo struct {
 	Spec    *ast.TypeSpec
 	Imports map[string]string
+	// Doc is the type's doc comment, on the spec or, for a lone `type X ...`, on its declaration.
+	Doc *ast.CommentGroup
 }
 
 type funcInfo struct {
@@ -72,6 +78,9 @@ type schemaBuilder struct {
 	requiredPackagePrefix string
 	prefixCollapse        map[string]string
 	nameAliases           map[string]string
+	docComments           bool
+	// origins maps each component schema to the import path of the Go type it was built from.
+	origins map[string]string
 }
 
 func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
@@ -111,6 +120,8 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 		requiredPackagePrefix: cfg.RequiredPackagePrefix,
 		prefixCollapse:        cfg.SchemaPrefixCollapse,
 		nameAliases:           cfg.SchemaNameAliases,
+		docComments:           cfg.DocComments,
+		origins:               map[string]string{},
 	}, nil
 }
 
@@ -633,6 +644,7 @@ func (b *schemaBuilder) schemaRef(ref typeRef) map[string]any {
 		_, exists := b.schemas[name]
 		if !exists {
 			b.schemas[name] = componentSchema
+			b.recordOrigin(name, ref)
 		}
 
 		return map[string]any{
@@ -723,8 +735,16 @@ func (b *schemaBuilder) ensureSchema(ref typeRef) {
 
 	schema := b.buildSchema(ref)
 	b.schemas[name] = schema
+	b.recordOrigin(name, ref)
 
 	b.building[ref] = false
+}
+
+func (b *schemaBuilder) recordOrigin(name string, ref typeRef) {
+	if b.origins == nil {
+		b.origins = map[string]string{}
+	}
+	b.origins[name] = ref.ImportPath
 }
 
 func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
@@ -761,9 +781,36 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 			enum = append(enum, value)
 		}
 		schema["enum"] = enum
+
+		docs := pkg.EnumDocs[ref.Name]
+		if b.docComments && anyNonEmpty(docs) {
+			descriptions := make([]any, 0, len(docs))
+			for _, doc := range docs {
+				descriptions = append(descriptions, doc)
+			}
+			schema["x-enum-descriptions"] = descriptions
+		}
+	}
+
+	if b.docComments {
+		doc := commentText(info.Doc)
+		_, isRef := schema["$ref"]
+		if doc != "" && !isRef {
+			schema["description"] = doc
+		}
 	}
 
 	return schema
+}
+
+func anyNonEmpty(values []string) bool {
+	for _, value := range values {
+		if value != "" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (b *schemaBuilder) recordUnresolved(ref typeRef, reason string) {
@@ -1124,6 +1171,7 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 	// Models that also ride on a request body get their list cleared again by
 	// stripRequestSideRequired once the request graph is known.
 	markRequired := b.requiredPackagePrefix != "" && strings.Contains(pkgPath, b.requiredPackagePrefix)
+	table := ""
 
 	for _, field := range st.Fields.List {
 		if field == nil {
@@ -1135,6 +1183,11 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 		}
 
 		if len(field.Names) == 0 {
+			// bun.BaseModel marshals nothing; its tag names the model's table.
+			if isBunBaseModel(field.Type, imports) {
+				table = bunTable(field)
+				continue
+			}
 			embedded := b.schemaForExpr(field.Type, imports, pkgPath)
 			allOf = append(allOf, embedded)
 			continue
@@ -1149,6 +1202,9 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 		if flaggedDeprecated {
 			schema = deprecatedSchema(schema)
 		}
+		if b.docComments {
+			schema = describedSchema(schema, fieldDoc(field))
+		}
 		props[name] = schema
 
 		// Nil-able fields (pointers, slices, maps — directly or through a named
@@ -1159,6 +1215,7 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 		}
 	}
 
+	var schema map[string]any
 	if len(allOf) > 0 {
 		if len(props) > 0 {
 			member := map[string]any{
@@ -1170,18 +1227,22 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 			}
 			allOf = append(allOf, member)
 		}
-		return map[string]any{
+		schema = map[string]any{
 			"allOf": allOf,
 		}
+	} else {
+		schema = map[string]any{
+			"type":       "object",
+			"properties": props,
+		}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+	}
+	if table != "" {
+		schema["x-table"] = table
 	}
 
-	schema := map[string]any{
-		"type":       "object",
-		"properties": props,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
 	return schema
 }
 
@@ -1499,9 +1560,14 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 					if !ok {
 						continue
 					}
+					doc := typeSpec.Doc
+					if doc == nil && len(gen.Specs) == 1 {
+						doc = gen.Doc
+					}
 					types[typeSpec.Name.Name] = typeSpecInfo{
 						Spec:    typeSpec,
 						Imports: imports,
+						Doc:     doc,
 					}
 				}
 			case token.CONST:
@@ -1513,6 +1579,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 	}
 
 	enums := map[string][]string{}
+	enumDocs := map[string][]string{}
 	for name := range closedSets {
 		seen := map[string]bool{}
 		for _, constant := range consts[name] {
@@ -1524,6 +1591,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 			}
 			seen[constant.Value] = true
 			enums[name] = append(enums[name], constant.Value)
+			enumDocs[name] = append(enumDocs[name], constant.Doc)
 		}
 	}
 
@@ -1533,6 +1601,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 		Types:      types,
 		Funcs:      funcs,
 		Enums:      enums,
+		EnumDocs:   enumDocs,
 	}
 
 	b.packages[importPath] = pkg
@@ -1566,6 +1635,7 @@ func collectTypedStringConsts(gen *ast.GenDecl, out map[string][]stringConst) {
 			out[typeIdent.Name] = append(out[typeIdent.Name], stringConst{
 				Name:  valueSpec.Names[i].Name,
 				Value: text,
+				Doc:   constDoc(valueSpec, valueSpec.Names[i].Name),
 			})
 		}
 	}

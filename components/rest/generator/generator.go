@@ -135,6 +135,8 @@ func Generate(cfg Config) (*Spec, error) {
 		}
 	}
 	pruneSchemas(document, builder.schemas, roots)
+	g.tagSchemas(routes, facts)
+	g.tagResources(document, routes, facts, handlerSchemas)
 
 	err = validateRefs(document, builder.schemas)
 	if err != nil {

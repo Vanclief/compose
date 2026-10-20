@@ -54,6 +54,20 @@ type Config struct {
 	// SchemaNameAliases maps a module-relative package path to the schema name prefix its types
 	// (and its subpackages' types) keep, so moving a package does not rename its schemas.
 	SchemaNameAliases map[string]string
+	// DocComments turns Go comments into descriptions: a type's doc comment on its component
+	// schema, a struct field's doc and line comments on its property, and an enum constant's
+	// line comment (or a doc comment starting with its name) in x-enum-descriptions. Off by
+	// default: comments are often notes for maintainers rather than API documentation.
+	DocComments bool
+	// SchemaTags picks the operation tags a component schema is filed under, written as its
+	// x-tags. derived holds the tags deriveSchemaTags found for the schema's Go package (pkgPath)
+	// in sorted order; nil keeps them when there is exactly one. Return nil to write none.
+	SchemaTags func(name string, pkgPath string, derived []string) []string
+	// ResourceTag names the child tag of a resource: a package handlers take their request types
+	// from (see tagResources). entity is the Go name of the model the resource's handlers
+	// return, "" when none; name is the generator's choice ("Bank accounts"). Return "" to make
+	// no child tag, leaving the package's schemas under their operation tag. Nil keeps name.
+	ResourceTag func(pkgPath string, entity string, name string) string
 
 	// PathSummaries overrides the summary of the operations on an OpenAPI path.
 	PathSummaries map[string]string
