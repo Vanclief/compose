@@ -19,7 +19,8 @@ type Graph struct {
 // the id of its model card in the reference page. Table is the database
 // table the schema declares with x-table ("" when it declares none). Hub
 // marks an entity that most others point at (see hubSources); the map leaves
-// its edges out until asked.
+// its edges out until asked. Diff is set in diff mode only (see Options.Base):
+// diffAdded, diffChanged or diffRemoved.
 type Node struct {
 	Name   string  `json:"name"`
 	Short  string  `json:"short"`
@@ -27,12 +28,14 @@ type Node struct {
 	Anchor string  `json:"anchor"`
 	Table  string  `json:"table,omitempty"`
 	Hub    bool    `json:"hub,omitempty"`
+	Diff   string  `json:"diff,omitempty"`
 	Fields []Field `json:"fields"`
 }
 
 // Field is one property of an entity. Optional means it is not listed in
 // required. Ref names the entity the field points at, either as an embedded
-// object or array or as a foreign key.
+// object or array or as a foreign key. Diff is set in diff mode only, as on
+// Node.
 type Field struct {
 	Name       string   `json:"name"`
 	Type       string   `json:"type,omitempty"`
@@ -43,6 +46,7 @@ type Field struct {
 	Deprecated bool     `json:"deprecated,omitempty"`
 	Enum       []string `json:"enum,omitempty"`
 	Ref        string   `json:"ref,omitempty"`
+	Diff       string   `json:"diff,omitempty"`
 }
 
 // Edge kinds.
@@ -54,7 +58,8 @@ const (
 
 // Edge is a relation from the entity holding the field to the entity it
 // points at. Inferred is true when the relation was guessed from a foo_id
-// field name rather than declared by a $ref or an x-ref extension.
+// field name rather than declared by a $ref or an x-ref extension. Diff is
+// set in diff mode only, as on Node.
 type Edge struct {
 	From        string `json:"from"`
 	To          string `json:"to"`
@@ -62,6 +67,7 @@ type Edge struct {
 	Kind        string `json:"kind"`
 	Cardinality string `json:"cardinality"`
 	Inferred    bool   `json:"inferred,omitempty"`
+	Diff        string `json:"diff,omitempty"`
 }
 
 // hubSources is the number of distinct entities that may point at an entity
@@ -91,7 +97,11 @@ var wrapperSuffixes = []string{"Request", "Response", "Params", "Query", "Body"}
 // from a foo_id property alone, matched by name to an entity called Foo
 // (marked Inferred).
 func (d *Document) Graph() *Graph {
-	short := shortNames(d.Components.Schemas.Keys)
+	return d.graph(shortNames(d.Components.Schemas.Keys))
+}
+
+// graph builds the entity graph with the given display names.
+func (d *Document) graph(short map[string]string) *Graph {
 	declared := d.declaresTables()
 	objects := d.graphObjects(declared)
 	entities := d.graphEntities(objects, declared)
@@ -119,7 +129,7 @@ func (d *Document) Graph() *Graph {
 		f := objects[node.Name]
 		node.Fields = d.graphFields(f, short)
 		for _, e := range d.graphEdges(node, f, entities, index) {
-			key := e.From + "\x00" + e.To + "\x00" + e.FromField + "\x00" + e.Kind
+			key := edgeKey(e)
 			if seen[key] {
 				continue
 			}
@@ -130,6 +140,12 @@ func (d *Document) Graph() *Graph {
 
 	markHubs(g)
 	return g
+}
+
+// edgeKey identifies a relation: two edges with the same key are the same
+// relation, in one document or across two.
+func edgeKey(e *Edge) string {
+	return e.From + "\x00" + e.To + "\x00" + e.FromField + "\x00" + e.Kind
 }
 
 // markHubs sets Hub on the entities that more than hubSources other

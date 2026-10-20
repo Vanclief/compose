@@ -1258,3 +1258,41 @@ body:not(.diff) [data-model-view="diff"] { display: none; }
 .mdiff-note .diff-badge { vertical-align: 1px; }
 .mdiff-fold { grid-column: 1 / -1; padding: 5px 14px; border: 0; border-block: 1px solid var(--sample-line); background: var(--sample-fill); color: var(--sample-muted); font: 12px var(--font); text-align: left; cursor: pointer; }
 .mdiff-fold:hover { color: var(--accent); }
+
+/* Schema map in diff mode: cards, field rows and relations tinted by their
+   diff state (a added, c changed, d removed); unstyled when the toggle is off. */
+.mcard-diff, .map-legend .lg-diff { display: none; }
+body.diff .mcard-diff { display: inline; }
+body.diff .map-legend .lg-diff { display: inline-flex; gap: 6px; }
+body.diff .mcard-badge.mcard-diff { font-weight: 700; }
+body.diff .mcard.d-a { border-color: var(--diff-add); }
+body.diff .mcard.d-a .mcard-head { background: var(--diff-add-bg); }
+body.diff .mcard.d-a .mcard-diff { background: var(--diff-add-bg); color: var(--diff-add); box-shadow: inset 0 0 0 1px var(--diff-add); }
+body.diff .mcard.d-c { border-color: var(--diff-chg); }
+body.diff .mcard.d-c .mcard-head { background: var(--diff-chg-bg); }
+body.diff .mcard.d-c .mcard-diff { background: var(--diff-chg-bg); color: var(--diff-chg); box-shadow: inset 0 0 0 1px var(--diff-chg); }
+body.diff .mcard.d-d { border-color: var(--diff-del); border-style: dashed; }
+body.diff .mcard.d-d .mcard-head { background: var(--diff-del-bg); }
+body.diff .mcard.d-d .mcard-name { color: var(--diff-del); text-decoration: line-through; }
+body.diff .mcard.d-d .mcard-fields { opacity: .7; }
+body.diff .mcard.d-d .mcard-diff { background: var(--diff-del-bg); color: var(--diff-del); box-shadow: inset 0 0 0 1px var(--diff-del); }
+body.diff .mf.d-a, body.diff .mf.d-c, body.diff .mf.d-d { position: relative; }
+body.diff .mf.d-a { background: var(--diff-add-bg); }
+body.diff .mf.d-c { background: var(--diff-chg-bg); }
+body.diff .mf.d-d { background: var(--diff-del-bg); }
+body.diff .mf.d-d .mf-name { color: var(--diff-del); text-decoration: line-through; }
+body.diff .mf.d-a::before, body.diff .mf.d-c::before, body.diff .mf.d-d::before { position: absolute; left: 2px; font-size: 11px; font-weight: 700; }
+body.diff .mf.d-a::before { content: "+"; color: var(--diff-add); }
+body.diff .mf.d-c::before { content: "~"; color: var(--diff-chg); }
+body.diff .mf.d-d::before { content: "\2212"; color: var(--diff-del); }
+body.diff .medge.d-a .mline, body.diff .medge.d-a .mends, body.diff .medge.d-a .mring { stroke: var(--diff-add); stroke-width: 2; }
+body.diff .medge.d-d .mline, body.diff .medge.d-d .mends, body.diff .medge.d-d .mring { stroke: var(--diff-del); stroke-width: 2; }
+body.diff .medge.d-d .mline { stroke-dasharray: 6 5; }
+body.diff .mlabel.d-a rect { stroke: var(--diff-add); fill: color-mix(in srgb, var(--diff-add) 12%, var(--bg)); }
+body.diff .mlabel.d-a text { fill: var(--diff-add); }
+body.diff .mlabel.d-d rect { stroke: var(--diff-del); fill: color-mix(in srgb, var(--diff-del) 12%, var(--bg)); }
+body.diff .mlabel.d-d text { fill: var(--diff-del); }
+.lg-d { padding: 0 7px; border-radius: 9px; font-size: 11px; font-style: normal; font-weight: 700; line-height: 18px; }
+.lg-d.d-a { background: var(--diff-add-bg); color: var(--diff-add); }
+.lg-d.d-c { background: var(--diff-chg-bg); color: var(--diff-chg); }
+.lg-d.d-d { background: var(--diff-del-bg); color: var(--diff-del); }

@@ -16,7 +16,8 @@
 <span><svg viewBox="0 0 30 12" aria-hidden="true"><path d="M1 6H29M8 1V11"/></svg>one</span>
 <span><svg viewBox="0 0 30 12" aria-hidden="true"><path d="M1 6H29M1 1L11 6M1 11L11 6"/></svg>many</span>
 <span><i class="lg-hub">hub</i>relations shown on hover</span>
-<span class="map-hint">Drag to pan or move cards &middot; Ctrl/&#8984; + scroll to zoom &middot; double-click opens the model</span>
+{{if .Diff}}<span class="lg-diff"><i class="lg-d d-a">added</i><i class="lg-d d-c">changed</i><i class="lg-d d-d">removed</i></span>
+{{end}}<span class="map-hint">Drag to pan or move cards &middot; Ctrl/&#8984; + scroll to zoom &middot; double-click opens the model</span>
 </div></div>
 </section>
 <script type="application/json" id="schema-map-data">{{.JSON}}</script>{{end}}

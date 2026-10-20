@@ -66,10 +66,9 @@ func TestSchemaMapScopes(t *testing.T) {
 	require.Len(t, matches, 1)
 
 	var data struct {
-		Nodes   []*Node  `json:"nodes"`
-		Tags    []mapTag `json:"tags"`
-		Default string   `json:"default"`
-		Spec    string   `json:"spec"`
+		Nodes []*Node  `json:"nodes"`
+		Tags  []mapTag `json:"tags"`
+		Spec  string   `json:"spec"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &data))
 
@@ -84,7 +83,9 @@ func TestSchemaMapScopes(t *testing.T) {
 		"Access Control", "Amenities", "CRM", "Finance", "Operations", "Organizations",
 		"Packages", "People", "Property", "Safety", "Users", "Visitors",
 	}, names)
-	require.Equal(t, "Access Control", data.Default)
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &top))
+	require.NotContains(t, top, "default", "the map opens on all models")
 	require.NotEmpty(t, data.Spec)
 
 	hubs := 0
@@ -94,16 +95,6 @@ func TestSchemaMapScopes(t *testing.T) {
 		}
 	}
 	require.Equal(t, 6, hubs, "hub flags reach the page")
-}
-
-func TestDefaultScope(t *testing.T) {
-	require.Equal(t, "", defaultScope(nil))
-	require.Equal(t, "", defaultScope([]mapTag{{Name: "a", Nodes: []string{"X"}}}))
-	require.Equal(t, "b", defaultScope([]mapTag{
-		{Name: "a", Nodes: []string{"X"}},
-		{Name: "b", Nodes: []string{"X", "Y"}},
-		{Name: "c", Nodes: []string{"X", "Y", "Z"}},
-	}))
 }
 
 func TestRenderSchemaMapEscapesScript(t *testing.T) {
@@ -142,4 +133,90 @@ func TestRenderWithoutEntitiesHasNoMap(t *testing.T) {
 	require.NotContains(t, page, "schema-map-data")
 	require.NotContains(t, page, "view-switch")
 	require.False(t, strings.Contains(page, `id="section/map"`))
+}
+
+func TestSchemaMapDiff(t *testing.T) {
+	base := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.0"},
+  "paths": {},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "legacy": {"type": "string"},
+      "owner": {"$ref": "#/components/schemas/Owner"},
+      "relic": {"$ref": "#/components/schemas/Legacy"}
+    }},
+    "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+    "Legacy": {"type": "object", "properties": {"id": {"type": "string"}, "code": {"type": "string"}}}
+  }}
+}`
+	head := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.1"},
+  "paths": {},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "properties": {
+      "id": {"type": "integer"},
+      "owner": {"$ref": "#/components/schemas/Owner"},
+      "tag": {"$ref": "#/components/schemas/Tag"}
+    }},
+    "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "email": {"type": "string"}}},
+    "Tag": {"type": "object", "properties": {"id": {"type": "string"}}}
+  }}
+}`
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+
+	plain := renderPage(t, doc)
+	matches := mapDataPattern.FindAllStringSubmatch(plain, -1)
+	require.Len(t, matches, 1)
+	require.NotContains(t, matches[0][1], `"diff"`, "no diff states without a base")
+	require.NotContains(t, plain, `lg-diff`)
+
+	out, err := Render(doc, Options{Base: []byte(base)})
+	require.NoError(t, err)
+	page := string(out)
+	require.Contains(t, page, `lg-diff`, "the legend explains the diff colors")
+	matches = mapDataPattern.FindAllStringSubmatch(page, -1)
+	require.Len(t, matches, 1)
+	var data struct {
+		Nodes []*Node `json:"nodes"`
+		Edges []*Edge `json:"edges"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &data))
+
+	nodes := map[string]*Node{}
+	var order []string
+	for _, n := range data.Nodes {
+		nodes[n.Name] = n
+		order = append(order, n.Name)
+	}
+	require.Equal(t, []string{"Pet", "Owner", "Tag", "Legacy"}, order, "removed entities follow the head ones")
+	require.Equal(t, diffChanged, nodes["Pet"].Diff)
+	require.Equal(t, diffChanged, nodes["Owner"].Diff)
+	require.Equal(t, diffAdded, nodes["Tag"].Diff)
+	require.Equal(t, diffRemoved, nodes["Legacy"].Diff)
+	require.Equal(t, "model/Legacy", nodes["Legacy"].Anchor, "a removed entity opens its removed model card")
+
+	fields := func(n *Node) []string {
+		var out []string
+		for _, f := range n.Fields {
+			out = append(out, f.Name+":"+f.Diff)
+		}
+		return out
+	}
+	require.Equal(t, []string{"id:c", "legacy:d", "owner:", "relic:d", "tag:a"}, fields(nodes["Pet"]), "removed fields stay where they were")
+	require.Equal(t, []string{"id:", "name:", "email:a"}, fields(nodes["Owner"]))
+	require.Equal(t, []string{"id:"}, fields(nodes["Tag"]), "an added entity's fields are not marked one by one")
+
+	edges := map[string]string{}
+	for _, e := range data.Edges {
+		edges[e.From+">"+e.To] = e.Diff
+	}
+	require.Equal(t, map[string]string{
+		"Pet>Owner":  "",
+		"Pet>Tag":    diffAdded,
+		"Pet>Legacy": diffRemoved,
+	}, edges)
 }

@@ -3383,6 +3383,15 @@
   const nodes = new Map(data.nodes.map((n) => [n.name, n]));
   const edges = (data.edges || []).filter((e) => nodes.has(e.from) && nodes.has(e.to));
 
+  // In diff mode nodes, fields and edges carry a diff state: a (added), c
+  // (changed) or d (removed, from the base document). Removed ones are only
+  // drawn while the Diff mode toggle is on.
+  const diffToggle = doc.querySelector('[data-diff-toggle]');
+  // The toggle, not body.diff: its change reaches the map first.
+  const diffOn = () => Boolean(diffToggle && diffToggle.checked);
+  const live = (x) => x.diff !== 'd' || diffOn();
+  const diffNames = { a: 'added', c: 'changed', d: 'removed' };
+
   let store = null;
   try {
     store = window.localStorage;
@@ -3435,20 +3444,20 @@
   // Scopes are the operation tags, in page order, and all models.
   const scopes = new Map();
   scopes.set('all', { label: 'All models', names: data.nodes.map((n) => n.name) });
+  const removedCount = data.nodes.filter((n) => n.diff === 'd').length;
   for (const t of data.tags || []) {
     const names = (t.nodes || []).filter((n) => nodes.has(n));
     if (names.length && !scopes.has(t.name)) {
       scopes.set(t.name, { label: t.name, names });
     }
   }
-  const defaultScope = scopes.has(data.default) ? data.default : 'all';
   for (const [id, s] of scopes) {
-    const o = el('option', '', s.label + ' (' + s.names.length + ')');
+    const o = el('option', '', s.label + ' (' + (id === 'all' ? s.names.length - removedCount : s.names.length) + ')');
     o.value = id;
     scopeSelect.append(o);
   }
 
-  const state = { scope: defaultScope, selected: null, hover: null, expanded: new Set(), showHubs: false, x: 0, y: 0, k: 1 };
+  const state = { scope: 'all', selected: null, hover: null, expanded: new Set(), showHubs: false, x: 0, y: 0, k: 1 };
   let cards = new Map(); // name -> { el, n, compact, x, y, w, h, headY, rows, moreY }
   let links = [];
   let lineLayer = null;
@@ -3497,7 +3506,7 @@
   // fieldRow is one line per field (name, qualifiers, type or the model it
   // points at), with enum values as chips below.
   function fieldRow(f) {
-    const li = el('li', 'mf' + (f.deprecated ? ' deprecated' : ''));
+    const li = el('li', 'mf' + (f.deprecated ? ' deprecated' : '') + (f.diff ? ' d-' + f.diff : ''));
     li.dataset.field = f.name;
     const line = el('div', 'mf-line');
     const name = el('span', 'mf-name');
@@ -3553,13 +3562,16 @@
   // that a card in it points at) shows its header only.
   function makeCard(n, compact) {
     const c = { n, compact, x: 0, y: 0, w: CARD_W, h: 0, headY: 0, rows: new Map(), moreY: 0 };
-    const box = el('div', 'mcard' + (compact ? ' compact' : '') + (n.hub ? ' hub' : ''));
+    const box = el('div', 'mcard' + (compact ? ' compact' : '') + (n.hub ? ' hub' : '') + (n.diff ? ' d-' + n.diff : ''));
     box.dataset.node = n.name;
     box.tabIndex = 0;
     box.title = n.table ? n.name + '\nTable: ' + n.table : n.name;
     box.style.width = CARD_W + 'px';
     const head = el('div', 'mcard-head');
     head.append(el('span', 'mcard-name', n.short));
+    if (n.diff) {
+      head.append(el('span', 'mcard-badge mcard-diff', diffNames[n.diff]));
+    }
     if (n.hub) {
       head.append(el('span', 'mcard-badge hub', 'hub'));
     }
@@ -3567,7 +3579,7 @@
       head.append(el('span', 'mcard-badge', n.group));
     }
     box.append(head);
-    const fields = n.fields || [];
+    const fields = (n.fields || []).filter(live);
     if (compact) {
       box.append(el('div', 'mcard-note', fields.length + ' fields, outside this scope'));
     } else if (fields.length) {
@@ -3827,12 +3839,12 @@
   // its cardinality pill in the label layer above every line.
   function makeLink(e, lineLayer, labelLayer) {
     const hub = nodes.get(e.to).hub && e.from !== e.to;
-    const g = svgEl('g', { class: 'medge' + (e.inferred ? ' inferred' : '') });
+    const g = svgEl('g', { class: 'medge' + (e.inferred ? ' inferred' : '') + (e.diff ? ' d-' + e.diff : '') });
     const line = svgEl('path', { class: 'mline' });
     const ends = svgEl('path', { class: 'mends' });
     const rings = svgEl('path', { class: 'mring' });
     g.append(line, ends, rings);
-    const label = svgEl('g', { class: 'mlabel' });
+    const label = svgEl('g', { class: 'mlabel' + (e.diff ? ' d-' + e.diff : '') });
     const rect = svgEl('rect', { height: '18', y: '-9', rx: '9' });
     const text = svgEl('text', {});
     text.textContent = e.cardinality;
@@ -4043,12 +4055,13 @@
     cards = new Map();
     near = new Map();
     const scope = scopes.get(state.scope);
-    const full = new Set(scope.names);
-    const shown = scope.names.slice();
+    const names = scope.names.filter((name) => live(nodes.get(name)));
+    const full = new Set(names);
+    const shown = names.slice();
     const seen = new Set(shown);
     const list = [];
     for (const e of edges) {
-      if (!full.has(e.from)) {
+      if (!full.has(e.from) || !live(e) || !live(nodes.get(e.to))) {
         continue;
       }
       if (!seen.has(e.to)) {
@@ -4100,7 +4113,9 @@
 
     const hubLinks = links.filter((l) => l.hub).length;
     const outside = shown.length - full.size;
-    countEl.textContent = full.size + (full.size === 1 ? ' model' : ' models') + ' · ' + list.length + (list.length === 1 ? ' relation' : ' relations') + (outside ? ' · ' + outside + ' linked from outside' : '');
+    const removed = names.filter((name) => nodes.get(name).diff === 'd').length;
+    const models = full.size - removed;
+    countEl.textContent = models + (models === 1 ? ' model' : ' models') + (removed ? ' + ' + removed + ' removed' : '') + ' · ' + list.length + (list.length === 1 ? ' relation' : ' relations') + (outside ? ' · ' + outside + ' linked from outside' : '');
     hubsCount.textContent = hubLinks ? '(' + hubLinks + ')' : '';
     rendered = state.scope;
     if (!keepCamera) {
@@ -4551,6 +4566,17 @@
     if (push !== null) {
       setHash(hashFor(), push);
     }
+  }
+
+  // Diff mode draws or drops the removed models, fields and relations.
+  if (diffToggle) {
+    diffToggle.addEventListener('change', () => {
+      if (isOpen) {
+        render(true);
+      } else {
+        rendered = null;
+      }
+    });
   }
 
   function openHash(h, push) {
