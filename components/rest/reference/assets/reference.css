@@ -921,7 +921,11 @@ button.pn:hover { color: var(--accent); }
 .pedit { margin: 6px 0 2px 16px; padding: 1px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
 .pedit:hover, .pedit[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); }
 /* The body port's fields: the ObjectInspector in page colors, an input per
-   value. */
+   value. Leaf rows are a grid of key and field, the key column (--bk, set
+   on the tree) fitting the longest key less each level's 24px indent (--d),
+   so every input starts and ends at one x. A field holds its input and,
+   for ids, the operation the value comes from. .bt-stack, when the card is
+   too narrow for both, puts each key above its input. */
 .btree { --tl: var(--border-strong); --row: 30px; margin: 6px 0 2px; font-family: var(--mono); font-size: 12.5px; }
 .btree .oi-row { gap: 10px; padding: 1px 0 1px 4px; color: var(--text); }
 .btree .oi-tg { padding-left: 20px; }
@@ -930,13 +934,26 @@ button.pn:hover { color: var(--accent); }
 .btree .oi-tg::before { border-color: var(--muted); }
 .btree .oi-k { color: var(--muted); }
 .btree .oi-list:not(.oi-root) > li:last-child::after { border-left-color: var(--bg); }
-.btree li[data-port] > .oi-row > .oi-k { color: var(--text); }
-.btree .src { flex: none; margin: 0; padding: 0; font-family: var(--font); }
-.bt-v { flex: 1 1 auto; min-width: 60px; height: 24px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-soft); color: var(--text); font: inherit; }
+.btree .oi-row.bt-row { display: grid; grid-template-columns: max(calc(var(--bk, 12ch) - var(--d, 0) * 24px), 4ch) minmax(0, 1fr); align-items: start; column-gap: 10px; padding-top: 2px; padding-bottom: 2px; }
+.bt-kl { display: flex; align-items: baseline; gap: 8px; min-width: 0; line-height: 26px; }
+.bt-kl > .oi-k { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-ty { display: none; flex: 0 1 auto; min-width: 2ch; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11.5px; }
+.bt-f { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.btree.bt-stack { --row: 19px; }
+.btree.bt-stack .oi-row.bt-row { grid-template-columns: minmax(0, 1fr); row-gap: 2px; padding-top: 2px; padding-bottom: 5px; }
+.bt-stack .bt-kl { line-height: 17px; }
+.bt-stack .bt-ty { display: block; }
+.bt-stack .bt-v.bt-ph-ty::placeholder { color: transparent; }
+.btree .src { flex: none; margin: 0; padding: 0 0 0 1px; font-family: var(--font); font-size: 11.5px; line-height: 16px; white-space: nowrap; overflow: hidden; }
+.bt-v { width: 100%; min-width: 0; height: 26px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-soft); color: var(--text); font: inherit; text-overflow: ellipsis; }
 .bt-v::placeholder { color: var(--faint); }
 .bt-v:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-select.bt-v { flex: 0 1 90px; }
-.btree + .pedit { margin-left: 4px; }
+select.bt-v { padding-right: 4px; cursor: pointer; }
+select.bt-v:invalid { color: var(--faint); }
+select.bt-v option { color: var(--text); }
+/* Edit as JSON closes the field list, under the inputs' right edge. */
+.btree + .pedit { display: block; margin: 4px 0 2px auto; padding: 1px 2px; border: 0; border-radius: 4px; font-size: 11.5px; font-weight: 600; }
+.btree + .pedit:hover { background: none; text-decoration: underline; }
 .mc-outs .pbox:has(> .pt[data-goto]) { cursor: pointer; }
 .mc-body textarea.invalid { border-color: var(--req); }
 .mc-body, .machine > .try-result { grid-column: 1 / -1; }

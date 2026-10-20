@@ -139,6 +139,7 @@ type opView struct {
 	Body        *bodyView
 	CurlAuth    string        // JSON credential args for the copied curl, see curlAuth
 	ReqExample  template.HTML // the request body example the body port's fields start from
+	ReqTypes    string        // index of the request example's type description, see typesRef
 	ResSamples  []sampleView
 	Search      string
 	TryParams   []tryParam
@@ -1047,6 +1048,7 @@ func (b *builder) buildBody(ov *opView, op *Operation) {
 			ov.TryBody = true
 			ov.TryCT = ct
 			ov.ReqExample = textHTML(b.d.MediaExampleJSON(mt, ForRequest))
+			ov.ReqTypes = b.typesRef(mt, ForRequest)
 		}
 	}
 	ov.Body = bv

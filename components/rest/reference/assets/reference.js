@@ -991,10 +991,10 @@
       }
       return;
     }
-    const root = btList(v, 0, '');
+    const root = btList(v, 0, '', typeTree(example.dataset.types));
     root.classList.add('oi-root');
     box.append(root);
-    // Body ids keep the operations they come from, on their own rows.
+    // Body ids keep the operations they come from, under their inputs.
     const fields = box.parentElement.querySelector('.pfields');
     if (fields) {
       fields.querySelectorAll(':scope > li[data-port]').forEach((li) => {
@@ -1007,13 +1007,38 @@
           row.dataset.m = li.dataset.m;
         }
         const src = li.querySelector('.src');
-        if (src) {
-          row.querySelector('.oi-row').append(src);
+        const field = row.querySelector(':scope > .oi-row > .bt-f');
+        if (src && field) {
+          field.append(src);
         }
       });
       fields.remove();
     }
+    // Every input starts at one x: the key column fits the longest key,
+    // less each level's 24px indent. When that leaves the inputs too
+    // little room, the keys go above their inputs instead.
+    let kw = 0;
+    root.querySelectorAll('.bt-row').forEach((row) => {
+      kw = Math.max(kw, row.querySelector('.oi-k').textContent.length + Number(row.style.getPropertyValue('--d') || 0) * 3.2);
+    });
+    kw = Math.min(btKeyMax, Math.ceil(kw));
+    box.style.setProperty('--bk', kw + 'ch');
+    const fit = () => {
+      if (box.clientWidth > 0) {
+        box.classList.toggle('bt-stack', box.clientWidth - kw * 7.5 - 10 < btInputMin);
+      }
+    };
+    fit();
+    if ('ResizeObserver' in window) {
+      new ResizeObserver(fit).observe(box);
+    }
   }
+
+  // btKeyMax caps the body tree's key column (ch); longer keys end in an
+  // ellipsis. btInputMin is the narrowest input (px) worth keeping beside
+  // its key.
+  const btKeyMax = 22;
+  const btInputMin = 110;
 
   function btKind(v) {
     if (typeof v === 'number') {
@@ -1025,15 +1050,19 @@
     return 'string';
   }
 
-  function btList(v, depth, path) {
+  function btList(v, depth, path, t) {
     const ul = el('ul', 'oi-list');
     for (const key of Object.keys(v)) {
-      ul.append(btItem(key, v[key], depth, path ? path + '.' + key : key));
+      ul.append(btItem(key, v[key], depth, path ? path + '.' + key : key, typeKid(t, key)));
     }
     return ul;
   }
 
-  function btItem(key, v, depth, path) {
+  // btItem is one field: a folder for an object or a list of objects, an
+  // input otherwise. t is the field's type note, when the page has one:
+  // enums get a select of their values, and the input's title names the
+  // type.
+  function btItem(key, v, depth, path, t) {
     const li = el('li');
     li.dataset.key = key;
     const isList = Array.isArray(v);
@@ -1048,23 +1077,36 @@
         el('span', item ? 'oi-ico oi-arr' : 'oi-ico oi-obj', item ? '[]' : '{}'),
         el('span', 'oi-k', key),
       );
-      const kids = btList(item || v, depth + 1, path);
+      const kids = btList(item || v, depth + 1, path, item ? typeKid(t, '[]') : t);
       kids.hidden = !open;
       li.dataset.shape = item ? 'list' : 'object';
       li.append(line, kids);
       return li;
     }
-    const line = el('label', 'oi-row');
-    line.append(el('span', 'oi-k', key));
+    const line = el('label', 'oi-row bt-row');
+    line.style.setProperty('--d', depth);
+    // The key cell names the type too; CSS shows it only with the keys
+    // above their inputs, where the line has room.
+    const k = el('span', 'bt-kl');
+    k.title = key;
+    k.append(el('span', 'oi-k', key));
+    if (t && t.label) {
+      k.append(el('span', 'bt-ty', t.label));
+    }
+    const field = el('span', 'bt-f');
+    const values = t && t.values && !isList ? t.values.filter((x) => x !== '' && x !== null) : null;
     let input;
-    if (typeof v === 'boolean') {
+    if (typeof v === 'boolean' || (values && values.length)) {
       input = el('select', 'bt-v');
-      for (const opt of ['', 'true', 'false']) {
+      // Required makes the unset choice :invalid, which CSS greys like a
+      // placeholder; the form itself is novalidate.
+      input.required = true;
+      for (const opt of [''].concat(values && values.length ? values.map(String) : ['true', 'false'])) {
         const o = el('option', '', opt === '' ? '—' : opt);
         o.value = opt;
         input.append(o);
       }
-      li.dataset.kind = 'boolean';
+      li.dataset.kind = typeof v === 'boolean' ? 'boolean' : btKind(values[0]);
     } else {
       input = el('input', 'bt-v');
       input.type = 'text';
@@ -1072,21 +1114,41 @@
       input.autocomplete = 'off';
       if (isList) {
         li.dataset.kind = 'list-' + (v.length ? btKind(v[0]) : 'string');
-        input.placeholder = v.length ? v.join(', ') : 'a, b';
-        input.title = 'Comma-separated list';
+        input.placeholder = v.length ? v.join(', ') + (v.length === 1 ? ', …' : '') : 'a, b, …';
       } else if (v !== null && typeof v === 'object') {
         li.dataset.kind = 'json';
         input.placeholder = '{}';
-        input.title = 'JSON';
       } else {
         li.dataset.kind = btKind(v);
-        input.placeholder = v === null ? 'null' : v === '' ? 'string' : String(v);
+        input.placeholder = v === null ? 'null' : v === '' ? (t && t.label) || 'string' : String(v);
+        // A placeholder that only names the type repeats the key line's
+        // type when the keys are above their inputs.
+        input.classList.toggle('bt-ph-ty', Boolean(t && t.label) && input.placeholder === t.label);
       }
     }
+    input.title = btTitle(t, li.dataset.kind);
     input.setAttribute('aria-label', path);
-    line.append(input);
+    field.append(input);
+    line.append(k, field);
     li.append(line);
     return li;
+  }
+
+  // btTitle describes what an input takes: its type and how to type it.
+  function btTitle(t, kind) {
+    const parts = [];
+    if (t && t.label) {
+      parts.push(t.base ? t.label + ' (' + t.base + ')' : t.label);
+    }
+    if (kind.startsWith('list-')) {
+      parts.push('comma-separated list');
+    } else if (kind === 'json') {
+      parts.push('JSON');
+    }
+    if (t && t.desc) {
+      parts.push(t.desc);
+    }
+    return parts.join(' · ');
   }
 
   function btRead(kind, s) {

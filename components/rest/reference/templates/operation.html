@@ -33,7 +33,7 @@
 <div class="mc-wire mc-wire-out" aria-hidden="true"></div>
 <ul class="mc-outs">{{range .Machine.Outputs}}{{template "port" .}}{{end}}</ul>
 {{if .TryBody}}<div class="mc-body" hidden><div class="mc-body-h">Body <span class="ct">{{.TryCT}}</span></div><textarea data-body rows="12" spellcheck="false" aria-label="Request body"></textarea></div>
-{{end}}{{template "details" .}}{{with .ReqExample}}<pre class="req-ex" hidden data-req-example>{{.}}</pre>{{end}}<div class="try-result" hidden aria-live="polite"></div>
+{{end}}{{template "details" .}}{{with .ReqExample}}<pre class="req-ex" hidden data-req-example{{with $.ReqTypes}} data-types="{{.}}"{{end}}>{{.}}</pre>{{end}}<div class="try-result" hidden aria-live="polite"></div>
 </form>{{end}}
 
 {{define "detail-x"}}<button type="button" class="mcd-x" data-detail-close aria-label="Close details">&times;</button>{{end}}
