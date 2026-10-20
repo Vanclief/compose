@@ -2071,6 +2071,9 @@
       box.parentElement.classList.add('oi-off');
       return;
     }
+    if (renderSampleDiff(box, v)) {
+      return;
+    }
     box.append(inspectorTree(v, typeTree(box.dataset.types), box.clientWidth));
   }
 
@@ -2124,6 +2127,9 @@
     return box;
   }
 
+
+  // The sample diffs, read on first use (see sampleDiff).
+  let sampleDiffData;
 
   const oiObserver = 'IntersectionObserver' in window
     ? new IntersectionObserver((entries) => {
@@ -2399,21 +2405,7 @@
       }
       changes.get(p).push(c);
     }
-    const pairs = diffAlign(diffRows(d.k === 'added' ? null : d.b), diffRows(d.k === 'removed' ? null : head));
-    const rows = pairs.map(([a, b]) => {
-      let state = 'same';
-      const own = (changes.get((a || b).path) || []).filter((c) => c.k !== 'inside');
-      if (!a) {
-        state = 'add';
-      } else if (!b) {
-        state = 'del';
-      } else if (own.length || diffSig(a) !== diffSig(b)) {
-        state = 'chg';
-      } else if (changes.has(a.path)) {
-        state = 'inside';
-      }
-      return { a, b, state, changes: changes.get((a || b).path) || [] };
-    });
+    const rows = diffStates(diffAlign(diffRows(d.k === 'added' ? null : d.b), diffRows(d.k === 'removed' ? null : head)), changes);
 
     // Shared columns: the widest key with its indent, the widest type.
     let kw = 6;
@@ -2450,11 +2442,39 @@
       view.append(whole);
     }
 
-    // Fold long unchanged runs.
+    diffFold(view, rows, diffPair);
+    if (!rows.length) {
+      view.append(el('div', 'mdiff-model', 'No fields on either side.'));
+    }
+    return view;
+  }
+
+  // diffStates tells each aligned pair of rows apart: add, del, chg (the row
+  // itself changed), inside (a model it holds changed) or same.
+  function diffStates(pairs, changes) {
+    return pairs.map(([a, b]) => {
+      let state = 'same';
+      const own = (changes.get((a || b).path) || []).filter((c) => c.k !== 'inside');
+      if (!a) {
+        state = 'add';
+      } else if (!b) {
+        state = 'del';
+      } else if (own.length || diffSig(a) !== diffSig(b)) {
+        state = 'chg';
+      } else if (changes.has(a.path)) {
+        state = 'inside';
+      }
+      return { a, b, state, changes: changes.get((a || b).path) || [] };
+    });
+  }
+
+  // diffFold writes rows into view with put, folding long unchanged runs
+  // into a button that writes them in their place.
+  function diffFold(view, rows, put) {
     let i = 0;
     while (i < rows.length) {
       if (rows[i].state !== 'same') {
-        diffPair(view, rows[i]);
+        put(view, rows[i]);
         i++;
         continue;
       }
@@ -2465,28 +2485,22 @@
       const head = i === 0 ? 0 : diffContext;
       const tail = j === rows.length ? 0 : diffContext;
       if (j - i <= diffRun || j - i <= head + tail + 1) {
-        rows.slice(i, j).forEach((r) => diffPair(view, r));
+        rows.slice(i, j).forEach((r) => put(view, r));
       } else {
-        rows.slice(i, i + head).forEach((r) => diffPair(view, r));
+        rows.slice(i, i + head).forEach((r) => put(view, r));
         const hidden = rows.slice(i + head, j - tail);
         const fold = el('button', 'mdiff-fold', '⋯ ' + hidden.length + ' unchanged ' + (hidden.length === 1 ? 'field' : 'fields'));
         fold.type = 'button';
         fold.onclick = () => {
-          const frag = doc.createDocumentFragment();
           const tmp = el('div');
-          hidden.forEach((r) => diffPair(tmp, r));
-          frag.append(...tmp.childNodes);
-          fold.replaceWith(frag);
+          hidden.forEach((r) => put(tmp, r));
+          fold.replaceWith(...tmp.childNodes);
         };
         view.append(fold);
-        rows.slice(j - tail, j).forEach((r) => diffPair(view, r));
+        rows.slice(j - tail, j).forEach((r) => put(view, r));
       }
       i = j;
     }
-    if (!rows.length) {
-      view.append(el('div', 'mdiff-model', 'No fields on either side.'));
-    }
-    return view;
   }
 
   // diffPair appends the two cells of a row pair: the base row on the left,
@@ -2559,6 +2573,160 @@
     }
     return note;
   }
+
+  // ---------------------------------------------------------- sample diffs
+  // In diff mode a response sample that changed shows its rows as one
+  // column, like a unified diff: removed rows from the base sample in red,
+  // added ones in green, changed ones in yellow with what changed under
+  // them. The changes of the models the sample holds join in at the rows
+  // that hold them, so a field added to a nested model shows where it sits.
+
+  function sampleDiff(ref) {
+    if (sampleDiffData === undefined) {
+      const node = doc.getElementById('sample-diffs');
+      try {
+        sampleDiffData = node ? JSON.parse(node.textContent) : null;
+      } catch (err) {
+        sampleDiffData = null;
+      }
+    }
+    return sampleDiffData ? sampleDiffData[Number(ref)] || null : null;
+  }
+
+  // diffOn reads the Diff mode toggle itself: its change listeners run
+  // before the one that sets body.diff.
+  function diffOn() {
+    const toggle = doc.querySelector('[data-diff-toggle]');
+    return toggle ? toggle.checked : false;
+  }
+
+  // renderSampleDiff fills box, a response panel's inspector, with the
+  // diff of its sample v; it returns false when the panel has none.
+  function renderSampleDiff(box, v) {
+    const sd = box.dataset.sdiff === undefined || !diffOn() ? null : sampleDiff(box.dataset.sdiff);
+    if (!sd) {
+      return false;
+    }
+    const own = { v, t: box.dataset.types === undefined ? '' : box.dataset.types };
+    const name = box.parentElement.querySelector('.ct-model');
+    box.append(sampleDiffView(sd, sd.k === 'removed' ? own : sd.b, sd.k === 'removed' ? null : own, name ? name.textContent : ''));
+    return true;
+  }
+
+  // sampleDiffView is the diff of a response sample sd between the base
+  // and head samples, either absent when the response was added or removed;
+  // name is the model the response shows, if any.
+  function sampleDiffView(sd, base, head, name) {
+    const a = diffRows(base);
+    const b = diffRows(head);
+    const changes = new Map();
+    const seen = new Set();
+    const add = (prefix, c) => {
+      const p = diffPath(prefix && c.p ? prefix + ' › ' + c.p : prefix || c.p);
+      const key = p + '\0' + c.k + '\0' + c.d;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      if (!changes.has(p)) {
+        changes.set(p, []);
+      }
+      changes.get(p).push(c);
+    };
+    (sd.c || []).forEach((c) => add('', c));
+    const nested = (prefix, anchor) => {
+      const md = anchor ? modelDiff(anchor) : null;
+      if (md && md.k === 'changed') {
+        (md.c || []).forEach((c) => add(prefix, c));
+      }
+    };
+    nested('', sd.m);
+    for (const r of a.concat(b)) {
+      if (r.t && !r.t.own && (r.t.kind === 'm' || r.t.kind === 'l')) {
+        nested(r.path, modelAnchor(r.t.label));
+      }
+    }
+    const rows = diffStates(diffAlign(a, b), changes);
+
+    const view = el('div', 'mdiff mdiff-1');
+    let kw = 6;
+    let tw = 4;
+    for (const r of rows) {
+      const x = r.b || r.a;
+      kw = Math.max(kw, x.depth * 2 + String(x.key === undefined ? JSON.stringify(x.value) : x.key).length + (x.folder ? 3 : 0));
+      if (x.t) {
+        const was = r.state === 'chg' && r.a && r.a.t && r.a.t.label !== x.t.label ? r.a.t.label.length + 3 : 0;
+        tw = Math.max(tw, x.t.label.length + (x.t.base ? x.t.base.length + 1 : 0) + was);
+      }
+    }
+    view.style.setProperty('--kw', Math.min(30, kw) + 'ch');
+    view.style.setProperty('--tw', Math.min(26, tw) + 'ch');
+
+    if (sd.k === 'added' || sd.k === 'removed') {
+      const whole = el('div', 'mdiff-model');
+      whole.append(el('span', sd.k === 'added' ? 'mdiff-added' : 'mdiff-removed', sd.k === 'added' ? 'New response' : 'Response removed'));
+      view.append(whole);
+    } else {
+      const root = (changes.get('') || []).filter((c) => !(c.k === 'inside' && c.m === sd.m));
+      if (root.length) {
+        const note = el('div', 'mdiff-model');
+        if (name && sd.m) {
+          const link = el('a', 'oi-type t-model', name);
+          link.href = '#' + sd.m;
+          link.dataset.model = sd.m;
+          note.append(link);
+        }
+        root.forEach((c) => note.append(diffNote(c)));
+        view.append(note);
+      }
+    }
+    diffFold(view, rows, sampleDiffRow);
+    if (!rows.length) {
+      view.append(el('div', 'mdiff-model', 'No fields.'));
+    }
+    return view;
+  }
+
+  // sampleDiffRow writes one row of a sample diff: the base row when it was
+  // removed, the head row otherwise, a changed type after the one it was.
+  function sampleDiffRow(view, r) {
+    const x = r.state === 'del' ? r.a : r.b;
+    const notes = r.state === 'chg' || r.state === 'inside' || r.changes.some((c) => c.x) ? r.changes : null;
+    const cell = diffCell(x, r.state, notes);
+    if (r.state === 'chg' && r.a && r.a.t && x.t && r.a.t.label !== x.t.label) {
+      const ty = cell.querySelector('.mdiff-row > .oi-type');
+      if (ty) {
+        const wrap = el('span', 'mdiff-ty');
+        ty.replaceWith(wrap);
+        wrap.append(el('s', 'mdiff-was', r.a.t.label), el('span', 'mdiff-arrow', '→'), ty);
+      }
+    }
+    view.append(cell);
+  }
+
+  // Diff mode switches the response panels between their diff and their
+  // inspector, and away from responses only the base document has.
+  doc.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || !t.hasAttribute('data-diff-toggle')) {
+      return;
+    }
+    doc.querySelectorAll('[data-oi][data-sdiff]').forEach((box) => {
+      if (box.dataset.done) {
+        box.textContent = '';
+        delete box.dataset.done;
+        renderInspector(box);
+      }
+    });
+    if (!t.checked) {
+      doc.querySelectorAll('.tab.tab-removed[aria-selected="true"]').forEach((tab) => {
+        const first = tab.parentElement.querySelector('.tab:not(.tab-removed)');
+        if (first) {
+          first.click();
+        }
+      });
+    }
+  });
 
   function toggleRaw(btn) {
     const panel = btn.closest('.tabpanel');

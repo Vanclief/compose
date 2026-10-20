@@ -46,6 +46,9 @@ type pageView struct {
 	// ModelDiffs is the side-by-side diff of the changed models in diff
 	// mode, see modelDiffs.
 	ModelDiffs template.JS
+	// SampleDiffs is the diff of the changed response samples in diff mode,
+	// see sampleDiffs.
+	SampleDiffs template.JS
 }
 
 // serverView is one server: URL has every variable replaced by its default
@@ -184,6 +187,11 @@ type sampleView struct {
 	Model   *sampleModelView // the named schema the sample shows, if any
 	Example template.HTML
 	Types   string // index of the example's type description, see typesRef
+	// In diff mode: the sample's badge, its index in the sample diffs (see
+	// sampleDiffs) and whether the head document no longer has it.
+	Diff    *diffBadge
+	DiffRef string
+	Removed bool
 }
 
 // sampleModelView names the model a sample shows, next to its content
@@ -361,6 +369,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Models = p.ModelNav.order()
 	p.Flow = b.flow.JSON
 	p.ModelDiffs = b.modelDiffsJSON()
+	p.SampleDiffs = b.sampleDiffsJSON()
 	p.ModelSamples = b.modelSamplesJSON()
 	p.TypeNotes = b.typeNotesJSON()
 	p.Map = b.buildMap()

@@ -1299,6 +1299,37 @@ body:not(.diff) [data-model-view="diff"] { display: none; }
 .mdiff-fold { grid-column: 1 / -1; padding: 5px 14px; border: 0; border-block: 1px solid var(--sample-line); background: var(--sample-fill); color: var(--sample-muted); font: 12px var(--font); text-align: left; cursor: pointer; }
 .mdiff-fold:hover { color: var(--accent); }
 
+/* Response samples in diff mode: one column, a unified diff of the
+   inspector's rows. A changed row is yellow, its old type struck out. */
+.mdiff.mdiff-1 { grid-template-columns: minmax(0, 1fr); padding: 4px 0 8px; }
+.mdiff-1 .mdiff-cell { padding: 0 12px 0 4px; }
+.mdiff-1 .mdiff-del .mdiff-k { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--diff-del) 60%, transparent); }
+.mdiff-chg { background: var(--diff-chg-bg); }
+.mdiff-chg .mdiff-sign::before { content: "~"; color: var(--diff-chg); font-weight: 700; }
+.mdiff-ty { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.mdiff-ty > .oi-type { min-width: 0; }
+.mdiff-was { color: var(--diff-del); text-decoration-color: color-mix(in srgb, var(--diff-del) 60%, transparent); }
+.mdiff-arrow { color: var(--sample-muted); }
+.mdiff-1 .mdiff-model:first-child { border-top: 0; }
+
+/* Status tabs: the response's change letters; responses only the base has
+   show in diff mode alone. */
+.tab .diff-dot { margin-left: 6px; vertical-align: 1px; }
+.tab .diff-dot + .diff-dot { margin-left: 2px; }
+body:not(.diff) .tab.tab-removed, body:not(.diff) .tabpanel-removed { display: none; }
+body.diff .tab.tab-removed { text-decoration: line-through; }
+
+/* Flow canvas ports in diff mode: the frame takes the change colour and its
+   letters sit on the corner. Removed ports come back dashed and struck out. */
+.pdiff > .pbox { position: relative; }
+.pdiff-mark { position: absolute; top: -9px; right: -7px; display: inline-flex; gap: 2px; }
+.pdiff-mark .diff-dot + .diff-dot { margin-left: 0; }
+body:not(.diff) .pdiff-mark, body:not(.diff) .port.pdiff.diff-removed { display: none; }
+body.diff .port.pdiff.diff-changed > .pbox { border-color: var(--diff-chg); background: var(--diff-chg-bg); }
+body.diff .port.pdiff.diff-added > .pbox { border-color: var(--diff-add); background: var(--diff-add-bg); }
+body.diff .port.pdiff.diff-removed > .pbox { border-style: dashed; border-color: var(--diff-del); background: var(--diff-del-bg); }
+body.diff .port.pdiff.diff-removed .pnm { color: var(--diff-del); font-style: normal; text-decoration: line-through; }
+
 /* Schema map in diff mode: cards, field rows and relations tinted by their
    diff state (a added, c changed, d removed); unstyled when the toggle is off. */
 .mcard-diff, .map-legend .lg-diff { display: none; }

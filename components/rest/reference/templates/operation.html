@@ -11,8 +11,8 @@
 </div>
 <aside class="op-samples" aria-label="Samples for {{.Title}}">
 {{if .ResSamples}}<div class="card tabset">
-<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
-{{range $i, $s := .ResSamples}}<div class="tabpanel oi-panel" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct"><span class="ct-of">{{$s.Type}}{{with $s.Model}}<span class="ct-sep" aria-hidden="true">&middot;</span><a class="ct-model oi-type {{.Class}}" href="{{href .Anchor}}" data-model="{{.Anchor}}" title="{{.Title}}">{{with .Prefix}}<span class="pre">{{.}}</span>{{end}}{{.Name}}</a>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}{{end}}</span><button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="oi" data-oi{{with $s.Types}} data-types="{{.}}"{{end}}></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
+<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}{{if $s.Removed}} tab-removed{{end}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}{{with $s.Diff}}{{template "diff-nav-badge" .}}{{end}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
+{{range $i, $s := .ResSamples}}<div class="tabpanel oi-panel{{if $s.Removed}} tabpanel-removed{{end}}" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct"><span class="ct-of">{{$s.Type}}{{with $s.Model}}<span class="ct-sep" aria-hidden="true">&middot;</span><a class="ct-model oi-type {{.Class}}" href="{{href .Anchor}}" data-model="{{.Anchor}}" title="{{.Title}}">{{with .Prefix}}<span class="pre">{{.}}</span>{{end}}{{.Name}}</a>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}{{end}}</span><button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="oi" data-oi{{with $s.Types}} data-types="{{.}}"{{end}}{{with $s.DiffRef}} data-sdiff="{{.}}"{{end}}></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
 {{end}}</div>
 {{end}}</aside>
 </article>
@@ -52,7 +52,7 @@
 </div>
 {{end}}{{end}}
 
-{{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Loc}} in{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">
+{{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Loc}} in{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}{{with .Diff}} pdiff {{.Class}}{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">{{with .Diff}}<span class="pdiff-mark">{{template "diff-nav-badge" .}}</span>{{end}}
 {{- if .Ghost}}<span class="pt"><span class="ps"></span><span class="pnm">{{.Name}}</span></span>
 {{- else if .Loc}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pin">{{dotName .Head}}</span><span class="lchip">{{.Loc}}</span></button>
 {{- if or (ne .Head .Type) .Source}}<div class="src">{{if ne .Head .Type}}<span class="pty">{{.Type}}</span>{{end}}{{with .Source}}<span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a>{{if $.MoreSources}}<button type="button" class="pop-tg" data-pop="by">+{{$.MoreSources}}</button>{{end}}{{end}}</div>{{end}}

@@ -26,6 +26,7 @@ type diffState struct {
 	base    *Document
 	report  *Report
 	removed map[*Operation]bool // base operations shown as removed
+	samples []*sampleDiffView   // the response sample diffs, see sampleDiffs
 }
 
 // newDiffState parses base and compares it with head; it returns nil when
@@ -114,6 +115,8 @@ func (b *builder) operationView(ref OperationRef, tags []string) *opView {
 		old.d = b.diff.base
 		old.diff = nil
 		ov := old.buildOperation(ref, tags)
+		// The copy lists the type notes it adds on its own slice.
+		b.notes = old.notes
 		ov.Diff = newBadge(Removed, true)
 		ov.Diff.op = od
 		return ov
@@ -125,6 +128,7 @@ func (b *builder) operationView(ref OperationRef, tags []string) *opView {
 		ov.Diff.op = od
 	}
 	b.removedParams(ov, ref.Operation)
+	b.sampleDiffs(ov, ref, od)
 	return ov
 }
 
@@ -477,6 +481,8 @@ func (b *builder) removedModelViews() []*modelView {
 		_, mv.Inspector = b.samples[mv.Anchor]
 		out = append(out, mv)
 	}
+	// The copy lists the type notes it adds on its own slice.
+	b.notes = old.notes
 	return out
 }
 
@@ -526,18 +532,7 @@ func (b *builder) modelDiffsJSON() template.JS {
 		}
 		for _, c := range md.Changes {
 			segs := strings.Split(c.Path, pathSep)
-			cv := modelChangeView{
-				Path:     strings.Join(segs[1:], pathSep),
-				Kind:     c.Kind.String(),
-				Detail:   c.Detail,
-				Breaking: c.Breaking,
-			}
-			if c.inherited() {
-				cv.Kind = "inside"
-				cv.Model = b.models[c.model]
-				cv.Detail = b.display(c.model)
-			}
-			mv.Changes = append(mv.Changes, cv)
+			mv.Changes = append(mv.Changes, b.changeView(c, strings.Join(segs[1:], pathSep)))
 		}
 		out.Models[anchor] = mv
 	}
@@ -546,6 +541,18 @@ func (b *builder) modelDiffsJSON() template.JS {
 		return ""
 	}
 	return template.JS(raw)
+}
+
+// changeView is the change c at path, relative to the model or sample it
+// belongs to.
+func (b *builder) changeView(c Change, path string) modelChangeView {
+	cv := modelChangeView{Path: path, Kind: c.Kind.String(), Detail: c.Detail, Breaking: c.Breaking}
+	if c.inherited() {
+		cv.Kind = "inside"
+		cv.Model = b.models[c.model]
+		cv.Detail = b.display(c.model)
+	}
+	return cv
 }
 
 // baseSample is the dialog sample of the component schema name in the base
@@ -558,4 +565,280 @@ func (b *builder) baseSample(name string) *modelSample {
 	var raw bytes.Buffer
 	appendJSON(&raw, v)
 	return &modelSample{Value: raw.Bytes(), Types: b.noteRef(strings.Join(notes, "\n"))}
+}
+
+// sampleDiffView is the diff of one response sample: Kind added, removed or
+// changed; Base the base sample of a changed one (a removed response's
+// panel shows the base sample itself); Model the anchor of the model the
+// sample shows, whose changes, and those of the models inside it, the client
+// adds by path; Changes the operation's own changes below the response,
+// with paths relative to it.
+type sampleDiffView struct {
+	Kind    string            `json:"k"`
+	Base    *modelSample      `json:"b,omitempty"`
+	Model   string            `json:"m,omitempty"`
+	Changes []modelChangeView `json:"c,omitempty"`
+}
+
+// sampleDiffs gives each response sample of a changed operation that
+// changed its diff and badge, and adds a sample built from the base
+// document for every response the head no longer has.
+func (b *builder) sampleDiffs(ov *opView, ref OperationRef, od *OperationDiff) {
+	if od == nil || od.Kind != Changed {
+		return
+	}
+	bref, ok := b.diff.baseOperation(ref.Method, ref.Path)
+	if !ok {
+		return
+	}
+	for i := range ov.ResSamples {
+		s := &ov.ResSamples[i]
+		sd := &sampleDiffView{Kind: "changed", Changes: b.responseChanges(od, s.Label, s.Type)}
+		br, ok := bref.Operation.Responses.Get(s.Label)
+		if !ok {
+			sd.Kind = "added"
+		} else {
+			sd.Base = b.baseMediaSample(b.diff.base.Response(br), s.Type)
+		}
+		if sd.Kind == "changed" && len(sd.Changes) == 0 {
+			continue
+		}
+		if s.Model != nil {
+			sd.Model = s.Model.Anchor
+		}
+		kind := Changed
+		if sd.Kind == "added" {
+			kind = Added
+		}
+		s.Diff = newBadge(kind, anyBreaking(sd.Changes))
+		s.DiffRef = b.diff.addSample(sd)
+	}
+
+	old := *b
+	old.d = b.diff.base
+	old.diff = nil
+	for _, code := range bref.Operation.Responses.Keys {
+		_, ok := ref.Operation.Responses.Get(code)
+		if ok {
+			continue
+		}
+		r := b.diff.base.Response(bref.Operation.Responses.Map[code])
+		if r == nil {
+			continue
+		}
+		for _, ct := range r.Content.Keys {
+			mt := r.Content.Map[ct]
+			if mt == nil {
+				continue
+			}
+			example := b.diff.base.MediaExampleJSON(mt, ForResponse)
+			if example == "" {
+				continue
+			}
+			sv := sampleView{Label: code, Class: statusClass(code), Type: ct, Model: old.sampleModel(mt.Schema), Example: textHTML(example), Removed: true, Diff: newBadge(Removed, false)}
+			notes := b.diff.base.mediaTypes(mt, ForResponse, b.display)
+			if notes != "" {
+				sv.Types = strconv.Itoa(b.noteRef(notes))
+			}
+			sd := &sampleDiffView{Kind: "removed", Changes: b.responseChanges(od, code, ct)}
+			if sv.Model != nil {
+				sd.Model = sv.Model.Anchor
+			}
+			sv.DiffRef = b.diff.addSample(sd)
+			ov.ResSamples = append(ov.ResSamples, sv)
+			break
+		}
+	}
+	sort.SliceStable(ov.ResSamples, func(i, j int) bool {
+		return statusRank(ov.ResSamples[i].Label) < statusRank(ov.ResSamples[j].Label)
+	})
+}
+
+// responseChanges are the changes of od below its response code, with paths
+// relative to the response's content of type ct.
+func (b *builder) responseChanges(od *OperationDiff, code, ct string) []modelChangeView {
+	prefix := od.Key() + pathSep + "response " + code
+	var out []modelChangeView
+	for _, c := range od.Changes {
+		rel := ""
+		switch {
+		case c.Path == prefix:
+		case strings.HasPrefix(c.Path, prefix+pathSep):
+			rel = c.Path[len(prefix+pathSep):]
+		default:
+			continue
+		}
+		// A response with several content types puts the type first.
+		if rel == ct {
+			rel = ""
+		}
+		rel = strings.TrimPrefix(rel, ct+pathSep)
+		out = append(out, b.changeView(c, rel))
+	}
+	return out
+}
+
+// baseMediaSample is the sample of the base response r for content type ct,
+// or for its only content type, or nil.
+func (b *builder) baseMediaSample(r *Response, ct string) *modelSample {
+	if r == nil {
+		return nil
+	}
+	mt, ok := r.Content.Get(ct)
+	if !ok && r.Content.Len() == 1 {
+		mt = r.Content.Map[r.Content.Keys[0]]
+	}
+	if mt == nil {
+		return nil
+	}
+	example := b.diff.base.MediaExampleJSON(mt, ForResponse)
+	if example == "" {
+		return nil
+	}
+	sample := &modelSample{Value: json.RawMessage(example), Types: -1}
+	notes := b.diff.base.mediaTypes(mt, ForResponse, b.display)
+	if notes != "" {
+		sample.Types = b.noteRef(notes)
+	}
+	return sample
+}
+
+func anyBreaking(changes []modelChangeView) bool {
+	for _, c := range changes {
+		if c.Breaking {
+			return true
+		}
+	}
+	return false
+}
+
+// baseOperation finds the base document's operation at method and path.
+func (st *diffState) baseOperation(method, path string) (OperationRef, bool) {
+	for _, ref := range st.base.Operations() {
+		if ref.Method == method && ref.Path == path {
+			return ref, true
+		}
+	}
+	return OperationRef{}, false
+}
+
+// addSample lists a sample diff and returns its index.
+func (st *diffState) addSample(sd *sampleDiffView) string {
+	st.samples = append(st.samples, sd)
+	return strconv.Itoa(len(st.samples) - 1)
+}
+
+// sampleDiffsJSON is the sample diffs the response panels point at.
+// Marshal escapes <, > and &, so the JSON is safe inside a script element.
+func (b *builder) sampleDiffsJSON() template.JS {
+	if b.diff == nil || len(b.diff.samples) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(b.diff.samples)
+	if err != nil {
+		return ""
+	}
+	return template.JS(raw)
+}
+
+// machineDiffs marks the ports of the changed operations' machines: an
+// input or output that was added, changed or removed gets its badge, and
+// the inputs and outputs the head no longer has come back as removed ports.
+func (b *builder) machineDiffs(ops []*opView) {
+	if b.diff == nil {
+		return
+	}
+	for _, ov := range ops {
+		if ov.Diff == nil || ov.Diff.op == nil || ov.Diff.op.Kind != Changed {
+			continue
+		}
+		od := ov.Diff.op
+		key := od.Key()
+		m := &ov.Machine
+		for i := range m.Inputs {
+			p := &m.Inputs[i]
+			switch {
+			case p.Key == "in:body":
+				p.Diff = portBadge(od, key+pathSep+"request body")
+			case p.Key == "in:optional":
+				var badges []*diffBadge
+				for _, name := range p.Names {
+					for _, loc := range []string{"query", "header", "cookie", "path"} {
+						badges = append(badges, portBadge(od, key+pathSep+loc+pathSep+name))
+					}
+				}
+				p.Diff = mergeBadges(badges)
+			case strings.HasPrefix(p.Key, "in:"):
+				loc, name, _ := strings.Cut(strings.TrimPrefix(p.Key, "in:"), ":")
+				p.Diff = portBadge(od, key+pathSep+loc+pathSep+name)
+			}
+		}
+		for i := range m.Outputs {
+			p := &m.Outputs[i]
+			p.Diff = portBadge(od, key+pathSep+"response "+p.Name)
+		}
+
+		removed := newBadge(Removed, false)
+		for _, rp := range b.diff.report.marks.params[ov.ref.Operation] {
+			p := portView{Key: "in:removed:" + rp.in + ":" + rp.row.name, Name: rp.row.name + " (" + rp.in + ")", Kind: "any", Ghost: true, Diff: removed}
+			m.Inputs = append(m.Inputs, p)
+		}
+		bref, ok := b.diff.baseOperation(ov.Method, ov.Path)
+		if !ok {
+			continue
+		}
+		old := *b
+		old.d = b.diff.base
+		for _, code := range bref.Operation.Responses.Keys {
+			_, ok := ov.ref.Operation.Responses.Get(code)
+			if ok {
+				continue
+			}
+			name := code
+			s := old.responseSchema(bref.Operation.Responses.Map[code])
+			if s != nil {
+				name += " " + old.port(s, ForResponse).Type
+			}
+			m.Outputs = append(m.Outputs, portView{Key: "out:removed:" + code, Name: name, Kind: "any", Ghost: true, Diff: removed})
+		}
+	}
+}
+
+// portBadge is the badge of the port whose changes sit at path: added when
+// the port itself was, changed when anything at or below it changed.
+func portBadge(od *OperationDiff, path string) *diffBadge {
+	var badge *diffBadge
+	for _, c := range od.Changes {
+		if c.Path != path && !strings.HasPrefix(c.Path, path+pathSep) {
+			continue
+		}
+		kind := Changed
+		if c.Path == path && c.Kind == Added && strings.HasSuffix(c.Detail, "added") && !strings.HasPrefix(c.Detail, "content type") {
+			kind = Added
+		}
+		if badge == nil {
+			badge = newBadge(kind, c.Breaking)
+			continue
+		}
+		if kind != Added && badge.Letter == "A" {
+			continue
+		}
+		badge.Breaking = badge.Breaking || c.Breaking
+	}
+	return badge
+}
+
+// mergeBadges is one changed badge for several, nil when all are.
+func mergeBadges(badges []*diffBadge) *diffBadge {
+	var out *diffBadge
+	for _, b := range badges {
+		if b == nil {
+			continue
+		}
+		if out == nil {
+			out = newBadge(Changed, false)
+		}
+		out.Breaking = out.Breaking || b.Breaking
+	}
+	return out
 }

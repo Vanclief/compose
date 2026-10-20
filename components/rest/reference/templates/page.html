@@ -29,6 +29,7 @@
 <script type="application/json" id="type-notes">{{.TypeNotes}}</script>
 <script type="application/json" id="model-samples">{{.ModelSamples}}</script>
 {{if .ModelDiffs}}<script type="application/json" id="model-diffs">{{.ModelDiffs}}</script>
+{{end}}{{if .SampleDiffs}}<script type="application/json" id="sample-diffs">{{.SampleDiffs}}</script>
 {{end}}
 {{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/reference.js?v={{.JSVersion}}"></script>{{end}}
 </body>

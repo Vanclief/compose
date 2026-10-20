@@ -46,6 +46,7 @@ type portView struct {
 	Try         *tryParam  // the input that fills a parameter port
 	Opts        []tryParam // the inputs of the optional port
 	Edit        bool       // the body port opens the body editor
+	Diff        *diffBadge // in diff mode, what changed at the port
 }
 
 // BaseType is Type without its list brackets: Amenity for Amenity[].
@@ -167,6 +168,7 @@ func (b *builder) buildFlow(ops []*opView) {
 	}
 
 	idx.JSON = b.flowJSON(ops, flows)
+	b.machineDiffs(ops)
 }
 
 // producerRank orders the operations that produce a model: lists first, then

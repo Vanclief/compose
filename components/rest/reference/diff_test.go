@@ -420,3 +420,120 @@ func TestRenderModelDiffs(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(plain), `id="model-diffs"`)
 }
+
+// TestRenderSampleDiffs covers the response sample diffs: a changed status
+// with its own and its models' changes, an added and a removed status, the
+// status tab letters and the flow ports' marks.
+func TestRenderSampleDiffs(t *testing.T) {
+	base := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.0"},
+  "paths": {"/pets": {"get": {
+    "operationId": "pets.list",
+    "parameters": [
+      {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+      {"name": "X-Old", "in": "header", "required": true, "schema": {"type": "string"}}
+    ],
+    "responses": {
+      "200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object", "properties": {
+        "pets": {"type": "array", "items": {"$ref": "#/components/schemas/Pet"}},
+        "total": {"type": "string"}
+      }}}}},
+      "404": {"description": "missing", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    }
+  }}},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "properties": {"id": {"type": "string"}, "legacy": {"type": "string"}}},
+    "Problem": {"type": "object", "properties": {"message": {"type": "string"}}}
+  }}
+}`
+	head := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.1"},
+  "paths": {"/pets": {"get": {
+    "operationId": "pets.list",
+    "parameters": [
+      {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+      {"name": "X-New", "in": "header", "required": true, "schema": {"type": "string"}}
+    ],
+    "responses": {
+      "200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object", "properties": {
+        "pets": {"type": "array", "items": {"$ref": "#/components/schemas/Pet"}},
+        "total": {"type": "integer"},
+        "next": {"type": "string"}
+      }}}}},
+      "202": {"description": "later", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    }
+  }}},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "properties": {"id": {"type": "string"}, "alias": {"type": "string"}}},
+    "Problem": {"type": "object", "properties": {"message": {"type": "string"}}}
+  }}
+}`
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{Base: []byte(base)})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	start := strings.Index(html, `<script type="application/json" id="sample-diffs">`)
+	require.Positive(t, start)
+	raw := html[start+len(`<script type="application/json" id="sample-diffs">`):]
+	raw = raw[:strings.Index(raw, "</script>")]
+	var diffs []struct {
+		Kind    string            `json:"k"`
+		Base    *modelSample      `json:"b"`
+		Model   string            `json:"m"`
+		Changes []modelChangeView `json:"c"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &diffs))
+	require.Len(t, diffs, 3)
+	byKind := map[string]int{}
+	for i, d := range diffs {
+		byKind[d.Kind] = i
+	}
+
+	changed := diffs[byKind["changed"]]
+	require.NotNil(t, changed.Base, "a changed response carries its base sample")
+	require.Contains(t, string(changed.Base.Value), `"total"`)
+	require.Empty(t, changed.Model, "an inline response names no model")
+	paths := map[string]modelChangeView{}
+	for _, c := range changed.Changes {
+		paths[c.Path] = c
+	}
+	require.Equal(t, "added", paths["next"].Kind)
+	require.Equal(t, "changed", paths["total"].Kind)
+	require.True(t, paths["total"].Breaking)
+	require.Equal(t, "inside", paths["pets[]"].Kind, "the list's model changed inside")
+	require.Equal(t, "model/Pet", paths["pets[]"].Model)
+
+	require.Nil(t, diffs[byKind["added"]].Base)
+	require.Equal(t, "model/Problem", diffs[byKind["added"]].Model)
+	require.Equal(t, "model/Problem", diffs[byKind["removed"]].Model)
+
+	op := section(t, html, `id="operation/pets-list"`)
+	// Tabs in status order, each with its letters; the removed one struck.
+	require.Contains(t, op, `<button type="button" role="tab" class="tab s2xx" aria-selected="true">200<span class="diff-dot diff-changed" title="CHANGED, BREAKING">C</span><span class="diff-dot diff-breaking" title="BREAKING">!</span></button>`)
+	require.Contains(t, op, `<button type="button" role="tab" class="tab s2xx" aria-selected="false">202<span class="diff-dot diff-added" title="ADDED">A</span></button>`)
+	require.Contains(t, op, `<button type="button" role="tab" class="tab s4xx tab-removed" aria-selected="false">404<span class="diff-dot diff-removed" title="REMOVED">R</span></button>`)
+	require.Contains(t, op, `<div class="tabpanel oi-panel tabpanel-removed" role="tabpanel" hidden>`)
+	require.Contains(t, op, ` data-sdiff="`)
+	// The removed panel shows the base sample.
+	require.Contains(t, op, "tabpanel-removed\" role=\"tabpanel\" hidden>")
+	require.Regexp(t, `tabpanel-removed" role="tabpanel" hidden>.*?data-sdiff="\d+"></div><pre class="raw"><code class="json">\{\s+"message": "string"`, op)
+
+	// Ports: the new header is added, the old one comes back removed, the
+	// changed response is marked, the removed one is a removed port.
+	require.Contains(t, op, `pdiff diff-added" data-port="in:header:X-New"`)
+	require.Contains(t, op, `pdiff diff-removed" data-port="in:removed:header:X-Old"`)
+	require.Contains(t, op, `pdiff diff-changed" data-port="out:200"`)
+	require.Contains(t, op, `pdiff diff-added" data-port="out:202"`)
+	require.Contains(t, op, `pdiff diff-removed" data-port="out:removed:404"`)
+	require.NotContains(t, op, `data-port="in:optional"`+` class`, "the unchanged optional port has no mark")
+
+	plain, err := Render(doc, Options{})
+	require.NoError(t, err)
+	require.NotContains(t, string(plain), `id="sample-diffs"`)
+	require.NotContains(t, string(plain), `<span class="pdiff-mark">`)
+}
