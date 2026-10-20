@@ -259,7 +259,7 @@ func TestRenderDiff(t *testing.T) {
 
 	require.Contains(t, html, `<body data-server="" data-mode="docs" class="diff">`)
 	require.Contains(t, html, `data-diff-toggle`)
-	require.Contains(t, html, `data-diff-only`)
+	require.NotContains(t, html, `data-diff-only`)
 	require.Contains(t, html, `href="#section/changes"`)
 
 	changes := section(t, html, `id="section/changes"`)

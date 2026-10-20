@@ -2166,23 +2166,21 @@
     setModelView(btn.closest('.model'), btn.dataset.modelView);
   }
 
-  // Show changes switches the models that changed between their changes and
+  // Diff mode switches the models that changed between their changes and
   // their inspector.
-  doc.addEventListener('click', (e) => {
-    if (!(e.target instanceof Element) || !e.target.closest('[data-diff-toggle]')) {
+  doc.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || !t.hasAttribute('data-diff-toggle')) {
       return;
     }
-    setTimeout(() => {
-      const on = body.classList.contains('diff');
-      doc.querySelectorAll('.model > [data-model-diff]').forEach((box) => {
-        const article = box.parentElement;
-        const current = article.querySelector('[data-model-view][aria-pressed="true"]');
-        if (on && current && current.dataset.modelView === 'oi') {
-          setModelView(article, 'diff');
-        } else if (!on && current && current.dataset.modelView === 'diff') {
-          setModelView(article, 'oi');
-        }
-      });
+    doc.querySelectorAll('.model > [data-model-diff]').forEach((box) => {
+      const article = box.parentElement;
+      const current = article.querySelector('[data-model-view][aria-pressed="true"]');
+      if (t.checked && current && current.dataset.modelView === 'oi') {
+        setModelView(article, 'diff');
+      } else if (!t.checked && current && current.dataset.modelView === 'diff') {
+        setModelView(article, 'oi');
+      }
     });
   });
 
@@ -4604,29 +4602,24 @@
 })();
 
 // ---- diff ----
-// Diff mode (rendered with a base spec): the Show changes toggle, the
-// Changes only sidebar filter and opening the collapsed responses and rows
-// that hold marked changes. It talks to the client above only through the
-// DOM, by clicking the toggles that client already handles.
+// Diff mode (rendered with a base spec): the Diff mode toggle and opening
+// the collapsed sidebar groups, responses and rows that hold marked changes.
+// It talks to the client above only through the DOM, by clicking the
+// toggles that client already handles.
 (() => {
   'use strict';
 
   const doc = document;
   const body = doc.body;
-  const showBtn = doc.querySelector('[data-diff-toggle]');
-  if (!showBtn) {
+  const toggle = doc.querySelector('[data-diff-toggle]');
+  if (!toggle) {
     return;
   }
 
-  function setShow(on) {
+  // Diff mode shows the marks and hides unchanged sidebar entries (both in
+  // CSS), and opens the groups and folders that hold changes.
+  function setDiff(on) {
     body.classList.toggle('diff', on);
-    showBtn.setAttribute('aria-pressed', String(on));
-  }
-
-  // Changes only hides unchanged sidebar entries (in CSS) and opens the
-  // groups and folders that hold changes.
-  function setOnly(on) {
-    body.classList.toggle('changes-only', on);
     if (!on) {
       return;
     }
@@ -4637,24 +4630,13 @@
     });
   }
 
-  doc.addEventListener('click', (e) => {
-    const btn = e.target instanceof Element ? e.target.closest('[data-diff-toggle]') : null;
-    if (btn) {
-      setShow(!body.classList.contains('diff'));
-    }
-  });
-
   doc.addEventListener('change', (e) => {
-    const t = e.target;
-    if (t instanceof HTMLInputElement && t.hasAttribute('data-diff-only')) {
-      setOnly(t.checked);
+    if (e.target === toggle) {
+      setDiff(toggle.checked);
     }
   });
 
-  const only = doc.querySelector('[data-diff-only]');
-  if (only && only.checked) {
-    setOnly(true);
-  }
+  setDiff(toggle.checked);
 
   // toggleFor returns the button that shows a collapsed container.
   function toggleFor(box) {

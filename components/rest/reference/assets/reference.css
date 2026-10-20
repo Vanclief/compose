@@ -1122,8 +1122,9 @@ body.map-open .content > :not(.map) { display: none !important; }
 }
 
 /* ---- diff ---- */
-/* Diff mode (Options.Base): body.diff shows the marks; the Show changes
-   toggle removes the class to show the head document alone. */
+/* Diff mode (Options.Base): body.diff shows the marks and lists only the
+   changes in the sidebar; the Diff mode toggle removes the class to show the
+   head document alone. */
 :root {
   --diff-add: #1a7f37;
   --diff-add-bg: #e6f6ea;
@@ -1152,7 +1153,7 @@ body.map-open .content > :not(.map) { display: none !important; }
 }
 
 body:not(.diff) .diff-badge, body:not(.diff) .diff-dot, body:not(.diff) .diff-log, body:not(.diff) .diff-navlink,
-body:not(.diff) .diff-only, body:not(.diff) .row.diff-del, body:not(.diff) .chip.diff-del, body:not(.diff) .mk.diff-inside,
+body:not(.diff) .row.diff-del, body:not(.diff) .chip.diff-del, body:not(.diff) .mk.diff-inside,
 body:not(.diff) .op.diff-removed, body:not(.diff) .nav li:has(> .diff-removed) { display: none; }
 
 /* Badges */
@@ -1170,13 +1171,13 @@ body:not(.diff) .op.diff-removed, body:not(.diff) .nav li:has(> .diff-removed) {
 .diff-dot.diff-breaking { min-width: 12px; color: #fff; background: var(--diff-del); }
 .diff-dot + .diff-dot { margin-left: -5px; }
 
-/* Header toggle and sidebar filter */
-.diff-toggle { margin-left: auto; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
-.diff-toggle[aria-pressed="true"] { color: var(--diff-chg); border-color: var(--diff-chg); background: var(--diff-chg-bg); }
-.diff-only { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 13px; cursor: pointer; }
-.search .diff-only input { width: auto; margin: 0; padding: 0; accent-color: var(--diff-chg); }
-body.diff.changes-only .nav li:has(> .nav-op:not(.diff-op)), body.diff.changes-only .nav li:has(> .nav-model:not(.diff-op)),
-body.diff.changes-only .nav-folder:not(:has(.diff-op)), body.diff.changes-only .nav-group:not(:has(.diff-op)) { display: none; }
+/* Header toggle; on, the sidebar lists only the changes */
+.diff-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; user-select: none; }
+.diff-toggle:hover { background: var(--bg-hover); }
+.diff-toggle input { margin: 0; accent-color: var(--diff-chg); cursor: pointer; }
+.diff-toggle:has(input:checked) { color: var(--diff-chg); border-color: var(--diff-chg); background: var(--diff-chg-bg); }
+body.diff .nav li:has(> .nav-op:not(.diff-op)), body.diff .nav li:has(> .nav-model:not(.diff-op)),
+body.diff .nav-folder:not(:has(.diff-op)), body.diff .nav-group:not(:has(.diff-op)) { display: none; }
 
 /* Removed operations stay, greyed out */
 body.diff .op.diff-removed > * { opacity: .55; }
