@@ -181,8 +181,22 @@ type sampleView struct {
 	Label   string
 	Class   string
 	Type    string
+	Model   *sampleModelView // the named schema the sample shows, if any
 	Example template.HTML
 	Types   string // index of the example's type description, see typesRef
+}
+
+// sampleModelView names the model a sample shows, next to its content
+// type, linked to the model like the inspector's type labels: Name, Name[]
+// for a list of them, after the muted package Prefix that tells apart models
+// sharing a name. Class is the inspector's type class.
+type sampleModelView struct {
+	Anchor string
+	Prefix string
+	Name   string
+	Title  string
+	Class  string
+	Diff   *diffBadge
 }
 
 // textEscaper escapes text for element content only. html/template's escaper
@@ -1107,11 +1121,41 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 			}
 			example := b.d.MediaExampleJSON(mt, ForResponse)
 			if example != "" {
-				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Example: textHTML(example), Types: b.typesRef(mt, ForResponse)})
+				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Model: b.sampleModel(mt.Schema), Example: textHTML(example), Types: b.typesRef(mt, ForResponse)})
 				break
 			}
 		}
 	}
+}
+
+// sampleModel names the component schema s stands for, or the one its
+// items do, or returns nil for an inline schema.
+func (b *builder) sampleModel(s *Schema) *sampleModelView {
+	name := b.d.SchemaName(s)
+	suffix := ""
+	if name == "" {
+		f := b.d.Flatten(s)
+		if f == nil || !isArray(f) || f.Items == nil {
+			return nil
+		}
+		name = b.d.SchemaName(f.Items)
+		suffix = "[]"
+	}
+	anchor, ok := b.models[name]
+	if !ok {
+		return nil
+	}
+	class := "t-prim"
+	f := b.d.Flatten(&Schema{Ref: refSchemas + name})
+	switch {
+	case f != nil && len(f.Enum) > 0:
+		class = "t-enum"
+	case f != nil && (isObject(f) || isArray(f)):
+		class = "t-model"
+	}
+	label := b.display(name)
+	cut := strings.LastIndex(label, ".") + 1
+	return &sampleModelView{Anchor: anchor, Prefix: label[:cut], Name: label[cut:] + suffix, Title: name, Class: class, Diff: b.modelBadge(name)}
 }
 
 // summary names what s carries: its model, a list of models, or its label.

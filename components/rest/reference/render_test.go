@@ -684,3 +684,83 @@ func TestNavTree(t *testing.T) {
 	require.Empty(t, lone.Folders)
 	require.Equal(t, 10, len(lone.Ops))
 }
+
+// TestRenderSampleModel names the model a response sample shows next to
+// its content type: the model, a list of them, a named enum, and nothing
+// for an inline schema.
+func TestRenderSampleModel(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Samples
+  version: "1"
+paths:
+  /pets:
+    get:
+      operationId: pets.list
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pet'
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kind'
+        default:
+          description: error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+  /pets/{id}:
+    get:
+      operationId: pets.get
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: integer
+        kind:
+          $ref: '#/components/schemas/Kind'
+    Kind:
+      type: string
+      enum: [cat, dog]
+`
+	doc, err := Parse([]byte(spec))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	list := section(t, html, `id="operation/pets-list"`)
+	require.Contains(t, list, `<span class="ct-of">application/json<span class="ct-sep" aria-hidden="true">&middot;</span><a class="ct-model oi-type t-model" href="#model/Pet" data-model="model/Pet" title="Pet">Pet[]</a></span>`)
+	require.Contains(t, list, `<a class="ct-model oi-type t-enum" href="#model/Kind" data-model="model/Kind" title="Kind">Kind</a>`)
+	require.Contains(t, list, `<span class="ct-of">application/json</span>`, "an inline schema names no model")
+	require.Contains(t, section(t, html, `id="operation/pets-get"`), `title="Pet">Pet</a></span>`)
+}
