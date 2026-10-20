@@ -1995,14 +1995,12 @@
 
   // inspectorTree is the inspector of the value v typed by t, its shared key
   // column at most keyMax ch wide.
-  // An enum on its own, such as an enum model in its dialog, is followed by
-  // a table of its values and their descriptions.
+  // An enum on its own, such as an enum model in its dialog, lists its
+  // values instead (see oiValues).
   function inspectorTree(v, t, keyMax) {
-    let values = null;
     if (!oiIsNode(v)) {
       if (t && t.values && t.values.length) {
-        values = oiValueTable(t);
-        t = Object.assign({}, t, { values: null });
+        return oiValues(t);
       }
       v = { value: v };
       t = t ? { kids: new Map([['value', t]]) } : null;
@@ -2011,30 +2009,38 @@
     const root = oiList(v, 0, t);
     root.classList.add('oi-root');
     oiSetCols(root, keyMax || oiKeyMax);
-    if (!values) {
-      return root;
-    }
-    const frag = doc.createDocumentFragment();
-    frag.append(root, values);
-    return frag;
+    return root;
   }
 
-  function oiValueTable(t) {
+  // oiValues is an enum's values under a line counting them: each next to
+  // its description when the spec describes any (x-enum-descriptions), as
+  // chips otherwise.
+  function oiValues(t) {
+    const values = t.values;
     const descs = t.valueDescs || [];
-    const table = el('table', 'oi-values');
-    const head = el('tr');
-    head.append(el('th', '', 'Value'), el('th', '', descs.length ? 'Description' : ''));
-    table.append(head);
-    t.values.forEach((v, i) => {
-      const row = el('tr');
-      const chip = el('code', 'oi-chip' + (v === '' ? ' oi-chip-empty' : ''), v === '' ? 'empty' : String(v));
-      chip.title = JSON.stringify(v);
-      const value = el('td');
-      value.append(chip);
-      row.append(value, el('td', '', descs[i] || ''));
-      table.append(row);
+    const kinds = new Set(values.map((v) => (v === null ? 'null' : typeof v)));
+    const kind = kinds.size === 1 ? { string: ' string', number: ' number', boolean: ' boolean' }[[...kinds][0]] || '' : '';
+    const box = el('div', 'oi-values');
+    box.append(el('div', 'oi-values-head', 'One of ' + values.length + kind + (values.length === 1 ? ' value' : ' values')));
+    const chip = (v) => {
+      const c = el('code', 'oi-chip' + (v === '' ? ' oi-chip-empty' : ''), v === '' ? 'empty' : String(v));
+      c.title = JSON.stringify(v);
+      return c;
+    };
+    if (!descs.some(Boolean)) {
+      const list = el('div', 'oi-enum');
+      values.forEach((v) => list.append(chip(v)));
+      box.append(list);
+      return box;
+    }
+    const list = el('dl', 'oi-values-list');
+    values.forEach((v, i) => {
+      const term = el('dt');
+      term.append(chip(v));
+      list.append(term, el('dd', descs[i] ? '' : 'oi-values-none', descs[i] || 'No description'));
     });
-    return table;
+    box.append(list);
+    return box;
   }
 
 

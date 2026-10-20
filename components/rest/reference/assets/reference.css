@@ -826,10 +826,13 @@ button.pn:hover { color: var(--accent); }
   .oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
   .oi-desc { display: none; }
 }
-.oi-values { margin: 10px 6px 2px; border-collapse: collapse; font-size: 12px; line-height: 1.45; }
-.oi-values th { padding: 0 18px 4px 0; color: var(--sample-muted); font-family: var(--font); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
-.oi-values td { padding: 5px 18px 5px 0; border-top: 1px solid var(--sample-line); vertical-align: baseline; }
-.oi-values td + td { color: var(--sample-text); font-family: var(--font); }
+.oi-values { display: grid; gap: 10px; padding: 4px 6px; }
+.oi-values-head { color: var(--sample-muted); font-family: var(--font); font-size: 12px; }
+.oi-values .oi-chip { font-size: 12px; line-height: 20px; }
+.oi-values-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 8px 18px; margin: 0; }
+.oi-values-list dt, .oi-values-list dd { margin: 0; }
+.oi-values-list dd { color: var(--sample-text); font-family: var(--font); font-size: 12.5px; line-height: 1.45; }
+.oi-values-list dd.oi-values-none { color: var(--sample-muted); font-style: italic; }
 .oi-cols > .oi-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oi-k > .oi-ico { margin-right: 7px; }
 .oi-type { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
