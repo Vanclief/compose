@@ -228,17 +228,37 @@ type modelView struct {
 
 // modelNav is the Models sidebar: models whose generated names carry a
 // module (see schemaGroup) in a folder per module, the rest loose above
-// them, each sorted by display name. Tables counts the models stored in a
-// database table.
+// them, each list by family (see families). Tables counts the models stored
+// in a database table.
 type modelNav struct {
-	Loose   []*modelView
+	Loose   []modelFamily
 	Modules []modelModule
 	Tables  int
 }
 
 type modelModule struct {
-	Name   string
-	Models []*modelView
+	Name     string
+	Families []modelFamily
+	Count    int
+}
+
+// order lists the models as the sidebar does: loose ones first, then each
+// module, each family head before its members.
+func (nav modelNav) order() []*modelView {
+	var out []*modelView
+	add := func(list []modelFamily) {
+		for _, f := range list {
+			if f.Head != nil {
+				out = append(out, f.Head)
+			}
+			out = append(out, f.Members...)
+		}
+	}
+	add(nav.Loose)
+	for _, m := range nav.Modules {
+		add(m.Families)
+	}
+	return out
 }
 
 type builder struct {
@@ -322,7 +342,8 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Global = b.requirements(d.Security)
 	p.Groups = b.buildGroups()
 	p.Models = b.buildModels()
-	p.ModelNav = buildModelNav(p.Models)
+	p.ModelNav = b.buildModelNav(p.Models)
+	p.Models = p.ModelNav.order()
 	p.Flow = b.flow.JSON
 	p.ModelDiffs = b.modelDiffsJSON()
 	p.ModelSamples = b.modelSamplesJSON()
@@ -1241,37 +1262,32 @@ func (b *builder) buildModels() []*modelView {
 	return append(out, b.removedModelViews()...)
 }
 
-func buildModelNav(models []*modelView) modelNav {
+func (b *builder) buildModelNav(models []*modelView) modelNav {
 	var nav modelNav
-	byModule := map[string]int{}
+	var loose []*modelView
+	var modules []string
+	byModule := map[string][]*modelView{}
 	for _, m := range models {
 		if m.Table != "" {
 			nav.Tables++
 		}
 		module := schemaGroup(m.Name)
 		if module == "" {
-			nav.Loose = append(nav.Loose, m)
+			loose = append(loose, m)
 			continue
 		}
-		i, ok := byModule[module]
+		_, ok := byModule[module]
 		if !ok {
-			i = len(nav.Modules)
-			byModule[module] = i
-			nav.Modules = append(nav.Modules, modelModule{Name: module})
+			modules = append(modules, module)
 		}
-		nav.Modules[i].Models = append(nav.Modules[i].Models, m)
+		byModule[module] = append(byModule[module], m)
 	}
-	byShort := func(list []*modelView) {
-		sort.SliceStable(list, func(i, j int) bool {
-			return strings.ToLower(list[i].Short) < strings.ToLower(list[j].Short)
-		})
+	sort.Strings(modules)
+	headOf := b.familyHeadOf()
+	nav.Loose = families(loose, headOf)
+	for _, module := range modules {
+		list := byModule[module]
+		nav.Modules = append(nav.Modules, modelModule{Name: module, Families: families(list, headOf), Count: len(list)})
 	}
-	byShort(nav.Loose)
-	for _, m := range nav.Modules {
-		byShort(m.Models)
-	}
-	sort.SliceStable(nav.Modules, func(i, j int) bool {
-		return nav.Modules[i].Name < nav.Modules[j].Name
-	})
 	return nav
 }
