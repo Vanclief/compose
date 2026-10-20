@@ -1,0 +1,65 @@
+{{define "operation"}}<article class="op{{if .Internal}} is-internal{{end}}{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor data-op>
+<div class="op-main">
+<h3 class="op-title"><a href="{{href .Anchor}}">{{.Title}}</a></h3>
+<div class="op-line"><div class="op-bar"><span class="m m-{{.MethodClass}}">{{.Method}}</span><nav class="crumbs" data-path="{{.Path}}" aria-label="Path {{.Path}}"><button type="button" class="crumb root" data-crumb="0" title="Browse every path">/</button>{{range .Crumbs}}<span class="crumb-sep" aria-hidden="true">&rsaquo;</span>{{if .Param}}<button type="button" class="crumb param" data-crumb="{{.Depth}}">{{.Name}}</button>{{else}}<button type="button" class="crumb" data-crumb="{{.Depth}}"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg>{{.Name}}</button>{{end}}{{end}}</nav></div>{{if .Deprecated}}<span class="mk dep">deprecated</span>{{end}}{{if .Internal}}<span class="mk int">internal</span>{{end}}{{with .Diff}}{{template "diff-badge" .}}{{end}}</div>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+<div class="op-meta">
+{{if .OperationID}}<div class="om"><span class="ml">operationId</span><code>{{.OperationID}}</code></div>{{end}}
+<div class="om"><span class="ml">Auth</span>{{if .NoAuth}}<span class="noauth">No authentication</span>{{else}}{{template "reqs" .Security}}{{end}}</div>
+</div>
+{{template "machine" .}}
+</div>
+<aside class="op-samples" aria-label="Samples for {{.Title}}">
+{{if .ResSamples}}<div class="card tabset">
+<div class="card-head"><span>Response</span><div class="tablist" role="tablist">{{range $i, $s := .ResSamples}}<button type="button" role="tab" class="tab {{$s.Class}}{{if $s.Removed}} tab-removed{{end}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$s.Label}}{{with $s.Diff}}{{template "diff-nav-badge" .}}{{end}}</button>{{end}}</div><button type="button" class="copy" data-copy>Copy</button></div>
+{{range $i, $s := .ResSamples}}<div class="tabpanel oi-panel{{if $s.Removed}} tabpanel-removed{{end}}" role="tabpanel"{{if ne $i 0}} hidden{{end}}><div class="ct"><span class="ct-of">{{$s.Type}}{{with $s.Model}}<span class="ct-sep" aria-hidden="true">&middot;</span><a class="ct-model oi-type {{.Class}}" href="{{href .Anchor}}" data-model="{{.Anchor}}" title="{{.Title}}">{{with .Prefix}}<span class="pre">{{.}}</span>{{end}}{{.Name}}</a>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}{{end}}</span><button type="button" class="raw-tg" data-raw aria-pressed="false">JSON</button></div><div class="oi" data-oi{{with $s.Types}} data-types="{{.}}"{{end}}{{with $s.DiffRef}} data-sdiff="{{.}}"{{end}}></div><pre class="raw"><code class="json">{{$s.Example}}</code></pre></div>
+{{end}}</div>
+{{end}}</aside>
+</article>
+{{end}}
+
+{{define "contents"}}{{if gt (len .) 1}}<div class="tabset ctabs">
+<div class="tablist" role="tablist">{{range $i, $c := .}}<button type="button" role="tab" class="tab" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}">{{$c.Type}}</button>{{end}}</div>
+{{range $i, $c := .}}<div class="tabpanel" role="tabpanel"{{if ne $i 0}} hidden{{end}}>{{$c.Tree}}</div>
+{{end}}</div>{{else}}{{range .}}{{if ne .Type "application/json"}}<div class="ct">{{.Type}}</div>{{end}}{{.Tree}}{{end}}{{end}}{{end}}
+
+{{define "tryin"}}<input type="text" class="pin-v" data-in="{{.In}}" data-name="{{.Name}}" placeholder="{{.Placeholder}}" aria-label="{{.Name}}"{{if .Required}} data-required{{end}}{{if .Array}} data-array{{if .Explode}} data-explode{{else if ne .Sep ","}} data-sep="{{.Sep}}"{{end}} title="Comma-separated list"{{end}} spellcheck="false" autocomplete="off">{{end}}
+
+{{define "machine"}}<form class="machine try" aria-label="Try {{.Title}}" data-method="{{.Method}}" data-path="{{.Path}}" data-requires="{{.SecurityKey}}"{{with .CurlAuth}} data-auth-args="{{.}}"{{end}}{{if .TryServer}} data-server="{{.TryServer}}"{{end}}{{if .TryBody}} data-ct="{{.TryCT}}"{{end}} novalidate>
+<div class="mc-top"><button type="button" class="mc-copy" data-copy-req="curl" title="Copy this request as curl, with the values typed here">Copy curl</button><button type="button" class="mc-copy" data-copy-req="ai" title="Copy this endpoint as Markdown for an AI agent">Copy for AI</button><button type="submit" class="mc-play" title="Send {{.Method}} {{.Path}}" aria-label="Send {{.Method}} {{.Path}}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.6v10.8L13.2 8z"/></svg></button></div>
+<ul class="mc-ins">{{range .Machine.Inputs}}{{template "port" .}}{{end}}</ul>
+<div class="mc-wire mc-wire-in" aria-hidden="true"></div>
+<div class="mc-node"><span class="m m-{{.MethodClass}}">{{.Method}}</span><span class="mc-res">{{.Machine.Resource}}</span></div>
+<div class="mc-wire mc-wire-out" aria-hidden="true"></div>
+<ul class="mc-outs">{{range .Machine.Outputs}}{{template "port" .}}{{end}}</ul>
+{{if .TryBody}}<div class="mc-body" hidden><div class="mc-body-h">Body <span class="ct">{{.TryCT}}</span></div><textarea data-body rows="12" spellcheck="false" aria-label="Request body"></textarea></div>
+{{end}}{{template "details" .}}{{with .ReqExample}}<pre class="req-ex" hidden data-req-example{{with $.ReqTypes}} data-types="{{.}}"{{end}}>{{.}}</pre>{{end}}<div class="try-result" hidden aria-live="polite"></div>
+</form>{{end}}
+
+{{define "detail-x"}}<button type="button" class="mcd-x" data-detail-close aria-label="Close details">&times;</button>{{end}}
+
+{{define "details"}}{{if .ParamGroups}}<div class="mc-detail" data-detail="params" hidden>
+<div class="mcd-head"><span class="mcd-t">Parameters</span>{{template "detail-x"}}</div>
+{{range .ParamGroups}}<div class="io" data-in="{{.In}}">
+<div class="io-k"><span class="lchip">{{.In}}</span></div>
+<div class="io-v">{{if .Rows}}<div class="rows">{{.Rows}}</div>{{end}}{{if .Optional}}<div class="rows">{{.Optional}}</div>{{end}}</div>
+</div>
+{{end}}</div>
+{{end}}{{with .Body}}<div class="mc-detail" data-detail="body" hidden>
+<div class="mcd-head"><span class="lchip">body</span><span class="resp-ty">{{.Summary.Type}}</span>{{if .Required}}<span class="mk req">required</span>{{end}}{{template "detail-x"}}</div>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+{{template "contents" .Contents}}
+</div>
+{{end}}{{end}}
+
+{{define "port"}}<li class="port k-{{.Kind}}{{if .Required}} req{{end}}{{if .Main}} main{{end}}{{if .Loc}} in{{end}}{{if .Ghost}} ghost{{end}}{{if .Stack}} stack{{end}}{{if .Names}} opt{{end}}{{with .Diff}} pdiff {{.Class}}{{end}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><div class="pbox">{{with .Diff}}<span class="pdiff-mark">{{template "diff-nav-badge" .}}</span>{{end}}
+{{- if .Ghost}}<span class="pt"><span class="ps"></span><span class="pnm">{{.Name}}</span></span>
+{{- else if .Loc}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pin">{{dotName .Head}}</span><span class="lchip">{{.Loc}}</span></button>
+{{- if or (ne .Head .Type) .Source}}<div class="src">{{if ne .Head .Type}}<span class="pty">{{.Type}}</span>{{end}}{{with .Source}}<span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a>{{if $.MoreSources}}<button type="button" class="pop-tg" data-pop="by">+{{$.MoreSources}}</button>{{end}}{{end}}</div>{{end}}
+{{- with .Try}}{{template "tryin" .}}{{end}}{{if .Edit}}<div class="btree" data-btree></div><button type="button" class="pedit" data-body-tg aria-expanded="false">Edit as JSON</button>{{end}}
+{{- else if .Opts}}<button type="button" class="pt" data-opt aria-expanded="true"{{if .Title}} title="{{.Title}}"{{end}}><span class="ps"></span><span class="pnm">{{.Name}}</span><span class="opt-chev" aria-hidden="true">&rsaquo;</span></button><div class="popts">{{range .Opts}}<div class="popt" data-port="in:{{.In}}:{{.Name}}"><button type="button" class="popt-n" data-goto>{{.Name}}<span class="lchip">{{.In}}</span></button>{{template "tryin" .}}</div>{{end}}</div>
+{{- else if .Main}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}><span class="pout{{if eq .Type "empty"}} empty{{end}}">{{with dotPrefix .BaseType}}<span class="pre">{{.}}</span>{{end}}{{dotName .BaseType}}{{with .ListSuffix}}<span class="arr">{{.}}</span>{{end}}</span><span class="status schip {{.Class}}">{{.Name}}</span></button>
+{{- else}}<button type="button" class="pt" data-goto{{if .Title}} title="{{.Title}}"{{end}}>{{if .Class}}<span class="status {{.Class}}">{{.Name}}</span>{{else}}<span class="ps"></span><span class="pnm">{{.Name}}</span>{{end}}{{if .Type}}<span class="pty">{{.Type}}</span>{{end}}</button>{{end}}
+{{- if .Users}}<div class="src"><button type="button" class="pop-tg users" data-pop="use">used by {{.Users}} &rarr;</button></div>{{end}}
+{{- if .Fields}}<ul class="pfields">{{range .Fields}}<li class="k-{{.Kind}}" data-port="{{.Key}}"{{if .Model}} data-m="{{.Model}}"{{end}}><button type="button" class="pt" data-goto title="{{.Title}}"><span class="ps"></span><span class="pnm">{{.Name}}</span></button>{{with .Source}}<span class="src"><span class="src-k">from</span><a href="{{href .Anchor}}">{{.Title}}</a></span>{{end}}</li>{{end}}{{if .MoreFields}}<li class="more">+{{.MoreFields}} more ids</li>{{end}}</ul>{{end -}}
+</div></li>{{end}}

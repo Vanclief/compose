@@ -1,0 +1,177 @@
+openapi: 3.0.3
+info:
+  title: Tracker
+  version: "2.0"
+tags:
+  - name: Issues
+  - name: Users
+  - name: Labels
+paths:
+  /issues:
+    get:
+      tags: [Issues]
+      operationId: issues.list
+      summary: List issues
+      parameters:
+        - name: project
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Page size.
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Issue'
+    post:
+      tags: [Issues]
+      operationId: issues.create
+      summary: Create an issue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIssue'
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+  /issues/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Issues]
+      operationId: issues.get
+      summary: Get an issue
+      deprecated: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+  /issues/{id}/stats:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Issues]
+      operationId: issues.stats
+      summary: Issue stats
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      open:
+                        type: integer
+                      closed:
+                        type: integer
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: users.me
+      summary: Current user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /labels:
+    post:
+      tags: [Labels]
+      operationId: labels.create
+      summary: Create a label
+      responses:
+        "201":
+          description: Created
+  /health:
+    get:
+      operationId: health
+      summary: Health
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    Issue:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        priority:
+          type: string
+        state:
+          type: string
+          enum: [open, closed, triaged]
+        assignee_id:
+          type: string
+          nullable: true
+        reporter:
+          $ref: '#/components/schemas/User'
+        description:
+          type: string
+          description: Markdown body, up to 64 KB.
+        labels:
+          type: array
+          items:
+            type: string
+    CreateIssue:
+      type: object
+      required: [title, summary, project_id]
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        status:
+          type: string
+          enum: [open, closed]
+        project_id:
+          type: string
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    Node:
+      type: object
+      properties:
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'

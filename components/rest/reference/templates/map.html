@@ -1,0 +1,24 @@
+{{define "map"}}<section class="map" id="section/map" aria-label="Schema map" hidden>
+<div class="map-bar">
+<label class="map-scope"><span class="map-label">Scope</span><select data-map-scope aria-label="Scope"></select></label>
+<input type="search" class="map-find" data-map-find placeholder="Find a model" aria-label="Find a model on the map" autocomplete="off" spellcheck="false">
+<span class="map-count" data-map-count></span>
+<span class="map-tools">
+<label class="map-check" title="Relations to models most others point at (Complex, User, ...) are hidden until you hover or select a card"><input type="checkbox" data-map-hubs> Show hub relations <span class="map-faint" data-map-hubs-count></span></label>
+<button type="button" class="btn ghost" data-map-fold-all>Collapse all</button>
+<button type="button" class="btn ghost" data-map-reset title="Forget dragged card positions and collapsed cards for this scope">Reset layout</button>
+<span class="map-zoom"><button type="button" class="btn ghost icon" data-map-zoom="out" aria-label="Zoom out" title="Zoom out">&minus;</button><span class="map-pct" data-map-pct>100%</span><button type="button" class="btn ghost icon" data-map-zoom="in" aria-label="Zoom in" title="Zoom in">+</button><button type="button" class="btn ghost" data-map-zoom="fit" title="Fit the whole scope on screen">Fit</button></span>
+</span>
+</div>
+<div class="map-canvas" data-map-canvas><div class="map-world" data-map-world><svg class="map-edges" data-map-svg width="1" height="1" aria-hidden="true"></svg></div>
+<div class="map-legend" aria-label="Legend">
+<span><svg viewBox="0 0 30 12" aria-hidden="true"><path d="M1 6H29"/></svg>declared</span>
+<span><svg viewBox="0 0 30 12" aria-hidden="true"><path class="inferred" d="M1 6H29"/></svg>inferred from <code>_id</code></span>
+<span><svg viewBox="0 0 30 12" aria-hidden="true"><path d="M1 6H29M8 1V11"/></svg>one</span>
+<span><svg viewBox="0 0 30 12" aria-hidden="true"><path d="M1 6H29M1 1L11 6M1 11L11 6"/></svg>many</span>
+<span><i class="lg-hub">hub</i>relations shown on hover</span>
+{{if .Diff}}<span class="lg-diff"><i class="lg-d d-a">added</i><i class="lg-d d-c">changed</i><i class="lg-d d-d">removed</i></span>
+{{end}}<span class="map-hint">Drag to pan or move cards &middot; Ctrl/&#8984; + scroll to zoom &middot; double-click opens the model</span>
+</div></div>
+</section>
+<script type="application/json" id="schema-map-data">{{.JSON}}</script>{{end}}

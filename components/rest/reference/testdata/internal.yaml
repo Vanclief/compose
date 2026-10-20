@@ -1,0 +1,20 @@
+openapi: 3.0.3
+info:
+  title: Widgets
+  version: "1.0"
+paths:
+  /widgets:
+    get:
+      operationId: widgets.listWidgets
+      summary: List widgets
+      responses:
+        "200":
+          description: OK
+  /system/upgrade:
+    post:
+      operationId: system.upgrade
+      summary: Upgrade the system
+      x-internal: true
+      responses:
+        "200":
+          description: OK

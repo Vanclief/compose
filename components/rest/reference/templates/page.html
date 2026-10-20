@@ -1,0 +1,168 @@
+{{define "page.html" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}}</title>
+{{if .Inline}}<style>{{.CSS}}</style>{{else}}<link rel="stylesheet" href="{{.AssetsURL}}/reference.css?v={{.CSSVersion}}">{{end}}
+</head>
+<body data-server="{{.ServerURL}}" data-mode="docs"{{if .Diff}} class="diff"{{end}}>
+<a class="skip" href="#main">Skip to content</a>
+{{template "appbar" .}}
+<div class="layout">
+{{template "sidebar" .}}
+<main class="content" id="main" tabindex="-1">
+<div class="pane" data-pane="docs">
+{{template "intro" .}}
+{{if .Diff}}{{template "changes" .Diff}}{{end}}</div>
+<div class="pane" data-pane="endpoints">
+{{range .Groups}}{{template "group" .}}{{end}}</div>
+{{if .Models}}<div class="pane" data-pane="models">
+{{template "models" .}}</div>
+{{end}}{{if .Map}}{{template "map" .Map}}{{end}}
+<footer class="footer">Rendered by compose reference from the OpenAPI {{.OpenAPI}} document.</footer>
+</main>
+</div>
+<script type="application/json" id="flow-data">{{.Flow}}</script>
+<script type="application/json" id="type-notes">{{.TypeNotes}}</script>
+<script type="application/json" id="model-samples">{{.ModelSamples}}</script>
+{{if .ModelDiffs}}<script type="application/json" id="model-diffs">{{.ModelDiffs}}</script>
+{{end}}{{if .SampleDiffs}}<script type="application/json" id="sample-diffs">{{.SampleDiffs}}</script>
+{{end}}
+{{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/reference.js?v={{.JSVersion}}"></script>{{end}}
+</body>
+</html>
+{{- end}}
+
+{{define "appbar"}}<header class="appbar">
+<button type="button" class="btn ghost icon menu-btn" data-menu aria-controls="sidebar" aria-expanded="false" aria-label="Menu" title="Menu"><span aria-hidden="true">&#9776;</span></button>
+<a class="brand" href="#section/introduction">{{.InfoTitle}}{{if .Version}}<span class="brand-ver">v{{.Version}}</span>{{end}}</a>
+<nav class="modes" aria-label="Views">
+<a href="#section/introduction" data-mode="docs" aria-current="page">Documentation</a>
+<a href="{{with .Groups}}{{href (index . 0).Anchor}}{{end}}" data-mode="endpoints">Endpoint Reference</a>
+{{if .Models}}<a href="#section/models" data-mode="models">Models</a>
+{{end}}{{if .Map}}<a href="#map" data-mode="map">Schema Map</a>
+{{end}}</nav>
+<div class="appbar-end">
+{{if .Diff}}{{template "diff-toggle" .Diff}}{{end}}<button type="button" class="btn ghost icon" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode"><span aria-hidden="true">&#9680;</span></button>
+</div>
+</header>{{end}}
+
+{{define "sidebar"}}<aside class="sidebar" id="sidebar">
+<div class="search">
+<input type="search" id="nav-search" placeholder="Search endpoints  /" aria-label="Search" autocomplete="off" spellcheck="false">
+</div>
+<nav class="nav-wrap" aria-label="API reference">
+<div class="nav-pane" data-pane="docs">
+<ul class="nav nav-static">
+<li><a class="nav-link" href="#section/introduction">Introduction</a></li>
+{{if .Schemes}}<li><a class="nav-link" href="#section/authentication">Authentication</a></li>
+{{range .Schemes}}<li><a class="nav-link nav-sub" href="{{href .Anchor}}">{{.Name}}</a></li>
+{{end}}{{end}}{{if .Diff}}{{template "diff-nav-link" .Diff}}{{end}}</ul>
+</div>
+<div class="nav-pane" data-pane="endpoints">
+{{if .HasInternal}}<label class="internal-toggle" title="List and show the operations marked x-internal"><input type="checkbox" data-internal-toggle checked> Show internal</label>
+{{end}}{{range .Groups}}<div class="nav-group">
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{len .Ops}}</span></button>
+<ul class="nav" hidden>
+{{template "navfolder" .NavTree}}</ul>
+</div>
+{{end}}</div>
+{{if .Models}}<div class="nav-pane" data-pane="models">
+{{with .ModelNav}}{{if .Loose}}<ul class="nav nav-loose">
+{{range .Loose}}{{template "navmodel" .}}{{end}}</ul>
+{{end}}{{range .Groups}}<div class="nav-group{{if .Shared}} nav-shared{{end}}">
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{.Count}}</span></button>
+<ul class="nav" hidden>
+{{template "navmodelfolders" .Folders}}{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
+</div>
+{{end}}{{end}}</div>
+{{end}}<p class="no-results" hidden>No matches.</p>
+</nav>
+</aside>{{end}}
+
+{{define "navmodel"}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{if .Table}}{{template "ico-table"}}{{else}}<span class="ico-obj" aria-hidden="true">{}</span>{{end}}<span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
+{{end}}
+
+{{/* How many models of a collapsed group changed, by diff state. */}}
+{{/* The folders of a model group's child tags, nested like the tags. */}}
+{{define "navmodelfolders"}}{{range .}}<li class="nav-folder nav-subtag"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{.Count}}</span></button>
+<ul class="nav" hidden>
+{{template "navmodelfolders" .Folders}}{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
+</li>
+{{end}}{{end}}
+
+{{define "group-changes"}}{{if .}}<span class="nav-group-diff">{{range .}}<span class="diff-dot {{.Class}}" title="{{.Count}} {{.Label}}">{{.Count}}{{.Letter}}</span>{{end}}</span>{{end}}{{end}}
+
+{{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{if .Internal}} is-internal{{end}}{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{if .Internal}}<span class="mk int">internal</span>{{end}}{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
+{{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
+<ul class="nav" hidden>
+{{template "navfolder" .}}</ul>
+</li>
+{{end}}{{end}}
+
+{{define "reqs"}}{{range $i, $r := .}}{{if $i}} <span class="or">or</span> {{end}}<span class="req-set">{{range $j, $s := $r.Schemes}}{{if $j}} + {{end}}{{if $s.Anchor}}<a href="{{href $s.Anchor}}">{{$s.Name}}</a>{{else}}{{$s.Name}}{{end}}{{if $s.Scopes}} <span class="scopes">({{$s.Scopes}})</span>{{end}}{{else}}none{{end}}</span>{{end}}{{end}}
+
+{{define "intro"}}<section class="section intro" id="section/introduction" data-anchor>
+<div class="main-col">
+<h1 class="title">{{.InfoTitle}}</h1>
+<div class="badges">{{if .Version}}<span class="badge ver">v{{.Version}}</span>{{end}}<span class="badge">OpenAPI {{.OpenAPI}}</span></div>
+{{if .Summary}}<p class="lead">{{.Summary}}</p>{{end}}
+<ul class="facts">
+{{if .SpecURL}}<li><span class="ml">Spec</span><a href="{{.SpecURL}}" target="_blank" rel="noopener" download>Download OpenAPI document</a></li>{{end}}
+{{with .Contact}}<li><span class="ml">Contact</span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{if .Name}}{{.Name}}{{else}}{{.URL}}{{end}}</a>{{else}}{{.Name}}{{end}}{{if .Email}} <a href="mailto:{{.Email}}">{{.Email}}</a>{{end}}</li>{{end}}
+{{with .License}}<li><span class="ml">License</span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Name}}</a>{{else}}{{.Name}}{{end}}</li>{{end}}
+{{if .Terms}}<li><span class="ml">Terms</span><a href="{{.Terms}}" target="_blank" rel="noopener">Terms of service</a></li>{{end}}
+</ul>
+{{if .Servers}}<div class="servers"><h2 class="h-small">Servers</h2><ul>{{range .Servers}}<li><code>{{.URL}}</code>{{if .Description}} <span class="muted">{{.Description}}</span>{{end}}{{if .Template}}<div class="server-vars muted">Template <code>{{.Template}}</code>{{range .Variables}}<div><code>{{"{"}}{{.Name}}{{"}"}}</code> default <code>{{.Default}}</code>{{if .Enum}}, one of {{.Enum}}{{end}}{{if .Description}}: {{.Description}}{{end}}</div>{{end}}</div>{{end}}</li>{{end}}</ul></div>{{end}}
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+<div class="side-col">
+<div class="card settings" id="try-settings">
+<div class="card-head"><span>Try it settings</span></div>
+<div class="card-body">
+<label class="field"><span class="field-name">Server</span><input type="url" list="server-list" data-server-input value="{{.ServerURL}}" placeholder="page origin" spellcheck="false"></label>
+{{if .Servers}}<datalist id="server-list">{{range .Servers}}<option value="{{.URL}}">{{end}}</datalist>{{end}}
+{{range .Schemes}}{{$scheme := .}}{{range .Inputs}}<label class="field"><span class="field-name">{{.Label}} <span class="field-in">{{$scheme.Name}}</span></span><input {{if .Secret}}type="password"{{else}}type="text"{{end}} data-auth="{{.Key}}" data-scheme="{{.Scheme}}" data-kind="{{.Kind}}" data-in="{{.In}}" data-param="{{.Param}}" placeholder="{{.Placeholder}}" autocomplete="off" spellcheck="false"></label>
+{{end}}{{end}}<p class="hint">Credentials stay in this tab (sessionStorage) and are only sent by Try it.</p>
+</div>
+</div>
+</div>
+</section>
+{{if .Schemes}}<section class="section" id="section/authentication" data-anchor>
+<div class="main-col">
+<h2>Authentication</h2>
+{{if .Global}}<p>Every operation requires {{template "reqs" .Global}} unless it says otherwise.</p>{{else}}<p>No authentication is required by default.</p>{{end}}
+{{range .Schemes}}<div class="scheme" id="{{.Anchor}}">
+<h3>{{.Name}} <span class="badge">{{.Kind}}</span>{{if .Global}} <span class="badge ok">global</span>{{end}}</h3>
+{{if .Detail}}<p>{{.Detail}}</p>{{end}}
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+{{end}}</div>
+<div class="side-col"></div>
+</section>{{end}}{{end}}
+
+{{define "group"}}<section class="tag">
+<div class="tag-head" id="{{.Anchor}}" data-anchor>
+<h2 class="group-path"><a href="{{href .Anchor}}">{{if ne .Name "/"}}/{{end}}{{.Name}}</a></h2>
+{{if .Description}}<div class="md">{{.Description}}</div>{{end}}
+</div>
+{{range .Ops}}{{template "operation" .}}{{end}}
+</section>{{end}}
+
+{{define "ico-table"}}<svg class="ico-table" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.6" rx="5.5" ry="2"/><path d="M2.5 3.6v8.8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V3.6M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"/></svg>{{end}}
+
+{{define "models"}}<section class="models" id="section/models">
+<div class="tag-head"><h2>Models</h2><p class="muted">{{len .Models}} schemas in the document{{with .ModelNav.Tables}}, {{.}} of them stored in database tables{{end}}. A field holding another model expands in place, and its type opens that model.</p></div>
+{{range .Models}}<article class="model{{with .Diff}} {{.Class}}{{end}}" id="{{.Anchor}}" data-anchor>
+<h3 class="model-title"><a href="{{href .Anchor}}">{{.Short}}</a>{{with .Diff}} {{template "diff-badge" .}}{{end}}</h3>
+{{if or (ne .Short .Name) .Table}}<div class="model-name">{{if ne .Short .Name}}<code>{{.Name}}</code>{{end}}{{with .Table}}<span class="model-table" title="Stored in the database table {{.}}">{{template "ico-table"}}<code>{{.}}</code></span>{{end}}</div>{{end}}
+{{if .Description}}<div class="md model-desc">{{.Description}}</div>{{end}}
+<div class="model-bar">{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
+</div>
+{{if .Inspector}}<div class="card mm-sample oi-deep"><div class="oi" data-model-oi></div></div>
+<div class="model-tree" hidden>{{.Tree}}</div>{{else}}{{.Tree}}{{end}}
+</article>
+{{end}}</section>{{end}}

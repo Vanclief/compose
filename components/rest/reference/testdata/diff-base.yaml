@@ -1,0 +1,167 @@
+openapi: 3.0.3
+info:
+  title: Tracker
+  version: "1.0"
+tags:
+  - name: Issues
+  - name: Users
+paths:
+  /issues:
+    get:
+      tags: [Issues]
+      operationId: issues.list
+      summary: List issues
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: sort
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Issue'
+    post:
+      tags: [Issues]
+      operationId: issues.create
+      summary: Create an issue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIssue'
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+  /issues/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Issues]
+      operationId: issues.get
+      summary: Get an issue
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+    delete:
+      tags: [Issues]
+      operationId: issues.delete
+      summary: Delete an issue
+      responses:
+        "204":
+          description: Deleted
+  /issues/{id}/stats:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Issues]
+      operationId: issues.stats
+      summary: Issue stats
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      open:
+                        type: integer
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: users.me
+      summary: Current user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /health:
+    get:
+      operationId: health
+      summary: Health
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    Issue:
+      type: object
+      required: [id, title]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        priority:
+          type: integer
+        legacy_code:
+          type: string
+        state:
+          type: string
+          enum: [open, closed]
+        assignee_id:
+          type: string
+        reporter:
+          $ref: '#/components/schemas/User'
+        description:
+          type: string
+          description: Markdown body.
+    CreateIssue:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        status:
+          type: string
+          enum: [open, closed, archived]
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+    Node:
+      type: object
+      properties:
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
