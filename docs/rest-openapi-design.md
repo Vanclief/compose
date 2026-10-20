@@ -2,9 +2,9 @@
 
 Status: implemented in compose on branch `Vanclief/sdk-generation` (packages
 `components/rest/api`, `components/rest/api/openapi`, `components/rest/api/validate`,
-`components/rest/apitest`), not yet released. Last updated 2026-10-11 after Astra review
-round 5 (implementation review). Section 12 lists where the implementation deviates from
-the design.
+`components/rest/apitest`), not yet released. Last updated 2026-10-20: `Legacy` removed;
+blob responses, content negotiation and multipart uploads added. Section 12 lists where the
+implementation deviates from the design.
 
 ## 1. Decision
 
@@ -124,7 +124,7 @@ Rules enforced at registration (fail boot):
   param field and params never leak into the body component (huma skips `-`, `schema.go:915`)
 - every path placeholder has a `path:` field and vice versa
 - operationId `<tag>.<name>` is unique
-- tag names come from an allowlist (`param`, `path`, `query`, `header`, `required`,
+- tag names come from an allowlist (`param`, `path`, `query`, `header`, `form`, `required`,
   `default`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`,
   `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`, `enum`,
   `format`, `doc`, `example`, `deprecated`, `hidden`, `nullable`)
@@ -150,6 +150,7 @@ as unknown keys, then bind). Decode once instead.
 3. Read the body under Echo `BodyLimit`. Decode with `jsonschema.UnmarshalJSON`
    (`loader.go:255-265`: `UseNumber`, rejects trailing data). A non-JSON content type on an
    operation with a body returns `EINVALID`, since Echo's binder no longer produces the 415.
+   Multipart operations parse `multipart/form-data` instead (section 12).
 4. Coerce declared path, query and header params to the schema's type (integer, number,
    boolean, array via comma or repeated keys). If parsing fails keep the raw string so
    santhosh reports `kind.Type` like any other type error. Header keys lowercased, only
@@ -166,7 +167,9 @@ as unknown keys, then bind). Decode once instead.
 7. `request.SetBody(req)`, `App.HandleRequest(request)` (unchanged; it still calls
    `Validate()` for cross-field rules). Malformed requests never reach the app and never
    spend rate-limit tokens, the same as bind errors today.
-8. Response written as today (`c.JSON(200, response)` or blob).
+8. Response written from what the app returned: an `api.Blob` with `c.Blob` (and
+   `Content-Disposition` when it has a filename), anything else with `c.JSON(200, response)`.
+   The media type negotiated from `Accept` is on `request.GetAccept()` (section 12).
 
 ## 5. Reflector glue (huma registry as a library)
 
@@ -447,9 +450,54 @@ Deviations from the sections above, all accepted in review:
 - **GET, HEAD and DELETE operations must not have body properties**; registration fails and
   points at the `query:` tag.
 - **`?LIMIT=5000` is ignored**, not rejected (section 10, check 3 updated).
-- **Not implemented**: the `Res`/`*Res` response check (apitest covers it), blob responses
-  (stay `Legacy`), `fields` in the envelope (still deferred).
+- **No `Legacy` registration.** The typed `Legacy[Req, Res]` and `x-compose-legacy` were
+  dropped before release: apps migrate every route to the typed registry, and the four
+  capabilities below cover what emma-backend's handlers do through `BaseHandler`.
+- **Blob responses**: `api.GET[Req, api.Blob](g, "/report", "report",
+  api.Produces("application/pdf"))`. The app returns `api.Blob{ContentType, Body, Filename}`
+  (or `*api.Blob`); an empty `ContentType` means the negotiated type, `Filename` adds
+  `Content-Disposition: attachment`. A Blob operation whose app returns anything else fails
+  with `EINTERNAL`; errors keep the JSON envelope. Registration fails for a Blob without
+  `Produces`, a Blob that produces `application/json`, and `Produces` on a JSON `Res`
+  without `application/json`. Declared types carry no parameters or wildcards
+  (`text/plain`, while the Blob may send `text/plain; charset=utf-8`).
+- **Content negotiation**: `api.Produces("application/json", "text/csv")` on a JSON `Res`.
+  The pipeline picks the first `Accept` entry, in header order, that matches a declared type
+  (`type/*` and `*/*` match the first declared type in the range), else the first declared
+  type; q-values are ignored and there is no 406. Every registered operation sets the choice
+  on `requests.Request.GetAccept()` (`application/json` without `Produces`); the app returns
+  `Res` for JSON or an `api.Blob` for the other types, and the pipeline writes whichever came
+  back. The 200 response lists one content entry per declared type: `Res`'s schema for JSON,
+  `{type: string, format: binary}` for the others (huma adds `contentMediaType:
+  application/octet-stream`, which the 3.0 downgrade renames `x-contentMediaType`).
+  `apitest.Contract.Do` checks a non-JSON 200's content type against the declared types.
+- **Multipart uploads**: request fields of type `*multipart.FileHeader` or
+  `[]*multipart.FileHeader` tagged `form:"name"` and `json:"-"` make the operation
+  `multipart/form-data`. The other body fields are read from the form values named by their
+  JSON keys (empty values are absent, unknown and case-mismatched keys are ignored), coerced
+  like query params and validated against the body component; then they decode through
+  `encoding/json`, so named types decode as in JSON bodies. File fields are checked for
+  presence (`required:"true"`), and a single-file field rejects repeated parts. The body
+  limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills to temporary files).
+  Registration fails for file fields without both tags, `form` tags on other types, body
+  fields a form value cannot carry (nested objects, maps, `[]byte`) and files on GET, HEAD
+  or DELETE. The request body is documented as `multipart/form-data` with the body
+  properties inline, files as binary strings (arrays of them for slices) and `required` by
+  presence.
+- **XML request bodies were considered and skipped**: no emma-backend or auditor3-api REST
+  handler calls `BindedXMLResponse` (emma's only XML is an outgoing client), so there is no
+  consumer. `BaseHandler.BindedXMLResponse` is unchanged; registered operations accept JSON
+  and multipart bodies only.
+- **Not implemented**: the `Res`/`*Res` response check (apitest covers it), `fields` in the
+  envelope (still deferred).
 - **Known app adoption items**: emma has about 25 duplicated package names
   (`finance/units` vs `property/units`), so it needs `api.Namer`/`openapi.SegmentsNamer(2)`;
   auditor3 `runs.GetRequest.RunID` must become `uuid.UUID` with `json:"-" path:"id"`, and
-  `ListRequest` fields need `json:"-" query:"..."` tags.
+  `ListRequest` fields need `json:"-" query:"..."` tags. emma's negotiating list handlers
+  read `request.GetAccept()` instead of the `Format` field the handler fills from
+  `NegotiateContentType`, and return `api.Blob` instead of `[]byte`; its upload requests tag
+  `File`/`Files` with `form:"..."` and `json:"-"`.
+- **Not expressible in the registry yet** (they stay plain Echo routes, outside the spec):
+  emma's signed webhooks (`whatsapp.ReceiveWebhook`, `crm.CalWebhook`) need the exact raw
+  body bytes for the signature check, and the system health handler answers non-200
+  statuses, `HEAD` with no body and its own cache headers.
