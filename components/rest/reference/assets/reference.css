@@ -812,18 +812,18 @@ button.pn:hover { color: var(--accent); }
    its key cell gives back. A folder's chevron takes 14px more. Types are
    colored like a typed language's: primitives, models and the enum
    keyword; examples are JSON literals on a chip of their own color. */
-.oi-row.oi-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
-.oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
+.oi-row.oi-cols { display: grid; grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), 4ch) var(--tw, 8ch) minmax(0, 1fr); align-items: baseline; column-gap: 14px; padding-top: 3px; padding-bottom: 3px; }
+.oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), 4ch) var(--tw, 8ch) minmax(0, 1fr); }
 /* A tree with descriptions has a fourth column for them. Narrow trees leave
    it out: the field name's title carries the description, and an enum's
    values are a click away on its type. */
-.oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
-.oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
+.oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), 4ch) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
+.oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), 4ch) var(--tw, 8ch) var(--ew, 12ch) minmax(0, 1fr); }
 .oi-desc { grid-column: 4; display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; min-width: 0; color: var(--sample-muted); font-family: var(--font); font-size: 12px; line-height: 1.45; white-space: normal; }
 .oi-desc-text { max-width: 76ch; }
 @container (max-width: 699px) {
-  .oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
-  .oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), var(--kl, 0px)) var(--tw, 8ch) minmax(0, 1fr); }
+  .oi-4 .oi-row.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px), 4ch) var(--tw, 8ch) minmax(0, 1fr); }
+  .oi-4 .oi-tg.oi-cols { grid-template-columns: max(calc(var(--kw, 12ch) - var(--d, 0) * 24px - 14px), 4ch) var(--tw, 8ch) minmax(0, 1fr); }
   .oi-desc { display: none; }
 }
 .oi-values { display: grid; gap: 10px; padding: 4px 6px; }

@@ -1836,17 +1836,12 @@
   // field has a description or enum values, a description column. Each
   // level indents by oiIndent (about 3ch), so a row's key cell is the
   // shared width less its depth; oiCols collects the widest key, counted
-  // with its indent, and the widest type while a tree renders. The shared
-  // key width is capped by oiKeyCap: a row whose key needs more (--kl)
-  // takes it and pushes only its own type over.
+  // with its indent, and the widest type while a tree renders. The key
+  // column takes what its widest key needs when the inspector has the room
+  // (see oiSetCols); a key longer than that is cut, so every row keeps its
+  // type and example in line.
   const oiIndent = 3;
-  const oiKeyMax = 22;
-
-  // oiKeyCap lets the key column take up to 38% of an inspector width px
-  // wide (7.5px is the 12.5px monospace ch), and never less than oiKeyMax.
-  function oiKeyCap(width) {
-    return Math.max(oiKeyMax, Math.floor(width * 0.38 / 7.5));
-  }
+  const oiKeyMin = 22;
   // The example column is at most oiExampleMax ch wide; longer examples are
   // cut, the full value in their title.
   const oiExampleMax = 30;
@@ -1856,7 +1851,7 @@
     const need = key.length + (folder ? 3 : 0);
     line.classList.add('oi-cols');
     line.style.setProperty('--d', String(depth));
-    line.style.setProperty('--kl', need + 'ch');
+    line.querySelector('.oi-k').title = key;
     oiCols.k = Math.max(oiCols.k, need + depth * oiIndent + (folder ? 2 : 0) + 1);
     oiCols.t = Math.max(oiCols.t, t.label.length + (t.base ? t.base.length + 1 : 0));
   }
@@ -1901,19 +1896,29 @@
     const root = kids.closest('.oi-root');
     oiCols = { k: Number(root.dataset.k) || 1, t: Number(root.dataset.t) || 4, e: Number(root.dataset.e) || 0, d: root.classList.contains('oi-4') };
     kids.append(...oiList(sample.v, depth, typeTree(String(sample.t))).childNodes);
-    oiSetCols(root, oiKeyCap(root.clientWidth));
+    oiSetCols(root, root.closest('.oi').clientWidth);
   }
 
-  // oiSetCols sizes the shared columns from oiCols, keeping the counts on
-  // the root for rows grafted in later.
-  function oiSetCols(root, keyMax) {
+  // oiSetCols sizes the shared columns from oiCols for an inspector width
+  // px wide, keeping the counts on the root for rows grafted in later. The
+  // key column gets the room the other columns leave: the type, then at
+  // least 14ch of example or, with four columns (an inspector 700px wide
+  // inside its padding, as in the CSS), the example and 30ch of description.
+  // 7.5px is the 12.5px monospace ch; 36px are the paddings and 2ch each
+  // column gap.
+  function oiSetCols(root, width) {
     root.dataset.k = String(oiCols.k);
     root.dataset.t = String(oiCols.t);
     root.dataset.e = String(oiCols.e);
     root.classList.toggle('oi-4', oiCols.d);
-    root.style.setProperty('--kw', Math.min(keyMax, oiCols.k) + 'ch');
-    root.style.setProperty('--tw', Math.min(24, oiCols.t) + 'ch');
-    root.style.setProperty('--ew', Math.max(4, Math.min(oiExampleMax, oiCols.e)) + 'ch');
+    const tw = Math.min(24, oiCols.t);
+    const ew = Math.max(4, Math.min(oiExampleMax, oiCols.e));
+    const four = oiCols.d && width - 24 >= 700;
+    const rest = four ? tw + 2 + ew + 2 + 30 + 2 : tw + 2 + 14 + 2;
+    const room = width ? Math.floor((width - 36) / 7.5) - rest : 0;
+    root.style.setProperty('--kw', Math.min(Math.max(oiKeyMin, room), oiCols.k) + 'ch');
+    root.style.setProperty('--tw', tw + 'ch');
+    root.style.setProperty('--ew', ew + 'ch');
   }
 
   function oiItem(key, v, depth, t) {
@@ -1990,14 +1995,14 @@
       box.parentElement.classList.add('oi-off');
       return;
     }
-    box.append(inspectorTree(v, typeTree(box.dataset.types), oiKeyCap(box.clientWidth)));
+    box.append(inspectorTree(v, typeTree(box.dataset.types), box.clientWidth));
   }
 
-  // inspectorTree is the inspector of the value v typed by t, its shared key
-  // column at most keyMax ch wide.
+  // inspectorTree is the inspector of the value v typed by t, for an
+  // inspector width px wide (see oiSetCols).
   // An enum on its own, such as an enum model in its dialog, lists its
   // values instead (see oiValues).
-  function inspectorTree(v, t, keyMax) {
+  function inspectorTree(v, t, width) {
     if (!oiIsNode(v)) {
       if (t && t.values && t.values.length) {
         return oiValues(t);
@@ -2008,7 +2013,7 @@
     oiCols = { k: 1, t: 4, e: 0, d: false };
     const root = oiList(v, 0, t);
     root.classList.add('oi-root');
-    oiSetCols(root, keyMax || oiKeyMax);
+    oiSetCols(root, width || 0);
     return root;
   }
 
@@ -2073,7 +2078,7 @@
     box.dataset.done = '1';
     const sample = modelSample(box.closest('.model').id);
     if (sample) {
-      box.append(inspectorTree(sample.v, typeTree(String(sample.t)), oiKeyCap(box.clientWidth)));
+      box.append(inspectorTree(sample.v, typeTree(String(sample.t)), box.clientWidth));
     }
   }
 
@@ -2795,7 +2800,7 @@
     });
     if (sample) {
       const oi = el('div', 'oi');
-      oi.append(inspectorTree(sample.v, typeTree(String(sample.t)), oiKeyCap(box.clientWidth - 60)));
+      oi.append(inspectorTree(sample.v, typeTree(String(sample.t)), box.clientWidth - 60));
       const frame = el('div', 'card mm-sample oi-deep');
       frame.append(oi);
       body.append(frame);
