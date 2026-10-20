@@ -1,7 +1,9 @@
 package api_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +52,7 @@ func newServer(t *testing.T) *server {
 	api.POST[fixture.ArchiveRequest, fixture.Run](rg, "/archive", "archive", api.Hidden(), api.MaxBodyBytes(1024))
 	api.GET[fixture.ReportRequest, api.Blob](rg, "/:id/report", "report", api.Produces("application/pdf"))
 	api.GET[fixture.ExportRequest, fixture.ListResponse](rg, "/export", "export", api.Produces(echo.MIMEApplicationJSON, "text/csv"))
+	api.POST[fixture.UploadRequest, fixture.UploadResponse](rg, "/:id/artifacts", "upload", api.MaxBodyBytes(4096))
 
 	hg := reg.Group("/health")
 	api.GET[fixture.HealthRequest, fixture.HealthResponse](hg, "", "check", api.Public(), api.Deprecated())
@@ -478,4 +481,99 @@ func TestBlobNotReturned(t *testing.T) {
 		resp := requireError(t, rec, http.StatusInternalServerError, "")
 		require.Equal(t, ez.EINTERNAL, resp.Error.Code)
 	}
+}
+
+// part is a multipart form value, or a file when filename is set.
+type part struct {
+	name     string
+	value    string
+	filename string
+}
+
+// form encodes parts as multipart/form-data and returns the body and its
+// Content-Type.
+func form(t *testing.T, parts ...part) (string, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for _, p := range parts {
+		if p.filename == "" {
+			err := w.WriteField(p.name, p.value)
+			require.NoError(t, err)
+			continue
+		}
+		fw, err := w.CreateFormFile(p.name, p.filename)
+		require.NoError(t, err)
+		_, err = fw.Write([]byte(p.value))
+		require.NoError(t, err)
+	}
+	err := w.Close()
+	require.NoError(t, err)
+	return buf.String(), w.FormDataContentType()
+}
+
+func TestMultipart(t *testing.T) {
+	s := newServer(t)
+	target := "/runs/" + fixture.KnownID.String() + "/artifacts"
+	upload := func(parts ...part) *httptest.ResponseRecorder {
+		body, contentType := form(t, parts...)
+		return s.do(http.MethodPost, target, body, echo.HeaderContentType, contentType)
+	}
+	manifest := part{name: "manifest", value: "steps: 3", filename: "manifest.yaml"}
+
+	rec := upload(
+		part{name: "category", value: "log"},
+		part{name: "attempt", value: "2"},
+		part{name: "tags", value: "a"},
+		part{name: "tags", value: "b"},
+		manifest,
+		part{name: "files", value: "1", filename: "one.log"},
+		part{name: "files", value: "2", filename: "two.log"},
+	)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{"manifest":"steps: 3","files":["one.log","two.log"]}`, rec.Body.String())
+	got := s.app.Last().(*fixture.UploadRequest)
+	require.Equal(t, fixture.KnownID, got.RunID)
+	require.Equal(t, "log", got.Category)
+	require.NotNil(t, got.Attempt)
+	require.Equal(t, 2, *got.Attempt)
+	require.Equal(t, []string{"a", "b"}, got.Tags)
+	require.Equal(t, "manifest.yaml", got.Manifest.Filename)
+	require.Len(t, got.Files, 2)
+
+	// Optional values and files may be absent; empty values are absent.
+	rec = upload(part{name: "category", value: "report"}, part{name: "attempt", value: ""}, manifest)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	got = s.app.Last().(*fixture.UploadRequest)
+	require.Nil(t, got.Attempt)
+	require.Nil(t, got.Files)
+
+	// Required values and files are reported together; case-mismatched keys
+	// are ignored, never bound.
+	rec = upload(part{name: "Category", value: "log"})
+	resp := requireError(t, rec, http.StatusBadRequest, "category is required")
+	require.Contains(t, resp.Error.Message, "manifest is required")
+
+	rec = upload(part{name: "category", value: sentinel}, part{name: "attempt", value: "abc"}, manifest)
+	resp = requireError(t, rec, http.StatusBadRequest, "attempt must be integer")
+	require.Contains(t, resp.Error.Message, "category must be one of")
+
+	rec = upload(part{name: "category", value: "log"}, part{name: "attempt", value: "0"}, manifest)
+	requireError(t, rec, http.StatusBadRequest, "attempt must be >= 1")
+
+	rec = upload(part{name: "category", value: "log"}, manifest, manifest)
+	requireError(t, rec, http.StatusBadRequest, "manifest must be a single file")
+
+	rec = upload(part{name: "category", value: "log"}, part{name: "manifest", value: strings.Repeat("a", 8192), filename: "big.yaml"})
+	requireError(t, rec, http.StatusBadRequest, "body exceeds 4096 bytes")
+
+	rec = s.do(http.MethodPost, target, `{"category":"log"}`)
+	requireError(t, rec, http.StatusBadRequest, "content type must be multipart/form-data")
+
+	rec = s.do(http.MethodPost, target, "--x\r\nbroken", echo.HeaderContentType, "multipart/form-data; boundary=x")
+	requireError(t, rec, http.StatusBadRequest, "body is not a valid multipart form")
+
+	body, contentType := form(t, part{name: "category", value: "log"}, manifest)
+	rec = s.do(http.MethodPost, "/runs/not-a-uuid/artifacts", body, echo.HeaderContentType, contentType)
+	requireError(t, rec, http.StatusBadRequest, "path id must be a valid uuid")
 }

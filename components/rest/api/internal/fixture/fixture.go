@@ -2,6 +2,8 @@
 package fixture
 
 import (
+	"io"
+	"mime/multipart"
 	"sync"
 	"time"
 
@@ -114,6 +116,24 @@ type ExportRequest struct {
 // ExportCSV is the CSV body the App returns for ExportRequest.
 const ExportCSV = "id,name\n0192f3a1-7b2c-7def-8a12-3456789abcde,nightly\n"
 
+// UploadRequest is a multipart/form-data upload: path param, form values
+// and files.
+type UploadRequest struct {
+	requests.NoRules
+	RunID    uuid.UUID               `json:"-" path:"id"`
+	Category string                  `json:"category" required:"true" enum:"log,report"`
+	Attempt  *int                    `json:"attempt,omitempty" minimum:"1"`
+	Tags     []string                `json:"tags,omitempty"`
+	Manifest *multipart.FileHeader   `json:"-" form:"manifest" required:"true" doc:"Run manifest"`
+	Files    []*multipart.FileHeader `json:"-" form:"files"`
+}
+
+// UploadResponse echoes what the App received.
+type UploadResponse struct {
+	Manifest string   `json:"manifest"`
+	Files    []string `json:"files"`
+}
+
 // HealthRequest is used by the public operation.
 type HealthRequest struct {
 	requests.NoRules
@@ -197,6 +217,8 @@ func (a *App) HandleRequest(request requests.Request) (any, error) {
 			return &api.Blob{Body: []byte(ExportCSV), Filename: "runs.csv"}, nil
 		}
 		return ListResponse{Runs: []Run{sampleRun(KnownID)}}, nil
+	case *UploadRequest:
+		return upload(b)
 	case *HealthRequest:
 		return HealthResponse{OK: true}, nil
 	}
@@ -218,6 +240,26 @@ func (a *App) record(body requests.Body) {
 	a.mu.Lock()
 	a.received = append(a.received, stored)
 	a.mu.Unlock()
+}
+
+// upload reads the manifest and lists the other files' names.
+func upload(r *UploadRequest) (UploadResponse, error) {
+	f, err := r.Manifest.Open()
+	if err != nil {
+		return UploadResponse{}, ez.Wrap(err)
+	}
+	defer f.Close()
+
+	manifest, err := io.ReadAll(f)
+	if err != nil {
+		return UploadResponse{}, ez.Wrap(err)
+	}
+
+	resp := UploadResponse{Manifest: string(manifest), Files: []string{}}
+	for _, file := range r.Files {
+		resp.Files = append(resp.Files, file.Filename)
+	}
+	return resp, nil
 }
 
 func sampleRun(id uuid.UUID) Run {

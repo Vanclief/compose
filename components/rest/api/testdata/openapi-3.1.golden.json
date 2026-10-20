@@ -169,6 +169,27 @@
         },
         "type": "object"
       },
+      "fixture.UploadResponse": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "manifest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "files"
+        ],
+        "type": "object"
+      },
       "handler.ErrorResponse": {
         "properties": {
           "error": {
@@ -511,6 +532,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/fixture.Run"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/handler.ErrorResponse"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/runs/{id}/artifacts": {
+      "post": {
+        "operationId": "runs.upload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "attempt": {
+                    "format": "int64",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "category": {
+                    "enum": [
+                      "log",
+                      "report"
+                    ],
+                    "type": "string"
+                  },
+                  "files": {
+                    "items": {
+                      "contentMediaType": "application/octet-stream",
+                      "format": "binary",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "manifest": {
+                    "contentMediaType": "application/octet-stream",
+                    "description": "Run manifest",
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "tags": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "category",
+                  "manifest"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fixture.UploadResponse"
                 }
               }
             },

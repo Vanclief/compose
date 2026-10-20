@@ -139,6 +139,9 @@ func (op *operation) compile(compiler *validate.Compiler, res *openapi.Result) e
 	if ok {
 		op.bodySchema = &huma.Schema{Ref: ref}
 	}
+	if ok && len(op.files) > 0 {
+		op.formKinds = formKindsOf(ref, res.Components)
+	}
 
 	schema, err := op.validatorSchema(res)
 	if err != nil {
@@ -273,7 +276,9 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 	}
 
 	ref, required, ok := res.BodyRef(op.reqType)
-	if ok {
+	if len(op.files) > 0 {
+		o.RequestBody = op.multipartBody(res)
+	} else if ok {
 		o.RequestBody = &huma.RequestBody{Required: required, Content: jsonContent(&huma.Schema{Ref: ref})}
 	}
 

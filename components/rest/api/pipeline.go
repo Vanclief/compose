@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strings"
@@ -20,6 +21,8 @@ import (
 
 // serve is the Echo handler of a typed operation: validate the request
 // against the compiled schema, decode it once, and pass it to the app.
+// Multipart operations validate their form values against the body schema
+// the same way.
 func (op *operation) serve(c echo.Context) error {
 	h := op.reg.handler
 
@@ -52,8 +55,20 @@ func (op *operation) serve(c echo.Context) error {
 	}
 
 	var raw []byte
+	var form *multipart.Form
+	var formValues map[string]any
 	var collisions []validate.FieldError
-	if op.hasBody {
+	if len(op.files) > 0 {
+		var err error
+		form, err = op.readForm(c)
+		if err != nil {
+			return h.ManageError(c, op.id, request, err)
+		}
+		formValues, collisions = op.formBody(form)
+		if op.hasBody {
+			instance["body"] = formValues
+		}
+	} else if op.hasBody {
 		body, bodyRaw, err := op.readBody(c)
 		if err != nil {
 			return h.ManageError(c, op.id, request, err)
@@ -77,6 +92,12 @@ func (op *operation) serve(c echo.Context) error {
 	}
 
 	req := reflect.New(op.reqType)
+	if form != nil {
+		err = op.decodeForm(req, formValues, form)
+		if err != nil {
+			return h.ManageError(c, op.id, request, err)
+		}
+	}
 	if raw != nil {
 		err = json.Unmarshal(raw, req.Interface())
 		if err != nil {

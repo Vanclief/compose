@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"flag"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,6 +118,18 @@ func TestSpec31(t *testing.T) {
 		dig(t, doc, "paths", "/runs/{id}/report", "get", "responses", "default", "content", "application/json", "schema", "$ref"))
 	require.NotContains(t, dig(t, doc, "components", "schemas"), "api.Blob")
 
+	upload := dig(t, doc, "paths", "/runs/{id}/artifacts", "post", "requestBody").(map[string]any)
+	require.Equal(t, true, upload["required"])
+	formSchema := dig(t, upload, "content", "multipart/form-data", "schema")
+	require.Equal(t, "object", dig(t, formSchema, "type"))
+	require.Equal(t, []any{"category", "manifest"}, dig(t, formSchema, "required"))
+	require.Equal(t, []any{"log", "report"}, dig(t, formSchema, "properties", "category", "enum"))
+	require.Equal(t, "integer", dig(t, formSchema, "properties", "attempt", "type").([]any)[0])
+	require.Equal(t, map[string]any{"type": "string", "format": "binary", "contentMediaType": "application/octet-stream", "description": "Run manifest"},
+		dig(t, formSchema, "properties", "manifest"))
+	require.Equal(t, map[string]any{"type": "array", "items": binary}, dig(t, formSchema, "properties", "files"))
+	require.Len(t, upload["content"], 1)
+
 	again, err := s.reg.Spec(api.V31)
 	require.NoError(t, err)
 	require.Equal(t, raw, again)
@@ -176,7 +189,7 @@ func TestSpecGolden(t *testing.T) {
 func TestOperations(t *testing.T) {
 	s := newServer(t)
 	ops := s.reg.Operations()
-	require.Len(t, ops, 9)
+	require.Len(t, ops, 10)
 	require.Equal(t, api.OperationInfo{
 		Method: http.MethodPatch, Path: "/runs/:id", SpecPath: "/runs/{id}", OperationID: "runs.update", Tag: "runs",
 		Produces: []string{echo.MIMEApplicationJSON},
@@ -229,6 +242,40 @@ type mapParamRequest struct {
 type runIDRequest struct {
 	requests.NoRules
 	RunID string `json:"-" path:"run_id"`
+}
+
+type formStringRequest struct {
+	requests.NoRules
+	Doc string `json:"-" form:"doc"`
+}
+
+type formNoDashRequest struct {
+	requests.NoRules
+	File *multipart.FileHeader `form:"file"`
+}
+
+type formUntaggedRequest struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-"`
+}
+
+type formDuplicateRequest struct {
+	requests.NoRules
+	File  *multipart.FileHeader `json:"-" form:"file"`
+	Other *multipart.FileHeader `json:"-" form:"file"`
+}
+
+type formNestedRequest struct {
+	requests.NoRules
+	Name   string                `json:"name"`
+	Config *fixture.Config       `json:"config"`
+	Labels map[string]string     `json:"labels"`
+	File   *multipart.FileHeader `json:"-" form:"file"`
+}
+
+type formFileRequest struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
 }
 
 type noDashRequest struct {
@@ -352,6 +399,26 @@ func TestRegistrationFailures(t *testing.T) {
 				return
 			}
 			api.GET[fixture.ExportRequest, fixture.ListResponse](g, "/export", "export", tt.opts...)
+		})
+		require.Contains(t, msg, tt.want)
+	}
+
+	uploads := []struct {
+		register func(g *api.Group)
+		want     string
+	}{
+		{func(g *api.Group) { api.POST[formStringRequest, fixture.Run](g, "", "upload") }, `form:"doc" field Doc must be *multipart.FileHeader or []*multipart.FileHeader`},
+		{func(g *api.Group) { api.POST[formNoDashRequest, fixture.Run](g, "", "upload") }, `form:"file" field File must carry json:"-"`},
+		{func(g *api.Group) { api.POST[formUntaggedRequest, fixture.Run](g, "", "upload") }, `file field File needs a form:"..." tag and json:"-"`},
+		{func(g *api.Group) { api.POST[formDuplicateRequest, fixture.Run](g, "", "upload") }, `duplicate form:"file" field Other`},
+		{func(g *api.Group) { api.POST[formNestedRequest, fixture.Run](g, "", "upload") }, "multipart body field Config (config): type *fixture.Config cannot be sent as a form value"},
+		{func(g *api.Group) { api.PUT[formNestedRequest, fixture.Run](g, "", "upload") }, "multipart body field Labels (labels): type map[string]string cannot be sent as a form value"},
+		{func(g *api.Group) { api.Handle[formFileRequest, fixture.Run](g, http.MethodGet, "", "upload") }, "GET requests cannot upload files"},
+	}
+	for _, tt := range uploads {
+		_, g = newGroup()
+		msg = panicMessage(t, func() {
+			tt.register(g)
 		})
 		require.Contains(t, msg, tt.want)
 	}

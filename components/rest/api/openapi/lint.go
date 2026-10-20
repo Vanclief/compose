@@ -12,7 +12,7 @@ import (
 // allowedTags are the struct tag keys accepted on registered types. Anything
 // else is most likely a typo (minimun) that huma would silently ignore.
 var allowedTags = map[string]bool{
-	"json": true, "path": true, "query": true, "header": true, "required": true,
+	"json": true, "path": true, "query": true, "header": true, "form": true, "required": true,
 	"default": true, "minimum": true, "maximum": true, "exclusiveMinimum": true,
 	"exclusiveMaximum": true, "multipleOf": true, "minLength": true, "maxLength": true,
 	"pattern": true, "minItems": true, "maxItems": true, "uniqueItems": true, "enum": true,

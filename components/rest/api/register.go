@@ -53,12 +53,14 @@ type operation struct {
 	reqType reflect.Type
 	resType reflect.Type
 	params  []openapi.Param
+	files   []fileField // non-empty for multipart/form-data operations
 
 	// Set by Ready, read by the handler after the registry's ready flag.
 	schema     *validate.Schema
 	kinds      []validate.Kind
 	hasBody    bool
 	bodySchema *huma.Schema // $ref to the request body component, nil without a body
+	formKinds  map[string]validate.Kind
 }
 
 // Handle registers a typed operation. path uses Echo syntax (/:id) relative
@@ -197,6 +199,20 @@ func (r *Registry) check(op *operation) error {
 	err = checkNoBody(op.method, op.reqType)
 	if err != nil {
 		return err
+	}
+
+	op.files, err = fileFields(op.reqType)
+	if err != nil {
+		return err
+	}
+	if len(op.files) > 0 {
+		if slices.Contains(noBodyMethods, op.method) {
+			return ez.New(ez.EINVALID, fmt.Sprintf("%s requests cannot upload files", op.method), nil)
+		}
+		err = checkFormFields(op.reqType)
+		if err != nil {
+			return err
+		}
 	}
 
 	op.params = params
