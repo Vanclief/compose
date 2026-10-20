@@ -35,7 +35,8 @@ type Config struct {
 	ReceiverVar string
 	// RootGroups maps the route files' root variables to their base path. Defaults to {"e": ""}.
 	RootGroups map[string]string
-	// OutDir is where Run writes openapi.json and openapi.yaml, relative to Root.
+	// OutDir is where Run writes openapi.json and openapi.yaml (the public spec) and
+	// openapi.internal.json and openapi.internal.yaml (the full spec), relative to Root.
 	OutDir string
 
 	Info     Info
@@ -84,6 +85,9 @@ type Config struct {
 
 	// Skip leaves an operation out of the document. path is the OpenAPI path ({id}, not :id).
 	Skip func(method string, path string) bool
+	// Internal marks an operation as internal: it is documented with `x-internal: true` and
+	// Spec.Public leaves it out. path is the OpenAPI path.
+	Internal func(method string, path string) bool
 	// Public marks an operation as needing no authentication (`security: []`).
 	Public func(method string, path string) bool
 	// MultipartPath reports whether a path's request body is multipart/form-data with files.

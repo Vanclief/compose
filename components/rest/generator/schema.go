@@ -1095,6 +1095,12 @@ func cloneSchemaValue(value any) any {
 			cloned[key] = cloneSchemaValue(nested)
 		}
 		return cloned
+	case map[string]map[string]any:
+		cloned := make(map[string]map[string]any, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneSchema(nested)
+		}
+		return cloned
 	case []any:
 		cloned := make([]any, len(typed))
 		for i := range typed {

@@ -66,6 +66,9 @@ func (g *generator) buildOpenAPISpec(routes []Route, facts handlerFacts, handler
 		if g.cfg.Public != nil && g.cfg.Public(r.Method, oasPath) {
 			operation["security"] = []any{}
 		}
+		if g.internal(r.Method, oasPath) {
+			operation["x-internal"] = true
+		}
 
 		operation["parameters"] = params
 		if g.cfg.Operation != nil {
@@ -159,6 +162,14 @@ func (g *generator) skip(method string, oasPath string) bool {
 	}
 
 	return g.cfg.Skip(method, oasPath)
+}
+
+func (g *generator) internal(method string, oasPath string) bool {
+	if g.cfg.Internal == nil {
+		return false
+	}
+
+	return g.cfg.Internal(method, oasPath)
 }
 
 func (g *generator) summaryForRoute(r Route, oasPath string) string {

@@ -18,6 +18,10 @@ type Spec struct {
 	Document map[string]any
 	// Routes are all parsed routes, skipped and deprecated ones included.
 	Routes []Route
+
+	// publicRoots are the request and response schemas of the routed handlers that are not
+	// internal, the roots Public prunes components from.
+	publicRoots []any
 }
 
 // JSON encodes the document with two-space indentation and a trailing newline.
@@ -55,6 +59,9 @@ type generator struct {
 // reached from an operation, or from the request or response type of a routed handler (a
 // GET request type travels as parameters, yet SDKs still name it); drop such a schema in the
 // Schemas hook to hide it. Generation fails when a $ref does not resolve.
+//
+// The document is the full spec: Internal operations are in it, marked `x-internal: true`.
+// Spec.Public derives the spec without them.
 func Generate(cfg Config) (*Spec, error) {
 	cfg, err := cfg.withDefaults()
 	if err != nil {
@@ -116,12 +123,16 @@ func Generate(cfg Config) (*Spec, error) {
 	document := g.buildOpenAPISpec(routes, facts, handlerSchemas)
 
 	var roots []any
+	var publicRoots []any
 	for _, r := range routes {
 		handler, ok := handlerSchemas[r.HandlerKey()]
 		if !ok {
 			continue
 		}
 		roots = append(roots, handler.Request, handler.Response)
+		if !g.internal(r.Method, toOpenAPIPath(r.Path)) {
+			publicRoots = append(publicRoots, handler.Request, handler.Response)
+		}
 	}
 	pruneSchemas(document, builder.schemas, roots)
 
@@ -131,14 +142,110 @@ func Generate(cfg Config) (*Spec, error) {
 	}
 
 	return &Spec{
-		Document: document,
-		Routes:   routes,
+		Document:    document,
+		Routes:      routes,
+		publicRoots: publicRoots,
 	}, nil
 }
 
-// Run generates the document and writes it to cfg.OutDir as openapi.json and openapi.yaml.
+// Public returns a copy of the spec without its internal operations (`x-internal: true`).
+// Path items left empty and tags no remaining operation uses are dropped, and component
+// schemas are pruned with Generate's rule computed over what is left: the schemas the
+// remaining operations reach plus the request and response types of every routed handler
+// that is not Internal (skipped routes included). That is deliberately not strict pruning,
+// SDKs still name those types; for strict pruning, pass nil instead of s.publicRoots to
+// pruneSchemas below. Public fails when a $ref of the result does not resolve.
+func (s *Spec) Public() (*Spec, error) {
+	document := cloneSchema(s.Document)
+
+	used := map[string]bool{}
+	paths, _ := document["paths"].(map[string]any)
+	for path, itemRaw := range paths {
+		item, ok := itemRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for method, opRaw := range item {
+			op, ok := opRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if op["x-internal"] == true {
+				delete(item, method)
+				continue
+			}
+			for _, tag := range operationTags(op) {
+				used[tag] = true
+			}
+		}
+		if len(item) == 0 {
+			delete(paths, path)
+		}
+	}
+
+	tags, ok := document["tags"].([]any)
+	if ok {
+		var kept []any
+		for _, tag := range tags {
+			entry, _ := tag.(map[string]any)
+			name, _ := entry["name"].(string)
+			if used[name] {
+				kept = append(kept, tag)
+			}
+		}
+		if len(kept) > 0 {
+			document["tags"] = kept
+		} else {
+			delete(document, "tags")
+		}
+	}
+
+	components, _ := document["components"].(map[string]any)
+	schemas, _ := components["schemas"].(map[string]map[string]any)
+	pruneSchemas(document, schemas, s.publicRoots)
+
+	err := validateRefs(document, schemas)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	return &Spec{
+		Document:    document,
+		Routes:      s.Routes,
+		publicRoots: s.publicRoots,
+	}, nil
+}
+
+// operationTags returns an operation's tags, whether the generator ([]string) or an
+// Operation hook ([]any) set them.
+func operationTags(op map[string]any) []string {
+	switch typed := op["tags"].(type) {
+	case []string:
+		return typed
+	case []any:
+		var names []string
+		for _, tag := range typed {
+			name, ok := tag.(string)
+			if ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+
+	return nil
+}
+
+// Run generates the document and writes it to cfg.OutDir: the public spec (Spec.Public) as
+// openapi.json and openapi.yaml, the artifact SDKs and releases consume, and the full spec,
+// internal operations included, as openapi.internal.json and openapi.internal.yaml.
 func Run(cfg Config) error {
 	spec, err := Generate(cfg)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	public, err := spec.Public()
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -153,12 +260,27 @@ func Run(cfg Config) error {
 		outDir = filepath.Join(cfg.Root, outDir)
 	}
 
+	err = writeSpec(public, filepath.Join(outDir, "openapi"))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	err = writeSpec(spec, filepath.Join(outDir, "openapi.internal"))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	return nil
+}
+
+// writeSpec writes the spec as base.json and base.yaml.
+func writeSpec(spec *Spec, base string) error {
 	jsonBytes, err := spec.JSON()
 	if err != nil {
 		return ez.Wrap(err)
 	}
 
-	err = os.WriteFile(filepath.Join(outDir, "openapi.json"), jsonBytes, 0o644)
+	err = os.WriteFile(base+".json", jsonBytes, 0o644)
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -168,7 +290,7 @@ func Run(cfg Config) error {
 		return ez.Wrap(err)
 	}
 
-	err = os.WriteFile(filepath.Join(outDir, "openapi.yaml"), yamlBytes, 0o644)
+	err = os.WriteFile(base+".yaml", yamlBytes, 0o644)
 	if err != nil {
 		return ez.Wrap(err)
 	}
