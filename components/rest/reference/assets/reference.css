@@ -277,21 +277,12 @@ body[data-mode="docs"] .search { display: none; }
 .ico-obj { flex: none; color: var(--put); font-family: var(--mono); font-weight: 700; font-size: 12px; }
 .ico-table { flex: none; width: 13px; height: 13px; fill: none; stroke: var(--put); stroke-width: 1.4; stroke-linejoin: round; }
 .nav-model { font-family: var(--mono); font-size: 12.5px; }
-/* Model families: the head's link is the folder row, with the chevron in
-   front of it; members hang under it like a folder's entries. */
-.nav-family-head { position: relative; }
-.nav-family-head > .nav-model { padding-left: 24px; align-items: center; }
-.nav-family-tg { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 24px; padding: 0; }
-.nav-family-tg:hover { background: none; }
-.nav-family-tg:hover::before { border-color: var(--text); }
-.nav-family-tg .nav-folder-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.nav-family-head > .nav-model .count { margin-left: 2px; }
-/* Plain rows next to families line up with the family names. */
-.nav:has(> .nav-family) > li:not(.nav-folder) > .nav-model { padding-left: 24px; }
-.nav-family-diff { display: inline-flex; gap: 2px; }
-.nav-family-diff .diff-dot { min-width: 0; padding: 0 3px; background: none; box-shadow: inset 0 0 0 1px currentColor; }
-.nav-family-diff .diff-dot + .diff-dot { margin-left: 0; }
-.nav-folder-tg[aria-expanded="true"] ~ .nav-model .nav-family-diff, .nav-folder-tg[aria-expanded="true"] > .nav-family-diff { display: none; }
+/* A collapsed model group sums up its models' changes. */
+.nav-group-diff { display: inline-flex; gap: 2px; margin-left: auto; }
+.nav-group-diff .diff-dot { min-width: 0; padding: 0 3px; background: none; box-shadow: inset 0 0 0 1px currentColor; }
+.nav-group-diff .diff-dot + .diff-dot { margin-left: 0; }
+.nav-group-diff + .count { margin-left: 0; }
+.nav-group-tg[aria-expanded="true"] > .nav-group-diff { display: none; }
 .no-results { padding: 8px 16px; color: var(--muted); }
 
 /* Buttons */
@@ -1194,7 +1185,7 @@ body.map-open .content > :not(.map) { display: none !important; }
 body:not(.diff) .diff-badge, body:not(.diff) .diff-dot, body:not(.diff) .diff-log, body:not(.diff) .diff-navlink,
 body:not(.diff) .row.diff-del, body:not(.diff) .chip.diff-del, body:not(.diff) .mk.diff-inside,
 body:not(.diff) .op.diff-removed, body:not(.diff) .nav li:has(> .diff-removed),
-body:not(.diff) .nav-family:not(:has(.nav-model:not(.diff-removed))) { display: none; }
+body:not(.diff) [data-pane="models"] .nav-group:not(:has(.nav-model:not(.diff-removed))) { display: none; }
 
 /* Badges */
 .diff-badge { display: inline-block; padding: 0 7px; border: 1px solid currentColor; border-radius: 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; line-height: 18px; white-space: nowrap; }

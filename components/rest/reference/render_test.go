@@ -207,9 +207,9 @@ func TestRenderEmmaInline(t *testing.T) {
 		require.Contains(t, html, `<div class="pane" data-pane="`+pane+`">`)
 		require.Contains(t, html, `<div class="nav-pane" data-pane="`+pane+`">`)
 	}
-	// Models are listed by module and shown in an inspector, with the full
+	// Models are listed by tag and shown in an inspector, with the full
 	// schema a click away.
-	require.Contains(t, html, `<span class="nav-group-name">accesscontrol</span>`)
+	require.Contains(t, section(t, html, `data-pane="models"`), `<span class="nav-group-name">Access Control</span>`)
 	point := section(t, html, `id="model/application_models_accesscontrol_AccessPoint"`)
 	require.Contains(t, point, `<div class="card mm-sample oi-deep"><div class="oi" data-model-oi></div></div>`)
 	require.Contains(t, point, `<div class="model-tree" hidden>`)

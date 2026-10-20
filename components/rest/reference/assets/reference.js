@@ -87,9 +87,6 @@
   // ------------------------------------------------------------- toggles
 
   function toggleBody(btn) {
-    if (btn.classList.contains('nav-family-tg')) {
-      return btn.parentElement.nextElementSibling;
-    }
     if (btn.classList.contains('nav-group-tg') || btn.classList.contains('nav-folder-tg')) {
       return btn.nextElementSibling;
     }
@@ -554,18 +551,12 @@
     navLinks.get(id).push(a);
   });
 
-  // folderToggle returns the toggle of a sidebar folder: its own button,
-  // or the chevron in a model family's head row.
-  function folderToggle(li) {
-    return li.querySelector(':scope > .nav-folder-tg, :scope > .nav-family-head > .nav-folder-tg');
-  }
-
   // navToggles lists the sidebar toggles above a link, outermost first: its
-  // tag group, then each path folder or model family down to the link.
+  // tag group, then each path folder down to the link.
   function navToggles(link) {
     const out = [];
     for (let li = link.closest('.nav-folder'); li; li = li.parentElement.closest('.nav-folder')) {
-      out.unshift(folderToggle(li));
+      out.unshift(li.querySelector(':scope > .nav-folder-tg'));
     }
     const group = link.closest('.nav-group');
     const btn = group ? group.querySelector(':scope > .nav-group-tg') : null;
@@ -580,7 +571,7 @@
   doc.querySelectorAll('.sidebar a[data-search]').forEach((a) => {
     const names = [];
     for (let li = a.closest('.nav-folder'); li; li = li.parentElement.closest('.nav-folder')) {
-      names.push(folderToggle(li).querySelector('.nav-folder-name').textContent);
+      names.push(li.querySelector(':scope > .nav-folder-tg .nav-folder-name').textContent);
     }
     const group = a.closest('.nav-group');
     if (group) {
@@ -719,16 +710,11 @@
       }
     });
     pane.querySelectorAll('.nav-folder, .nav-group').forEach((box) => {
-      const btn = box.classList.contains('nav-group') ? box.querySelector(':scope > .nav-group-tg') : folderToggle(box);
+      const btn = box.querySelector(':scope > .nav-folder-tg, :scope > .nav-group-tg');
       if (terms.length > 0) {
         const any = Array.from(box.querySelectorAll('a[data-search]')).some((a) => !a.parentElement.hidden);
         box.hidden = !any;
         setExpanded(btn, any);
-        // A family shows its head row above its matching members.
-        const head = box.querySelector(':scope > .nav-family-head');
-        if (head && any) {
-          head.hidden = false;
-        }
       } else {
         box.hidden = false;
         setExpanded(btn, btn.dataset.user ? btn.dataset.user === 'open' : box.querySelector('a.active') !== null);
@@ -3026,7 +3012,7 @@
         }
         if (up.classList.contains('nav-folder') || up.classList.contains('nav-group')) {
           seen.add(up);
-          const c = up.querySelector(':scope > button .count, :scope > .nav-family-head > .count');
+          const c = up.querySelector(':scope > button .count');
           if (c) {
             counts.push(c);
           }
@@ -4894,8 +4880,7 @@
       return;
     }
     doc.querySelectorAll('.sidebar .nav-group-tg, .sidebar .nav-folder-tg').forEach((btn) => {
-      const box = btn.classList.contains('nav-family-tg') ? btn.parentElement.nextElementSibling : btn.nextElementSibling;
-      if (btn.getAttribute('aria-expanded') !== 'true' && box && box.querySelector('.diff-op')) {
+      if (btn.getAttribute('aria-expanded') !== 'true' && btn.parentElement.querySelector('.diff-op')) {
         btn.click();
       }
     });

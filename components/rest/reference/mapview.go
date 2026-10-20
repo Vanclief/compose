@@ -215,7 +215,7 @@ func (b *builder) mapTags(entities map[string]bool) []mapTag {
 	}
 
 	var out []mapTag
-	for _, tag := range b.tagNames() {
+	for _, tag := range b.d.tagNames() {
 		names := reached[tag]
 		if len(names) > 0 {
 			out = append(out, mapTag{Name: tag, Nodes: names})

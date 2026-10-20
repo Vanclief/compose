@@ -71,36 +71,22 @@
 {{end}}</div>
 {{if .Models}}<div class="nav-pane" data-pane="models">
 {{with .ModelNav}}{{if .Loose}}<ul class="nav nav-loose">
-{{template "navfamilies" .Loose}}</ul>
-{{end}}{{range .Modules}}<div class="nav-group">
-<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>
+{{range .Loose}}{{template "navmodel" .}}{{end}}</ul>
+{{end}}{{range .Groups}}<div class="nav-group{{if .Shared}} nav-shared{{end}}">
+<button type="button" class="nav-group-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-group-name">{{.Name}}</span>{{template "group-changes" .Changes}}<span class="count">{{len .Models}}</span></button>
 <ul class="nav" hidden>
-{{template "navfamilies" .Families}}</ul>
+{{range .Models}}{{template "navmodel" .}}{{end}}</ul>
 </div>
 {{end}}{{end}}</div>
 {{end}}<p class="no-results" hidden>No matches.</p>
 </nav>
 </aside>{{end}}
 
-{{define "navmodel"}}<li>{{template "navmodel-link" .}}</li>
+{{define "navmodel"}}<li><a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{if .Table}}{{template "ico-table"}}{{else}}<span class="ico-obj" aria-hidden="true">{}</span>{{end}}<span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a></li>
 {{end}}
 
-{{define "navmodel-link"}}<a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{if .Table}}{{template "ico-table"}}{{else}}<span class="ico-obj" aria-hidden="true">{}</span>{{end}}<span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}</a>{{end}}
-
-{{/* A family's row is its head's link with a chevron that opens the
-     members, and, collapsed, how many of them changed; the Shared group is a
-     plain folder. */}}
-{{define "navfamilies"}}{{range $f := .}}{{if not .Members}}{{template "navmodel" .Head}}{{else if .Head}}<li class="nav-folder nav-family"><div class="nav-family-head"><button type="button" class="nav-folder-tg nav-family-tg" aria-expanded="false" title="Show the {{len .Members}} {{if eq (len .Members) 1}}model{{else}}models{{end}} in this family"><span class="nav-folder-name">{{.Head.Short}}</span></button>{{with .Head}}<a class="nav-model{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}" title="{{.Name}}">{{if .Table}}{{template "ico-table"}}{{else}}<span class="ico-obj" aria-hidden="true">{}</span>{{end}}<span class="nav-title">{{.Short}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}{{template "family-changes" $f.Changes}}<span class="count">{{len $f.Members}}</span></a>{{end}}</div>
-<ul class="nav" hidden>
-{{range .Members}}{{template "navmodel" .}}{{end}}</ul>
-</li>
-{{else}}<li class="nav-folder nav-shared"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">Shared</span>{{template "family-changes" .Changes}}<span class="count">{{len .Members}}</span></button>
-<ul class="nav" hidden>
-{{range .Members}}{{template "navmodel" .}}{{end}}</ul>
-</li>
-{{end}}{{end}}{{end}}
-
-{{define "family-changes"}}{{if .}}<span class="nav-family-diff">{{range .}}<span class="diff-dot {{.Class}}" title="{{.Count}} {{.Label}} in this family">{{.Count}}{{.Letter}}</span>{{end}}</span>{{end}}{{end}}
+{{/* How many models of a collapsed group changed, by diff state. */}}
+{{define "group-changes"}}{{if .}}<span class="nav-group-diff">{{range .}}<span class="diff-dot {{.Class}}" title="{{.Count}} {{.Label}}">{{.Count}}{{.Letter}}</span>{{end}}</span>{{end}}{{end}}
 
 {{define "navfolder"}}{{range .Ops}}<li><a class="nav-op{{with .Diff}} diff-op {{.Class}}{{end}}" href="{{href .Anchor}}" data-search="{{.Search}}"{{if .Trace}} data-m="{{.Trace}}"{{end}}><span class="leaf" aria-hidden="true">&rarr;</span><span class="nav-title">{{.Title}}</span>{{with .Diff}}{{template "diff-nav-badge" .}}{{end}}<span class="m m-{{.MethodClass}}">{{.Method}}</span></a></li>
 {{end}}{{range .Folders}}<li class="nav-folder"><button type="button" class="nav-folder-tg" aria-expanded="false"><svg class="ico-folder" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.5h4.1l1.5 1.6h6.9v7.4H1.75z"/></svg><span class="nav-folder-name">{{.Name}}</span><span class="count">{{.Count}}</span></button>

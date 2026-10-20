@@ -249,37 +249,22 @@ type modelView struct {
 	Diff        *diffBadge
 }
 
-// modelNav is the Models sidebar: models whose generated names carry a
-// module (see schemaGroup) in a folder per module, the rest loose above
-// them, each list by family (see families). Tables counts the models stored
-// in a database table.
+// modelNav is the Models sidebar: a folder per operation tag (see
+// tagGroups), or, in a document without tags, models whose generated names
+// carry a module (see schemaGroup) in a folder per module and the rest loose
+// above them. Tables counts the models stored in a database table.
 type modelNav struct {
-	Loose   []modelFamily
-	Modules []modelModule
-	Tables  int
-}
-
-type modelModule struct {
-	Name     string
-	Families []modelFamily
-	Count    int
+	Loose  []*modelView
+	Groups []modelGroup
+	Tables int
 }
 
 // order lists the models as the sidebar does: loose ones first, then each
-// module, each family head before its members.
+// group's.
 func (nav modelNav) order() []*modelView {
-	var out []*modelView
-	add := func(list []modelFamily) {
-		for _, f := range list {
-			if f.Head != nil {
-				out = append(out, f.Head)
-			}
-			out = append(out, f.Members...)
-		}
-	}
-	add(nav.Loose)
-	for _, m := range nav.Modules {
-		add(m.Families)
+	out := append([]*modelView{}, nav.Loose...)
+	for _, g := range nav.Groups {
+		out = append(out, g.Models...)
 	}
 	return out
 }
@@ -683,10 +668,10 @@ func pathGroup(path string) string {
 
 // tagNames lists the operation tags in the order the document declares them,
 // then undeclared ones by name, and Other last for untagged operations.
-func (b *builder) tagNames() []string {
+func (d *Document) tagNames() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, t := range b.d.Tags {
+	for _, t := range d.Tags {
 		if !seen[t.Name] {
 			seen[t.Name] = true
 			out = append(out, t.Name)
@@ -694,7 +679,7 @@ func (b *builder) tagNames() []string {
 	}
 	var extra []string
 	other := false
-	for _, ref := range b.d.Operations() {
+	for _, ref := range d.Operations() {
 		if len(ref.Operation.Tags) == 0 {
 			other = true
 		}
@@ -1319,30 +1304,44 @@ func (b *builder) buildModels() []*modelView {
 
 func (b *builder) buildModelNav(models []*modelView) modelNav {
 	var nav modelNav
-	var loose []*modelView
-	var modules []string
-	byModule := map[string][]*modelView{}
 	for _, m := range models {
 		if m.Table != "" {
 			nav.Tables++
 		}
+	}
+	tagged := b.d.hasModelTags() || b.diff != nil && b.diff.base.hasModelTags()
+	if tagged {
+		nav.Groups = b.tagGroups(models)
+		return nav
+	}
+
+	byShort := func(list []*modelView) {
+		sort.SliceStable(list, func(i, j int) bool {
+			return strings.ToLower(list[i].Short) < strings.ToLower(list[j].Short)
+		})
+	}
+	byModule := map[string]int{}
+	for _, m := range models {
 		module := schemaGroup(m.Name)
 		if module == "" {
-			loose = append(loose, m)
+			nav.Loose = append(nav.Loose, m)
 			continue
 		}
-		_, ok := byModule[module]
+		i, ok := byModule[module]
 		if !ok {
-			modules = append(modules, module)
+			i = len(nav.Groups)
+			byModule[module] = i
+			nav.Groups = append(nav.Groups, modelGroup{Name: module})
 		}
-		byModule[module] = append(byModule[module], m)
+		nav.Groups[i].Models = append(nav.Groups[i].Models, m)
 	}
-	sort.Strings(modules)
-	headOf := b.familyHeadOf()
-	nav.Loose = families(loose, headOf)
-	for _, module := range modules {
-		list := byModule[module]
-		nav.Modules = append(nav.Modules, modelModule{Name: module, Families: families(list, headOf), Count: len(list)})
+	byShort(nav.Loose)
+	for i := range nav.Groups {
+		byShort(nav.Groups[i].Models)
+		nav.Groups[i].Changes = groupChanges(nav.Groups[i].Models)
 	}
+	sort.SliceStable(nav.Groups, func(i, j int) bool {
+		return nav.Groups[i].Name < nav.Groups[j].Name
+	})
 	return nav
 }
