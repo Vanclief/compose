@@ -43,6 +43,9 @@ type pageView struct {
 	// ModelSamples maps each model's anchor to its example and type notes
 	// for the model dialog, see modelSamplesJSON.
 	ModelSamples template.JS
+	// ModelDiffs is the side-by-side diff of the changed models in diff
+	// mode, see modelDiffs.
+	ModelDiffs template.JS
 }
 
 // serverView is one server: URL has every variable replaced by its default
@@ -204,8 +207,9 @@ type tryParam struct {
 
 // modelView is one model of the Models view. Its fields show in an
 // ObjectInspector built from its sample (see addModelSample) when it has
-// one, and in Tree, the full schema with every constraint. A changed model
-// (diff mode) opens on the tree, which marks the changes. Table is the
+// one, and in Tree, the full schema with every constraint. In diff mode a
+// changed, added or removed model opens on its changes (see modelDiffs).
+// Table is the
 // database table it is stored in (see Document.Table).
 type modelView struct {
 	Name        string
@@ -215,7 +219,6 @@ type modelView struct {
 	Description template.HTML
 	Tree        template.HTML
 	Inspector   bool
-	TreeFirst   bool
 	Search      string
 	MadeBy      int
 	UsedBy      int
@@ -268,8 +271,12 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 		samples:   map[string]modelSample{},
 	}
 
-	b.short = shortNames(d.Components.Schemas.Keys)
-	for _, name := range d.Components.Schemas.Keys {
+	names := d.Components.Schemas.Keys
+	if diff != nil {
+		names = append(append([]string(nil), names...), diff.removedModels(d)...)
+	}
+	b.short = shortNames(names)
+	for _, name := range names {
 		b.models[name] = b.anchor("model", modelSlug(name))
 	}
 
@@ -317,6 +324,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 	p.Models = b.buildModels()
 	p.ModelNav = buildModelNav(p.Models)
 	p.Flow = b.flow.JSON
+	p.ModelDiffs = b.modelDiffsJSON()
 	p.ModelSamples = b.modelSamplesJSON()
 	p.TypeNotes = b.typeNotesJSON()
 	p.Map = b.buildMap()
@@ -1228,10 +1236,9 @@ func (b *builder) buildModels() []*modelView {
 			Diff:        b.modelBadge(name),
 		}
 		_, mv.Inspector = b.samples[mv.Anchor]
-		mv.TreeFirst = mv.Diff != nil
 		out = append(out, mv)
 	}
-	return out
+	return append(out, b.removedModelViews()...)
 }
 
 func buildModelNav(models []*modelView) modelNav {

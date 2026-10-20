@@ -328,3 +328,95 @@ func TestRenderWithoutBase(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, out, again)
 }
+
+// TestRenderModelDiffs checks the data of the side-by-side model diffs: a
+// changed model's base sample and changes by path below the model, a model
+// that changed inside another, an added model without a base sample, and a
+// removed model, which gets a card built from the base.
+func TestRenderModelDiffs(t *testing.T) {
+	base := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.0"},
+  "paths": {},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "required": ["id"], "properties": {
+      "id": {"type": "string"},
+      "legacy": {"type": "string"},
+      "owner": {"$ref": "#/components/schemas/Owner"}
+    }},
+    "Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "Legacy": {"type": "object", "description": "Gone.", "properties": {"code": {"type": "string"}}}
+  }}
+}`
+	head := `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1.1"},
+  "paths": {},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "required": ["id"], "properties": {
+      "id": {"type": "integer"},
+      "owner": {"$ref": "#/components/schemas/Owner"},
+      "tags": {"type": "array", "items": {"type": "string"}}
+    }},
+    "Owner": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}},
+    "Tag": {"type": "object", "properties": {"name": {"type": "string"}}}
+  }}
+}`
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{Base: []byte(base)})
+	require.NoError(t, err)
+	html := string(out)
+	requireBalanced(t, html)
+
+	start := strings.Index(html, `<script type="application/json" id="model-diffs">`)
+	require.Positive(t, start)
+	raw := html[start+len(`<script type="application/json" id="model-diffs">`):]
+	raw = raw[:strings.Index(raw, "</script>")]
+	var diffs modelDiffs
+	require.NoError(t, json.Unmarshal([]byte(raw), &diffs))
+	require.Equal(t, "1.0", diffs.Base)
+	require.Equal(t, "1.1", diffs.Head)
+
+	pet := diffs.Models["model/Pet"]
+	require.NotNil(t, pet)
+	require.Equal(t, "changed", pet.Kind)
+	require.NotNil(t, pet.Base)
+	require.Contains(t, string(pet.Base.Value), `"legacy"`)
+	kinds := map[string]string{}
+	for _, c := range pet.Changes {
+		kinds[c.Path] = c.Kind
+	}
+	require.Equal(t, "removed", kinds["legacy"])
+	require.Equal(t, "added", kinds["tags"])
+	require.Equal(t, "changed", kinds["id"])
+	require.Equal(t, "inside", kinds["owner"])
+	for _, c := range pet.Changes {
+		if c.Kind == "inside" {
+			require.Equal(t, "model/Owner", c.Model)
+			require.Equal(t, "Owner", c.Detail)
+		}
+	}
+
+	tag := diffs.Models["model/Tag"]
+	require.NotNil(t, tag)
+	require.Equal(t, "added", tag.Kind)
+	require.Nil(t, tag.Base)
+
+	legacy := diffs.Models["model/Legacy"]
+	require.NotNil(t, legacy)
+	require.Equal(t, "removed", legacy.Kind)
+	require.NotNil(t, legacy.Base)
+
+	// The removed model has a card and a sidebar entry, from the base.
+	card := section(t, html, `id="model/Legacy"`)
+	require.Contains(t, html, `<article class="model diff-removed" id="model/Legacy"`)
+	require.Contains(t, card, "Gone.")
+	require.Contains(t, card, `data-model-oi`)
+	require.Contains(t, html, `class="nav-model diff-op diff-removed" href="#model/Legacy"`)
+
+	// Without a base the page has no model diffs.
+	plain, err := Render(doc, Options{})
+	require.NoError(t, err)
+	require.NotContains(t, string(plain), `id="model-diffs"`)
+}

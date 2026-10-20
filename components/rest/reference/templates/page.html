@@ -28,6 +28,8 @@
 <script type="application/json" id="flow-data">{{.Flow}}</script>
 <script type="application/json" id="type-notes">{{.TypeNotes}}</script>
 <script type="application/json" id="model-samples">{{.ModelSamples}}</script>
+{{if .ModelDiffs}}<script type="application/json" id="model-diffs">{{.ModelDiffs}}</script>
+{{end}}
 {{if .Inline}}<script>{{.JS}}</script>{{else}}<script src="{{.AssetsURL}}/reference.js?v={{.JSVersion}}"></script>{{end}}
 </body>
 </html>
@@ -148,7 +150,7 @@
 {{if .Description}}<div class="md model-desc">{{.Description}}</div>{{end}}
 <div class="model-bar">{{if or .MadeBy .UsedBy}}<div class="model-flow" data-m="{{.Trace}}">{{if .MadeBy}}<button type="button" class="pop-tg" data-pop="by">&larr; made by {{.MadeBy}}</button>{{end}}{{if .UsedBy}}<button type="button" class="pop-tg users" data-pop="use">used by {{.UsedBy}} &rarr;</button>{{end}}</div>{{end}}
 </div>
-{{if .Inspector}}<div class="card mm-sample oi-deep"{{if .TreeFirst}} hidden{{end}}><div class="oi" data-model-oi></div></div>
-<div class="model-tree"{{if not .TreeFirst}} hidden{{end}}>{{.Tree}}</div>{{else}}{{.Tree}}{{end}}
+{{if .Inspector}}<div class="card mm-sample oi-deep"><div class="oi" data-model-oi></div></div>
+<div class="model-tree" hidden>{{.Tree}}</div>{{else}}{{.Tree}}{{end}}
 </article>
 {{end}}</section>{{end}}

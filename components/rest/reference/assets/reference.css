@@ -1229,3 +1229,31 @@ a.mk.diff-inside:hover { text-decoration: none; filter: brightness(1.1); }
 .count.fd-count { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 .pbox.lit-port, .pfields li.lit-port { border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-soft) !important; border-radius: 7px; }
 a.lit-link { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent-soft); border-radius: 3px; }
+
+/* Model diffs: the model before and after as two inspector columns, rows
+   paired like the lines of a side-by-side diff. */
+body:not(.diff) [data-model-view="diff"] { display: none; }
+.mdiff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); font-family: var(--mono); font-size: 12.5px; }
+.mdiff-side-head { padding: 8px 14px; border-bottom: 1px solid var(--sample-line); color: var(--sample-muted); font-family: var(--font); font-size: 12px; font-weight: 600; }
+.mdiff-side-head:first-child { border-right: 1px solid var(--sample-line); }
+.mdiff-model { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 7px 14px; border-bottom: 1px solid var(--sample-line); color: var(--sample-muted); font-family: var(--font); font-size: 12px; }
+.mdiff-added { color: var(--diff-add); font-weight: 600; }
+.mdiff-removed { color: var(--diff-del); font-weight: 600; }
+.mdiff-cell { min-width: 0; padding: 0 12px 0 4px; }
+.mdiff-l { border-right: 1px solid var(--sample-line); }
+.mdiff-row { display: grid; grid-template-columns: 2ch var(--kw, 16ch) var(--tw, 10ch) minmax(0, 1fr); align-items: baseline; column-gap: 12px; min-height: 26px; padding: 3px 0; }
+.mdiff-sign { color: var(--sample-muted); text-align: center; user-select: none; }
+.mdiff-k { overflow: hidden; color: var(--sample-muted); text-overflow: ellipsis; white-space: nowrap; }
+.mdiff-k > .oi-ico { margin-right: 2px; }
+.mdiff-row > .oi-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdiff-desc { grid-column: 3 / -1; color: var(--sample-text); font-family: var(--font); font-size: 12px; }
+.mdiff-del { background: var(--diff-del-bg); }
+.mdiff-del .mdiff-sign { color: var(--diff-del); font-weight: 700; }
+.mdiff-add { background: var(--diff-add-bg); }
+.mdiff-add .mdiff-sign { color: var(--diff-add); font-weight: 700; }
+.mdiff-none { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--sample-line) 55%, transparent) 6px 7px); }
+.mdiff-inside .mdiff-sign::before { content: "~"; color: var(--diff-chg); font-weight: 700; }
+.mdiff-notes { display: flex; flex-wrap: wrap; gap: 2px 12px; padding-bottom: 6px; color: var(--sample-muted); font-family: var(--font); font-size: 12px; }
+.mdiff-note .diff-badge { vertical-align: 1px; }
+.mdiff-fold { grid-column: 1 / -1; padding: 5px 14px; border: 0; border-block: 1px solid var(--sample-line); background: var(--sample-fill); color: var(--sample-muted); font: 12px var(--font); text-align: left; cursor: pointer; }
+.mdiff-fold:hover { color: var(--accent); }

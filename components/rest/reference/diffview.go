@@ -1,6 +1,8 @@
 package reference
 
 import (
+	"bytes"
+	"encoding/json"
 	"html/template"
 	"sort"
 	"strconv"
@@ -430,4 +432,130 @@ func (b *builder) modelLink(name string) string {
 // Count formats a number with its noun.
 func (cv *changesView) Count(n int, one, many string) string {
 	return strconv.Itoa(n) + " " + plural(n, one, many)
+}
+
+// removedModels lists the component schemas of the base document that head
+// no longer has, in base order.
+func (st *diffState) removedModels(head *Document) []string {
+	var out []string
+	for _, name := range st.base.Components.Schemas.Keys {
+		_, ok := head.Components.Schemas.Map[name]
+		if !ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// removedModelViews builds the cards of the models the head document no
+// longer has, from the base document, so their changes have a place.
+func (b *builder) removedModelViews() []*modelView {
+	if b.diff == nil {
+		return nil
+	}
+	old := *b
+	old.d = b.diff.base
+	old.diff = nil
+	var out []*modelView
+	for _, name := range b.diff.removedModels(b.d) {
+		s := b.diff.base.Components.Schemas.Map[name]
+		if s == nil {
+			continue
+		}
+		short := b.short[name]
+		old.addModelSample(name)
+		mv := &modelView{
+			Name:        name,
+			Short:       short,
+			Anchor:      b.models[name],
+			Table:       b.diff.base.Table(name),
+			Description: markdown(s.Description),
+			Tree:        old.newTree(ForResponse, false).root(s, name),
+			Search:      strings.ToLower(short + " " + name),
+			Diff:        b.modelBadge(name),
+		}
+		_, mv.Inspector = b.samples[mv.Anchor]
+		out = append(out, mv)
+	}
+	return out
+}
+
+// modelDiffs is what the Changes view of the models needs to set each
+// changed, added or removed model's base version beside its head version:
+// the two version labels and, by model anchor, a modelDiffView.
+type modelDiffs struct {
+	Base   string                    `json:"base"`
+	Head   string                    `json:"head"`
+	Models map[string]*modelDiffView `json:"models"`
+}
+
+// modelDiffView is one model of modelDiffs: its change kind (added, removed
+// or changed), its base sample, absent when it was added (the head sample
+// is in the model samples), and its changes.
+type modelDiffView struct {
+	Kind    string            `json:"k"`
+	Base    *modelSample      `json:"b,omitempty"`
+	Changes []modelChangeView `json:"c,omitempty"`
+}
+
+// modelChangeView is one change of a model: Path is the property it is at
+// below the model, segments joined by " › " ("" for the model itself),
+// Kind added, removed, changed or inside (a model it holds changed, named
+// by Model, the anchor of its card, and Detail, its display name).
+type modelChangeView struct {
+	Path     string `json:"p"`
+	Kind     string `json:"k"`
+	Detail   string `json:"d"`
+	Breaking bool   `json:"x,omitempty"`
+	Model    string `json:"m,omitempty"`
+}
+
+func (b *builder) modelDiffsJSON() template.JS {
+	if b.diff == nil {
+		return ""
+	}
+	out := modelDiffs{Base: b.diff.base.Info.Version, Head: b.d.Info.Version, Models: map[string]*modelDiffView{}}
+	for _, md := range b.diff.report.Models {
+		anchor, ok := b.models[md.Name]
+		if !ok {
+			continue
+		}
+		mv := &modelDiffView{Kind: md.Kind.String()}
+		if md.Kind != Added {
+			mv.Base = b.baseSample(md.Name)
+		}
+		for _, c := range md.Changes {
+			segs := strings.Split(c.Path, pathSep)
+			cv := modelChangeView{
+				Path:     strings.Join(segs[1:], pathSep),
+				Kind:     c.Kind.String(),
+				Detail:   c.Detail,
+				Breaking: c.Breaking,
+			}
+			if c.inherited() {
+				cv.Kind = "inside"
+				cv.Model = b.models[c.model]
+				cv.Detail = b.display(c.model)
+			}
+			mv.Changes = append(mv.Changes, cv)
+		}
+		out.Models[anchor] = mv
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return template.JS(raw)
+}
+
+// baseSample is the dialog sample of the component schema name in the base
+// document, or nil when it has none.
+func (b *builder) baseSample(name string) *modelSample {
+	v, notes := b.diff.base.modelExample(&Schema{Ref: refSchemas + name}, b.display)
+	if len(notes) == 0 {
+		return nil
+	}
+	var raw bytes.Buffer
+	appendJSON(&raw, v)
+	return &modelSample{Value: raw.Bytes(), Types: b.noteRef(strings.Join(notes, "\n"))}
 }

@@ -2087,23 +2087,31 @@
       for (const entry of entries) {
         if (entry.isIntersecting) {
           modelObserver.unobserve(entry.target);
-          renderModelInspector(entry.target);
+          renderModelBox(entry.target);
         }
       }
     }, { rootMargin: '800px 0px' })
     : null;
 
-  // modelViews is the Inspector / Full schema switch of a model, pressed
-  // on the one shown.
-  function modelViews(tree) {
+  // The model diffs of diff mode, parsed on first use (see modelDiffs).
+  let modelDiffData;
+
+  // modelViews is the Changes / Inspector / Full schema switch of a model,
+  // pressed on the one shown. Changes is there in diff mode, for the models
+  // that changed.
+  function modelViews(shown, changes) {
     const group = el('div', 'model-views');
     group.setAttribute('role', 'group');
     group.setAttribute('aria-label', 'Show the model as');
-    [['oi', 'Inspector', ''], ['tree', 'Full schema', 'Every field with its constraints: required, nullable, formats and limits']].forEach(([view, label, title]) => {
+    const views = [['oi', 'Inspector', ''], ['tree', 'Full schema', 'Every field with its constraints: required, nullable, formats and limits']];
+    if (changes) {
+      views.unshift(['diff', 'Changes', 'The model before and after, side by side']);
+    }
+    views.forEach(([view, label, title]) => {
       const btn = el('button', '', label);
       btn.type = 'button';
       btn.dataset.modelView = view;
-      btn.setAttribute('aria-pressed', String((view === 'tree') === tree));
+      btn.setAttribute('aria-pressed', String(view === shown));
       if (title) {
         btn.title = title;
       }
@@ -2114,23 +2122,366 @@
 
   doc.querySelectorAll('[data-model-oi]').forEach((box) => {
     const article = box.closest('.model');
-    article.querySelector(':scope > .model-bar').append(modelViews(box.parentElement.hidden));
+    const changes = modelDiff(article.id);
+    if (changes) {
+      const diffBox = el('div', 'card model-diff oi-deep');
+      diffBox.dataset.modelDiff = '';
+      article.insertBefore(diffBox, box.parentElement);
+    }
+    const shown = changes && body.classList.contains('diff') ? 'diff' : 'oi';
+    article.querySelector(':scope > .model-bar').append(modelViews(shown, !!changes));
+    setModelView(article, shown);
+  });
+
+  // setModelView shows one view of a model card, rendering it on first use:
+  // the inspector and the changes when they near the viewport.
+  function setModelView(article, view) {
+    article.querySelectorAll('[data-model-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.modelView === view)));
+    const diffBox = article.querySelector(':scope > [data-model-diff]');
+    if (diffBox) {
+      diffBox.hidden = view !== 'diff';
+    }
+    article.querySelector(':scope > .mm-sample').hidden = view !== 'oi';
+    article.querySelector(':scope > .model-tree').hidden = view !== 'tree';
+    const box = view === 'diff' ? diffBox : view === 'oi' ? article.querySelector('[data-model-oi]') : null;
+    if (!box || box.dataset.done) {
+      return;
+    }
     if (modelObserver) {
       modelObserver.observe(box);
     } else {
+      renderModelBox(box);
+    }
+  }
+
+  function renderModelBox(box) {
+    if (box.hasAttribute('data-model-diff')) {
+      renderModelDiff(box);
+    } else {
       renderModelInspector(box);
     }
-  });
+  }
 
   function showModelView(btn) {
-    const article = btn.closest('.model');
-    const tree = btn.dataset.modelView === 'tree';
-    article.querySelectorAll('[data-model-view]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-    article.querySelector(':scope > .mm-sample').hidden = tree;
-    article.querySelector(':scope > .model-tree').hidden = !tree;
-    if (!tree) {
-      renderModelInspector(article.querySelector('[data-model-oi]'));
+    setModelView(btn.closest('.model'), btn.dataset.modelView);
+  }
+
+  // Show changes switches the models that changed between their changes and
+  // their inspector.
+  doc.addEventListener('click', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('[data-diff-toggle]')) {
+      return;
     }
+    setTimeout(() => {
+      const on = body.classList.contains('diff');
+      doc.querySelectorAll('.model > [data-model-diff]').forEach((box) => {
+        const article = box.parentElement;
+        const current = article.querySelector('[data-model-view][aria-pressed="true"]');
+        if (on && current && current.dataset.modelView === 'oi') {
+          setModelView(article, 'diff');
+        } else if (!on && current && current.dataset.modelView === 'diff') {
+          setModelView(article, 'oi');
+        }
+      });
+    });
+  });
+
+  // ---------------------------------------------------------- model diffs
+  // In diff mode a changed model shows its base version beside its head
+  // version, as the inspector's rows: the rows are matched by their path
+  // like lines in a diff, removed ones red on the left, added ones green on
+  // the right and changed ones both, with what changed under them.
+  function modelDiffs() {
+    if (modelDiffData === undefined) {
+      const node = doc.getElementById('model-diffs');
+      try {
+        modelDiffData = node ? JSON.parse(node.textContent) : null;
+      } catch (err) {
+        modelDiffData = null;
+      }
+    }
+    return modelDiffData;
+  }
+
+  function modelDiff(anchor) {
+    const d = modelDiffs();
+    return d && d.models ? d.models[anchor] || null : null;
+  }
+
+  // diffRows flattens a model sample into the inspector's rows, in order,
+  // each with its path from the model ("cards › id"). An enum on its own is
+  // a row per value.
+  function diffRows(sample) {
+    const rows = [];
+    if (!sample) {
+      return rows;
+    }
+    const t = typeTree(String(sample.t));
+    if (!oiIsNode(sample.v)) {
+      if (t && t.values && t.values.length) {
+        t.values.forEach((x, i) => rows.push({ path: '= ' + JSON.stringify(x), depth: 0, value: x, desc: (t.valueDescs || [])[i] || '' }));
+      } else {
+        rows.push({ path: '', depth: 0, key: 'value', t, v: sample.v });
+      }
+      return rows;
+    }
+    const walk = (v, t, depth, segs) => {
+      if (Array.isArray(v) && v.length === 1 && oiIsNode(v[0]) && !Array.isArray(v[0])) {
+        v = v[0];
+        t = typeKid(t, '[]');
+      }
+      const keys = Array.isArray(v) ? v.map((_, i) => i) : Object.keys(v);
+      for (const k of keys) {
+        const key = Array.isArray(v) ? '#' + (k + 1) : k;
+        const kv = v[k];
+        const kt = typeKid(t, Array.isArray(v) ? '[]' : k);
+        const node = oiIsNode(kv);
+        const model = kt && !kt.own && (kt.kind === 'm' || kt.kind === 'l');
+        const path = segs.concat(key);
+        rows.push({ path: path.join(' › '), depth, key, t: kt, v: kv, folder: node || model, list: Array.isArray(kv) || (kt && kt.kind === 'l') });
+        if (node) {
+          walk(kv, kt, depth + 1, path);
+        }
+      }
+    };
+    walk(sample.v, t, 0, []);
+    return rows;
+  }
+
+  // diffSig is what a row shows, to tell a changed row from the same one.
+  // A row typed by a named schema leaves out what that schema defines (its
+  // base type, enum values and the example they make): a change there is a
+  // change inside it.
+  function diffSig(r) {
+    const t = r.t || {};
+    if (t.kind === 'm' || t.kind === 'l' || t.base || (t.kind === 'e' && t.label !== 'enum' && t.label !== 'enum[]')) {
+      return JSON.stringify([t.kind, t.label, t.desc]);
+    }
+    return JSON.stringify([t.kind, t.label, t.desc, t.values, t.valueDescs, t.own ? r.v : null, r.desc]);
+  }
+
+  // diffAlign pairs the rows of a and b like lines in a diff: a longest
+  // common subsequence of paths, the rows outside it alone on their side,
+  // removed before added.
+  function diffAlign(a, b) {
+    const n = a.length;
+    const m = b.length;
+    const dp = [];
+    for (let i = 0; i <= n; i++) {
+      dp.push(new Uint16Array(m + 1));
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i].path === b[j].path ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const out = [];
+    let i = 0;
+    let j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && a[i].path === b[j].path) {
+        out.push([a[i++], b[j++]]);
+      } else if (j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1])) {
+        out.push([a[i++], null]);
+      } else {
+        out.push([null, b[j++]]);
+      }
+    }
+    return out;
+  }
+
+  // diffPath is a change's path in the rows' terms: items are their list.
+  function diffPath(p) {
+    return p.split(' › ').map((seg) => seg.replace(/(\[\])+$/, '')).join(' › ');
+  }
+
+  // A run of unchanged rows longer than diffRun folds, keeping diffContext
+  // rows next to the changes around it.
+  const diffRun = 8;
+  const diffContext = 2;
+
+  function renderModelDiff(box) {
+    if (box.dataset.done) {
+      return;
+    }
+    box.dataset.done = '1';
+    const anchor = box.closest('.model').id;
+    const d = modelDiff(anchor);
+    const all = modelDiffs();
+    if (!d) {
+      return;
+    }
+    box.append(modelDiffView(d, modelSample(anchor), all.base, all.head));
+  }
+
+  // modelDiffView is the side-by-side diff of a model d whose head sample
+  // is head, between versions baseVer and headVer.
+  function modelDiffView(d, head, baseVer, headVer) {
+    const changes = new Map();
+    for (const c of d.c || []) {
+      const p = diffPath(c.p);
+      if (!changes.has(p)) {
+        changes.set(p, []);
+      }
+      changes.get(p).push(c);
+    }
+    const pairs = diffAlign(diffRows(d.k === 'added' ? null : d.b), diffRows(d.k === 'removed' ? null : head));
+    const rows = pairs.map(([a, b]) => {
+      let state = 'same';
+      const own = (changes.get((a || b).path) || []).filter((c) => c.k !== 'inside');
+      if (!a) {
+        state = 'add';
+      } else if (!b) {
+        state = 'del';
+      } else if (own.length || diffSig(a) !== diffSig(b)) {
+        state = 'chg';
+      } else if (changes.has(a.path)) {
+        state = 'inside';
+      }
+      return { a, b, state, changes: changes.get((a || b).path) || [] };
+    });
+
+    // Shared columns: the widest key with its indent, the widest type.
+    let kw = 6;
+    let tw = 4;
+    for (const r of rows) {
+      for (const x of [r.a, r.b]) {
+        if (!x) {
+          continue;
+        }
+        kw = Math.max(kw, x.depth * 2 + String(x.key === undefined ? JSON.stringify(x.value) : x.key).length + (x.folder ? 3 : 0));
+        if (x.t) {
+          tw = Math.max(tw, x.t.label.length + (x.t.base ? x.t.base.length + 1 : 0));
+        }
+      }
+    }
+
+    const view = el('div', 'mdiff');
+    view.style.setProperty('--kw', Math.min(30, kw) + 'ch');
+    view.style.setProperty('--tw', Math.min(22, tw) + 'ch');
+    const label = (side, ver) => el('div', 'mdiff-side-head', side + (ver ? ' · v' + ver : ''));
+    view.append(label('Before', baseVer), label('After', baseVer === headVer ? '' : headVer));
+
+    const model = changes.get('') || [];
+    if (model.length) {
+      const note = el('div', 'mdiff-model');
+      model.forEach((c) => note.append(diffNote(c)));
+      view.append(note);
+    }
+    if (d.k === 'added' || d.k === 'removed') {
+      const whole = el('div', 'mdiff-model');
+      whole.append(el('span', d.k === 'added' ? 'mdiff-added' : 'mdiff-removed', d.k === 'added' ? 'New model' : 'Model removed'));
+      view.append(whole);
+    }
+
+    // Fold long unchanged runs.
+    let i = 0;
+    while (i < rows.length) {
+      if (rows[i].state !== 'same') {
+        diffPair(view, rows[i]);
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < rows.length && rows[j].state === 'same') {
+        j++;
+      }
+      const head = i === 0 ? 0 : diffContext;
+      const tail = j === rows.length ? 0 : diffContext;
+      if (j - i <= diffRun || j - i <= head + tail + 1) {
+        rows.slice(i, j).forEach((r) => diffPair(view, r));
+      } else {
+        rows.slice(i, i + head).forEach((r) => diffPair(view, r));
+        const hidden = rows.slice(i + head, j - tail);
+        const fold = el('button', 'mdiff-fold', '⋯ ' + hidden.length + ' unchanged ' + (hidden.length === 1 ? 'field' : 'fields'));
+        fold.type = 'button';
+        fold.onclick = () => {
+          const frag = doc.createDocumentFragment();
+          const tmp = el('div');
+          hidden.forEach((r) => diffPair(tmp, r));
+          frag.append(...tmp.childNodes);
+          fold.replaceWith(frag);
+        };
+        view.append(fold);
+        rows.slice(j - tail, j).forEach((r) => diffPair(view, r));
+      }
+      i = j;
+    }
+    if (!rows.length) {
+      view.append(el('div', 'mdiff-model', 'No fields on either side.'));
+    }
+    return view;
+  }
+
+  // diffPair appends the two cells of a row pair: the base row on the left,
+  // the head row on the right, an empty cell where a side has none.
+  function diffPair(view, r) {
+    const left = r.state === 'add' ? 'none' : r.state === 'chg' || r.state === 'del' ? 'del' : r.state;
+    const right = r.state === 'del' ? 'none' : r.state === 'chg' || r.state === 'add' ? 'add' : r.state;
+    const before = diffCell(r.a, left, null);
+    before.classList.add('mdiff-l');
+    view.append(before, diffCell(r.b, right, r.state === 'chg' || r.state === 'inside' || r.changes.some((c) => c.x) ? r.changes : null));
+  }
+
+  function diffCell(x, state, changes) {
+    const cell = el('div', 'mdiff-cell mdiff-' + state);
+    if (!x) {
+      return cell;
+    }
+    const row = el('div', 'mdiff-row');
+    row.append(el('span', 'mdiff-sign', state === 'del' ? '−' : state === 'add' ? '+' : ''));
+    const key = el('span', 'mdiff-k');
+    key.style.paddingLeft = x.depth * 2 + 'ch';
+    if (x.key === undefined) {
+      // An enum value.
+      const chip = el('code', 'oi-chip' + (x.value === '' ? ' oi-chip-empty' : ''), x.value === '' ? 'empty' : String(x.value));
+      key.append(chip);
+      row.append(key);
+      if (x.desc) {
+        row.append(el('span', 'mdiff-desc', x.desc));
+      }
+      cell.append(row);
+      return cell;
+    }
+    if (x.folder) {
+      key.append(el('span', x.list ? 'oi-ico oi-arr' : 'oi-ico oi-obj', x.list ? '[]' : '{}'), ' ');
+    }
+    key.append(String(x.key));
+    key.title = x.t && x.t.desc ? x.key + ': ' + x.t.desc : String(x.key);
+    row.append(key);
+    if (x.t) {
+      row.append(oiType(x.t, false));
+      const ex = x.folder ? null : oiExample(x.v, x.t);
+      if (ex) {
+        row.append(ex);
+      }
+    }
+    cell.append(row);
+    if (changes) {
+      const notes = el('div', 'mdiff-notes');
+      notes.style.paddingLeft = 'calc(2ch + 8px + ' + x.depth * 2 + 'ch)';
+      changes.forEach((c) => notes.append(diffNote(c)));
+      cell.append(notes);
+    }
+    return cell;
+  }
+
+  // diffNote says what one change did, a model that changed inside linked
+  // to its card.
+  function diffNote(c) {
+    const note = el('span', 'mdiff-note');
+    if (c.k === 'inside') {
+      const link = el('a', 'oi-type t-model', c.d);
+      link.href = '#' + c.m;
+      link.dataset.model = c.m;
+      note.append(link, ' changed');
+    } else {
+      note.append(c.d);
+    }
+    if (c.x) {
+      note.append(' ', el('span', 'diff-badge diff-breaking', 'BREAKING'));
+    }
+    return note;
   }
 
   function toggleRaw(btn) {
@@ -2798,7 +3149,14 @@
         body.append(node.cloneNode(true));
       }
     });
-    if (sample) {
+    // In diff mode a model that changed shows its changes instead.
+    const changes = doc.body.classList.contains('diff') ? modelDiff(anchor) : null;
+    if (changes) {
+      const all = modelDiffs();
+      const frame = el('div', 'card model-diff oi-deep');
+      frame.append(modelDiffView(changes, sample, all.base, all.head));
+      body.append(frame);
+    } else if (sample) {
       const oi = el('div', 'oi');
       oi.append(inspectorTree(sample.v, typeTree(String(sample.t)), box.clientWidth - 60));
       const frame = el('div', 'card mm-sample oi-deep');
