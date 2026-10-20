@@ -20,3 +20,11 @@ func TestNewNegotiatesLocale(t *testing.T) {
 	request.SetLocale("es-MX")
 	require.Equal(t, "es-MX", request.GetLocale())
 }
+
+func TestAccept(t *testing.T) {
+	request := New(http.Header{}, "127.0.0.1")
+	require.Equal(t, "", request.GetAccept())
+
+	request.SetAccept("text/csv")
+	require.Equal(t, "text/csv", request.GetAccept())
+}

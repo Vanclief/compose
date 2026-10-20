@@ -105,6 +105,18 @@ func TestSpec31(t *testing.T) {
 	require.Equal(t, "#/components/schemas/fixture.Config",
 		dig(t, doc, "components", "schemas", "fixture.CreateRequest", "properties", "labels", "additionalProperties", "$ref"))
 
+	// huma marks every binary string application/octet-stream (the 3.1 form).
+	binary := map[string]any{"type": "string", "format": "binary", "contentMediaType": "application/octet-stream"}
+	require.Equal(t, map[string]any{"application/pdf": map[string]any{"schema": binary}},
+		dig(t, doc, "paths", "/runs/{id}/report", "get", "responses", "200", "content"))
+	require.Equal(t, map[string]any{
+		"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/fixture.ListResponse"}},
+		"text/csv":         map[string]any{"schema": binary},
+	}, dig(t, doc, "paths", "/runs/export", "get", "responses", "200", "content"))
+	require.Equal(t, "#/components/schemas/handler.ErrorResponse",
+		dig(t, doc, "paths", "/runs/{id}/report", "get", "responses", "default", "content", "application/json", "schema", "$ref"))
+	require.NotContains(t, dig(t, doc, "components", "schemas"), "api.Blob")
+
 	again, err := s.reg.Spec(api.V31)
 	require.NoError(t, err)
 	require.Equal(t, raw, again)
@@ -164,11 +176,14 @@ func TestSpecGolden(t *testing.T) {
 func TestOperations(t *testing.T) {
 	s := newServer(t)
 	ops := s.reg.Operations()
-	require.Len(t, ops, 7)
+	require.Len(t, ops, 9)
 	require.Equal(t, api.OperationInfo{
 		Method: http.MethodPatch, Path: "/runs/:id", SpecPath: "/runs/{id}", OperationID: "runs.update", Tag: "runs",
+		Produces: []string{echo.MIMEApplicationJSON},
 	}, ops[3])
 	require.True(t, ops[4].Hidden)
+	require.Equal(t, []string{"application/pdf"}, ops[6].Produces)
+	require.Equal(t, []string{echo.MIMEApplicationJSON, "text/csv"}, ops[7].Produces)
 }
 
 func TestTags(t *testing.T) {
@@ -315,6 +330,31 @@ func TestRegistrationFailures(t *testing.T) {
 		api.POST[runIDRequest, fixture.Run](g, "/:run_id", "poke")
 	})
 	require.Contains(t, msg, "duplicate route, already registered as runs.touch")
+
+	produces := []struct {
+		opts []api.Option
+		blob bool
+		want string
+	}{
+		{nil, true, "api.Blob responses need api.Produces"},
+		{[]api.Option{api.Produces("application/pdf", echo.MIMEApplicationJSON)}, true, "api.Blob responses cannot produce application/json"},
+		{[]api.Option{api.Produces("text/csv")}, false, "Produces on JSON response type fixture.ListResponse must include application/json"},
+		{[]api.Option{api.Produces("text/*")}, true, `Produces media type "text/*" must be a lowercase type/subtype without parameters or wildcards`},
+		{[]api.Option{api.Produces("text/plain; charset=utf-8")}, true, "without parameters or wildcards"},
+		{[]api.Option{api.Produces("Text/CSV")}, true, "must be a lowercase type/subtype"},
+		{[]api.Option{api.Produces("text/csv", "text/csv")}, true, `Produces lists "text/csv" twice`},
+	}
+	for _, tt := range produces {
+		_, g = newGroup()
+		msg = panicMessage(t, func() {
+			if tt.blob {
+				api.GET[fixture.ExportRequest, api.Blob](g, "/export", "export", tt.opts...)
+				return
+			}
+			api.GET[fixture.ExportRequest, fixture.ListResponse](g, "/export", "export", tt.opts...)
+		})
+		require.Contains(t, msg, tt.want)
+	}
 
 	reg, g := newGroup()
 	api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "", "list")

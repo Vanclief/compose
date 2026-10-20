@@ -23,6 +23,8 @@ type Request interface {
 	SetContext(context.Context)
 	GetLocale() string
 	SetLocale(string)
+	GetAccept() string
+	SetAccept(string)
 }
 
 type StandardRequest struct {
@@ -35,6 +37,7 @@ type StandardRequest struct {
 	Context   context.Context
 	Cancel    context.CancelFunc
 	Locale    string
+	Accept    string
 }
 
 // Option is a function that modifies the Request.
@@ -120,6 +123,19 @@ func (r *StandardRequest) GetLocale() string {
 // user's saved preference.
 func (r *StandardRequest) SetLocale(locale string) {
 	r.Locale = locale
+}
+
+// GetAccept returns the response media type chosen for the request, e.g.
+// "text/csv". The api registry sets it from the Accept header and the
+// operation's declared media types (application/json when none are
+// declared); it is empty for requests built outside the registry.
+func (r *StandardRequest) GetAccept() string {
+	return r.Accept
+}
+
+// SetAccept sets the response media type chosen for the request.
+func (r *StandardRequest) SetAccept(mediaType string) {
+	r.Accept = mediaType
 }
 
 type Body interface {

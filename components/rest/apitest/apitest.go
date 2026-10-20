@@ -1,11 +1,15 @@
 // Package apitest checks recorded responses against the contract of an
 // api.Registry: the strict OpenAPI 3.1 document, where every response object
 // component has additionalProperties:false so undocumented fields fail.
+// Non-JSON 200 responses (api.Blob) are checked against the operation's
+// declared media types.
 package apitest
 
 import (
+	"mime"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,12 +25,13 @@ const errorResponseRef = "spec.json#/components/schemas/handler.ErrorResponse"
 
 // Contract validates responses of a registry's operations.
 type Contract struct {
-	responses map[string]*validate.Schema
+	responses map[string]*validate.Schema // operations that produce JSON
+	produces  map[string][]string
 	errors    *validate.Schema
 }
 
-// New compiles one validator per operation's 200 response (hidden
-// operations included) and one for the error envelope.
+// New compiles one validator per operation's application/json 200 response
+// (hidden operations included) and one for the error envelope.
 func New(t testing.TB, reg *api.Registry) *Contract {
 	t.Helper()
 
@@ -40,7 +45,7 @@ func New(t testing.TB, reg *api.Registry) *Contract {
 		t.Fatalf("apitest: load strict spec: %s", ez.ErrorMessage(err))
 	}
 
-	c := &Contract{responses: map[string]*validate.Schema{}}
+	c := &Contract{responses: map[string]*validate.Schema{}, produces: map[string][]string{}}
 
 	c.errors, err = compiler.Compile("contract:error", wrap(errorResponseRef))
 	if err != nil {
@@ -48,6 +53,11 @@ func New(t testing.TB, reg *api.Registry) *Contract {
 	}
 
 	for _, op := range reg.Operations() {
+		c.produces[op.OperationID] = op.Produces
+		if !slices.Contains(op.Produces, echo.MIMEApplicationJSON) {
+			continue
+		}
+
 		ref := "spec.json#/paths/" + pointerEscape(op.SpecPath) + "/" + strings.ToLower(op.Method) +
 			"/responses/200/content/application~1json/schema"
 
@@ -68,10 +78,15 @@ func (c *Contract) AssertResponse(t testing.TB, operationID string, status int, 
 
 	schema := c.errors
 	if status == http.StatusOK {
+		_, known := c.produces[operationID]
+		if !known {
+			t.Errorf("apitest: unknown operation %q", operationID)
+			return
+		}
 		var ok bool
 		schema, ok = c.responses[operationID]
 		if !ok {
-			t.Errorf("apitest: unknown operation %q", operationID)
+			t.Errorf("apitest: %s does not produce application/json", operationID)
 			return
 		}
 	}
@@ -89,14 +104,35 @@ func (c *Contract) AssertResponse(t testing.TB, operationID string, status int, 
 }
 
 // Do serves req on e, asserts the response matches the contract and returns
-// the recorder.
+// the recorder. A 200 response that is not application/json must carry one
+// of the operation's declared media types.
 func (c *Contract) Do(t testing.TB, e *echo.Echo, operationID string, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
+
+	mediaType, _, _ := mime.ParseMediaType(rec.Header().Get(echo.HeaderContentType))
+	if rec.Code == http.StatusOK && mediaType != echo.MIMEApplicationJSON {
+		c.assertMediaType(t, operationID, mediaType)
+		return rec
+	}
+
 	c.AssertResponse(t, operationID, rec.Code, rec.Body.Bytes())
 	return rec
+}
+
+func (c *Contract) assertMediaType(t testing.TB, operationID, mediaType string) {
+	t.Helper()
+
+	produces, ok := c.produces[operationID]
+	if !ok {
+		t.Errorf("apitest: unknown operation %q", operationID)
+		return
+	}
+	if !slices.Contains(produces, mediaType) {
+		t.Errorf("apitest: %s 200 response has undeclared content type %q (declared: %s)", operationID, mediaType, strings.Join(produces, ", "))
+	}
 }
 
 // wrap validates {"response": <body>} so field errors read "response.x ...".

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vanclief/ez"
 
+	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
 	"github.com/vanclief/compose/primitives/enums"
@@ -98,6 +99,21 @@ type ArchiveRequest struct {
 	Reason string `json:"reason" required:"true"`
 }
 
+// ReportRequest returns a run report as a PDF api.Blob.
+type ReportRequest struct {
+	requests.NoRules
+	RunID uuid.UUID `json:"-" path:"id"`
+}
+
+// ExportRequest lists runs as JSON or, when negotiated, as a CSV api.Blob.
+type ExportRequest struct {
+	requests.NoRules
+	Status RunStatus `json:"-" query:"status"`
+}
+
+// ExportCSV is the CSV body the App returns for ExportRequest.
+const ExportCSV = "id,name\n0192f3a1-7b2c-7def-8a12-3456789abcde,nightly\n"
+
 // HealthRequest is used by the public operation.
 type HealthRequest struct {
 	requests.NoRules
@@ -120,6 +136,7 @@ var KnownID = uuid.MustParse("0192f3a1-7b2c-7def-8a12-3456789abcde")
 type App struct {
 	mu       sync.Mutex
 	received []requests.Body
+	accept   string
 }
 
 // Last returns the last received body.
@@ -132,10 +149,20 @@ func (a *App) Last() requests.Body {
 	return a.received[len(a.received)-1]
 }
 
+// LastAccept returns the media type negotiated for the last request.
+func (a *App) LastAccept() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.accept
+}
+
 // HandleRequest implements handler.App.
 func (a *App) HandleRequest(request requests.Request) (any, error) {
 	body := request.GetBody()
 	a.record(body)
+	a.mu.Lock()
+	a.accept = request.GetAccept()
+	a.mu.Unlock()
 
 	err := body.Validate()
 	if err != nil {
@@ -160,6 +187,16 @@ func (a *App) HandleRequest(request requests.Request) (any, error) {
 		return run, nil
 	case *ArchiveRequest:
 		return sampleRun(KnownID), nil
+	case *ReportRequest:
+		if b.RunID == MissingID {
+			return nil, ez.New(ez.ENOTFOUND, "run not found", nil)
+		}
+		return api.Blob{ContentType: "application/pdf", Body: []byte("%PDF-1.7 " + b.RunID.String()), Filename: "run report.pdf"}, nil
+	case *ExportRequest:
+		if request.GetAccept() == "text/csv" {
+			return &api.Blob{Body: []byte(ExportCSV), Filename: "runs.csv"}, nil
+		}
+		return ListResponse{Runs: []Run{sampleRun(KnownID)}}, nil
 	case *HealthRequest:
 		return HealthResponse{OK: true}, nil
 	}

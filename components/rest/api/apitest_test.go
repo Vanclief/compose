@@ -42,8 +42,31 @@ func TestContract(t *testing.T) {
 
 	contract.Do(t, s.e, "health.check", httptest.NewRequest(http.MethodGet, "/health", nil))
 
-	// Undocumented response field fails the strict contract.
+	// Blob and negotiated responses are checked against the declared media types.
+	report := httptest.NewRequest(http.MethodGet, "/runs/"+fixture.KnownID.String()+"/report", nil)
+	rec = contract.Do(t, s.e, "runs.report", report)
+	require.Equal(t, "application/pdf", rec.Header().Get("Content-Type"))
+
+	export := httptest.NewRequest(http.MethodGet, "/runs/export", nil)
+	export.Header.Set("Accept", "text/csv")
+	rec = contract.Do(t, s.e, "runs.export", export)
+	require.Equal(t, "text/csv", rec.Header().Get("Content-Type"))
+
+	rec = contract.Do(t, s.e, "runs.export", httptest.NewRequest(http.MethodGet, "/runs/export", nil))
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
 	fake := &fakeTB{TB: t}
+	contract.Do(fake, s.e, "runs.get", httptest.NewRequest(http.MethodGet, "/runs/"+fixture.KnownID.String()+"/report", nil))
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], `runs.get 200 response has undeclared content type "application/pdf"`)
+
+	fake = &fakeTB{TB: t}
+	contract.AssertResponse(fake, "runs.report", http.StatusOK, []byte(`{}`))
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], "runs.report does not produce application/json")
+
+	// Undocumented response field fails the strict contract.
+	fake = &fakeTB{TB: t}
 	contract.AssertResponse(fake, "runs.get", http.StatusOK, []byte(`{
 		"id": "0192f3a1-7b2c-7def-8a12-3456789abcde", "name": "x", "status": "running",
 		"max_total_runs": 0, "created_at": "2026-10-11T12:00:00Z", "secret": "leak"}`))

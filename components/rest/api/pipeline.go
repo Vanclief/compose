@@ -28,6 +28,8 @@ func (op *operation) serve(c echo.Context) error {
 		reqOpts = append(reqOpts, requests.WithTimeout(op.timeout))
 	}
 	request := requests.New(c.Request().Header, c.RealIP(), reqOpts...)
+	mediaType := negotiate(strings.Join(c.Request().Header.Values(echo.HeaderAccept), ","), op.produces)
+	request.SetAccept(mediaType)
 
 	if !op.reg.ready.Load() {
 		return h.ManageError(c, op.id, request, ez.New(ez.EINTERNAL, "api registry not ready", nil))
@@ -93,7 +95,12 @@ func (op *operation) serve(c echo.Context) error {
 		return h.ManageError(c, op.id, request, err)
 	}
 
-	return c.JSON(http.StatusOK, response)
+	_, isBlob := asBlob(response)
+	if op.blob && !isBlob {
+		return h.ManageError(c, op.id, request, ez.New(ez.EINTERNAL, "HandleRequest response is not an api.Blob", nil))
+	}
+
+	return writeResponse(c, response, mediaType)
 }
 
 // paramValues returns the non-empty raw values of a parameter.

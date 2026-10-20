@@ -16,6 +16,7 @@ import (
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/handler"
+	"github.com/vanclief/compose/components/rest/requests"
 )
 
 const sentinel = "ZZZ_SENTINEL"
@@ -47,6 +48,8 @@ func newServer(t *testing.T) *server {
 	api.PATCH[fixture.UpdateRequest, fixture.Run](rg, "/:id", "update")
 	api.PUT[fixture.UpdateRequest, fixture.Run](rg, "/:id", "replace", api.Hidden())
 	api.POST[fixture.ArchiveRequest, fixture.Run](rg, "/archive", "archive", api.Hidden(), api.MaxBodyBytes(1024))
+	api.GET[fixture.ReportRequest, api.Blob](rg, "/:id/report", "report", api.Produces("application/pdf"))
+	api.GET[fixture.ExportRequest, fixture.ListResponse](rg, "/export", "export", api.Produces(echo.MIMEApplicationJSON, "text/csv"))
 
 	hg := reg.Group("/health")
 	api.GET[fixture.HealthRequest, fixture.HealthResponse](hg, "", "check", api.Public(), api.Deprecated())
@@ -383,4 +386,96 @@ func TestMergedErrors(t *testing.T) {
 	resp := requireError(t, rec, http.StatusBadRequest, `config.Retries is not a known field, did you mean "retries"`)
 	require.Contains(t, resp.Error.Message, "name must be at least 1 characters")
 	require.Contains(t, resp.Error.Message, "steps.0.retries must be >= 0")
+}
+
+func TestBlob(t *testing.T) {
+	s := newServer(t)
+	target := "/runs/" + fixture.KnownID.String() + "/report"
+
+	// A Blob operation writes the app's bytes whatever the Accept header says.
+	for _, accept := range []string{"", "application/json", "application/pdf"} {
+		rec := s.do(http.MethodGet, target, "", echo.HeaderAccept, accept)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, "application/pdf", rec.Header().Get(echo.HeaderContentType))
+		require.Equal(t, `attachment; filename="run report.pdf"`, rec.Header().Get(echo.HeaderContentDisposition))
+		require.Equal(t, "%PDF-1.7 "+fixture.KnownID.String(), rec.Body.String())
+		require.Equal(t, "application/pdf", s.app.LastAccept())
+	}
+
+	// Errors keep the JSON envelope.
+	rec := s.do(http.MethodGet, "/runs/"+fixture.MissingID.String()+"/report", "", echo.HeaderAccept, "application/pdf")
+	requireError(t, rec, http.StatusNotFound, "run not found")
+	require.Equal(t, echo.MIMEApplicationJSON, rec.Header().Get(echo.HeaderContentType))
+
+	rec = s.do(http.MethodGet, "/runs/not-a-uuid/report", "")
+	requireError(t, rec, http.StatusBadRequest, "path id must be a valid uuid")
+}
+
+func TestNegotiation(t *testing.T) {
+	s := newServer(t)
+
+	tests := []struct {
+		accept string
+		want   string
+	}{
+		{"", echo.MIMEApplicationJSON},
+		{"*/*", echo.MIMEApplicationJSON},
+		{"image/png", echo.MIMEApplicationJSON},
+		{"text/csv", "text/csv"},
+		{"TEXT/CSV; charset=utf-8", "text/csv"},
+		// Accept order decides; q-values are ignored.
+		{"text/csv;q=0.1, application/json", "text/csv"},
+		{"application/json, text/csv", echo.MIMEApplicationJSON},
+		{"application/xml, text/*", "text/csv"},
+		{"image/png, */*", echo.MIMEApplicationJSON},
+	}
+	for _, tt := range tests {
+		rec := s.do(http.MethodGet, "/runs/export?status=running", "", echo.HeaderAccept, tt.accept)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, tt.want, s.app.LastAccept(), tt.accept)
+		require.Equal(t, tt.want, rec.Header().Get(echo.HeaderContentType), tt.accept)
+		require.Equal(t, fixture.RunningStatus, s.app.Last().(*fixture.ExportRequest).Status)
+		if tt.want == "text/csv" {
+			require.Equal(t, fixture.ExportCSV, rec.Body.String())
+			require.Equal(t, `attachment; filename=runs.csv`, rec.Header().Get(echo.HeaderContentDisposition))
+			continue
+		}
+		require.Empty(t, rec.Header().Get(echo.HeaderContentDisposition))
+		var resp fixture.ListResponse
+		err := json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Len(t, resp.Runs, 1)
+	}
+
+	// Validation errors are JSON even when CSV was negotiated.
+	rec := s.do(http.MethodGet, "/runs/export?status=bogus", "", echo.HeaderAccept, "text/csv")
+	requireError(t, rec, http.StatusBadRequest, "query status must be one of")
+
+	// Operations without Produces negotiate application/json.
+	rec = s.do(http.MethodGet, "/runs", "", echo.HeaderAccept, "text/csv")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, echo.MIMEApplicationJSON, s.app.LastAccept())
+}
+
+// stubApp returns a fixed response for every request.
+type stubApp struct {
+	response any
+}
+
+func (a stubApp) HandleRequest(request requests.Request) (any, error) {
+	return a.response, nil
+}
+
+func TestBlobNotReturned(t *testing.T) {
+	for _, response := range []any{fixture.Run{}, []byte("raw"), (*api.Blob)(nil)} {
+		e := echo.New()
+		reg := api.New(e, handler.NewHandler(stubApp{response: response}))
+		api.GET[fixture.HealthRequest, api.Blob](reg.Group("/report"), "", "get", api.Produces("application/pdf"))
+		err := reg.Ready()
+		require.NoError(t, err)
+
+		rec := (&server{e: e, reg: reg}).do(http.MethodGet, "/report", "")
+		resp := requireError(t, rec, http.StatusInternalServerError, "")
+		require.Equal(t, ez.EINTERNAL, resp.Error.Code)
+	}
 }

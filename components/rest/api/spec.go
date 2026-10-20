@@ -249,7 +249,7 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 		Responses: map[string]*huma.Response{
 			"200": {
 				Description: "OK",
-				Content:     jsonContent(res.ResponseSchema(op.resType)),
+				Content:     op.responseContent(res),
 			},
 			"default": {
 				Description: "Error",

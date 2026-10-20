@@ -16,6 +16,7 @@ package api
 
 import (
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -157,6 +158,7 @@ type OperationInfo struct {
 	OperationID string
 	Tag         string
 	Hidden      bool
+	Produces    []string // 200 response media types
 }
 
 // Operations returns the registered operations in registration order.
@@ -173,6 +175,7 @@ func (r *Registry) Operations() []OperationInfo {
 			OperationID: op.id,
 			Tag:         op.tag,
 			Hidden:      op.hidden,
+			Produces:    slices.Clone(op.produces),
 		}
 	}
 	return out

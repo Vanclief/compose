@@ -41,6 +41,8 @@ type operation struct {
 
 	hidden      bool
 	public      bool
+	produces    []string // 200 media types, application/json by default
+	blob        bool     // Res is Blob
 	deprecated  bool
 	summary     string
 	description string
@@ -62,7 +64,8 @@ type operation struct {
 // Handle registers a typed operation. path uses Echo syntax (/:id) relative
 // to the group; name is the operationId suffix. Requests are validated
 // against the generated schema, decoded into a new Req and passed to the
-// app; the app's response is documented as the 200 response Res.
+// app; the app's response is documented as the 200 response Res (see Blob
+// and Produces for non-JSON responses).
 func Handle[Req, Res any, P interface {
 	*Req
 	requests.Body
@@ -178,9 +181,17 @@ func (r *Registry) check(op *operation) error {
 		return ez.Wrap(err)
 	}
 
-	err = r.reflector.AddResponse(op.resType)
+	op.blob = derefType(op.resType) == blobType
+	err = checkProduces(op)
 	if err != nil {
-		return ez.Wrap(err)
+		return err
+	}
+
+	if !op.blob {
+		err = r.reflector.AddResponse(op.resType)
+		if err != nil {
+			return ez.Wrap(err)
+		}
 	}
 
 	err = checkNoBody(op.method, op.reqType)
