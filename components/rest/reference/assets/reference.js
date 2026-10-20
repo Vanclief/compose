@@ -2362,7 +2362,9 @@
     const label = (side, ver) => el('div', 'mdiff-side-head', side + (ver ? ' · v' + ver : ''));
     view.append(label('Before', baseVer), label('After', baseVer === headVer ? '' : headVer));
 
-    const model = changes.get('') || [];
+    // An added or removed model carries one root change saying so, which the
+    // banner below already shows.
+    const model = d.k === 'added' || d.k === 'removed' ? [] : changes.get('') || [];
     if (model.length) {
       const note = el('div', 'mdiff-model');
       model.forEach((c) => note.append(diffNote(c)));
