@@ -141,6 +141,16 @@ func TestJSONFields(t *testing.T) {
 	}
 }
 
+// sameDepthConflict returns struct { fixture.ConflictA; fixture.ConflictB }:
+// both embed json "x" at the same depth, so encoding/json binds neither. It is
+// built at run time because go vet rejects the repeated tag in a declaration.
+func sameDepthConflict() reflect.Type {
+	return reflect.StructOf([]reflect.StructField{
+		{Name: "ConflictA", Type: reflect.TypeFor[fixture.ConflictA](), Anonymous: true},
+		{Name: "ConflictB", Type: reflect.TypeFor[fixture.ConflictB](), Anonymous: true},
+	})
+}
+
 func TestRequestKeyErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -152,7 +162,7 @@ func TestRequestKeyErrors(t *testing.T) {
 		{"hidden param", reflect.TypeFor[fixture.HiddenParam](), `openapi: fixture.HiddenParam: field Q has hidden:"true", which is not allowed on request types (encoding/json still binds it)`},
 		{"embedded non-struct", reflect.TypeFor[fixture.EmbeddedSlice](), `openapi: fixture.EmbeddedSlice: field Tags (json "Tags") is bound by encoding/json but missing from the schema`},
 		{"shadowed Go name", reflect.TypeFor[fixture.ShadowedGoName](), `openapi: fixture.ShadowedGoName: field Inner.ID (json "a_id") is bound by encoding/json but missing from the schema`},
-		{"same depth conflict", reflect.TypeFor[fixture.SameDepthConflict](), `openapi: fixture.SameDepthConflict: schema property "x" is not bound by encoding/json (conflicting fields at the same depth)`},
+		{"same depth conflict", sameDepthConflict(), `openapi: struct { fixture.ConflictA; fixture.ConflictB }: schema property "x" is not bound by encoding/json (conflicting fields at the same depth)`},
 		{"shadow with different Go name", reflect.TypeFor[fixture.ShadowOuter](), `openapi: fixture.ShadowOuter: json "x" is declared by Count and ConflictB.Y; rename one (only a direct field may shadow embedded fields of the same Go name)`},
 		{"nested through slice", reflect.TypeFor[fixture.NestedBad](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`},
 	}

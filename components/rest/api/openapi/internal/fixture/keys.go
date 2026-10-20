@@ -46,15 +46,12 @@ type ConflictA struct {
 	X int `json:"x"`
 }
 
-// ConflictB declares "x" as Y.
+// ConflictB declares "x" as Y. Embedding ConflictA and ConflictB side by side
+// makes encoding/json drop "x" while huma publishes it; checks_test builds that
+// struct with reflect.StructOf, since go vet rejects the repeated json tag in
+// a declared type.
 type ConflictB struct {
 	Y int `json:"x" maximum:"5"`
-}
-
-// SameDepthConflict: encoding/json drops "x", huma publishes it.
-type SameDepthConflict struct {
-	ConflictA
-	ConflictB
 }
 
 // ShadowOuter: encoding/json binds Count, huma's schema describes ConflictB.Y.
