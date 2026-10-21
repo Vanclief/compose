@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -328,4 +329,86 @@ func TestClientCloseFinishesWithConcurrentWrites(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, elapsed, 2*time.Second)
 	assert.Empty(t, client.lines)
+}
+
+func TestClientLabelsIgnoreValuesOutsideCharset(t *testing.T) {
+	client, err := newClient(testParams("http://loki"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		text string
+		want map[string]string
+	}{
+		{
+			name: "quoted value with spaces",
+			text: `INF request method="GET /a" status=200`,
+			want: map[string]string{"app": "api", "env": "test", "status": "200"},
+		},
+		{
+			name: "quotes and brackets",
+			text: `INF request method=[GET] status="200"`,
+			want: map[string]string{"app": "api", "env": "test"},
+		},
+		{
+			name: "too long",
+			text: "INF request method=" + strings.Repeat("a", 65) + " status=200",
+			want: map[string]string{"app": "api", "env": "test", "status": "200"},
+		},
+		{
+			name: "allowed punctuation",
+			text: "INF request method=a-b_c.d:e@f/g status=200",
+			want: map[string]string{"app": "api", "env": "test", "method": "a-b_c.d:e@f/g", "status": "200"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, client.labels(tt.text))
+		})
+	}
+}
+
+func TestClientLabelsCannotOverrideStaticLabels(t *testing.T) {
+	params := testParams("http://loki")
+	params.PromtailLabels = "method,env,app"
+
+	client, err := newClient(params)
+	require.NoError(t, err)
+
+	labels := client.labels("INF request env=prod app=evil method=GET")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "GET"}, labels)
+}
+
+func TestClientLabelsLastTokenWins(t *testing.T) {
+	client, err := newClient(testParams("http://loki"))
+	require.NoError(t, err)
+
+	// ConsoleWriter prints the message before the fields, so the real field comes last
+	labels := client.labels("INF user sent method=EVIL method=GET status=200")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "GET", "status": "200"}, labels)
+
+	// An invalid real value drops the label instead of falling back to an injected token
+	labels = client.labels("INF user sent status=200 status=[bad]")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test"}, labels)
+}
+
+func TestClientLabelsDropValuesPastLimit(t *testing.T) {
+	client, err := newClient(testParams("http://loki"))
+	require.NoError(t, err)
+
+	for i := range maxLabelValues {
+		labels := client.labels("INF request method=m" + strconv.Itoa(i) + " status=200")
+		assert.Equal(t, "m"+strconv.Itoa(i), labels["method"])
+	}
+
+	labels := client.labels("INF request method=overflow status=200")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test", "status": "200"}, labels)
+
+	// Values already seen keep working, and other names have their own budget
+	labels = client.labels("INF request method=m0 status=201")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "m0", "status": "201"}, labels)
+	assert.Len(t, client.seen["method"], maxLabelValues)
+	assert.True(t, client.capped["method"])
+	assert.False(t, client.capped["status"])
 }

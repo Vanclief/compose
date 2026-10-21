@@ -27,10 +27,15 @@ const (
 	bufferedLines   = 10000
 	maxPushAttempts = 3
 	retryBackoff    = 250 * time.Millisecond
+	maxLabelValues  = 100
 )
 
 // Taken from https://github.com/acarl005/stripansi
 var ansiRegex = regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
+
+// labelValueRegex is the charset a value parsed from a log line needs to become
+// a stream label, so free text cannot reach Loki's index.
+var labelValueRegex = regexp.MustCompile(`^[A-Za-z0-9_.:@/-]{1,64}$`)
 
 // Client is an io.Writer that ships log lines to Loki in batches. Write never
 // waits on the network: lines are buffered and pushed by a background
@@ -48,6 +53,12 @@ type Client struct {
 	lines   chan line
 	dropped atomic.Int64
 	done    chan struct{}
+
+	// seen holds the distinct values accepted per label name, capped at
+	// maxLabelValues to bound stream cardinality, and capped records the names
+	// already reported as over the cap. Both are only touched from run.
+	seen   map[string]map[string]struct{}
+	capped map[string]bool
 
 	// mu makes closing exact: Close waits for in-flight Writes, so once stop is
 	// closed nothing else is queued and drain only pushes what was buffered.
@@ -122,6 +133,8 @@ func newClient(params *WithPromtailParams) (*Client, error) {
 		lines:         make(chan line, bufferedLines),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
+		seen:          map[string]map[string]struct{}{},
+		capped:        map[string]bool{},
 	}
 
 	return c, nil
@@ -311,12 +324,19 @@ func (c *Client) request(lines []line) pushRequest {
 
 // labels extracts the configured labels from the key=value tokens that
 // zerolog's ConsoleWriter prints, then applies the static labels on top.
+//
+// The last token for a name wins: ConsoleWriter prints the message before the
+// fields, so a token injected through the message cannot override the real
+// field. The label is then dropped when that final value is outside
+// labelValueRegex, so an invalid real value never falls back to an injected
+// one. A name keeps at most maxLabelValues distinct values, later ones are
+// dropped.
 func (c *Client) labels(text string) map[string]string {
 	labels := map[string]string{}
 
 	for _, token := range strings.Split(text, " ") {
 		parts := strings.Split(token, "=")
-		if len(parts) != 2 || parts[1] == "" {
+		if len(parts) != 2 {
 			continue
 		}
 
@@ -325,7 +345,40 @@ func (c *Client) labels(text string) map[string]string {
 		}
 	}
 
+	for name, value := range labels {
+		if !labelValueRegex.MatchString(value) || !c.allowLabelValue(name, value) {
+			delete(labels, name)
+		}
+	}
+
 	maps.Copy(labels, c.staticLabels)
 
 	return labels
+}
+
+// allowLabelValue records value for name and reports whether it fits within
+// maxLabelValues distinct values. The first rejection per name goes to stderr.
+func (c *Client) allowLabelValue(name, value string) bool {
+	values, ok := c.seen[name]
+	if !ok {
+		values = map[string]struct{}{}
+		c.seen[name] = values
+	}
+
+	_, ok = values[value]
+	if ok {
+		return true
+	}
+
+	if len(values) < maxLabelValues {
+		values[value] = struct{}{}
+		return true
+	}
+
+	if !c.capped[name] {
+		c.capped[name] = true
+		fmt.Fprintf(os.Stderr, "promtail: label %q exceeded %d distinct values, further values are dropped\n", name, maxLabelValues)
+	}
+
+	return false
 }
