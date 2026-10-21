@@ -141,16 +141,28 @@ func isSessionError(err error) bool {
 
 // getSESService returns the SES service, ensuring a valid session
 func (c *Client) getSESService(ctx context.Context) (*ses.Client, error) {
-	if err := c.ensureValidSession(ctx); err != nil {
+	err := c.ensureValidSession(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return c.sesSvc, nil
+
+	c.sessionMutex.RLock()
+	svc := c.sesSvc
+	c.sessionMutex.RUnlock()
+
+	return svc, nil
 }
 
 // getSNSService returns the SNS service, ensuring a valid session
 func (c *Client) getSNSService(ctx context.Context) (*sns.Client, error) {
-	if err := c.ensureValidSession(ctx); err != nil {
+	err := c.ensureValidSession(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return c.snsSvc, nil
+
+	c.sessionMutex.RLock()
+	svc := c.snsSvc
+	c.sessionMutex.RUnlock()
+
+	return svc, nil
 }
