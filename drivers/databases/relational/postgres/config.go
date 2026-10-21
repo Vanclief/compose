@@ -8,11 +8,20 @@ const (
 )
 
 type ConnectionConfig struct {
-	Username         string `mapstructure:"username"`
-	Password         string `mapstructure:"password"`
-	Host             string `mapstructure:"host"`
-	Database         string `mapstructure:"database"`
-	SSL              bool   `mapstructure:"ssl"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	Host     string `mapstructure:"host"`
+	Database string `mapstructure:"database"`
+	// SSL enables TLS with sslmode=require: traffic is encrypted but the server
+	// certificate is not verified. Ignored when SSLMode is set.
+	SSL bool `mapstructure:"ssl"`
+	// SSLMode overrides SSL when set. Allowed: "disable", "require", "verify-ca"
+	// and "verify-full". Leave empty to keep the SSL behavior.
+	SSLMode string `mapstructure:"sslMode"`
+	// SSLRootCert is the path to the CA PEM used to verify the server
+	// certificate. Only used by verify-ca and verify-full; when empty they
+	// verify against the system CA pool.
+	SSLRootCert      string `mapstructure:"sslRootCert"`
 	Verbose          bool   `mapstructure:"verbose"`
 	DialTimeout      int    `mapstructure:"dialTimeout"`
 	ReadTimeout      int    `mapstructure:"readTimeout"`
