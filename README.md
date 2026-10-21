@@ -42,7 +42,5 @@ go get -u github.com/vanclief/compose
 
 - [ez](https://github.com/vanlcief/ez) - Better error handling & error stack traces
 - [zerolog](https://github.com/rs/zerolog) - Lightweight and minimalistic logging
-- [promtail-go](https://github.com/carlware/promtail-go) - Promtail + Grafana = Awesome logs
 - [echo]() - HTTP router
-- [ozzo-validation]() - Struct validation
 - [viper]() - Env variables & config files

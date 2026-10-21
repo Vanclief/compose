@@ -18,6 +18,7 @@ import (
 type BaseController struct {
 	Environment string
 	logWriter   io.Writer
+	promtail    *promtail.Client
 }
 
 func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, configOpts ...configurator.Option) error {
@@ -54,21 +55,46 @@ func (c *BaseController) WithZerolog() {
 }
 
 func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error {
-	writer, err := promtail.NewWriter(params)
+	err := params.Validate()
 	if err != nil {
 		return ez.Wrap(err)
 	}
 
-	c.logWriter = writer
-	log.Logger = log.Output(writer)
+	c.logWriter = os.Stdout
+	if params.PromtailEnabled {
+		client, err := promtail.NewClient(params)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+
+		c.promtail = client
+		c.logWriter = io.MultiWriter(os.Stdout, client)
+	}
+
+	log.Logger = log.Output(c.logWriter)
 	log.Info().
 		Str("App", params.App).
 		Str("Environment", params.Environment).
 		Str("Host", params.PromtailHost).
 		Str("Username", params.PromtailUsername).
-		Int("Timeout MS", params.PromtailTimeoutMS).
+		Int("Timeout MS", params.EffectiveTimeoutMS()).
 		Bool("Enabled", params.PromtailEnabled).
 		Msg("Promtail Config")
+
+	return nil
+}
+
+// CloseLogs pushes the logs still buffered for Promtail. Call it before the
+// process exits, after the last log line worth keeping.
+func (c *BaseController) CloseLogs(ctx context.Context) error {
+	if c.promtail == nil {
+		return nil
+	}
+
+	err := c.promtail.Close(ctx)
+	if err != nil {
+		return ez.Wrap(err)
+	}
 
 	return nil
 }
