@@ -44,7 +44,8 @@ func (r Route) HandlerKey() string {
 }
 
 // OpenAPIPath is the route path in OpenAPI form: ":id" becomes "{id}" and a trailing "/*"
-// becomes "/{path}".
+// becomes "/{path}". Like Echo, a parameter's name runs to the next "/": ":user-id" becomes
+// "{user-id}" and ":name.ext" becomes "{name.ext}".
 func (r Route) OpenAPIPath() string {
 	return toOpenAPIPath(r.Path)
 }
@@ -52,7 +53,7 @@ func (r Route) OpenAPIPath() string {
 var (
 	reGroupAssign = regexp.MustCompile(`^(\w+)\s*:=\s*(\w+)\.Group\("([^"]*)"`)
 	reRouteCall   = regexp.MustCompile(`^(\w+)\.(GET|POST|PUT|PATCH|DELETE|HEAD)\("([^"]*)",\s*(.+)$`)
-	rePathParam   = regexp.MustCompile(`:([A-Za-z0-9_]+)`)
+	rePathParam   = regexp.MustCompile(`:([^/]+)`)
 	reOASParam    = regexp.MustCompile(`\{([^}]+)\}`)
 )
 

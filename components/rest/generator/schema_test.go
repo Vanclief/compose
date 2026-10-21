@@ -181,7 +181,7 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		t.Fatal("fixture handler not found")
 	}
 
-	params := newTestGenerator(t).functionQueryParameterSchemas(body, importMap(file))
+	params := newTestGenerator(t).functionQueryParameterSchemas(body, newTestSchemaBuilder(t, t.TempDir()).importMap(file))
 
 	// The literal-name reads, deduped; GetListLimit reads its fixed name "limit"
 	// and the non-literal read cannot be attributed.
@@ -279,7 +279,7 @@ func TestFunctionQueryParameterSchemasDeriveEnumArrays(t *testing.T) {
 		t.Fatal("fixture handler not found")
 	}
 
-	params := newTestGenerator(t).functionQueryParameterSchemas(body, importMap(file))
+	params := newTestGenerator(t).functionQueryParameterSchemas(body, newTestSchemaBuilder(t, t.TempDir()).importMap(file))
 
 	// The enum type is named by the parse-function argument; a non-literal name
 	// and a parse function that is not an imported <Type>FromString are skipped.
@@ -396,7 +396,7 @@ func (h *Handler) Webhook(c echo.Context) error {
 		t.Fatal(err)
 	}
 
-	imports := importMap(file)
+	imports := newTestSchemaBuilder(t, t.TempDir()).importMap(file)
 	helpers := map[string]funcInfo{}
 	var handlerBody *ast.BlockStmt
 	for _, decl := range file.Decls {

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/vanclief/ez"
 )
@@ -80,8 +81,11 @@ type schemaBuilder struct {
 	repoRoot       string
 	modCache       string
 	packages       map[string]*packageInfo
-	schemas        map[string]map[string]any
-	building       map[typeRef]bool
+	// packageNames caches, per import path, the name an unnamed import of it is referred to by
+	// (see packageName).
+	packageNames map[string]string
+	schemas      map[string]map[string]any
+	building     map[typeRef]bool
 	// Types emitted as opaque objects because their source could not be read. Silently
 	// dropping their fields would publish a broken contract, so Generate refuses to return a
 	// document while this is non-empty.
@@ -96,9 +100,9 @@ type schemaBuilder struct {
 	origins map[string]typeRef
 	// variantOf maps each request variant (RequestVariantSuffix) to the component it copies.
 	variantOf map[string]string
-	// derivedRequired holds the first element of every required list the value-typed,
-	// non-omitempty rule produced (see markDerived).
-	derivedRequired map[*string]bool
+	// derivedRequired holds a copy of every required list the value-typed, non-omitempty
+	// rule produced, keyed by the address of its first name (see markDerived).
+	derivedRequired map[*string][]string
 	// namer is Config.SchemaName.
 	namer func(importPath string, typeName string) string
 	// named maps each component name handed out to the type it names.
@@ -139,6 +143,7 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 		repoRoot:              cfg.Root,
 		modCache:              modCache,
 		packages:              map[string]*packageInfo{},
+		packageNames:          map[string]string{},
 		schemas:               map[string]map[string]any{},
 		building:              map[typeRef]bool{},
 		requiredPackagePrefix: cfg.RequiredPackagePrefix,
@@ -148,7 +153,7 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 		docComments:           cfg.DocComments,
 		origins:               map[string]typeRef{},
 		variantOf:             map[string]string{},
-		derivedRequired:       map[*string]bool{},
+		derivedRequired:       map[*string][]string{},
 		namer:                 cfg.SchemaName,
 		named:                 map[string]typeRef{},
 	}, nil
@@ -476,7 +481,8 @@ func packagePathForFile(repoRoot string, modulePath string, filePath string) str
 	return modulePath + "/" + filepath.ToSlash(dir)
 }
 
-func importMap(file *ast.File) map[string]string {
+// importMap maps each name a file refers to an import by to its import path.
+func (b *schemaBuilder) importMap(file *ast.File) map[string]string {
 	imports := map[string]string{}
 
 	for _, spec := range file.Imports {
@@ -490,9 +496,9 @@ func importMap(file *ast.File) map[string]string {
 			name = spec.Name.Name
 		}
 		if name == "" {
-			name = path.Base(pathValue)
+			name = b.packageName(pathValue)
 		}
-		if name == "_" || name == "." {
+		if name == "" || name == "_" || name == "." {
 			continue
 		}
 
@@ -500,6 +506,93 @@ func importMap(file *ast.File) map[string]string {
 	}
 
 	return imports
+}
+
+// packageName is the name an unnamed import is referred to by: the one in the package clause of
+// its source (aws-sdk-go-v2's signer/v4 is v4), or importName's guess for the standard library
+// and for a package whose source cannot be read.
+func (b *schemaBuilder) packageName(importPath string) string {
+	name, ok := b.packageNames[importPath]
+	if ok {
+		return name
+	}
+
+	name = b.declaredPackageName(importPath)
+	if name == "" {
+		name = importName(importPath)
+	}
+	if b.packageNames == nil {
+		b.packageNames = map[string]string{}
+	}
+	b.packageNames[importPath] = name
+
+	return name
+}
+
+// declaredPackageName reads the package clause of a non-standard-library package, "" when its
+// source cannot be read. Only the clause is parsed, so naming an import loads nothing else.
+func (b *schemaBuilder) declaredPackageName(importPath string) string {
+	if b.isStandardLibraryImport(importPath) {
+		return ""
+	}
+	dir, err := b.resolveImportPath(importPath)
+	if err != nil {
+		return ""
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return ""
+	}
+
+	for _, filePath := range files {
+		if strings.HasSuffix(filePath, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filePath, nil, parser.PackageClauseOnly)
+		if err != nil {
+			continue
+		}
+		// An importable package is never main; a main file beside it is a go:build ignore tool.
+		if file.Name.Name == "main" {
+			continue
+		}
+		return file.Name.Name
+	}
+
+	return ""
+}
+
+// importName is the name an unnamed import is referred to by, assumed the way goimports does: the
+// last path element, or the one before a major version element (/v5), without a go- prefix and
+// cut at its first character that cannot be in an identifier (gopkg.in's null.v4 is null).
+func importName(importPath string) string {
+	base := path.Base(importPath)
+	if isMajorVersion(base) {
+		dir := path.Dir(importPath)
+		if dir != "." {
+			base = path.Base(dir)
+		}
+	}
+	base = strings.TrimPrefix(base, "go-")
+	cut := strings.IndexFunc(base, func(r rune) bool {
+		return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if cut >= 0 {
+		base = base[:cut]
+	}
+
+	return base
+}
+
+// isMajorVersion reports a major version path element such as v2.
+func isMajorVersion(element string) bool {
+	version, ok := strings.CutPrefix(element, "v")
+	if !ok || version == "" {
+		return false
+	}
+	_, err := strconv.Atoi(version)
+
+	return err == nil
 }
 
 func (g *generator) buildHandlerSchemas(facts handlerFacts) (map[string]handlerSchema, error) {
@@ -558,12 +651,14 @@ func (b *schemaBuilder) jsonFieldNames(ref typeRef, goNames []string) []string {
 
 	var names []string
 	for _, field := range structure.Fields.List {
-		if len(field.Names) == 0 || !wanted[field.Names[0].Name] {
-			continue
-		}
-		name := jsonFieldName(field)
-		if name != "" {
-			names = append(names, name)
+		for _, ident := range field.Names {
+			if !wanted[ident.Name] || !ast.IsExported(ident.Name) {
+				continue
+			}
+			name := jsonFieldName(ident.Name, field)
+			if name != "" {
+				names = append(names, name)
+			}
 		}
 	}
 
@@ -747,6 +842,7 @@ func (b *schemaBuilder) schemaRef(ref typeRef) map[string]any {
 	}
 
 	if ref.ImportPath == "" || ref.Name == "" {
+		b.recordUnresolved(ref, "no import path or type name")
 		return map[string]any{
 			"type": "object",
 		}
@@ -884,7 +980,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 	}
 
 	// Standard-library types are not modeled; they stay opaque objects.
-	if isStandardLibraryImport(ref.ImportPath) {
+	if b.isStandardLibraryImport(ref.ImportPath) {
 		return extendedSchema(map[string]any{"type": "object"}, override, b)
 	}
 
@@ -990,7 +1086,13 @@ func (b *schemaBuilder) customMarshalReason(pkg *packageInfo, info typeSpecInfo,
 			continue
 		}
 		_, described := b.typeSchemas[typeKey(embedded)]
-		if described || isStandardLibraryImport(embedded.ImportPath) {
+		if described {
+			continue
+		}
+		if selfMarshalingTypes[typeKey(embedded)] {
+			return "type " + ref.Name + " embeds " + embedded.Name + ", which marshals itself, so it marshals as " + embedded.Name + " alone" + hint
+		}
+		if b.isStandardLibraryImport(embedded.ImportPath) {
 			continue
 		}
 		embeddedPkg, err := b.loadPackage(embedded.ImportPath)
@@ -1003,6 +1105,17 @@ func (b *schemaBuilder) customMarshalReason(pkg *packageInfo, info typeSpecInfo,
 	}
 
 	return ""
+}
+
+// selfMarshalingTypes are the well-known types (wellKnownSchema) whose JSON or text marshaler an
+// embedding struct inherits, so that struct marshals as the embedded value alone. Their source
+// is not loaded (the standard library) or not required, so their methods are not looked up.
+var selfMarshalingTypes = map[string]bool{
+	"time.Time":                   true,
+	"encoding/json.RawMessage":    true,
+	"net.IP":                      true,
+	"math/big.Int":                true,
+	"github.com/google/uuid.UUID": true,
 }
 
 func anyNonEmpty(values []string) bool {
@@ -1031,10 +1144,33 @@ func (b *schemaBuilder) unresolvedError() error {
 }
 
 // isStandardLibraryImport follows Go's rule: the first path element of a module path
-// carries a dot, the standard library's never does.
-func isStandardLibraryImport(importPath string) bool {
+// carries a dot, the standard library's never does. The module's own packages and those of the
+// modules it requires are never the standard library, dot or not (module app, a replaced local
+// module).
+func (b *schemaBuilder) isStandardLibraryImport(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	if withinModule(importPath, b.modulePath) {
+		return false
+	}
+	for modulePath := range b.moduleVersions {
+		if withinModule(importPath, modulePath) {
+			return false
+		}
+	}
+
 	first, _, _ := strings.Cut(importPath, "/")
-	return importPath != "" && !strings.Contains(first, ".")
+	return !strings.Contains(first, ".")
+}
+
+// withinModule reports an import path of the module modulePath or one of its packages.
+func withinModule(importPath string, modulePath string) bool {
+	if modulePath == "" {
+		return false
+	}
+
+	return importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/")
 }
 
 func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, pkgPath string) map[string]any {
@@ -1057,19 +1193,32 @@ func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, 
 			return map[string]any{"type": "object"}
 		}
 		importPath := imports[pkgIdent.Name]
+		if importPath == "" {
+			b.recordUnresolved(typeRef{ImportPath: pkgPath, Name: types.ExprString(t)}, "package "+pkgIdent.Name+" is not among its file's imports")
+			return map[string]any{
+				"type": "object",
+			}
+		}
 		ref := typeRef{ImportPath: importPath, Name: t.Sel.Name}
 		return b.schemaRef(ref)
 	case *ast.ArrayType:
-		if isByteSlice(t) {
+		// encoding/json writes a byte slice as base64, a byte array as an array of numbers.
+		if t.Len == nil && isByteSlice(t) {
 			return map[string]any{
 				"type":   "string",
 				"format": "byte",
 			}
 		}
-		return map[string]any{
+		schema := map[string]any{
 			"type":  "array",
 			"items": b.schemaForExpr(derefExpr(t.Elt), imports, pkgPath),
 		}
+		length, ok := arrayLength(t)
+		if ok {
+			schema["minItems"] = length
+			schema["maxItems"] = length
+		}
+		return schema
 	case *ast.MapType:
 		return map[string]any{
 			"type":                 "object",
@@ -1141,7 +1290,8 @@ func builtinSchema(name string) (map[string]any, bool) {
 	case "float64":
 		return map[string]any{"type": "number", "format": "double"}, true
 	case "byte":
-		return map[string]any{"type": "string", "format": "byte"}, true
+		// A lone byte is a number; only a []byte is base64 (schemaForExpr).
+		return map[string]any{"type": "integer", "format": "int32"}, true
 	case "rune":
 		return map[string]any{"type": "integer", "format": "int32"}, true
 	case "any":
@@ -1277,6 +1427,20 @@ func isByteSlice(array *ast.ArrayType) bool {
 	return ident.Name == "byte" || ident.Name == "uint8"
 }
 
+// arrayLength is the length of a fixed-size array type written as an integer literal, [32]T.
+func arrayLength(array *ast.ArrayType) (int, bool) {
+	lit, ok := array.Len.(*ast.BasicLit)
+	if !ok || lit.Kind != token.INT {
+		return 0, false
+	}
+	length, err := strconv.ParseInt(lit.Value, 0, 64)
+	if err != nil {
+		return 0, false
+	}
+
+	return int(length), true
+}
+
 // schemaMembers returns the object members that carry a schema's properties:
 // the schema itself, or its allOf members when the builder split an embedded
 // type out.
@@ -1348,36 +1512,60 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 		}
 		flaggedDeprecated := hasDeprecatedParagraph(field)
 
+		var names []string
 		if len(field.Names) == 0 {
 			// bun.BaseModel marshals nothing; its tag names the model's table.
 			if isBunBaseModel(field.Type, imports) {
 				table = bunTable(field)
 				continue
 			}
-			embedded := b.schemaForExpr(derefExpr(field.Type), imports, pkgPath)
-			allOf = append(allOf, embedded)
-			continue
+			// encoding/json inlines an embedded struct's fields unless the tag names it; any
+			// other embedded type is a field named after the type.
+			tagName, skipped := jsonTagName(field)
+			if skipped {
+				continue
+			}
+			isStruct := b.isStructType(derefExpr(field.Type), imports, pkgPath, 0)
+			if isStruct && tagName == "" {
+				embedded := b.schemaForExpr(derefExpr(field.Type), imports, pkgPath)
+				allOf = append(allOf, embedded)
+				continue
+			}
+			typeName := embeddedTypeName(field.Type)
+			// An embedded unexported non-struct type is ignored.
+			if typeName == "" || (!isStruct && !ast.IsExported(typeName)) {
+				continue
+			}
+			names = append(names, typeName)
+		} else {
+			for _, ident := range field.Names {
+				if ast.IsExported(ident.Name) {
+					names = append(names, ident.Name)
+				}
+			}
 		}
 
-		name := jsonFieldName(field)
-		if name == "" {
-			continue
-		}
+		for _, goName := range names {
+			name := jsonFieldName(goName, field)
+			if name == "" {
+				continue
+			}
 
-		schema := b.schemaForExpr(field.Type, imports, pkgPath)
-		if flaggedDeprecated {
-			schema = deprecatedSchema(schema)
-		}
-		if b.docComments {
-			schema = describedSchema(schema, fieldDoc(field))
-		}
-		props[name] = schema
+			schema := b.fieldSchema(field, imports, pkgPath)
+			if flaggedDeprecated {
+				schema = deprecatedSchema(schema)
+			}
+			if b.docComments {
+				schema = describedSchema(schema, fieldDoc(field))
+			}
+			props[name] = schema
 
-		// Nil-able fields (pointers, slices, maps — directly or through a named
-		// type) marshal as null and stay optional; when in doubt the field stays
-		// optional, never falsely required.
-		if !jsonFieldOmitsEmpty(field) && !b.isNilableFieldType(field.Type, imports, pkgPath, 0) {
-			required = append(required, name)
+			// Nil-able fields (pointers, slices, maps — directly or through a named
+			// type) marshal as null and stay optional; when in doubt the field stays
+			// optional, never falsely required.
+			if !jsonFieldOmitsEmpty(field) && !b.isNilableFieldType(field.Type, imports, pkgPath, 0) {
+				required = append(required, name)
+			}
 		}
 	}
 
@@ -1428,7 +1616,8 @@ func (b *schemaBuilder) isNilableFieldType(expr ast.Expr, imports map[string]str
 	case *ast.StarExpr, *ast.MapType, *ast.InterfaceType, *ast.ChanType, *ast.FuncType, *ast.Ellipsis:
 		return true
 	case *ast.ArrayType:
-		return true
+		// A slice can be nil; a fixed-size array never is.
+		return t.Len == nil
 	case *ast.StructType:
 		return false
 	case *ast.Ident:
@@ -1474,19 +1663,160 @@ func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
 	return b.isNilableFieldType(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
 }
 
+// fieldSchema is a struct field's schema. The `,string` option puts a boolean, number or string
+// (or a pointer to one) inside a JSON string.
+func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
+	if containsString(jsonTagOptions(field), "string") {
+		elem := field.Type
+		star, isPointer := elem.(*ast.StarExpr)
+		if isPointer {
+			elem = star.X
+		}
+		if b.isQuotableType(elem, imports, pkgPath, 0) {
+			schema := map[string]any{"type": "string"}
+			if isPointer {
+				schema = nullableSchema(schema)
+			}
+			return schema
+		}
+	}
+
+	return b.schemaForExpr(field.Type, imports, pkgPath)
+}
+
+// quotableKinds are the predeclared types the `,string` option applies to.
+var quotableKinds = map[string]bool{
+	"bool": true, "string": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"byte": true, "rune": true, "float32": true, "float64": true,
+}
+
+// isQuotableType reports a type whose kind the `,string` option applies to: a boolean, number
+// or string, directly or through a named type without a JSON or text marshaler (one with a
+// marshaler writes its own value). A type it cannot resolve is not.
+func (b *schemaBuilder) isQuotableType(expr ast.Expr, imports map[string]string, pkgPath string, depth int) bool {
+	if depth > 4 {
+		return false
+	}
+
+	var ref typeRef
+	switch t := expr.(type) {
+	case *ast.Ident:
+		_, builtin := builtinSchema(t.Name)
+		if builtin {
+			return quotableKinds[t.Name]
+		}
+		ref = typeRef{ImportPath: pkgPath, Name: t.Name}
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		ref = typeRef{ImportPath: imports[pkgIdent.Name], Name: t.Sel.Name}
+	default:
+		return false
+	}
+
+	if ref == (typeRef{ImportPath: "time", Name: "Duration"}) {
+		return true
+	}
+	_, described := b.typeSchemas[typeKey(ref)]
+	if described || b.isStandardLibraryImport(ref.ImportPath) {
+		return false
+	}
+	pkg, err := b.loadPackage(ref.ImportPath)
+	if err != nil {
+		return false
+	}
+	info, ok := pkg.Types[ref.Name]
+	if !ok {
+		return false
+	}
+	methods := pkg.Methods[ref.Name]
+	if methods["MarshalJSON"] || methods["MarshalText"] {
+		return false
+	}
+
+	return b.isQuotableType(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
+}
+
+// isStructType reports a struct type, directly or through a named type, whose fields encoding/json
+// promotes when it is embedded. A type it cannot resolve counts as one, as embedded types always
+// did; so does a standard-library type other than the few non-structs wellKnownSchema maps.
+func (b *schemaBuilder) isStructType(expr ast.Expr, imports map[string]string, pkgPath string, depth int) bool {
+	if depth > 4 {
+		return true
+	}
+
+	var ref typeRef
+	switch t := expr.(type) {
+	case *ast.StructType:
+		return true
+	case *ast.Ident:
+		_, builtin := builtinSchema(t.Name)
+		if builtin || t.Name == "error" {
+			return false
+		}
+		ref = typeRef{ImportPath: pkgPath, Name: t.Name}
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		ref = typeRef{ImportPath: imports[pkgIdent.Name], Name: t.Sel.Name}
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		return true
+	default:
+		return false
+	}
+
+	override, described := b.typeSchemas[typeKey(ref)]
+	if described && !isExtension(override) {
+		kind, typed := override["type"]
+		return !typed || kind == "object"
+	}
+	if b.isStandardLibraryImport(ref.ImportPath) {
+		return !standardLibraryNonStructs[typeKey(ref)]
+	}
+	pkg, err := b.loadPackage(ref.ImportPath)
+	if err != nil {
+		return true
+	}
+	info, ok := pkg.Types[ref.Name]
+	if !ok {
+		return true
+	}
+
+	return b.isStructType(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
+}
+
+// standardLibraryNonStructs are the well-known standard-library types (wellKnownSchema) that are
+// not structs.
+var standardLibraryNonStructs = map[string]bool{
+	"time.Duration":            true,
+	"net.IP":                   true,
+	"encoding/json.RawMessage": true,
+}
+
+// embeddedTypeName is the field name Go gives an embedded field: its type's name.
+func embeddedTypeName(expr ast.Expr) string {
+	switch t := derefExpr(expr).(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr:
+		return embeddedTypeName(t.X)
+	case *ast.IndexListExpr:
+		return embeddedTypeName(t.X)
+	}
+
+	return ""
+}
+
 func jsonFieldOmitsEmpty(field *ast.Field) bool {
-	if field == nil || field.Tag == nil {
-		return false
-	}
-
-	tag := strings.Trim(field.Tag.Value, "`")
-	if tag == "" {
-		return false
-	}
-
-	jsonTag := reflect.StructTag(tag).Get("json")
-	parts := strings.Split(jsonTag, ",")
-	for _, option := range parts[1:] {
+	for _, option := range jsonTagOptions(field) {
 		if option == "omitempty" || option == "omitzero" {
 			return true
 		}
@@ -1495,41 +1825,46 @@ func jsonFieldOmitsEmpty(field *ast.Field) bool {
 	return false
 }
 
-func jsonFieldName(field *ast.Field) string {
-	if len(field.Names) == 0 {
+// jsonFieldName is the JSON key of the field goName of a declaration: its json tag's name, else
+// goName; "" for a `json:"-"` field.
+func jsonFieldName(goName string, field *ast.Field) string {
+	name, skipped := jsonTagName(field)
+	if skipped {
 		return ""
 	}
-
-	name := field.Names[0].Name
-	if !ast.IsExported(name) {
-		return ""
+	if name == "" {
+		return goName
 	}
 
-	if field.Tag == nil {
-		return name
+	return name
+}
+
+// jsonTagName is the name a field's json tag gives, "" when it names none, and whether the tag
+// is `json:"-"`, which drops the field (`json:"-,"` names it "-" instead).
+func jsonTagName(field *ast.Field) (string, bool) {
+	jsonTag := fieldJSONTag(field)
+	if jsonTag == "-" {
+		return "", true
+	}
+
+	name, _, _ := strings.Cut(jsonTag, ",")
+	return name, false
+}
+
+// jsonTagOptions are the options after the name of a field's json tag.
+func jsonTagOptions(field *ast.Field) []string {
+	parts := strings.Split(fieldJSONTag(field), ",")
+
+	return parts[1:]
+}
+
+func fieldJSONTag(field *ast.Field) string {
+	if field == nil || field.Tag == nil {
+		return ""
 	}
 
 	tag := strings.Trim(field.Tag.Value, "`")
-	if tag == "" {
-		return name
-	}
-
-	jsonTag := reflect.StructTag(tag).Get("json")
-	if jsonTag == "-" {
-		return ""
-	}
-	if jsonTag == "" {
-		return name
-	}
-
-	parts := strings.Split(jsonTag, ",")
-	if len(parts) == 0 {
-		return name
-	}
-	if parts[0] == "" {
-		return name
-	}
-	return parts[0]
+	return reflect.StructTag(tag).Get("json")
 }
 
 // hasDeprecatedParagraph reports a field documented the Go way, with a paragraph that starts
@@ -1798,7 +2133,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 			return nil, ez.Wrap(err)
 		}
 
-		imports := importMap(file)
+		imports := b.importMap(file)
 		if packageDoc == "" {
 			packageDoc = commentText(file.Doc)
 		}

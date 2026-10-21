@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -13,25 +14,33 @@ import (
 const RequestVariantSuffix = "Input"
 
 // markDerived records a required list the builder derived from the value-typed,
-// non-omitempty rule, so the request side can tell it from one a Schemas hook wrote.
+// non-omitempty rule, so the request side can tell it from one a Schemas hook wrote. It keeps a
+// copy of the list under the address of its first name: a list a hook extended (even in place,
+// by append into spare capacity), shortened, reordered or replaced no longer matches it.
 func (b *schemaBuilder) markDerived(required []string) {
 	if len(required) == 0 {
 		return
 	}
 	if b.derivedRequired == nil {
-		b.derivedRequired = map[*string]bool{}
+		b.derivedRequired = map[*string][]string{}
 	}
-	b.derivedRequired[&required[0]] = true
+	b.derivedRequired[&required[0]] = slices.Clone(required)
 }
 
-// isDerived reports a required list markDerived recorded. A hook that replaced the list owns it.
+// isDerived reports a required list markDerived recorded, with the same names in the same
+// order. A hook that changed or replaced the list owns it.
 func (b *schemaBuilder) isDerived(required any) bool {
 	list, ok := required.([]string)
 	if !ok || len(list) == 0 {
 		return false
 	}
 
-	return b.derivedRequired[&list[0]]
+	recorded, ok := b.derivedRequired[&list[0]]
+	if !ok {
+		return false
+	}
+
+	return slices.Equal(recorded, list)
 }
 
 // isModel reports a component built from a RequiredPackagePrefix package.

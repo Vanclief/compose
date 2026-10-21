@@ -4,8 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"mime"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -125,7 +125,7 @@ func (g *generator) handlerFacts() handlerFacts {
 	helpersByPackage := g.packageHelpers()
 
 	for _, source := range g.sources {
-		imports := importMap(source.File)
+		imports := g.builder.importMap(source.File)
 		pkgPath := packagePathForFile(g.cfg.Root, g.builder.modulePath, source.Path)
 
 		packageDoc := commentText(source.File.Doc)
@@ -191,12 +191,20 @@ func (g *generator) handlerFacts() handlerFacts {
 	fillAliases(facts.requestTypes, g.aliases)
 	fillAliases(facts.pathFields, g.aliases)
 	fillAliases(facts.responses, g.aliases)
-	// An alias documented itself keeps its own doc.
-	for alias, target := range g.aliases {
-		_, documented := facts.docs[alias]
-		doc, ok := facts.docs[target]
-		if !documented && ok {
-			facts.docs[alias] = doc
+	// An alias documented itself keeps its own doc; else it takes the nearest doc down its
+	// chain, read from the docs as written so the order the aliases come in does not matter.
+	written := maps.Clone(facts.docs)
+	for alias := range g.aliases {
+		_, documented := written[alias]
+		if documented {
+			continue
+		}
+		for _, target := range aliasChain(g.aliases, alias) {
+			doc, ok := written[target]
+			if ok {
+				facts.docs[alias] = doc
+				break
+			}
 		}
 	}
 
@@ -210,7 +218,7 @@ func (g *generator) packageHelpers() map[string]map[string]funcInfo {
 	helpersByPackage := map[string]map[string]funcInfo{}
 
 	for _, source := range g.sources {
-		imports := importMap(source.File)
+		imports := g.builder.importMap(source.File)
 		pkgPath := packagePathForFile(g.cfg.Root, g.builder.modulePath, source.Path)
 
 		for _, decl := range source.File.Decls {
@@ -279,7 +287,7 @@ func (g *generator) handlerPackageNamespaces() (map[string]string, error) {
 		return nil, ez.Wrap(err)
 	}
 
-	imports := importMap(file)
+	imports := g.builder.importMap(file)
 	namespaces := map[string]string{}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -307,7 +315,7 @@ func (g *generator) handlerPackageNamespaces() (map[string]string, error) {
 				if !ok {
 					continue
 				}
-				namespaces[path.Base(importPath)] = lowerFirst(field.Names[0].Name)
+				namespaces[g.builder.packageName(importPath)] = lowerFirst(field.Names[0].Name)
 			}
 		}
 	}
@@ -371,11 +379,35 @@ func (g *generator) collectHandlerAliases() map[string]string {
 	return aliases
 }
 
+// aliasChain is the methods an alias leads to, in order: its target, the target's target if
+// that is an alias too, and so on until a method that is not an alias (or one already in the
+// chain, for a loop). The last one need not be a handler: a handler whose whole body is
+// `return h.BindedJSONResponse(...)` is an alias of BindedJSONResponse.
+func aliasChain(aliases map[string]string, alias string) []string {
+	seen := map[string]bool{alias: true}
+	var chain []string
+	target, ok := aliases[alias]
+	for ok && !seen[target] {
+		seen[target] = true
+		chain = append(chain, target)
+		target, ok = aliases[target]
+	}
+
+	return chain
+}
+
+// fillAliases gives each alias the value of the deepest method down its chain that has one,
+// as if each alias took its target's value after the target took its own; an alias whose chain
+// has none keeps what it has. Values are read from out as it was before any alias was filled,
+// so the order the aliases come in does not matter.
 func fillAliases[V any](out map[string]V, aliases map[string]string) {
-	for alias, target := range aliases {
-		value, ok := out[target]
-		if ok {
-			out[alias] = value
+	original := maps.Clone(out)
+	for alias := range aliases {
+		for _, target := range aliasChain(aliases, alias) {
+			value, ok := original[target]
+			if ok {
+				out[alias] = value
+			}
 		}
 	}
 }

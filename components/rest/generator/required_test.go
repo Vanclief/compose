@@ -2,6 +2,7 @@ package generator
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -185,5 +186,77 @@ func TestCursorResponseRequiresHasNextPage(t *testing.T) {
 	cursor := componentSchemas(spec.Document)["github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_CursorResponse"]
 	if !reflect.DeepEqual(cursor["required"], []string{"has_next_page"}) {
 		t.Fatalf("expected has_next_page required, got %v", cursor["required"])
+	}
+}
+
+// A Schemas hook that extends a derived required list owns it, even when append reuses the
+// list's backing array.
+func TestHookExtendedRequiredListIsTheHooks(t *testing.T) {
+	files := map[string]string{}
+	for name, contents := range requiredFixture {
+		files[name] = contents
+	}
+	files["modules/invoices/invoices.go"] = strings.Replace(requiredFixture["modules/invoices/invoices.go"],
+		"	Name       string                    `json:\"name\"`\n",
+		"	Name       string                    `json:\"name\"`\n	Note       string                    `json:\"note\"`\n", 1)
+	root := writeFixture(t, files)
+
+	spareCapacity := false
+	cfg := Config{
+		Root:        root,
+		RoutesGlob:  "api/routes.go",
+		HandlerGlob: "api/*.go",
+		Schemas: func(schemas map[string]map[string]any) {
+			create := schemas["modules_invoices_CreateRequest"]
+			required := create["required"].([]string)
+			spareCapacity = cap(required) > len(required)
+			create["required"] = append(required, "adjustment")
+		},
+	}
+
+	spec, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spareCapacity {
+		t.Fatal("expected the derived list to have spare capacity, so append reuses its backing array")
+	}
+
+	got := componentSchemas(spec.Document)["modules_invoices_CreateRequest"]["required"]
+	want := []string{"name", "note", "total", "adjustment"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected the hook's required list %v, got %v", want, got)
+	}
+}
+
+func TestIsDerivedOnlyRecognisesTheRecordedList(t *testing.T) {
+	builder := &schemaBuilder{}
+
+	list := make([]string, 0, 8)
+	list = append(list, "a", "b", "c")
+	builder.markDerived(list)
+	single := make([]string, 0, 4)
+	single = append(single, "only")
+	builder.markDerived(single)
+
+	cases := map[string]struct {
+		list []string
+		want bool
+	}{
+		"recorded":           {list, true},
+		"recorded single":    {single, true},
+		"extended":           {append(list, "d"), false},
+		"extended single":    {append(single, "more"), false},
+		"truncated":          {list[:2], false},
+		"truncated to first": {list[:1], false},
+		"without first":      {list[1:], false},
+		"last only":          {list[2:], false},
+		"copied":             {append([]string(nil), list...), false},
+	}
+	for name, c := range cases {
+		got := builder.isDerived(c.list)
+		if got != c.want {
+			t.Errorf("%s: isDerived(%v) = %v, want %v", name, c.list, got, c.want)
+		}
 	}
 }
