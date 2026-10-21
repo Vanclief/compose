@@ -233,11 +233,22 @@ func (s *Server) callFunction(ctx context.Context, req *mcp.CallToolRequest, cal
 // line, comes first and the log lines collected follow it, so the output cap
 // cuts logs. Scripts are only for callers whose credentials pass the WhoAmI
 // call, and each caller, keyed by its bearer token or else the WhoAmI
-// response, runs one at a time. The slot is taken before the WhoAmI call, so
-// callers cannot make identity requests while every slot is busy. Other
+// response, runs one at a time. A caller with a bearer token is claimed
+// before the slot is taken, so its parallel runs are refused at once and
+// hold no slot; a bogus token only blocks itself. The slot is taken before
+// the WhoAmI call, so callers cannot make identity requests while every
+// slot is busy; a caller without a token is claimed after that call. Other
 // WhoAmI failures, such as an outage, are reported as what they are.
 // Internal failures of the runtime also go to Config.OnError.
 func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *caller, in scriptInput) (string, bool) {
+	token := bearerToken(req)
+	if token != "" {
+		release, err := s.scripts.claim(scriptKey(token, nil))
+		if err != nil {
+			return errorText(err), true
+		}
+		defer release()
+	}
 	releaseSlot, err := s.scripts.slot(ctx)
 	if err != nil {
 		return errorText(err), true
@@ -254,11 +265,13 @@ func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *
 	if s.cfg.Script.Allow != nil && !s.cfg.Script.Allow(ctx, me) {
 		return errorText(ez.New(ez.ENOTAUTHORIZED, "mcp: run_script is not enabled for this account", nil)), true
 	}
-	release, err := s.scripts.claim(scriptKey(bearerToken(req), me))
-	if err != nil {
-		return errorText(err), true
+	if token == "" {
+		release, err := s.scripts.claim(scriptKey("", me))
+		if err != nil {
+			return errorText(err), true
+		}
+		defer release()
 	}
-	defer release()
 	out, err := s.engine.run(ctx, s.catalog, call, s.cfg.Script, in.Code, s.cfg.OnError)
 	if err == nil {
 		return out, false

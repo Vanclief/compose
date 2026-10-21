@@ -710,6 +710,128 @@ func TestServerRunScriptSlotBeforeWhoAmI(t *testing.T) {
 	assert.Equal(t, int32(1), whoami.Load())
 }
 
+// whoAmIBlocker serves the shop with a /me that blocks for the API key "a"
+// until unblock is called, and counts the /me calls of each key.
+type whoAmIBlocker struct {
+	entered chan struct{}
+	unblock func()
+	mu      sync.Mutex
+	calls   map[string]int
+}
+
+func newWhoAmIBlocker(t *testing.T, cfg *Config) *whoAmIBlocker {
+	t.Helper()
+	shop := shopApp()
+	release := make(chan struct{})
+	var once sync.Once
+	b := &whoAmIBlocker{entered: make(chan struct{}, 4), calls: map[string]int{}}
+	b.unblock = func() {
+		once.Do(func() {
+			close(release)
+		})
+	}
+	t.Cleanup(b.unblock)
+	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("API-KEY")
+		if r.URL.Path == "/me" {
+			b.mu.Lock()
+			b.calls[key]++
+			b.mu.Unlock()
+			if key == "a" {
+				b.entered <- struct{}{}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}
+		}
+		shop.ServeHTTP(w, r)
+	})
+	return b
+}
+
+func (b *whoAmIBlocker) count(key string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls[key]
+}
+
+// runScriptAsync calls run_script in the background and sends its result.
+func runScriptAsync(t *testing.T, session *mcp.ClientSession, code string) chan *mcp.CallToolResult {
+	done := make(chan *mcp.CallToolResult, 1)
+	go func() {
+		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "run_script", Arguments: map[string]any{"code": code}})
+		assert.NoError(t, err)
+		done <- res
+	}()
+	return done
+}
+
+// TestServerRunScriptBlockedWhoAmI: while caller a is inside its WhoAmI
+// call, it holds its slot, so with one slot caller b is refused without a
+// WhoAmI call of its own.
+func TestServerRunScriptBlockedWhoAmI(t *testing.T) {
+	cfg := shopConfig(t)
+	cfg.Script.Enabled = true
+	cfg.Script.MaxConcurrent = 1
+	blocker := newWhoAmIBlocker(t, &cfg)
+	s := newShopServer(t, cfg)
+
+	done := runScriptAsync(t, connect(t, s, "a:x"), "return 1")
+	<-blocker.entered
+
+	text, failed := callTool(t, connect(t, s, "b:x"), "run_script", map[string]any{"code": "return 2"})
+	assert.True(t, failed)
+	assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": too many scripts are running; try again shortly", text)
+	assert.Equal(t, 0, blocker.count("b"))
+
+	blocker.unblock()
+	res := <-done
+	require.NotNil(t, res)
+	require.Len(t, res.Content, 1)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
+}
+
+// TestServerRunScriptClaimBeforeSlot: a caller with a bearer token is
+// claimed before it takes a slot, so its second parallel script is refused
+// at once, holds no slot and makes no WhoAmI call, and another caller still
+// gets the second slot.
+func TestServerRunScriptClaimBeforeSlot(t *testing.T) {
+	cfg := shopConfig(t)
+	cfg.Script.Enabled = true
+	cfg.Script.MaxConcurrent = 2
+	blocker := newWhoAmIBlocker(t, &cfg)
+	s := newShopServer(t, cfg)
+
+	first := runScriptAsync(t, connect(t, s, "a:x"), "return 1")
+	<-blocker.entered
+
+	second := runScriptAsync(t, connect(t, s, "a:x"), "return 2")
+	select {
+	case res := <-second:
+		require.NotNil(t, res)
+		require.Len(t, res.Content, 1)
+		assert.True(t, res.IsError)
+		assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": a script is already running for this account; wait for it to finish", res.Content[0].(*mcp.TextContent).Text)
+	case <-blocker.entered:
+		blocker.unblock()
+		t.Fatal("the second script of a reached the WhoAmI call")
+	}
+	assert.Equal(t, 1, blocker.count("a"))
+
+	text, failed := callTool(t, connect(t, s, "b:x"), "run_script", map[string]any{"code": "return 3"})
+	assert.False(t, failed)
+	assert.Equal(t, "3", text)
+
+	blocker.unblock()
+	res := <-first
+	require.NotNil(t, res)
+	require.Len(t, res.Content, 1)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
+}
+
 // TestServerScriptKey: callers are keyed by a hash of the bearer token, or
 // of the WhoAmI response, in separate key spaces.
 func TestServerScriptKey(t *testing.T) {

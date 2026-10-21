@@ -59,3 +59,12 @@ is reproducible across build directories:
 stack placement. Moving to another wasi-sdk or binaryen changes the hash: update
 the versions in `build.sh` and this file, rebuild, check the layout assertions
 of the test still pass, then update the pinned hash.
+
+### Verified builds
+
+Only the macOS arm64 build, from the `wasi-sdk-25.0-arm64-macos.tar.gz`
+tarball above, has been verified to produce the pinned sha256. A Linux build
+with wasi-sdk 25 is expected to match, since it uses the same clang 19.1.5
+and binaryen 133, `-ffile-prefix-map` and no timestamps, but it has not been
+checked. Whoever first builds on Linux should record the wasi-sdk tarball and
+its sha256 here, with the hash of the `quickjs.wasm` it produced.
