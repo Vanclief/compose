@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{if .Title}}Sign in to {{.Title}}{{else}}Sign in{{end}}</title>
+<style>
+:root { color-scheme: dark; --bg: #0f1216; --card: #181c22; --field: #0b0e12; --border: #2a3039; --text: #d8dde4; --muted: #8b96a5; --accent: #6ea8fe; --error: #ff8a80; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+.card { width: 100%; max-width: 380px; padding: 28px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+h1 { margin: 0 0 4px; font-size: 20px; }
+p { margin: 0 0 16px; color: var(--muted); overflow-wrap: anywhere; }
+.client { color: var(--text); font-weight: 600; }
+.host { font-family: var(--mono); color: var(--text); }
+label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 13px; }
+input { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }
+input:focus { outline: none; border-color: var(--accent); }
+.identifier { padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); overflow-wrap: anywhere; }
+.error { margin: 16px 0 0; padding: 9px 10px; border: 1px solid var(--error); border-radius: 6px; color: var(--error); }
+button { width: 100%; margin-top: 20px; padding: 10px; border: 0; border-radius: 6px; background: var(--accent); color: #0b0e12; font: 600 14px var(--font); cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+.note { margin: 16px 0 0; font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="card">
+{{if .Heading}}<h1>{{.Heading}}</h1>
+<p>{{.Message}}</p>
+{{else}}<h1>{{if .Title}}Sign in to {{.Title}}{{else}}Sign in{{end}}</h1>
+<p><span class="client">{{if .ClientName}}{{.ClientName}}{{else}}An application{{end}}</span> at <span class="host">{{.RedirectHost}}</span> wants to access your {{if .Title}}{{.Title}} {{end}}account.</p>
+<form method="post" onsubmit="this.querySelector('button').disabled = true">
+<input type="hidden" name="request" value="{{.RequestID}}">
+{{if .AskIdentifier}}<label for="identifier">{{.IdentifierLabel}}</label>
+<input id="identifier" name="identifier" value="{{.Identifier}}" autocomplete="username" required{{if not .Identifier}} autofocus{{end}}>
+{{else}}<label>{{.IdentifierLabel}}</label>
+<div class="identifier">{{.Identifier}}</div>
+{{end}}{{if .AskCredential}}<label for="credential">{{.CredentialLabel}}</label>
+<input id="credential" name="credential" {{if .OneTimeCode}}type="text" inputmode="numeric" autocomplete="one-time-code"{{else}}type="password" autocomplete="current-password"{{end}} required{{if or .Identifier (not .AskIdentifier)}} autofocus{{end}}>
+{{end}}{{if .Error}}<div class="error" role="alert">{{.Error}}</div>
+{{end}}<button type="submit">{{if .AskCredential}}Sign in{{else}}Continue{{end}}</button>
+</form>
+<p class="note">After you sign in you will be sent to <span class="host">{{.RedirectHost}}</span>.</p>
+{{end}}</main>
+</body>
+</html>
