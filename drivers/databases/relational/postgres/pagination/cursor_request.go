@@ -17,7 +17,9 @@ type CursorRequest struct {
 }
 
 func (r *CursorRequest) Validate() error {
-	if r.Limit > MAX_PAGE_SIZE {
+	if r.Limit < 0 {
+		return ez.New(ez.EINVALID, "Page size cannot be negative", nil)
+	} else if r.Limit > MAX_PAGE_SIZE {
 		return ez.New(ez.EINVALID, "Page size must be less than 1000", nil)
 	} else if r.Limit == 0 {
 		r.Limit = DEFAULT_LIMIT

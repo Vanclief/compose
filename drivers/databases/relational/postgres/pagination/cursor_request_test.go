@@ -10,6 +10,7 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 	pgquery "github.com/vanclief/compose/drivers/databases/relational/postgres/query"
+	"github.com/vanclief/ez"
 )
 
 type cursorRequestTestModel struct{}
@@ -110,4 +111,42 @@ func newCursorRequestTestDB() *bun.DB {
 	))
 
 	return bun.NewDB(sqldb, pgdialect.New())
+}
+
+func TestCursorRequestValidateLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		wantLimit int
+		wantErr   bool
+	}{
+		{name: "negative", limit: -1, wantErr: true},
+		{name: "zero applies default", limit: 0, wantLimit: DEFAULT_LIMIT},
+		{name: "max", limit: MAX_PAGE_SIZE, wantLimit: MAX_PAGE_SIZE},
+		{name: "above max", limit: MAX_PAGE_SIZE + 1, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := &CursorRequest{Limit: tc.limit}
+
+			err := request.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if ez.ErrorCode(err) != ez.EINVALID {
+					t.Fatalf("expected %s, got %s", ez.EINVALID, ez.ErrorCode(err))
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if request.Limit != tc.wantLimit {
+				t.Fatalf("expected limit %d, got %d", tc.wantLimit, request.Limit)
+			}
+		})
+	}
 }

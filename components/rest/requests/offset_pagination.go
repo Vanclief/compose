@@ -17,10 +17,16 @@ type OffsetBasedList struct {
 }
 
 func (r *OffsetBasedList) Validate() error {
-	if r.Limit-r.Offset > MAX_PAGE_SIZE {
+	if r.Limit < 0 {
+		return ez.New(ez.EINVALID, "Page size cannot be negative", nil)
+	} else if r.Limit > MAX_PAGE_SIZE {
 		return ez.New(ez.EINVALID, "Page size must be less than 1000", nil)
 	} else if r.Limit == 0 {
 		r.Limit = DEFAULT_LIMIT
+	}
+
+	if r.Offset < 0 {
+		return ez.New(ez.EINVALID, "Offset cannot be negative", nil)
 	}
 
 	return nil
