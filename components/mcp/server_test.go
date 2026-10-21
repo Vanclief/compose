@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -783,11 +784,12 @@ func runScriptAsync(t *testing.T, session *mcp.ClientSession, code string) chan 
 // TestServerRunScriptClaimBeforeSlot: a caller with a bearer token is
 // claimed first, so while its script is still in the WhoAmI call its second
 // parallel script is refused at once, takes no slot and makes no WhoAmI
-// call, and another caller still runs.
+// call. With a single slot, another caller still runs, so the script in the
+// WhoAmI call holds no slot.
 func TestServerRunScriptClaimBeforeSlot(t *testing.T) {
 	cfg := shopConfig(t)
 	cfg.Script.Enabled = true
-	cfg.Script.MaxConcurrent = 2
+	cfg.Script.MaxConcurrent = 1
 	blocker := newWhoAmIBlocker(t, &cfg)
 	s := newShopServer(t, cfg)
 
@@ -812,6 +814,46 @@ func TestServerRunScriptClaimBeforeSlot(t *testing.T) {
 	assert.Equal(t, "3", text)
 
 	blocker.unblock()
+	res := <-first
+	require.NotNil(t, res)
+	require.Len(t, res.Content, 1)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
+}
+
+// TestServerRunScriptClaimWithoutTokenBeforeSlot: a caller without a bearer
+// token is claimed by its WhoAmI response before it takes a slot, so with a
+// single slot busy with its own script its second script is refused at once
+// as already running instead of waiting for the slot.
+func TestServerRunScriptClaimWithoutTokenBeforeSlot(t *testing.T) {
+	shop := shopApp()
+	entered := make(chan struct{}, 2)
+	unblock := make(chan struct{})
+	cfg := shopConfig(t)
+	cfg.Script.Enabled = true
+	cfg.Script.MaxConcurrent = 1
+	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/items" {
+			entered <- struct{}{}
+			select {
+			case <-unblock:
+			case <-r.Context().Done():
+			}
+		}
+		shop.ServeHTTP(w, r)
+	})
+	s := newShopServer(t, cfg)
+
+	first := runScriptAsync(t, connect(t, s, ""), `return api.items.list_items({limit: 1}).length`)
+	<-entered
+
+	start := time.Now()
+	text, failed := callTool(t, connect(t, s, ""), "run_script", map[string]any{"code": "return 2"})
+	assert.True(t, failed)
+	assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": a script is already running for this account; wait for it to finish", text)
+	assert.Less(t, time.Since(start), scriptSlotWait)
+
+	close(unblock)
 	res := <-first
 	require.NotNil(t, res)
 	require.Len(t, res.Content, 1)

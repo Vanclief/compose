@@ -189,8 +189,9 @@ func (s *Server) mcpPath() string {
 }
 
 // Handler serves the authorization server endpoints (metadata, register,
-// authorize, login, token) for installations that do not use Echo. Paths are
-// matched as in Mount.
+// authorize, login, token) for installations that do not use Echo. Unlike
+// Mount, ServeMux decodes each path segment, so it also accepts other
+// percent-encodings of the published paths.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range s.routes() {
