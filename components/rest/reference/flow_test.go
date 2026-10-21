@@ -360,3 +360,46 @@ func TestExampleTypesNamed(t *testing.T) {
 	// An enum's example skips the empty value.
 	require.Contains(t, ToJSON(v), `"format": "wiegand"`)
 }
+
+// TestSelfReferencingArrayTerminates covers an array whose items are the
+// array itself: its type note and flow port stop at maxExampleDepth instead
+// of recursing until the stack overflows.
+func TestSelfReferencingArrayTerminates(t *testing.T) {
+	doc, err := Parse([]byte(`
+openapi: 3.1.0
+info: {title: Tree, version: "1"}
+paths:
+  /nodes:
+    get:
+      operationId: listNodes
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+components:
+  schemas:
+    Node:
+      type: array
+      items:
+        $ref: '#/components/schemas/Node'
+`))
+	require.NoError(t, err)
+
+	notes := doc.exampleTypes(schemaRef("Node"), ForResponse, strings.ToLower)
+	require.Equal(t, []string{"\ta:node\t\t{\"b\":\"node[]\"}", " []\ta:node\t\t{\"b\":\"node[]\"}"}, notes)
+	require.Equal(t, "[\n  []\n]", doc.ExampleJSON(schemaRef("Node"), ForResponse))
+
+	p := buildPage(doc, Options{}, nil)
+	ov := p.Groups[0].Ops[0]
+	out := port(t, ov.Machine.Outputs, "out:200")
+	// Building the port used to recurse forever; it now ends and the
+	// response reads as a list of Node.
+	require.Equal(t, "Node[]", out.Type)
+
+	html, err := Render(doc, Options{})
+	require.NoError(t, err)
+	require.Contains(t, string(html), `id="model/Node"`)
+}

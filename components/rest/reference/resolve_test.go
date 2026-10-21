@@ -2,7 +2,10 @@ package reference
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -651,4 +654,74 @@ func TestFlattenAllOfPolymorphism(t *testing.T) {
 	wrapper := doc.Flatten(schemaRef("Wrapper"))
 	require.Len(t, wrapper.OneOf, 2)
 	require.NotNil(t, wrapper.Discriminator)
+}
+
+// diamondDoc has levels+1 levels of two schemas, An and Bn, each allOf the
+// two of the next level, so a schema at level 0 reaches the last level
+// through 2^levels paths.
+func diamondDoc(levels int) *Document {
+	doc := &Document{}
+	for i := 0; i <= levels; i++ {
+		for _, side := range []string{"A", "B"} {
+			n := strconv.Itoa(i)
+			s := &Schema{Type: TypeList{"object"}}
+			s.Properties.Set(strings.ToLower(side)+n, &Schema{Type: TypeList{"string"}})
+			if i < levels {
+				next := strconv.Itoa(i + 1)
+				s.AllOf = []*Schema{schemaRef("A" + next), schemaRef("B" + next)}
+			}
+			doc.Components.Schemas.Set(side+n, s)
+		}
+	}
+	return doc
+}
+
+// TestFlattenDiamondAllOf covers members shared by several members, which
+// were flattened once per path: 20 levels took 0.6 s, 30 would take minutes.
+func TestFlattenDiamondAllOf(t *testing.T) {
+	doc := diamondDoc(30)
+
+	start := time.Now()
+	flat := doc.Flatten(schemaRef("A0"))
+	elapsed := time.Since(start)
+	t.Logf("30 levels in %s", elapsed)
+	require.Less(t, elapsed, time.Second)
+
+	// Parent first, then members in order: A1 brings a1 to a30 and b30 back
+	// to b2, and B1 adds b1.
+	var want []string
+	for i := 0; i <= 30; i++ {
+		want = append(want, "a"+strconv.Itoa(i))
+	}
+	for i := 30; i >= 1; i-- {
+		want = append(want, "b"+strconv.Itoa(i))
+	}
+	require.Equal(t, want, flat.Properties.Keys)
+	require.Empty(t, flat.AllOf)
+}
+
+// TestFlattenSharedMemberDependsOnTheChain covers a member flattened once
+// below its own variant, where its polymorphism is dropped, and again
+// directly, where it is kept: the first result must not be reused.
+func TestFlattenSharedMemberDependsOnTheChain(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Root: {allOf: [{$ref: '#/components/schemas/Side'}, {$ref: '#/components/schemas/Shared'}]}
+    Side: {allOf: [{$ref: '#/components/schemas/Variant'}]}
+    Variant: {allOf: [{$ref: '#/components/schemas/Shared'}], properties: {v: {type: string}}}
+    Shared: {allOf: [{$ref: '#/components/schemas/Poly'}], properties: {s: {type: string}}}
+    Poly: {type: object, oneOf: [{$ref: '#/components/schemas/Variant'}, {$ref: '#/components/schemas/Other'}]}
+    Other: {type: object, properties: {o: {type: string}}}
+`)
+
+	variant := doc.Flatten(schemaRef("Variant"))
+	require.Empty(t, variant.OneOf, "Variant is one of Poly's variants")
+
+	root := doc.Flatten(schemaRef("Root"))
+	require.Len(t, root.OneOf, 2, "Root is not one of them")
+	require.Equal(t, []string{"v", "s"}, root.Properties.Keys)
 }

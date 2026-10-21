@@ -378,7 +378,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 			}
 			continue
 		}
-		port := b.port(schema, ForRequest)
+		port := b.port(schema, ForRequest, 0)
 		port.Key = "in:" + p.In + ":" + p.Name
 		port.Name = p.Name
 		port.Head = p.Name
@@ -404,7 +404,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 			}
 		}
 		if schema != nil {
-			port := b.port(schema, ForRequest)
+			port := b.port(schema, ForRequest, 0)
 			port.Key = "in:body"
 			port.Name = "body"
 			port.Head = "body"
@@ -431,7 +431,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 						consume(&portView{}, model)
 						continue
 					}
-					field := b.port(ps, ForRequest)
+					field := b.port(ps, ForRequest, 0)
 					field.Key = "in:body:" + key
 					field.Name = key
 					consume(&field, model)
@@ -459,7 +459,7 @@ func (b *builder) buildMachine(ov *opView, of *opFlow) {
 		s := b.responseSchema(ref.Operation.Responses.Map[code])
 		port := portView{Key: "out:" + code, Name: code, Class: statusClass(code), Main: strings.HasPrefix(code, "2"), Kind: "any", Type: "empty"}
 		if s != nil {
-			port = b.port(s, ForResponse)
+			port = b.port(s, ForResponse, 0)
 			port.Key = "out:" + code
 			port.Name = code
 			port.Class = statusClass(code)
@@ -498,17 +498,19 @@ func resourceName(path string) string {
 }
 
 // port describes the type of s as a port: a short label such as int64,
-// uuid, Amenity or Amenity[], and the shape class for its kind.
-func (b *builder) port(s *Schema, mode ExampleMode) portView {
+// uuid, Amenity or Amenity[], and the shape class for its kind. depth counts
+// the array levels above s: past maxExampleDepth the items are "any", so an
+// array that holds itself, such as Node: {items: {$ref: Node}}, ends.
+func (b *builder) port(s *Schema, mode ExampleMode, depth int) portView {
 	f := b.d.Flatten(s)
-	if f == nil {
+	if f == nil || depth > maxExampleDepth {
 		return portView{Kind: "any", Type: "any", Title: "any"}
 	}
 	p := portView{Title: b.newTree(mode, false).plainLabel(s)}
 	name := b.d.SchemaName(s)
 	switch {
 	case isArray(f):
-		item := b.port(f.Items, mode)
+		item := b.port(f.Items, mode, depth+1)
 		p.Kind = item.Kind
 		p.Type = item.Type + "[]"
 		p.Stack = true

@@ -2,6 +2,7 @@ package reference
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -544,4 +545,174 @@ func TestExampleValueAllOfPolymorphism(t *testing.T) {
 
 	pet := decode(t, doc.ExampleJSON(schemaRef("Pet"), ForRequest))
 	require.Equal(t, map[string]any{"petType": "cat", "name": "string", "lives": float64(0)}, pet)
+}
+
+// nestedOneOfSpec chains named oneOf schemas: each of L0..L(levels-1) has
+// width object members holding width fields of the next level. None of them
+// is a model, so the model cap does not apply and an uncapped example grows
+// by width^2 per level.
+func nestedOneOfSpec(levels, width int) string {
+	spec := `
+openapi: 3.1.0
+info: {title: Nested, version: "1"}
+paths:
+  /x:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/L0'
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/L0'
+components:
+  schemas:
+`
+	for l := 0; l < levels; l++ {
+		spec += fmt.Sprintf("    L%d:\n      oneOf:\n", l)
+		for m := 0; m < width; m++ {
+			spec += "        - type: object\n          properties:\n"
+			for p := 0; p < width; p++ {
+				spec += fmt.Sprintf("            p%d:\n              $ref: '#/components/schemas/L%d'\n", p, l+1)
+			}
+		}
+	}
+	spec += fmt.Sprintf("    L%d:\n      type: string\n", levels)
+	return spec
+}
+
+func TestExampleValueBoundsNestedOneOf(t *testing.T) {
+	doc := parseSpec(t, nestedOneOfSpec(8, 8))
+
+	example := doc.ExampleJSON(schemaRef("L0"), ForResponse)
+	require.LessOrEqual(t, strings.Count(example, `"string"`), maxExampleValues)
+	require.Less(t, len(example), 500_000)
+
+	start := time.Now()
+	html := renderPage(t, doc)
+	require.Less(t, len(html), 10_000_000)
+	require.Less(t, time.Since(start), 10*time.Second)
+
+	// Every copy of a repeated array item counts: twelve levels of arrays
+	// with minItems 3 would otherwise write 3^12 strings.
+	deep := &Schema{Type: TypeList{"string"}}
+	three := 3
+	for range 12 {
+		deep = &Schema{Type: TypeList{"array"}, MinItems: &three, Items: deep}
+	}
+	example = doc.ExampleJSON(deep, ForResponse)
+	require.LessOrEqual(t, strings.Count(example, `"string"`), maxExampleValues)
+}
+
+func TestStringExampleClampsMinLength(t *testing.T) {
+	huge := 1 << 40
+	v := stringExample(&Schema{Type: TypeList{"string"}, MinLength: &huge})
+	require.Len(t, v, maxExampleString)
+
+	doc := parseSpec(t, `
+openapi: 3.1.0
+info: {title: Long, version: "1"}
+paths: {}
+components:
+  schemas:
+    Long:
+      type: string
+      format: uuid
+      minLength: 1099511627776
+`)
+	require.Len(t, doc.ExampleValue(schemaRef("Long"), ForResponse), maxExampleString)
+	renderPage(t, doc)
+}
+
+// TestExampleValueNilMember covers a schema built in Go, which Parse has
+// not cleaned, whose first oneOf member is nil.
+func TestExampleValueNilMember(t *testing.T) {
+	doc := parseSpec(t, exampleSpec)
+	s := &Schema{
+		Type:          TypeList{"object"},
+		Properties:    Ordered[*Schema]{Keys: []string{"kind"}, Map: map[string]*Schema{"kind": {Type: TypeList{"string"}}}},
+		OneOf:         []*Schema{nil, schemaRef("Owner")},
+		Discriminator: &Discriminator{PropertyName: "kind"},
+	}
+	require.Equal(t, map[string]any{"kind": "string"}, decode(t, doc.ExampleJSON(s, ForResponse)))
+}
+
+// explicitExamplesSpec builds a spec of three models, A with width
+// properties of B, B with width properties of C, and C with width string
+// properties each carrying an example of size bytes, directly or, with oneOf,
+// on their only oneOf member.
+func explicitExamplesSpec(width, size int, oneOf bool) string {
+	var b strings.Builder
+	b.WriteString(`{"openapi":"3.1.0","info":{"title":"Explicit","version":"1"},"paths":{},"components":{"schemas":{`)
+	example := strings.Repeat("x", size)
+	models := []string{"A", "B", "C"}
+	for i, name := range models {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `%q:{"type":"object","properties":{`, name)
+		for p := range width {
+			if p > 0 {
+				b.WriteString(",")
+			}
+			if name == "C" && oneOf {
+				fmt.Fprintf(&b, `"p%d":{"oneOf":[{"type":"string","example":%q}]}`, p, example)
+				continue
+			}
+			if name == "C" {
+				fmt.Fprintf(&b, `"p%d":{"type":"string","example":%q}`, p, example)
+				continue
+			}
+			fmt.Fprintf(&b, `"p%d":{"$ref":"#/components/schemas/%s"}`, p, models[i+1])
+		}
+		b.WriteString("}}")
+	}
+	b.WriteString("}}}")
+	return b.String()
+}
+
+// TestExampleValueBoundsExplicitExamples covers explicit examples, which the
+// value cap counts per KiB: 100 x 100 x 100 leaves of 10 KB would otherwise
+// write about 5 GB.
+func TestExampleValueBoundsExplicitExamples(t *testing.T) {
+	for _, oneOf := range []bool{false, true} {
+		doc := parseSpec(t, explicitExamplesSpec(100, 10_000, oneOf))
+
+		start := time.Now()
+		example := doc.ExampleJSON(schemaRef("A"), ForResponse)
+		elapsed := time.Since(start)
+		t.Logf("oneOf %t: %d bytes in %s", oneOf, len(example), elapsed)
+
+		require.Less(t, len(example), 10_000_000)
+		require.Less(t, elapsed, 5*time.Second)
+		require.True(t, strings.HasPrefix(example, "{\n  \"p0\": {\n    \"p0\": {\n      \"p0\": \"xxx"), example[:min(len(example), 200)])
+	}
+}
+
+func TestExampleValueKeepsExplicitExamplesUnderCap(t *testing.T) {
+	doc := parseSpec(t, `
+openapi: 3.1.0
+info: {title: Small, version: "1"}
+paths: {}
+components:
+  schemas:
+    Small:
+      type: object
+      properties:
+        name: {type: string, example: Ada}
+        tags: {type: array, items: {type: string}, example: [a, b]}
+        meta: {type: object, example: {plan: pro, seats: 3}}
+        note: {type: string, example: `+strings.Repeat("n", 4096)+`}
+`)
+	require.Equal(t, map[string]any{
+		"name": "Ada",
+		"tags": []any{"a", "b"},
+		"meta": map[string]any{"plan": "pro", "seats": float64(3)},
+		"note": strings.Repeat("n", 4096),
+	}, decode(t, doc.ExampleJSON(schemaRef("Small"), ForResponse)))
 }

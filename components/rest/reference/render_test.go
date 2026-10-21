@@ -788,3 +788,131 @@ components:
 	require.Contains(t, list, `<span class="ct-of">application/json</span>`, "an inline schema names no model")
 	require.Contains(t, section(t, html, `id="operation/pets-get"`), `title="Pet">Pet</a></span>`)
 }
+
+// sharedExampleSpec is a JSON spec whose operations all share examples of
+// about 1 MB: the request body, a response through a schema $ref, a response
+// through a named example and a query parameter. withCreated keeps the 201
+// response, which a diff head can drop.
+func sharedExampleSpec(ops int, withCreated bool) string {
+	big := strings.Repeat("x", 1<<20)
+	var b strings.Builder
+	b.WriteString(`{"openapi":"3.1.0","info":{"title":"Shared","version":"1"},"paths":{`)
+	for i := range ops {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		n := strconv.Itoa(i)
+		b.WriteString(`"/op` + n + `":{"post":{"operationId":"op` + n + `",`)
+		b.WriteString(`"parameters":[{"$ref":"#/components/parameters/Q"}],`)
+		b.WriteString(`"requestBody":{"$ref":"#/components/requestBodies/B"},`)
+		b.WriteString(`"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/X"}}}}`)
+		if withCreated {
+			b.WriteString(`,"201":{"$ref":"#/components/responses/R"}`)
+		}
+		b.WriteString(`}}}`)
+	}
+	b.WriteString(`},"components":{`)
+	b.WriteString(`"schemas":{"X":{"type":"object","properties":{"data":{"type":"string"}},"example":{"data":"` + big + `"}}},`)
+	b.WriteString(`"parameters":{"Q":{"name":"q","in":"query","schema":{"type":"string"},"example":"` + big + `"}},`)
+	b.WriteString(`"requestBodies":{"B":{"content":{"application/json":{"schema":{"type":"object"},"example":{"data":"` + big + `"}}}}},`)
+	b.WriteString(`"responses":{"R":{"description":"ok","content":{"application/json":{"schema":{"type":"object"},"examples":{"one":{"value":{"data":"` + big + `"}}}}}}}}}`)
+	return b.String()
+}
+
+// TestRenderBoundsSharedExamples covers examples that many operations
+// share: each operation used to write its own copy, so 100 operations
+// returning a component with a 1 MB example wrote over 100 MB of HTML.
+func TestRenderBoundsSharedExamples(t *testing.T) {
+	spec := sharedExampleSpec(100, true)
+	doc, err := Parse([]byte(spec))
+	require.NoError(t, err)
+
+	start := time.Now()
+	out, err := Render(doc, Options{})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	t.Logf("%d operations: spec %d bytes, page %d bytes in %s", 100, len(spec), len(out), elapsed)
+	require.Less(t, len(out), 2*maxPageExampleBytes+len(spec))
+	require.Less(t, elapsed, 20*time.Second)
+}
+
+func TestRenderSamplesPastTheExampleBudget(t *testing.T) {
+	doc, err := Parse([]byte(sharedExampleSpec(20, true)))
+	require.NoError(t, err)
+	p := buildPage(doc, Options{}, nil)
+
+	var ops []*opView
+	for _, g := range p.Groups {
+		ops = append(ops, g.Ops...)
+	}
+	require.Len(t, ops, 20)
+	written := 0
+	for _, ov := range ops {
+		written += len(ov.ReqExample)
+		for _, s := range ov.ResSamples {
+			written += len(s.Example)
+		}
+		for _, tp := range ov.TryParams {
+			written += len(tp.Placeholder)
+		}
+	}
+	require.LessOrEqual(t, written, maxPageExampleBytes)
+
+	big := strings.Repeat("x", 1<<20)
+	first := ops[0]
+	require.Contains(t, string(first.ReqExample), big, "the first operations keep their examples")
+	require.Len(t, first.ResSamples, 2)
+	require.Contains(t, string(first.ResSamples[0].Example), big)
+	require.Contains(t, string(first.ResSamples[1].Example), big)
+	require.Equal(t, big, first.TryParams[0].Placeholder)
+
+	last := ops[len(ops)-1]
+	require.Equal(t, "{}", string(last.ReqExample), "past the budget a sample is its empty value")
+	require.Len(t, last.ResSamples, 2, "a response past the budget keeps its sample")
+	for _, s := range last.ResSamples {
+		require.Equal(t, "{}", string(s.Example))
+	}
+	require.Equal(t, "string", last.TryParams[0].Placeholder, "past the budget a placeholder is the type label")
+}
+
+func TestRenderBoundsSharedBaseExamples(t *testing.T) {
+	base := sharedExampleSpec(30, true)
+	head := sharedExampleSpec(30, false)
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+
+	start := time.Now()
+	out, err := Render(doc, Options{Base: []byte(base)})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	t.Logf("%d operations: specs %d bytes, page %d bytes in %s", 30, len(base)+len(head), len(out), elapsed)
+	require.Less(t, len(out), 2*maxPageExampleBytes+len(base)+len(head))
+	require.Less(t, elapsed, 20*time.Second)
+	require.Contains(t, string(out), "tabpanel-removed", "removed responses still show their base sample")
+}
+
+// TestRenderKeepsEveryEmmaExample checks that a real spec stays under the
+// page budget: every sample is the media type's example, as MediaExampleJSON
+// renders it.
+func TestRenderKeepsEveryEmmaExample(t *testing.T) {
+	doc := loadEmma(t, "emma.yaml")
+	p := buildPage(doc, Options{}, nil)
+
+	samples := 0
+	for _, g := range p.Groups {
+		for _, ov := range g.Ops {
+			op := ov.ref.Operation
+			if ov.TryBody {
+				mt := doc.RequestBody(op.RequestBody).Content.Map[ov.TryCT]
+				require.Equal(t, textHTML(doc.MediaExampleJSON(mt, ForRequest)), ov.ReqExample, ov.Anchor)
+				samples++
+			}
+			for _, s := range ov.ResSamples {
+				mt := doc.Response(op.Responses.Map[s.Label]).Content.Map[s.Type]
+				require.Equal(t, textHTML(doc.MediaExampleJSON(mt, ForResponse)), s.Example, ov.Anchor)
+				samples++
+			}
+		}
+	}
+	require.Greater(t, samples, 100)
+}

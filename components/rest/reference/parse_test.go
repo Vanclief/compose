@@ -1,8 +1,11 @@
 package reference
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
@@ -556,4 +559,127 @@ components:
 	onlyNull := props["onlyNull"]
 	require.True(t, onlyNull.Nullable)
 	require.Empty(t, onlyNull.OneOf)
+}
+
+// aliasBombSpec is a billion-laughs document made of schemas: A0 has nine
+// string properties and every next level holds nine aliases of the one
+// before, so An expands to 9^(n+1) schemas. Ordered and Schema decode each
+// property with its own Decode call, which never expands more than one
+// level, so yaml.v3's per-call ratio check lets it through.
+func aliasBombSpec(levels int) string {
+	spec := "openapi: 3.1.0\ninfo: {title: Bomb, version: \"1\"}\npaths: {}\ncomponents:\n  schemas:\n"
+	spec += "    A0: &a0 {type: object, properties: {p0: {type: string}, p1: {type: string}, p2: {type: string}, p3: {type: string}, p4: {type: string}, p5: {type: string}, p6: {type: string}, p7: {type: string}, p8: {type: string}}}\n"
+	for i := 1; i < levels; i++ {
+		var props []string
+		for p := 0; p < 9; p++ {
+			props = append(props, fmt.Sprintf("p%d: *a%d", p, i-1))
+		}
+		spec += fmt.Sprintf("    A%d: &a%d {type: object, properties: {%s}}\n", i, i, strings.Join(props, ", "))
+	}
+	return spec
+}
+
+// TestParseRejectsYAMLAliasBomb covers a document whose aliases expand to
+// 9^9 schemas: it fails fast with EINVALID instead of decoding them all.
+func TestParseRejectsYAMLAliasBomb(t *testing.T) {
+	spec := aliasBombSpec(9)
+	require.Less(t, len(spec), 2000)
+
+	start := time.Now()
+	_, err := Parse([]byte(spec))
+	require.Error(t, err)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "YAML alias expansion too large")
+	require.Less(t, time.Since(start), 5*time.Second)
+
+	// An alias inside its own anchor never ends either.
+	_, err = Parse([]byte("openapi: 3.1.0\ninfo: {title: Loop, version: \"1\"}\npaths: {}\nx-loop: &loop [*loop]\n"))
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "YAML alias expansion too large")
+
+	// Ordinary anchors and merge keys still decode.
+	doc, err := Parse([]byte(`
+openapi: 3.1.0
+info: {title: Anchors, version: "1"}
+paths: {}
+components:
+  schemas:
+    Base: &base
+      type: object
+      properties:
+        id: {type: string}
+    Copy: *base
+    Extended:
+      <<: *base
+      description: extended
+`))
+	require.NoError(t, err)
+	require.Equal(t, []string{"id"}, doc.Components.Schemas.Map["Copy"].Properties.Keys)
+	require.Equal(t, "extended", doc.Components.Schemas.Map["Extended"].Description)
+}
+
+// TestParseDropsNilMembers covers null list items under allOf, oneOf and
+// anyOf, in YAML and JSON: they are dropped, so a nullable idiom with a
+// null member next to the real one still reads as that member.
+func TestParseDropsNilMembers(t *testing.T) {
+	yamlSpec := `
+openapi: 3.1.0
+info: {title: Nil, version: "1"}
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        name: {type: string}
+    Holder:
+      type: object
+      properties:
+        one:
+          oneOf: [null, {$ref: '#/components/schemas/Pet'}, {type: "null"}]
+        any:
+          anyOf: [~, {type: string}, {type: integer}]
+        all:
+          allOf: [null]
+        onlyNull:
+          oneOf: [null, {type: "null"}]
+`
+	jsonSpec := `{
+  "openapi": "3.1.0",
+  "info": {"title": "Nil", "version": "1"},
+  "paths": {},
+  "components": {"schemas": {
+    "Pet": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "Holder": {"type": "object", "properties": {
+      "one": {"oneOf": [null, {"$ref": "#/components/schemas/Pet"}, {"type": "null"}]},
+      "any": {"anyOf": [null, {"type": "string"}, {"type": "integer"}]},
+      "all": {"allOf": [null]},
+      "onlyNull": {"oneOf": [null, {"type": "null"}]}
+    }}
+  }}
+}`
+	for name, spec := range map[string]string{"yaml": yamlSpec, "json": jsonSpec} {
+		t.Run(name, func(t *testing.T) {
+			doc, err := Parse([]byte(spec))
+			require.NoError(t, err)
+
+			props := doc.Components.Schemas.Map["Holder"].Properties.Map
+			require.Equal(t, "#/components/schemas/Pet", props["one"].Ref)
+			require.True(t, props["one"].Nullable)
+			require.Empty(t, props["one"].OneOf)
+			require.Len(t, props["any"].AnyOf, 2)
+			require.NotContains(t, props["any"].AnyOf, (*Schema)(nil))
+			require.Empty(t, props["all"].AllOf)
+			require.True(t, props["onlyNull"].Nullable)
+			require.Empty(t, props["onlyNull"].OneOf)
+			require.Empty(t, props["onlyNull"].AllOf)
+
+			example := decode(t, doc.ExampleJSON(schemaRef("Holder"), ForResponse))
+			require.Equal(t, map[string]any{"name": "string"}, example["one"])
+			require.Equal(t, "string", example["any"])
+
+			html := renderPage(t, doc)
+			require.Contains(t, html, `id="model/Holder"`)
+		})
+	}
 }

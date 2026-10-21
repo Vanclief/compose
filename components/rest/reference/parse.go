@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,7 +33,7 @@ func Parse(data []byte) (*Document, error) {
 	if isJSON {
 		err = json.Unmarshal(data, doc)
 	} else {
-		err = yaml.Unmarshal(data, doc)
+		err = decodeYAML(data, doc)
 	}
 	if err != nil {
 		return nil, ez.New(ez.EINVALID, "invalid OpenAPI document: "+causeText(data, err), err)
@@ -48,6 +49,59 @@ func Parse(data []byte) (*Document, error) {
 	normalizeDocument(doc)
 
 	return doc, nil
+}
+
+// maxYAMLDepth is the nesting yaml.v3 allows when parsing a document.
+const maxYAMLDepth = 10000
+
+// maxYAMLAliasNodes is how many nodes alias expansion may add to a YAML
+// document. yaml.v3 checks the expansion ratio per Decode call, but Ordered
+// and Schema decode each of their nodes separately, so the check never sees
+// a whole billion-laughs document; decodeYAML counts once instead. yaml.v3
+// lets a single Decode expand up to 400,000 nodes freely, and a real spec
+// uses anchors far less than that.
+const maxYAMLAliasNodes = 1_000_000
+
+// decodeYAML decodes data into doc after checking that expanding its aliases
+// stays within maxYAMLAliasNodes. A document without aliases has fewer
+// nodes than bytes, so the budget is the input length plus that allowance.
+func decodeYAML(data []byte, doc *Document) error {
+	var root yaml.Node
+	err := yaml.Unmarshal(data, &root)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	budget := len(data) + maxYAMLAliasNodes
+	if !withinAliasBudget(&root, 0, &budget) {
+		return ez.New(ez.EINVALID, "YAML alias expansion too large", nil)
+	}
+
+	err = root.Decode(doc)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
+}
+
+// withinAliasBudget walks n with every alias followed and reports whether it
+// holds at most *budget nodes, taking each node it visits from *budget. depth
+// stops at maxYAMLDepth so an alias inside its own anchor, such as &a [*a],
+// fails instead of recursing until the budget runs out.
+func withinAliasBudget(n *yaml.Node, depth int, budget *int) bool {
+	*budget--
+	if *budget < 0 || depth > maxYAMLDepth {
+		return false
+	}
+	if n.Kind == yaml.AliasNode {
+		return n.Alias == nil || withinAliasBudget(n.Alias, depth+1, budget)
+	}
+	for _, child := range n.Content {
+		if !withinAliasBudget(child, depth+1, budget) {
+			return false
+		}
+	}
+	return true
 }
 
 // causeText describes a decoding error by its innermost message, without the
@@ -91,7 +145,8 @@ func missingVersionMessage(data []byte, isJSON bool) string {
 // normalizeDocument walks every schema once and rewrites 3.1 forms into the
 // single shape the model promises: "null" moves from the type list into
 // Nullable, {type: "null"} members of oneOf and anyOf become Nullable on the
-// parent, and 3.0 boolean exclusive bounds become numeric bounds.
+// parent, null members of allOf, oneOf and anyOf are dropped, and 3.0
+// boolean exclusive bounds become numeric bounds.
 func normalizeDocument(doc *Document) {
 	seen := map[*Schema]bool{}
 
@@ -207,6 +262,9 @@ func normalizeSchema(s *Schema, seen map[*Schema]bool) {
 	normalizeSchema(s.Items, seen)
 	normalizeSchema(s.Not, seen)
 	normalizeSchema(s.AdditionalSchema(), seen)
+	s.AllOf = withoutNil(s.AllOf)
+	s.OneOf = withoutNil(s.OneOf)
+	s.AnyOf = withoutNil(s.AnyOf)
 	for _, sub := range s.AllOf {
 		normalizeSchema(sub, seen)
 	}
@@ -268,4 +326,20 @@ func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
 		return members, false
 	}
 	return out, true
+}
+
+// withoutNil returns members without nil entries, which a document holds for
+// a null list item such as oneOf: [null, {$ref: Pet}], so later passes never
+// see them. The input slice is returned as is when it has none.
+func withoutNil(members []*Schema) []*Schema {
+	if !slices.Contains(members, nil) {
+		return members
+	}
+	var out []*Schema
+	for _, m := range members {
+		if m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }

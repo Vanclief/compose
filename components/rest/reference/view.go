@@ -286,6 +286,30 @@ type builder struct {
 	notes     []string
 	noteIndex map[string]int
 	samples   map[string]modelSample
+	// examples is the page's example budget, shared with builder copies.
+	examples *pageExamples
+}
+
+// maxPageExampleBytes bounds the example bytes the operations of one page
+// write: request and response samples, base samples in diff mode and try-it
+// parameter placeholders. One example is bounded by maxExampleValues, but
+// every operation writes its own copy, so a component with a 1 MB explicit
+// example that 100 operations return would otherwise put 100 MB on the
+// page. A sample that no longer fits is written as the empty value of its
+// schema. emma's samples total about 577 KB, far below it.
+const maxPageExampleBytes = 8 << 20
+
+// pageExamples is what is left of maxPageExampleBytes, and the JSON of each
+// media type's example built so far, so operations that share a request
+// body or response build its sample once.
+type pageExamples struct {
+	left int
+	json map[exampleKey]string
+}
+
+type exampleKey struct {
+	mt   *MediaType
+	mode ExampleMode
 }
 
 func buildPage(d *Document, opts Options, diff *diffState) *pageView {
@@ -299,6 +323,7 @@ func buildPage(d *Document, opts Options, diff *diffState) *pageView {
 
 		noteIndex: map[string]int{},
 		samples:   map[string]modelSample{},
+		examples:  &pageExamples{left: maxPageExampleBytes, json: map[exampleKey]string{}},
 	}
 
 	names := d.Components.Schemas.Keys
@@ -1001,6 +1026,9 @@ func (b *builder) buildParameters(ov *opView, ref OperationRef) {
 			}
 		}
 		tp.Placeholder = ParamString(paramExample(b.d, p, true))
+		if !b.spendExample(len(tp.Placeholder)) {
+			tp.Placeholder = ""
+		}
 		if tp.Placeholder == "" {
 			tp.Placeholder = b.newTree(ForRequest, false).plainLabel(schema)
 		}
@@ -1063,7 +1091,7 @@ func (b *builder) buildBody(ov *opView, op *Operation) {
 		if !ov.TryBody {
 			ov.TryBody = true
 			ov.TryCT = ct
-			ov.ReqExample = textHTML(b.d.MediaExampleJSON(mt, ForRequest))
+			ov.ReqExample = textHTML(b.exampleJSON(b.d, mt, ForRequest))
 			ov.ReqTypes = b.typesRef(mt, ForRequest)
 		}
 	}
@@ -1121,13 +1149,44 @@ func (b *builder) buildResponses(ov *opView, op *Operation) {
 			if mt == nil {
 				continue
 			}
-			example := b.d.MediaExampleJSON(mt, ForResponse)
+			example := b.exampleJSON(b.d, mt, ForResponse)
 			if example != "" {
 				ov.ResSamples = append(ov.ResSamples, sampleView{Label: code, Class: statusClass(code), Type: ct, Model: b.sampleModel(mt.Schema), Example: textHTML(example), Types: b.typesRef(mt, ForResponse)})
 				break
 			}
 		}
 	}
+}
+
+// exampleJSON is d.MediaExampleJSON(mt, mode) charged against the page's
+// example budget, or the empty value of mt's schema ({} for an object) when
+// it no longer fits. "" when the media type has no example.
+func (b *builder) exampleJSON(d *Document, mt *MediaType, mode ExampleMode) string {
+	key := exampleKey{mt: mt, mode: mode}
+	out, ok := b.examples.json[key]
+	if !ok {
+		out = d.MediaExampleJSON(mt, mode)
+		b.examples.json[key] = out
+	}
+	if out == "" || b.spendExample(len(out)) {
+		return out
+	}
+	flat := d.Flatten(mt.Schema)
+	if flat == nil {
+		return ToJSON(nil)
+	}
+	return ToJSON(emptyExample(flat))
+}
+
+// spendExample charges n bytes against the page's example budget and
+// reports whether they fit. A sample that does not fit spends nothing, so
+// smaller ones after it still do.
+func (b *builder) spendExample(n int) bool {
+	if n > b.examples.left {
+		return false
+	}
+	b.examples.left -= n
+	return true
 }
 
 // sampleModel names the component schema s stands for, or the one its

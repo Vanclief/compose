@@ -31,6 +31,19 @@ const maxExampleDepth = 12
 // examples are used at any depth.
 const maxExampleModels = 3
 
+// maxExampleValues bounds the values one generated example holds, counting
+// each copy of a repeated array item. The model cap does not see unnamed or
+// non-object schemas, so a named oneOf whose members hold several fields of
+// the next named oneOf grows by its width at every level, up to
+// maxExampleDepth levels; past this many values the rest render empty. Real
+// examples stay far below it: the longest emma example is under 500 lines.
+const maxExampleValues = 5000
+
+// explicitExampleUnit is the JSON size an explicit example counts as one
+// value for: an explicit example counts one value per KiB of JSON, so the
+// cap also bounds bytes (about maxExampleValues KiB per example).
+const explicitExampleUnit = 1024
+
 // ExampleValue builds a sample value for s the way Redoc and Scalar do.
 //
 // Explicit values win in the order example, examples[0], default, const,
@@ -184,6 +197,8 @@ type exampler struct {
 	// maxModels (maxExampleModels when 0).
 	models    int
 	maxModels int
+	// values counts the values generated so far, see maxExampleValues.
+	values int
 	// notes, when set, collects a type note per value in generation order;
 	// step and level place the current value, see exampleTypes.
 	notes   *[]string
@@ -248,7 +263,7 @@ func (e *exampler) note(s *Schema, explicit bool) {
 	if flat == nil {
 		return
 	}
-	kind, label, detail := e.typeNote(s, flat)
+	kind, label, detail := e.typeNote(s, flat, 0)
 	if explicit {
 		label += "!"
 	}
@@ -320,8 +335,13 @@ func ownNote(note string) string {
 // named object is a model, kind m, labelled with its display name. Any other
 // named schema keeps its kind and is labelled with its display name too, its
 // base type in the detail unless it is an enum, whose values say more. An array is labelled as its items with "[]" and
-// carries their enum values; a list of models is kind l.
-func (e *exampler) typeNote(s, flat *Schema) (string, string, noteDetail) {
+// carries their enum values; a list of models is kind l. depth counts the
+// array levels above s: past maxExampleDepth the items are "any", so an
+// array that holds itself, such as Node: {items: {$ref: Node}}, ends.
+func (e *exampler) typeNote(s, flat *Schema, depth int) (string, string, noteDetail) {
+	if depth > maxExampleDepth {
+		return "x", "any", noteDetail{}
+	}
 	kind, label := typeNote(flat)
 	var detail noteDetail
 	if kind == "e" {
@@ -329,7 +349,7 @@ func (e *exampler) typeNote(s, flat *Schema) (string, string, noteDetail) {
 		detail.Values, detail.Descs = enumNote(flat)
 	}
 	if kind == "a" && flat.Items != nil {
-		itemKind, itemLabel, itemDetail := e.typeNote(flat.Items, e.doc.Flatten(flat.Items))
+		itemKind, itemLabel, itemDetail := e.typeNote(flat.Items, e.doc.Flatten(flat.Items), depth+1)
 		if itemKind == "m" {
 			kind = "l"
 		}
@@ -442,7 +462,7 @@ func (e *exampler) value(s *Schema, depth int) any {
 	v, ok := explicitExample(s)
 	if ok {
 		e.note(s, true)
-		return v
+		return e.explicit(s, v)
 	}
 
 	// SchemaName sees through allOf wrappers such as
@@ -457,10 +477,11 @@ func (e *exampler) value(s *Schema, depth int) any {
 	v, ok = explicitExample(flat)
 	e.note(s, ok)
 	if ok {
-		return v
+		return e.explicit(flat, v)
 	}
 
-	if depth > maxExampleDepth || (name != "" && e.stack[name]) {
+	e.values++
+	if depth > maxExampleDepth || e.values > maxExampleValues || (name != "" && e.stack[name]) {
 		return emptyExample(flat)
 	}
 	if name != "" {
@@ -478,6 +499,22 @@ func (e *exampler) value(s *Schema, depth int) any {
 	v = e.generate(flat, depth)
 	e.models--
 	return v
+}
+
+// explicit charges the explicit example v of s against maxExampleValues by
+// its encoded size, and returns the empty value of s once past the cap.
+func (e *exampler) explicit(s *Schema, v any) any {
+	var buf bytes.Buffer
+	appendJSON(&buf, v)
+	e.values += 1 + buf.Len()/explicitExampleUnit
+	if e.values <= maxExampleValues {
+		return v
+	}
+	flat := e.doc.Flatten(s)
+	if flat == nil {
+		return nil
+	}
+	return emptyExample(flat)
 }
 
 func (e *exampler) modelCap() int {
@@ -540,6 +577,10 @@ func (e *exampler) variant(s *Schema, depth int) any {
 		members = s.AnyOf
 	}
 	member := members[0]
+	if member == nil {
+		// Parse drops nil members, but a schema built in Go may hold one.
+		member = &Schema{}
+	}
 
 	memberName := e.doc.SchemaName(member)
 	if memberName != "" && e.stack[memberName] {
@@ -556,7 +597,9 @@ func (e *exampler) variant(s *Schema, depth int) any {
 	}
 
 	v, ok := explicitExample(memberFlat)
-	if !ok {
+	if ok {
+		v = e.explicit(memberFlat, v)
+	} else {
 		merged := *s
 		merged.Properties = Ordered[*Schema]{}
 		for _, key := range s.Properties.Keys {
@@ -653,7 +696,16 @@ func (e *exampler) array(s *Schema, depth int) any {
 		count = min(*s.MinItems, 3)
 	}
 
+	before := e.values
 	item := e.at("[]", s.Items, depth+1)
+	// The item is shared by every copy, but each copy is written out, so
+	// copies count too and are dropped once they would pass the cap.
+	extra := (e.values - before) * (count - 1)
+	if e.values+extra > maxExampleValues {
+		count = 1
+		extra = 0
+	}
+	e.values += extra
 	out := make([]any, count)
 	for i := range out {
 		out[i] = item
@@ -738,14 +790,19 @@ var formatExamples = map[string]string{
 	"password":  "********",
 }
 
+// maxExampleString caps the length a minLength pads a generated string to,
+// so a huge minLength cannot exhaust memory.
+const maxExampleString = 1024
+
 func stringExample(s *Schema) string {
 	v, ok := formatExamples[s.Format]
 	if !ok {
 		v = "string"
 	}
 
-	if s.MinLength != nil && len(v) < *s.MinLength {
-		v = strings.Repeat(v, *s.MinLength/len(v)+1)[:*s.MinLength]
+	if s.MinLength != nil && len(v) > 0 && len(v) < *s.MinLength {
+		n := min(*s.MinLength, maxExampleString)
+		v = strings.Repeat(v, n/len(v)+1)[:n]
 	}
 	if s.MaxLength != nil && *s.MaxLength >= 0 && len(v) > *s.MaxLength {
 		v = v[:*s.MaxLength]
