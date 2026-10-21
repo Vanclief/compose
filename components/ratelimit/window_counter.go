@@ -29,12 +29,14 @@ type UserCounter struct {
 	currentCount int
 }
 
+// NewWindowCounter returns a limiter that allows limit requests per key every
+// windowSeconds. Non-positive values fall back to DEFAULT_WINDOW and DEFAULT_LIMIT.
 func NewWindowCounter(windowSeconds, limit int) *WindowCounter {
-	if windowSeconds == 0 {
+	if windowSeconds <= 0 {
 		windowSeconds = DEFAULT_WINDOW
 	}
 
-	if limit == 0 {
+	if limit <= 0 {
 		limit = DEFAULT_LIMIT
 	}
 
