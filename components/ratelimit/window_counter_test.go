@@ -71,6 +71,22 @@ func TestWindowCounterResetsAfterWindow(t *testing.T) {
 	assert.False(t, rl.Allow("user"))
 }
 
+func TestWindowCounterNonPositiveFallsBackToDefaults(t *testing.T) {
+	rl, clock := newTestWindowCounter(-1, -1)
+
+	assert.Equal(t, DEFAULT_WINDOW*time.Second, rl.window)
+	assert.Equal(t, DEFAULT_LIMIT, rl.limit)
+
+	// A negative limit must not deny everything after the first request
+	for range DEFAULT_LIMIT {
+		assert.True(t, rl.Allow("user"))
+	}
+
+	// A negative window must not reset the counter on every call
+	clock.at = clock.at.Add(time.Second)
+	assert.False(t, rl.Allow("user"))
+}
+
 func TestWindowCounterEvictsExpiredKeys(t *testing.T) {
 	rl, clock := newTestWindowCounter(60, 5)
 
