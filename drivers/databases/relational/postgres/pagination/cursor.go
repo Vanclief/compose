@@ -1,6 +1,7 @@
 package pagination
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -65,7 +66,12 @@ func EncodeCursor(c Cursor) (string, error) {
 }
 
 // DecodeCursor decodes a base64 encoded cursor string into a Cursor struct,
-// verifying its signature when a signing key has been set with SetSigningKey
+// verifying its signature when a signing key has been set with SetSigningKey.
+//
+// Numeric SortValue and UniqueValue are decoded without loss of precision:
+// integers come back as int64 (so values above 2^53, such as snowflake IDs or
+// unix nanoseconds, survive the round trip) and other numbers as float64.
+// Strings, bools and nil are returned unchanged.
 func DecodeCursor(encodedCursor string) (*Cursor, error) {
 	if encodedCursor == "" {
 		return nil, nil
@@ -98,12 +104,39 @@ func DecodeCursor(encodedCursor string) (*Cursor, error) {
 	}
 
 	var cursor Cursor
-	err = json.Unmarshal(jsonBytes, &cursor)
+	decoder := json.NewDecoder(bytes.NewReader(jsonBytes))
+	decoder.UseNumber()
+	err = decoder.Decode(&cursor)
 	if err != nil {
 		return nil, ez.New(ez.EINVALID, "invalid cursor data", err)
 	}
 
+	cursor.SortValue = normalizeCursorValue(cursor.SortValue)
+	cursor.UniqueValue = normalizeCursorValue(cursor.UniqueValue)
+
 	return &cursor, nil
+}
+
+// normalizeCursorValue converts a json.Number into int64 when it is an
+// integer, float64 otherwise, and falls back to its string form. Any other
+// value is returned unchanged.
+func normalizeCursorValue(v any) any {
+	number, ok := v.(json.Number)
+	if !ok {
+		return v
+	}
+
+	intValue, err := number.Int64()
+	if err == nil {
+		return intValue
+	}
+
+	floatValue, err := number.Float64()
+	if err == nil {
+		return floatValue
+	}
+
+	return number.String()
 }
 
 func signCursor(key []byte, payload string) []byte {
