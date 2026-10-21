@@ -20,9 +20,9 @@ func setTestSigningKey(t *testing.T, key []byte) {
 func testCursor() Cursor {
 	return Cursor{
 		SortField:   "id",
-		SortValue:   float64(42),
+		SortValue:   int64(42),
 		UniqueField: "id",
-		UniqueValue: float64(42),
+		UniqueValue: int64(42),
 	}
 }
 
@@ -65,6 +65,55 @@ func TestCursorRoundTripSigned(t *testing.T) {
 
 	if *decoded != testCursor() {
 		t.Fatalf("expected %+v, got %+v", testCursor(), *decoded)
+	}
+}
+
+func TestCursorRoundTripPreservesValueTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		sortValue   interface{}
+		uniqueValue interface{}
+	}{
+		{name: "int64 above 2^53", sortValue: int64(1700000000123456789), uniqueValue: "abc"},
+		{name: "float", sortValue: float64(1.5), uniqueValue: "abc"},
+		{name: "string", sortValue: "2026-10-21T00:00:00Z", uniqueValue: "abc"},
+		{name: "nil", sortValue: nil, uniqueValue: nil},
+	}
+
+	for _, signed := range []bool{false, true} {
+		for _, tc := range tests {
+			name := tc.name
+			if signed {
+				name = "signed " + name
+			}
+
+			t.Run(name, func(t *testing.T) {
+				if signed {
+					setTestSigningKey(t, []byte("test-signing-key"))
+				}
+
+				original := Cursor{
+					SortField:   "created_at",
+					SortValue:   tc.sortValue,
+					UniqueField: "id",
+					UniqueValue: tc.uniqueValue,
+				}
+
+				encoded, err := EncodeCursor(original)
+				if err != nil {
+					t.Fatalf("encode cursor: %v", err)
+				}
+
+				decoded, err := DecodeCursor(encoded)
+				if err != nil {
+					t.Fatalf("decode cursor: %v", err)
+				}
+
+				if *decoded != original {
+					t.Fatalf("expected %#v, got %#v", original, *decoded)
+				}
+			})
+		}
 	}
 }
 
