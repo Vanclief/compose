@@ -105,7 +105,8 @@ func New(cfg Config) (*Server, error) {
 }
 
 // baseURLPath checks that raw is an absolute https URL (http is allowed for
-// localhost) without query, fragment or trailing slash, and returns its path.
+// localhost) without query, fragment, trailing slash or non-canonical
+// percent-encoding, and returns its path.
 func baseURLPath(name, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -122,6 +123,11 @@ func baseURLPath(name, raw string) (string, error) {
 	}
 	if strings.HasSuffix(raw, "/") {
 		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must not end with a slash", nil)
+	}
+	// Routes use the decoded path and the challenge the escaped one, so they
+	// only agree when the path is escaped the canonical way.
+	if u.RawPath != "" {
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path the canonical way, without %2F or needless escapes", nil)
 	}
 	return u.Path, nil
 }

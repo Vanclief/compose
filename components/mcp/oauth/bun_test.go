@@ -103,6 +103,31 @@ func TestCreateTableIndex(t *testing.T) {
 	assert.Contains(t, ddl, `("expires_at")`)
 }
 
+// TestCreateTableIndexDotted: a schema-qualified table gets its index in the
+// same schema, as SQLite wants it named.
+func TestCreateTableIndexDotted(t *testing.T) {
+	ctx := context.Background()
+	db := newSQLiteDB(t)
+	err := CreateTable(ctx, db, "main.oauth_dotted")
+	require.NoError(t, err)
+
+	var table string
+	err = db.NewSelect().
+		TableExpr("main.sqlite_master").
+		ColumnExpr("tbl_name").
+		Where("type = ?", "index").
+		Where("name = ?", "oauth_dotted_expires_at").
+		Scan(ctx, &table)
+	require.NoError(t, err)
+	assert.Equal(t, "oauth_dotted", table)
+
+	err = CreateTable(ctx, db, "main.oauth_dotted")
+	require.NoError(t, err, "CreateTable is idempotent on a dotted name")
+	store := NewBunStore(db, "main.oauth_dotted")
+	err = store.Put(ctx, KindClient, "id", []byte("v"), time.Now().Add(time.Hour))
+	require.NoError(t, err)
+}
+
 func TestBunStoreMissingTable(t *testing.T) {
 	ctx := context.Background()
 	store := NewBunStore(newSQLiteDB(t), "no_such_table")
