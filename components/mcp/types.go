@@ -161,12 +161,12 @@ type Concept struct {
 // ERESOURCEEXHAUSTED: a caller whose script is still running is refused at
 // once, and a script that finds every slot busy waits briefly first. Callers
 // are told apart by a hash of their bearer token, or of the JSON their
-// WhoAmI call returns when the request carries none. A request with a bearer
-// token claims its caller first, so it is refused at once while its own
-// script is still running. Every request then makes the WhoAmI call and the
-// Allow check, and only after them takes a slot, so a caller without
-// credentials the API accepts never takes one; a request without a token
-// claims its caller after the slot. A script takes only the memory it uses,
+// WhoAmI call returns when the request carries none. Every request claims
+// its caller before it takes a slot: by its bearer token before the WhoAmI
+// call, or by the WhoAmI response after it, so it is refused at once while
+// its own script is still running. Every request makes the WhoAmI call and
+// the Allow check before it takes a slot, so a caller without credentials
+// the API accepts never takes one. A script takes only the memory it uses,
 // up to the linear memory maximum, so the scripts of one Server hold at most
 // MaxConcurrent times that maximum plus overhead; several Servers
 // in one process each allow that many. The ceiling does not bound the REST
