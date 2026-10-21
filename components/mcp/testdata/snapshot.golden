@@ -117,7 +117,7 @@
     },
     {
       "name": "run_script",
-      "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned before the result. Limits: 5s timeout, 200 function calls, read-only functions only, 1024 KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.",
+      "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: 5s timeout, 200 function calls, read-only functions only, 1024 KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.",
       "annotations": {
         "idempotentHint": false,
         "readOnlyHint": true

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -75,7 +76,7 @@ const (
 // scriptUsage is the contract shown to the agent in the run_script tool
 // description. The verbs are the timeout, the call limit, the write rule
 // and the result limit; scriptDescription fills them.
-const scriptUsage = `Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned before the result. Limits: %s timeout, %d function calls, %s, %d KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.`
+const scriptUsage = `Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: %s timeout, %d function calls, %s, %d KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.`
 
 // scriptDescription is the run_script tool description with the configured
 // limits.
@@ -222,9 +223,12 @@ type guestMemory struct {
 	buf []byte
 }
 
-// mapGuestMemoryFunc is mapGuestMemory, replaceable by tests that exercise
-// the Go-heap fallback.
+// mapGuestMemoryFunc and unmapGuestMemoryFunc are mapGuestMemory and
+// unmapGuestMemory, replaceable by tests that exercise the Go-heap fallback
+// or count the mappings.
 var mapGuestMemoryFunc = mapGuestMemory
+
+var unmapGuestMemoryFunc = unmapGuestMemory
 
 // newGuestMemory maps a buffer of the maximum size. It returns nil and an
 // EUNAVAILABLE error where mapping is unsupported, in which case wazero
@@ -255,12 +259,15 @@ func (m *guestMemory) Reallocate(size uint64) []byte {
 func (m *guestMemory) Free() {}
 
 func (m *guestMemory) release() {
-	unmapGuestMemory(m.buf)
+	unmapGuestMemoryFunc(m.buf)
 }
 
 // scriptShim runs before the agent's code and evaluates to the object the
-// guest's run export drives: run compiles the code with new Function, so it
-// cannot break out of its function body, and calls it; encode and describe
+// guest's run export drives: run compiles the code with new Function and
+// calls it. The code arrives as a string argument and is never spliced into
+// source the shim evaluates; new Function compiles it at global scope, so
+// code that closes its function body early only reaches global scope, where
+// the shim keeps nothing it depends on. encode and describe
 // turn the result and a thrown value into text with the builtins captured
 // before the agent's code could replace them. The shim takes the two host
 // functions off the global object and builds api.<module>.<function> and
@@ -282,6 +289,11 @@ const scriptShim = `(function (names, writes, maxLogBytes, maxErrorChars) {
 	const hasOwn = Object.prototype.hasOwnProperty;
 	const slice = String.prototype.slice;
 	const freeze = Object.freeze;
+	// quickjs-ng calls Error.prepareStackTrace with CallSite objects whose
+	// getFunction() hands out the real functions of the stack, the shim's
+	// included. A read-only undefined makes an assignment fail: silently in
+	// sloppy code, with a TypeError in strict code.
+	Object.defineProperty(ScriptError, "prepareStackTrace", { value: undefined, writable: false, configurable: false });
 	const api = Object.create(null);
 	// Built now: when a reply cannot be read for lack of memory, throwing
 	// this needs none.
@@ -414,8 +426,9 @@ type scriptRun struct {
 
 // run runs code as the body of a function in a fresh instance of the
 // QuickJS module whose global api object exposes every catalog function. It
-// returns the console.log lines followed by the JSON of the returned value.
-// On error the log lines collected so far are returned with the error. The
+// returns the JSON of the returned value followed by the console.log lines,
+// so the output cap of the tool cuts logs, not the result. On error the log
+// lines collected so far are returned with the error. The
 // timeout bounds the whole run, function calls included. onError, when not
 // nil, receives the panics of function calls, which the script sees only
 // as a generic error.
@@ -446,7 +459,7 @@ func (e *scriptEngine) run(ctx context.Context, cat *Catalog, call Caller, cfg S
 		}
 		return strings.Join(run.logs, "\n"), run.withWrites(err)
 	}
-	return strings.Join(append(run.logs, result), "\n"), nil
+	return strings.Join(append([]string{result}, run.logs...), "\n"), nil
 }
 
 // withWrites puts the functions that write and were called before a run
@@ -782,7 +795,7 @@ func (r *scriptRun) reply(ctx context.Context, name, text string) (string, bool)
 // message and, when set, e.code.
 func scriptFailure(code, message string) string {
 	if len(message) > maxScriptFailureBytes {
-		message = message[:maxScriptFailureBytes] + " [truncated]"
+		message = scriptCut(message, maxScriptFailureBytes) + " [truncated]"
 	}
 	reply, err := json.Marshal(struct {
 		OK      bool   `json:"ok"`
@@ -815,6 +828,9 @@ func scriptHostLog(ctx context.Context, mod api.Module, stack []uint64) {
 	if !ok {
 		return
 	}
+	if size > room {
+		line = scriptCut(line, room)
+	}
 	// One line per log call: a line break in the text could forge the
 	// lines of the tool result after it.
 	line = scriptLineBreaks.Replace(line)
@@ -836,8 +852,25 @@ func interruptError(parent context.Context, timeout time.Duration) error {
 	return ez.New(ez.EINVALID, fmt.Sprintf("mcp: script timed out after %s", timeout), nil)
 }
 
-// scriptLineBreaks escapes every line break JavaScript or a terminal knows.
-var scriptLineBreaks = strings.NewReplacer("\n", "\\n", "\r", "\\r", "\u0085", "\\u0085", "\u2028", "\\u2028", "\u2029", "\\u2029")
+// scriptLineBreaks escapes every line break JavaScript or a terminal knows,
+// and the vertical tab, form feed and escape characters, so a line cannot
+// carry terminal control sequences either.
+var scriptLineBreaks = strings.NewReplacer("\n", "\\n", "\r", "\\r", "\u0085", "\\u0085", "\u2028", "\\u2028", "\u2029", "\\u2029", "\v", "\\v", "\f", "\\f", "\x1b", "\\x1b")
+
+// scriptCut cuts text to at most limit bytes, then drops the bytes of a
+// character the cut split. It drops at most utf8.UTFMax-1 bytes, so text
+// that was not valid UTF-8 to begin with is not erased.
+func scriptCut(text string, limit int) string {
+	text = text[:min(len(text), limit)]
+	for range utf8.UTFMax - 1 {
+		r, size := utf8.DecodeLastRuneInString(text)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		text = text[:len(text)-1]
+	}
+	return text
+}
 
 // scriptException is the error of a thrown value or syntax error: its text,
 // then the first line of the agent's code in its stack, if any.
@@ -848,7 +881,7 @@ func scriptException(text, code string) error {
 	// breaks could forge the lines after it.
 	message = scriptLineBreaks.Replace(message)
 	if len(message) > maxScriptErrorBytes {
-		message = message[:maxScriptErrorBytes] + " [truncated]"
+		message = scriptCut(message, maxScriptErrorBytes) + " [truncated]"
 	}
 	line := scriptErrorLine(strings.Split("at "+stack, "\n"), strings.Count(code, "\n")+1)
 	if line > 0 {
@@ -896,36 +929,37 @@ func newScriptLimiter(maxConcurrent int) *scriptLimiter {
 	return &scriptLimiter{slots: make(chan struct{}, maxConcurrent), running: map[string]bool{}}
 }
 
-// acquire takes a slot for the caller identified by key. It refuses at once
-// when the caller already runs a script and after scriptSlotWait when every
-// slot stays busy. Call the returned function when the script ends.
-func (l *scriptLimiter) acquire(ctx context.Context, key string) (func(), error) {
-	l.mu.Lock()
-	if l.running[key] {
-		l.mu.Unlock()
-		return nil, ez.New(ez.ERESOURCEEXHAUSTED, "mcp: a script is already running for this account; wait for it to finish", nil)
-	}
-	l.running[key] = true
-	l.mu.Unlock()
-	release := func() {
-		l.mu.Lock()
-		delete(l.running, key)
-		l.mu.Unlock()
-	}
-
+// slot takes one of the MaxConcurrent slots. It refuses after
+// scriptSlotWait when every slot stays busy. Call the returned function when
+// the script ends.
+func (l *scriptLimiter) slot(ctx context.Context) (func(), error) {
 	timer := time.NewTimer(scriptSlotWait)
 	defer timer.Stop()
 	select {
 	case l.slots <- struct{}{}:
 		return func() {
 			<-l.slots
-			release()
 		}, nil
 	case <-timer.C:
-		release()
 		return nil, ez.New(ez.ERESOURCEEXHAUSTED, "mcp: too many scripts are running; try again shortly", nil)
 	case <-ctx.Done():
-		release()
 		return nil, ez.New(ez.ECANCELED, fmt.Sprintf("mcp: script canceled: %v", ctx.Err()), nil)
 	}
+}
+
+// claim marks the caller identified by key as running a script. It refuses
+// at once when the caller already runs one. Call the returned function when
+// the script ends.
+func (l *scriptLimiter) claim(key string) (func(), error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running[key] {
+		return nil, ez.New(ez.ERESOURCEEXHAUSTED, "mcp: a script is already running for this account; wait for it to finish", nil)
+	}
+	l.running[key] = true
+	return func() {
+		l.mu.Lock()
+		delete(l.running, key)
+		l.mu.Unlock()
+	}, nil
 }

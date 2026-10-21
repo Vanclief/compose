@@ -60,9 +60,15 @@ func New(cfg Config) (*Server, error) {
 		cfg.MaxOutputBytes = defaultMaxOutputBytes
 	}
 	if cfg.WhoAmI != "" {
-		_, ok := catalog.Function(cfg.WhoAmI)
+		f, ok := catalog.Function(cfg.WhoAmI)
 		if !ok {
 			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.WhoAmI names unknown function %q", cfg.WhoAmI), nil)
+		}
+		// whoami calls the function with no arguments.
+		for _, arg := range f.Args {
+			if arg.Required {
+				return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.WhoAmI names function %q, whose argument %s is required; it must take none", cfg.WhoAmI, arg.Name), nil)
+			}
 		}
 	}
 	if cfg.Script.Enabled && cfg.WhoAmI == "" {
