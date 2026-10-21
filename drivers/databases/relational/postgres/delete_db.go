@@ -26,6 +26,7 @@ func DeleteDatabase(cfg ConnectionConfig) error {
 	// Delete the database
 	_, err = db.ExecContext(ctx, "DROP DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
+		db.Close() // nolint:errcheck // The statement error is the one that matters
 		return ez.Wrap(err)
 	}
 

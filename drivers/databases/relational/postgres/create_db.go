@@ -25,6 +25,7 @@ func CreateDatabase(cfg ConnectionConfig) error {
 
 	_, err = db.ExecContext(ctx, "CREATE DATABASE ?", bun.Ident(cfg.Database))
 	if err != nil {
+		db.Close() // nolint:errcheck // The statement error is the one that matters
 		return ez.Wrap(err)
 	}
 
