@@ -260,6 +260,12 @@ func TestNewValidation(t *testing.T) {
 		"issuer double slash":   func(c *Config) { c.Issuer = "https://api.acme.com/a//b" },
 		"resource dot segment":  func(c *Config) { c.Resource = "https://api.acme.com/a/../b" },
 		"resource double slash": func(c *Config) { c.Resource = "https://api.acme.com/a//b" },
+		"issuer open brace":     func(c *Config) { c.Issuer = "https://api.acme.com/%7Bid" },
+		"resource open brace":   func(c *Config) { c.Resource = "https://api.acme.com/%7Bid" },
+		"resource wildcard":     func(c *Config) { c.Resource = "https://api.acme.com/%7Bid%7D" },
+		"issuer escaped %":      func(c *Config) { c.Issuer = "https://api.acme.com/a%2525b" },
+		"resource colon":        func(c *Config) { c.Resource = "https://api.acme.com/:id" },
+		"resource star":         func(c *Config) { c.Resource = "https://api.acme.com/a%2A" },
 		"store missing":         func(c *Config) { c.Store = nil },
 		"no login":              func(c *Config) { c.Login = Login{} },
 		"both logins":           func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
@@ -294,6 +300,18 @@ func TestNewValidation(t *testing.T) {
 
 	cfg = valid()
 	cfg.Issuer = "https://api.acme.com/a//b"
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.Issuer", "the error names the field")
+
+	cfg = valid()
+	cfg.Resource = "https://api.acme.com/%7Bid%7D"
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.Resource", "the error names the field")
+
+	cfg = valid()
+	cfg.Issuer = "https://api.acme.com/%7Bid"
 	_, err = New(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Config.Issuer", "the error names the field")
@@ -407,6 +425,31 @@ func TestHandler(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader("grant_type=password")))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandlerAcceptedPaths: every path New accepts makes valid ServeMux
+// patterns that serve the metadata documents.
+func TestHandlerAcceptedPaths(t *testing.T) {
+	for _, escaped := range []string{"", "/mcp", "/m%20cp", "/m%C3%A9"} {
+		t.Run(escaped, func(t *testing.T) {
+			base := "https://x" + escaped
+			s, err := New(Config{Issuer: base, Resource: base, Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+			require.NoError(t, err)
+			var h http.Handler
+			require.NotPanics(t, func() {
+				h = s.Handler()
+			})
+			for _, path := range []string{
+				escaped + "/.well-known/oauth-authorization-server",
+				"/.well-known/oauth-authorization-server" + escaped,
+				"/.well-known/oauth-protected-resource" + escaped,
+			} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				assert.Equal(t, http.StatusOK, rec.Code, path)
+			}
+		})
+	}
 }
 
 func TestAuthorizeErrors(t *testing.T) {

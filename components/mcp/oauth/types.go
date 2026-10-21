@@ -124,7 +124,10 @@ type Config struct {
 	RefreshTokenTTL time.Duration
 	// OnError, when set, receives the failures users see only as a generic
 	// page or a server_error response: Store failures, Challenge and Verify
-	// errors that are not shown, and the like. Optional.
+	// errors that are not shown, and the like. Optional. The context carries
+	// the request's values but is never cancelled and has no deadline, and
+	// OnError runs synchronously inside the handler, so it must bound its own
+	// work.
 	OnError func(ctx context.Context, err error)
 	// HTTPClient fetches Client ID Metadata Documents. Defaults to a client
 	// with a 10s timeout and no proxy that checks every resolved address and
