@@ -1,6 +1,8 @@
 package reference
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -184,6 +186,31 @@ func TestCurlCredentialsExpandInAShell(t *testing.T) {
 	require.Equal(t, `'https://h/p?k='"$K"`, quoteTarget("https://h/p", false, []queryPlaceholder{{"k", "K"}}))
 }
 
+// TestShellPlaceholderSurvivesHistoryExpansion runs the placeholders in a
+// bash with history expansion on, as an interactive shell has it, where a
+// double-quoted ! would be read as a history event.
+func TestShellPlaceholderSurvivesHistoryExpansion(t *testing.T) {
+	require.Equal(t, `"X-Key"'!'": $K"`, shellPlaceholder("X-Key!: ", "K"))
+	require.Equal(t, `"a\\"'!'"\"b"'!'"c: $K"`, shellPlaceholder(`a\!"b!c: `, "K"))
+
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not installed")
+	}
+	script := strings.Join([]string{
+		"set -o history -o histexpand",
+		"K=v",
+		"printf '%s\\n' " + shellPlaceholder("X-Key!: ", "K"),
+		"printf '%s\\n' " + shellPlaceholder(`a\!"b!c: `, "K"),
+		"printf '%s\\n' " + shellQuote("single!quoted"),
+	}, "\n") + "\n"
+	cmd := exec.Command(bash)
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Equal(t, "X-Key!: v\n"+`a\!"b!c: v`+"\n"+"single!quoted\n", string(out))
+}
+
 const curlServersSpec = `
 openapi: 3.0.3
 info: {title: t, version: "1"}
@@ -354,13 +381,39 @@ func TestCurlMultipartBody(t *testing.T) {
 
 	got := curlFor(t, doc, "POST", "/upload", "")
 	require.Equal(t, `curl -X POST '/upload' \
-  -F 'name=it'\''s' \
+  --form-string 'name=it'\''s' \
   -F 'file=@path' \
   -F 'attachments=@path' \
-  -F 'tags=a' \
-  -F 'tags=b' \
-  -F 'meta={"n":0}'`, got)
-	require.NotContains(t, got, "Content-Type", "curl -F sets the multipart boundary itself")
+  --form-string 'tags=a' \
+  --form-string 'tags=b' \
+  --form-string 'meta={"n":0}'`, got)
+	require.NotContains(t, got, "Content-Type", "curl sets the multipart boundary itself")
+}
+
+func TestCurlMultipartValueIsNotAFilePath(t *testing.T) {
+	doc := parseSpec(t, `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+paths:
+  /upload:
+    post:
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                k: {type: string, example: "@/etc/passwd"}
+                r: {type: string, example: "</etc/passwd"}
+      responses: {"200": {description: ok}}
+`)
+
+	got := curlFor(t, doc, "POST", "/upload", "")
+	require.Equal(t, `curl -X POST '/upload' \
+  --form-string 'k=@/etc/passwd' \
+  --form-string 'r=</etc/passwd'`, got)
+	require.NotContains(t, got, "-F 'k=@")
+	require.NotContains(t, got, "-F 'r=<")
 }
 
 func TestCurlFormURLEncodedBody(t *testing.T) {
