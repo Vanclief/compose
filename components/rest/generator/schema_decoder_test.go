@@ -19,7 +19,7 @@ func parseHandlerPackageSource(t *testing.T, source string) (map[string]string, 
 		t.Fatal(err)
 	}
 
-	imports := importMap(file)
+	imports := newTestSchemaBuilder(t, t.TempDir()).importMap(file)
 	helpers := map[string]funcInfo{}
 	var handlerBody *ast.BlockStmt
 
