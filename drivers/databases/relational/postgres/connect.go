@@ -90,6 +90,7 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 
 	_, err = db.ExecContext(ctx, "SELECT 1")
 	if err != nil {
+		db.Close() // nolint:errcheck // The connection error is the one that matters
 		return nil, ez.Wrap(err)
 	}
 
