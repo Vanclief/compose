@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
 	"github.com/vanclief/ez"
 )
 
@@ -38,13 +39,14 @@ type bunRecord struct {
 // same table at startup to create it. Take uses a single DELETE ... RETURNING
 // statement so a record is redeemed at most once. Expired rows stay in the
 // table until Sweep deletes them; nothing calls Sweep automatically, so run
-// it periodically, for example from the compose scheduler.
+// it periodically, for example from a ticker goroutine as the Sweep doc shows.
 func NewBunStore(db *bun.DB, table string) Store {
 	return &bunStore{db: db, table: table}
 }
 
 // CreateTable creates the table of NewBunStore and its index on expires_at,
-// named after the table with an "_expires_at" suffix, when they do not exist.
+// named after the table with an "_expires_at" suffix in the schema of the
+// table, when they do not exist.
 func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 	_, err := db.NewCreateTable().
 		Model((*bunRecord)(nil)).
@@ -54,12 +56,25 @@ func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 	if err != nil {
 		return ez.New(ez.EINTERNAL, "oauth: creating the "+table+" table failed", err)
 	}
-	// An index name cannot be schema-qualified, so a "schema.table" name
-	// becomes "schema_table_expires_at".
+	// The index lives in the schema of the table. For "schema.table",
+	// PostgreSQL takes an unqualified index name and a qualified table:
+	//   CREATE INDEX IF NOT EXISTS "table_expires_at" ON "schema"."table" ("expires_at")
+	// SQLite takes the schema on the index name and a bare table:
+	//   CREATE INDEX IF NOT EXISTS "schema"."table_expires_at" ON "table" ("expires_at")
+	index := table + "_expires_at"
+	on := table
+	schema, name, qualified := strings.Cut(table, ".")
+	if qualified {
+		index = name + "_expires_at"
+		if db.Dialect().Name() == dialect.SQLite {
+			index = schema + "." + index
+			on = name
+		}
+	}
 	_, err = db.NewCreateIndex().
 		IfNotExists().
-		Index(strings.ReplaceAll(table, ".", "_")+"_expires_at").
-		TableExpr("?", bun.Ident(table)).
+		Index(index).
+		TableExpr("?", bun.Ident(on)).
 		Column("expires_at").
 		Exec(ctx)
 	if err != nil {

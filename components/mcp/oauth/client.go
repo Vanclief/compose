@@ -73,7 +73,10 @@ func isASCII(s string) bool {
 	return true
 }
 
-// errRefusedAddress is the cause of a fetch refused by publicAddressOnly.
+// errRefusedAddress is the cause of a fetch refused by publicAddressOnly. It
+// is a plain sentinel, not an ez error: the error arrives wrapped in a
+// url.Error and a net.OpError, and ez.ErrorCode only inspects the top level,
+// so errors.Is is the only way to classify it.
 var errRefusedAddress = errors.New("oauth: the address is not public")
 
 // knownClient resolves a client_id without fetching anything: Config.Clients

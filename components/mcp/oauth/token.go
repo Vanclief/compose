@@ -347,18 +347,27 @@ func verifyPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }
 
-// refreshTimeout bounds the Store calls of a refresh that run detached from
-// the request: taking the refresh token and putting it back.
-const refreshTimeout = 10 * time.Second
+// refreshTimeout bounds each group of Store calls of a refresh that runs
+// detached from the request: taking the refresh token, and putting it back.
+// A var so tests can shorten it.
+var refreshTimeout = 10 * time.Second
 
 // exchangeRefresh rotates a refresh token. The new refresh token keeps the
 // expiry of the first one, so RefreshTokenTTL bounds the whole connection.
 //
-// The take, the restore and the reporting run on a context detached from the
+// The take, the restore and the reporting run on contexts detached from the
 // request, so a client that disconnects mid-refresh cannot leave the token
-// taken and never put back, which would answer its retry invalid_grant.
+// taken and never put back, which would answer its retry invalid_grant. The
+// restore gets its own deadline: issuing may outlast the one of the take.
 // Issuing stays on the request context: a client that is gone gets no new
-// tokens it cannot receive, and the restore keeps the one it holds.
+// tokens it cannot receive, and the restore keeps the one it holds. That is
+// best-effort, since database/sql checks cancellation only when it gets a
+// connection and pgdriver honours deadlines, not cancellation: a disconnect
+// after the new tokens are stored but before the response is read loses the
+// rotation, and the user must log in again. That is preferred to a reuse
+// grace period, because a rotated token stays dead. The token is also lost
+// when the take commits but then fails, on refreshTimeout or a dropped
+// database connection, since nothing is restored after a failed take.
 func (s *Server) exchangeRefresh(w http.ResponseWriter, r *http.Request, client Client) {
 	token := r.PostForm.Get("refresh_token")
 	if token == "" {
@@ -384,18 +393,21 @@ func (s *Server) exchangeRefresh(w http.ResponseWriter, r *http.Request, client 
 	}
 	err = s.issueTokens(r.Context(), w, client.ID, record.Scope, record.Grant, record.ExpiresAt)
 	if err != nil {
-		s.restoreRefresh(ctx, token, record)
-		s.serverError(ctx, w, err, "the token could not be stored")
+		s.restoreRefresh(r.Context(), w, token, record, err)
 	}
 }
 
-// restoreRefresh puts a taken refresh token back after issuing failed, so
-// the client can retry instead of losing the connection.
-func (s *Server) restoreRefresh(ctx context.Context, token string, record tokenRecord) {
+// restoreRefresh puts a taken refresh token back after issuing failed with
+// issueErr, so the client can retry instead of losing the connection, and
+// answers server_error. It runs on a fresh deadline detached from ctx.
+func (s *Server) restoreRefresh(ctx context.Context, w http.ResponseWriter, token string, record tokenRecord, issueErr error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancel()
 	err := s.putRecord(ctx, KindRefresh, token, record, record.ExpiresAt)
 	if err != nil {
 		s.report(ctx, err)
 	}
+	s.serverError(ctx, w, issueErr, "the token could not be stored")
 }
 
 // issueTokens stores a new access and refresh token and writes the token

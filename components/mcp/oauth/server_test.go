@@ -254,6 +254,8 @@ func TestNewValidation(t *testing.T) {
 		"issuer not a URL":      func(c *Config) { c.Issuer = "https://api.acme.com/%zz" },
 		"issuer user info":      func(c *Config) { c.Issuer = "https://me@api.acme.com" },
 		"resource http":         func(c *Config) { c.Resource = "http://api.acme.com/mcp" },
+		"resource escaped /":    func(c *Config) { c.Resource = "https://api.acme.com/a%2Fmcp" },
+		"issuer escaped a":      func(c *Config) { c.Issuer = "https://api.acme.com/%61uth" },
 		"store missing":         func(c *Config) { c.Store = nil },
 		"no login":              func(c *Config) { c.Login = Login{} },
 		"both logins":           func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
@@ -280,6 +282,12 @@ func TestNewValidation(t *testing.T) {
 		})
 	}
 
+	cfg := valid()
+	cfg.Resource = "https://api.acme.com/a%2Fmcp"
+	_, err := New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.Resource", "the error names the field")
+
 	s, err := New(valid())
 	require.NoError(t, err)
 	assert.Equal(t, "/mcp", s.resourcePath)
@@ -291,7 +299,7 @@ func TestNewValidation(t *testing.T) {
 	assert.Equal(t, "Email", s.cfg.Login.IdentifierLabel)
 	assert.Equal(t, "Password", s.cfg.Login.CredentialLabel)
 
-	cfg := valid()
+	cfg = valid()
 	cfg.Issuer = "http://localhost:8080/auth"
 	cfg.Resource = "http://127.0.0.1:8080"
 	cfg.Login.Challenge = func(context.Context, string) error { return nil }
@@ -815,11 +823,13 @@ func TestAuthFunc(t *testing.T) {
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 }
 
-// brokenStore fails every call of the kinds set broken.
+// brokenStore fails every call of the kinds set broken, after sleeping
+// delay.
 type brokenStore struct {
 	Store
 	mu     sync.Mutex
 	broken map[string]bool
+	delay  time.Duration
 }
 
 func (b *brokenStore) set(kind string, broken bool) {
@@ -828,13 +838,22 @@ func (b *brokenStore) set(kind string, broken bool) {
 	b.broken[kind] = broken
 }
 
-func (b *brokenStore) fail(kind string) error {
+func (b *brokenStore) setDelay(delay time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.broken[kind] {
-		return ez.New(ez.EUNAVAILABLE, "store is down", nil)
+	b.delay = delay
+}
+
+func (b *brokenStore) fail(kind string) error {
+	b.mu.Lock()
+	broken := b.broken[kind]
+	delay := b.delay
+	b.mu.Unlock()
+	if !broken {
+		return nil
 	}
-	return nil
+	time.Sleep(delay)
+	return ez.New(ez.EUNAVAILABLE, "store is down", nil)
 }
 
 func (b *brokenStore) Put(ctx context.Context, kind, id string, value []byte, expiresAt time.Time) error {
@@ -862,21 +881,36 @@ func (b *brokenStore) Take(ctx context.Context, kind, id string) ([]byte, error)
 }
 
 // cancelStore fails every call whose context is done, as database drivers
-// do. The first Put of kind runs cancel before that check, so a request can
-// be cancelled after its refresh token was taken.
+// do. An armed Put runs cancel before that check, so a request can be
+// cancelled after its refresh token was taken. An armed Take deletes, then
+// runs cancel, then fails if the context is done: pgdriver and database/sql
+// can commit an autocommitted DELETE ... RETURNING and still return the
+// context error.
 type cancelStore struct {
 	Store
 	mu     sync.Mutex
+	op     string
 	kind   string
 	cancel context.CancelFunc
 }
 
-// arm makes the next Put of kind call cancel.
-func (c *cancelStore) arm(kind string, cancel context.CancelFunc) {
+// arm makes the next call of op ("Put" or "Take") for kind call cancel.
+func (c *cancelStore) arm(op, kind string, cancel context.CancelFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.op = op
 	c.kind = kind
 	c.cancel = cancel
+}
+
+// fire calls the armed cancel when op and kind match it.
+func (c *cancelStore) fire(op, kind string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancel != nil && op == c.op && kind == c.kind {
+		c.cancel()
+		c.cancel = nil
+	}
 }
 
 func (c *cancelStore) done(ctx context.Context) error {
@@ -887,12 +921,7 @@ func (c *cancelStore) done(ctx context.Context) error {
 }
 
 func (c *cancelStore) Put(ctx context.Context, kind, id string, value []byte, expiresAt time.Time) error {
-	c.mu.Lock()
-	if c.cancel != nil && kind == c.kind {
-		c.cancel()
-		c.cancel = nil
-	}
-	c.mu.Unlock()
+	c.fire("Put", kind)
 	err := c.done(ctx)
 	if err != nil {
 		return err
@@ -913,7 +942,16 @@ func (c *cancelStore) Take(ctx context.Context, kind, id string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	return c.Store.Take(ctx, kind, id)
+	value, err := c.Store.Take(ctx, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	c.fire("Take", kind)
+	err = c.done(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 // TestRefreshSurvivesDisconnect: a refresh whose request is cancelled, or
@@ -950,8 +988,34 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 		_, refresh := env.tokens(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		cancelling.arm(KindAccess, cancel)
+		cancelling.arm("Put", KindAccess, cancel)
 		res := refreshWith(ctx, refresh)
+		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		retry(t, refresh)
+	})
+
+	t.Run("cancelled during the take", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cancelling.arm("Take", KindRefresh, cancel)
+		res := refreshWith(ctx, refresh)
+		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		retry(t, refresh)
+	})
+
+	t.Run("issuing outlasts the take deadline", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		saved := refreshTimeout
+		refreshTimeout = 50 * time.Millisecond
+		defer func() {
+			refreshTimeout = saved
+		}()
+		store.set(KindAccess, true)
+		store.setDelay(2 * refreshTimeout)
+		res := refreshWith(context.Background(), refresh)
+		store.set(KindAccess, false)
+		store.setDelay(0)
 		assert.Equal(t, "server_error", oauthErrorCode(t, res))
 		retry(t, refresh)
 	})

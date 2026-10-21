@@ -61,6 +61,15 @@
 // regardless of their Cache-Control; registration is open and not
 // throttled; the MCP endpoint sends no CORS headers; Protect and AuthFunc
 // each read the Store once per request.
+//
+// A client that disconnects during a refresh after the new tokens are stored
+// but before it reads the response loses the rotation, and the user must log
+// in again; that is preferred to a reuse grace period because a rotated
+// token stays dead. Issuing on the request context to avoid this is
+// best-effort: database/sql checks cancellation only when it gets a
+// connection, and pgdriver honours deadlines, not cancellation. A refresh
+// token is also lost when its Take commits and then fails anyway, on the 10s
+// refresh deadline or a dropped database connection.
 package oauth
 
 import (
