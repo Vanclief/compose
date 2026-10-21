@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
+	"path/filepath"
+	"strings"
 
 	"github.com/vanclief/ez"
 	"gopkg.in/gomail.v2"
@@ -62,6 +65,30 @@ func validateEmail(email Email) error {
 
 	if email.HTMLBody == "" && email.TextBody == "" {
 		return ez.New(ez.EINVALID, "email body cannot be empty", nil)
+	}
+
+	for i := range email.Attachments {
+		err := validateAttachment(email.Attachments[i])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateAttachment rejects an empty filename and a content type containing
+// CR or LF, since the content type is written raw into the MIME part headers.
+// An empty content type is allowed: buildRawEmail derives one from the
+// filename extension. The filename may contain any character: buildRawEmail
+// encodes it into the Content-Disposition header with mime.FormatMediaType.
+func validateAttachment(attachment Attachment) error {
+	if attachment.Filename == "" {
+		return ez.New(ez.EINVALID, "attachment filename cannot be empty", nil)
+	}
+
+	if strings.ContainsAny(attachment.ContentType, "\r\n") {
+		return ez.New(ez.EINVALID, "attachment content type contains invalid characters", nil)
 	}
 
 	return nil
@@ -139,33 +166,13 @@ func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) 
 		return "", ez.Wrap(err)
 	}
 
-	msg := gomail.NewMessage()
-	msg.SetHeader("From", c.getSenderAddress())
-	msg.SetHeader("To", email.Recipients...)
-	msg.SetHeader("Subject", email.Subject)
-	setRawEmailBody(msg, email)
-
-	for i := range email.Attachments {
-		attachment := email.Attachments[i]
-		msg.Attach(attachment.Filename,
-			gomail.SetCopyFunc(func(w io.Writer) error {
-				_, err := w.Write(attachment.Data)
-				return err
-			}),
-			gomail.SetHeader(map[string][]string{
-				"Content-Type": {attachment.ContentType},
-			}),
-		)
-	}
-
-	var rawEmail bytes.Buffer
-	_, err = msg.WriteTo(&rawEmail)
+	rawEmail, err := c.buildRawEmail(email)
 	if err != nil {
 		return "", ez.Wrap(err)
 	}
 
 	input := &ses.SendRawEmailInput{
-		RawMessage: &types.RawMessage{Data: rawEmail.Bytes()},
+		RawMessage: &types.RawMessage{Data: rawEmail},
 	}
 
 	output, err := svc.SendRawEmail(ctx, input)
@@ -192,6 +199,63 @@ func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) 
 	}
 
 	return aws.ToString(output.MessageId), nil
+}
+
+// buildRawEmail renders the email with its attachments as a MIME message
+func (c *Client) buildRawEmail(email Email) ([]byte, error) {
+	msg := gomail.NewMessage()
+	msg.SetHeader("From", c.getSenderAddress())
+	msg.SetHeader("To", email.Recipients...)
+	msg.SetHeader("Subject", email.Subject)
+	setRawEmailBody(msg, email)
+
+	for i := range email.Attachments {
+		attachment := email.Attachments[i]
+
+		// Setting Content-Disposition stops gomail from writing the raw
+		// filename into the header. FormatMediaType quotes and escapes it, and
+		// percent-encodes CR, LF and non-ASCII characters per RFC 2231.
+		disposition := mime.FormatMediaType("attachment", map[string]string{"filename": attachment.Filename})
+		if disposition == "" {
+			return nil, ez.New(ez.EINVALID, "attachment filename cannot be encoded", nil)
+		}
+
+		msg.Attach(attachment.Filename,
+			gomail.SetCopyFunc(func(w io.Writer) error {
+				_, err := w.Write(attachment.Data)
+				return err
+			}),
+			gomail.SetHeader(map[string][]string{
+				"Content-Type":        {attachmentContentType(attachment)},
+				"Content-Disposition": {disposition},
+			}),
+		)
+	}
+
+	var rawEmail bytes.Buffer
+	_, err := msg.WriteTo(&rawEmail)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	return rawEmail.Bytes(), nil
+}
+
+// attachmentContentType returns the attachment's content type, falling back to
+// the type registered for its filename extension and then to
+// application/octet-stream. buildRawEmail always sets the Content-Type header,
+// so gomail never applies its own extension default.
+func attachmentContentType(attachment Attachment) string {
+	if attachment.ContentType != "" {
+		return attachment.ContentType
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(attachment.Filename))
+	if contentType != "" {
+		return contentType
+	}
+
+	return "application/octet-stream"
 }
 
 func setRawEmailBody(msg *gomail.Message, email Email) {
