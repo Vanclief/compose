@@ -1,0 +1,25 @@
+finance.list_billing_profiles  GET /billing/profiles
+  List Billing Profiles
+  args:
+    limit       integer int32
+    cursor      string
+    cluster_id  integer int64
+    unit_id     integer int64
+    user_id     integer int64
+  returns profiles.ListResponse: {has_next_page boolean, hash string, next_cursor string, profiles Profile[]}
+  see also: Profile, profiles.ListResponse
+
+auth.login  POST /auth/login
+  Login auth
+  args:
+    code                string
+    destinatary         string
+    device_name         string
+    device_uid          string
+    ip                  string
+    method              string
+    notification_token  string
+  returns LoginResponse: {api_key string, api_secret string, user_id integer int64}
+  see also: LoginRequest, LoginResponse
+
+unknown function "nope.missing"

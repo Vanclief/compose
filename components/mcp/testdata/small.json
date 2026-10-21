@@ -1,0 +1,148 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Front Desk", "version": "1.0"},
+  "tags": [
+    {"name": "Packages", "description": "Packages received at the front desk."},
+    {"name": "Units"}
+  ],
+  "paths": {
+    "/packages": {
+      "post": {
+        "operationId": "packages.registerPackage",
+        "tags": ["Packages"],
+        "summary": "Register a package at the front desk.",
+        "description": "Register a package at the front desk.\nThe resident is notified.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/models_RegisterPackageRequest"}}}
+        },
+        "responses": {
+          "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/models_Package"}}}},
+          "default": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "get": {
+        "operationId": "packages.listPackages",
+        "tags": ["Packages"],
+        "summary": "List packages",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "format": "int32"}},
+          {"name": "status", "in": "query", "description": "Only packages in this status", "schema": {"$ref": "#/components/schemas/models_packages_Status"}},
+          {"name": "session", "in": "cookie", "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/models_Package"}}}}}
+        }
+      }
+    },
+    "/packages/{id}": {
+      "parameters": [
+        {"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}
+      ],
+      "get": {
+        "operationId": "getPackage",
+        "tags": ["Packages"],
+        "description": "Get one package. Includes the carrier.",
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/models_Package", "nullable": true}}}}
+        }
+      },
+      "patch": {
+        "operationId": "packages.updatePackage",
+        "tags": ["Packages"],
+        "summary": "Update a package",
+        "deprecated": true,
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/models_Package"}}}
+        },
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}}}}
+        }
+      },
+      "delete": {
+        "tags": ["Packages"],
+        "responses": {"204": {"description": "Deleted"}}
+      }
+    },
+    "/units/{unit_id}/notes": {
+      "put": {
+        "operationId": "units.setNotes",
+        "tags": ["Units"],
+        "summary": "Replace the notes of a unit",
+        "parameters": [
+          {"name": "unit_id", "in": "path", "required": true, "schema": {"type": "integer"}},
+          {"name": "X-Request-Id", "in": "header", "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "content": {"application/json": {"schema": {"type": "array", "items": {"type": "string"}}}}
+        },
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/models_units_Status"}}}}
+        }
+      }
+    },
+    "/internal/reindex": {
+      "post": {
+        "operationId": "system.reindex",
+        "x-internal": true,
+        "responses": {"204": {"description": "Done"}}
+      }
+    },
+    "/health": {
+      "get": {
+        "responses": {
+          "default": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "models_Package": {
+        "type": "object",
+        "description": "A package received at the front desk.",
+        "required": ["id", "unit_id", "status"],
+        "properties": {
+          "id": {"type": "integer"},
+          "unit_id": {"type": "integer"},
+          "status": {"$ref": "#/components/schemas/models_packages_Status"},
+          "received_at": {"type": "string", "format": "date-time"},
+          "unit": {"$ref": "#/components/schemas/models_Unit"}
+        }
+      },
+      "models_packages_Status": {"type": "string", "enum": ["pending", "delivered"]},
+      "models_units_Status": {"type": "string", "enum": ["occupied", "vacant"]},
+      "models_Unit": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"}
+        }
+      },
+      "UnitRef": {
+        "type": "object",
+        "required": ["unit_id"],
+        "properties": {
+          "unit_id": {"type": "integer", "description": "Unit receiving the package"}
+        }
+      },
+      "models_RegisterPackageRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/UnitRef"},
+          {
+            "type": "object",
+            "properties": {
+              "carrier": {"type": "string", "enum": ["dhl", "fedex", "ups"]},
+              "notes": {"type": ["string", "null"]}
+            }
+          }
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {"message": {"type": "string"}}
+      }
+    }
+  }
+}

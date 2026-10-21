@@ -1,0 +1,12 @@
+module finance
+  finance.create_billing_profile  Create Billing Profile  -> Profile
+  finance.create_billing_service  Create Billing Service  -> Service
+  finance.create_tax_receipt  Create Tax Receipt  -> string binary
+  finance.delete_billing_profile  Delete Billing Profile  -> string uuid
+  finance.delete_billing_service  Delete Billing Service  -> string uuid
+  finance.get_billing_profile  Get Billing Profile  -> Profile
+  finance.get_billing_service  Get Billing Service  -> Service
+  finance.list_billing_profiles  List Billing Profiles  -> profiles.ListResponse
+  finance.list_billing_services  List Billing Services  -> services.ListResponse
+  finance.update_billing_profile  Update Billing Profile  -> Profile
+  finance.update_billing_service  Update Billing Service  -> Service

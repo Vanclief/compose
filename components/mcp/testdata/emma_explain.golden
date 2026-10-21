@@ -1,0 +1,6 @@
+profiles.ListResponse
+  (no description)
+  fields: has_next_page boolean, hash string, next_cursor string, profiles Profile[]
+  returned by: finance.list_billing_profiles
+
+unknown term "nope"

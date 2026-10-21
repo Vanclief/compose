@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Name}} MCP reference</title>
+<style>
+:root { color-scheme: dark; --bg: #0f1216; --side: #14181d; --card: #181c22; --code: #0b0e12; --border: #2a3039; --text: #d8dde4; --muted: #8b96a5; --accent: #6ea8fe; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+nav { position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 16px 12px; background: var(--side); border-right: 1px solid var(--border); }
+nav input { width: 100%; margin-bottom: 12px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+nav a { display: flex; justify-content: space-between; gap: 8px; padding: 3px 8px; border-radius: 4px; color: var(--text); overflow-wrap: anywhere; }
+nav a:hover { background: var(--card); text-decoration: none; }
+nav .sub { padding-left: 20px; color: var(--muted); }
+nav .count { color: var(--muted); font-size: 12px; }
+main { min-width: 0; padding: 24px 32px 64px; }
+header h1 { margin: 0; font-size: 22px; }
+header .version { color: var(--muted); font: 13px var(--mono); margin-left: 8px; }
+header p { margin: 2px 0 0; color: var(--muted); }
+h2 { margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 18px; }
+h3 { margin: 0; font-size: 15px; font-family: var(--mono); overflow-wrap: anywhere; }
+.block { margin: 12px 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; }
+.op { color: var(--muted); font: 13px var(--mono); overflow-wrap: anywhere; }
+.subtitle { margin: 4px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font: 11px/17px var(--font); vertical-align: middle; }
+.ro { color: #7ee2a8; } .destructive { color: #ff8a80; } .composite { color: #c9a0ff; } .deprecated { color: #ffcc66; }
+pre { margin: 10px 0 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; background: var(--code); border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
+pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+details summary { margin-top: 8px; color: var(--muted); cursor: pointer; }
+.description { color: var(--muted); white-space: pre-line; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+<input id="filter" type="search" placeholder="Filter functions and terms" aria-label="Filter functions and terms" hidden>
+<a href="#instructions">Instructions</a>
+<a href="#tools">Tools <span class="count">{{len .Tools}}</span></a>
+{{range .Modules}}<a class="sub" href="#{{.ID}}">{{.Name}} <span class="count">{{len .Functions}}</span></a>
+{{end}}<a href="#terms">Terms <span class="count">{{len .Terms}}</span></a>
+</nav>
+<main>
+<header>
+<h1>{{.Name}}{{if .Version}}<span class="version">{{.Version}}</span>{{end}}</h1>
+<p>MCP reference</p>
+</header>
+
+<section id="instructions">
+<h2>Instructions</h2>
+<pre class="wrap">{{.Instructions}}</pre>
+</section>
+
+<section id="tools">
+<h2>Tools</h2>
+{{range .Tools}}<div class="block" id="tool-{{.Name}}">
+<h3>{{.Name}}</h3>
+<pre class="wrap">{{.Description}}</pre>
+{{if .Schema}}<details>
+<summary>Input schema</summary>
+<pre>{{.Schema}}</pre>
+</details>
+{{end}}</div>
+{{end}}</section>
+{{range .Modules}}
+<section class="group" id="{{.ID}}">
+<h2>{{.Name}}</h2>
+{{if .Description}}<p class="description">{{.Description}}</p>
+{{end}}{{range .Functions}}<div class="block" id="{{.ID}}" data-k="{{.Key}}">
+<h3>{{.Name}} <span class="op">{{.Operation}}</span>{{if .ReadOnly}}<span class="badge ro">read-only</span>{{end}}{{if .Destructive}}<span class="badge destructive">destructive</span>{{end}}{{if .Composite}}<span class="badge composite">composite</span>{{end}}{{if .Deprecated}}<span class="badge deprecated">deprecated</span>{{end}}</h3>
+{{if .Subtitle}}<p class="subtitle">{{.Subtitle}}</p>
+{{end}}<pre>{{.Describe}}</pre>
+</div>
+{{end}}</section>
+{{end}}
+<section class="group" id="terms">
+<h2>Terms</h2>
+{{range .Terms}}<div class="block" id="{{.ID}}" data-k="{{.Key}}">
+<h3>{{.Name}}{{if .Aliases}} <span class="op">aliases: {{.Aliases}}</span>{{end}}</h3>
+<pre>{{.Explain}}</pre>
+</div>
+{{end}}</section>
+</main>
+</div>
+<script>
+var filter = document.getElementById("filter");
+filter.hidden = false;
+filter.oninput = function () {
+  var q = filter.value.trim().toLowerCase();
+  document.querySelectorAll("[data-k]").forEach(function (e) { e.hidden = q !== "" && e.dataset.k.indexOf(q) < 0; });
+  document.querySelectorAll(".group").forEach(function (s) {
+    s.hidden = q !== "" && !s.querySelector("[data-k]:not([hidden])");
+    document.querySelector('nav a[href="#' + s.id + '"]').hidden = s.hidden;
+  });
+};
+</script>
+</body>
+</html>

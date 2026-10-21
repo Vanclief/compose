@@ -1,0 +1,461 @@
+{
+  "name": "Shop",
+  "version": "2.3.0",
+  "instructions": "Shop is a test store.\n\nModules (pass one to search_functions):\n- accounts: Who is calling.\n- items: 1 function\n- orders: Customer orders and their lines.\n\nWorkflow: search_functions to find a function, describe_function to read its arguments, then call_function. Use explain_term for any unfamiliar term or module concept. Function names are module.function and arguments are one flat object. Errors come back as one line with a code, such as \"error invalid: ...\". run_script chains several read-only calls in one round trip.",
+  "tools": [
+    {
+      "name": "whoami",
+      "description": "Return the account the current credentials belong to. Call it first to check the connection.",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "search_functions",
+      "description": "Find functions. With no arguments, list the modules. With module, list every function in it. With query, list the functions whose name, summary, description, return type or argument names contain every word of it, optionally within one module. Each line shows module.function, its summary and what it returns. Next, describe_function.",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "description": "module name from the server instructions; omit to search every module"
+          },
+          "query": {
+            "type": "string",
+            "description": "words to find in function names, summaries, descriptions, return types and argument names; every word must match"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "describe_function",
+      "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function before its first call_function.",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "full function names, module.function",
+            "minItems": 1
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "explain_term",
+      "description": "Explain domain terms: the fields of a data type and the functions that accept or return it, or a concept of the application. Accepts names and aliases, case-insensitively. Use it for any unfamiliar word in a summary, field or module name.",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "term names or aliases",
+            "minItems": 1
+          }
+        },
+        "required": [
+          "terms"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "call_function",
+      "description": "Call one function by its full name, module.function. args is one flat object merging the path, query and body arguments listed by describe_function; omit it when there are none. Returns the JSON response. Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. Some functions write data: read their description first.",
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "full function name, module.function"
+          },
+          "args": {
+            "type": "object",
+            "description": "one flat object merging the path, query and body arguments listed by describe_function",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "run_script",
+      "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned before the result. Limits: 5s timeout, 200 function calls, read-only functions only, 1024 KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.",
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "JavaScript function body; return the result"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "modules": [
+    {
+      "name": "accounts",
+      "description": "Who is calling.",
+      "functions": [
+        {
+          "name": "accounts.me",
+          "summary": "The account of the credentials",
+          "description": "",
+          "method": "GET",
+          "path": "/me",
+          "args": [],
+          "returns": "Account",
+          "read_only": true,
+          "destructive": false,
+          "composite": false,
+          "deprecated": false
+        }
+      ]
+    },
+    {
+      "name": "items",
+      "description": "",
+      "functions": [
+        {
+          "name": "items.list_items",
+          "summary": "List catalog items",
+          "description": "",
+          "method": "GET",
+          "path": "/items",
+          "args": [
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "type": "integer"
+            }
+          ],
+          "returns": "Item[]",
+          "read_only": true,
+          "destructive": false,
+          "composite": false,
+          "deprecated": false
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "description": "Customer orders and their lines.",
+      "functions": [
+        {
+          "name": "orders.add_line",
+          "summary": "Add a line to an order",
+          "description": "",
+          "method": "POST",
+          "path": "/orders/{order_id}/lines",
+          "args": [
+            {
+              "name": "order_id",
+              "in": "path",
+              "required": true,
+              "type": "integer"
+            },
+            {
+              "name": "sku",
+              "in": "body",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "name": "quantity",
+              "in": "body",
+              "required": true,
+              "type": "integer"
+            },
+            {
+              "name": "note",
+              "in": "body",
+              "required": false,
+              "type": "string"
+            }
+          ],
+          "returns": "Order",
+          "read_only": false,
+          "destructive": false,
+          "composite": false,
+          "deprecated": false
+        },
+        {
+          "name": "orders.cancel_order",
+          "summary": "Cancel an order",
+          "description": "",
+          "method": "DELETE",
+          "path": "/orders/{order_id}",
+          "args": [
+            {
+              "name": "order_id",
+              "in": "path",
+              "required": true,
+              "type": "integer"
+            }
+          ],
+          "returns": "",
+          "read_only": false,
+          "destructive": true,
+          "composite": false,
+          "deprecated": false
+        },
+        {
+          "name": "orders.get_order",
+          "summary": "Get one order",
+          "description": "",
+          "method": "GET",
+          "path": "/orders/{order_id}",
+          "args": [
+            {
+              "name": "order_id",
+              "in": "path",
+              "required": true,
+              "type": "integer"
+            },
+            {
+              "name": "expand",
+              "in": "query",
+              "required": false,
+              "type": "string[]"
+            },
+            {
+              "name": "verbose",
+              "in": "query",
+              "required": false,
+              "type": "boolean"
+            }
+          ],
+          "returns": "Order",
+          "read_only": true,
+          "destructive": false,
+          "composite": false,
+          "deprecated": false
+        },
+        {
+          "name": "orders.set_tags",
+          "summary": "Replace the tags of an order",
+          "description": "",
+          "method": "PUT",
+          "path": "/orders/{order_id}/tags",
+          "args": [
+            {
+              "name": "order_id",
+              "in": "path",
+              "required": true,
+              "type": "integer"
+            },
+            {
+              "name": "X-Request-Id",
+              "in": "header",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "name": "body",
+              "in": "body",
+              "required": false,
+              "type": "string[]"
+            }
+          ],
+          "returns": "Order",
+          "read_only": false,
+          "destructive": false,
+          "composite": false,
+          "deprecated": false
+        },
+        {
+          "name": "orders.summary",
+          "summary": "Summarize an order",
+          "description": "Reads the order and counts two catalog items.",
+          "method": "",
+          "path": "",
+          "args": [
+            {
+              "name": "order_id",
+              "in": "body",
+              "required": true,
+              "type": "integer"
+            }
+          ],
+          "returns": "OrderSummary",
+          "read_only": true,
+          "destructive": false,
+          "composite": true,
+          "deprecated": false
+        }
+      ]
+    }
+  ],
+  "terms": [
+    {
+      "name": "Account",
+      "description": "The caller of the API.",
+      "aliases": [],
+      "fields": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "accepted_by": [],
+      "returned_by": [
+        "accounts.me"
+      ]
+    },
+    {
+      "name": "AddLineRequest",
+      "description": "",
+      "aliases": [],
+      "fields": [
+        {
+          "name": "sku",
+          "type": "string"
+        },
+        {
+          "name": "quantity",
+          "type": "integer"
+        },
+        {
+          "name": "note",
+          "type": "string"
+        }
+      ],
+      "accepted_by": [
+        "orders.add_line"
+      ],
+      "returned_by": []
+    },
+    {
+      "name": "Item",
+      "description": "",
+      "aliases": [],
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        }
+      ],
+      "accepted_by": [],
+      "returned_by": [
+        "items.list_items"
+      ]
+    },
+    {
+      "name": "Line",
+      "description": "",
+      "aliases": [],
+      "fields": [
+        {
+          "name": "sku",
+          "type": "string"
+        },
+        {
+          "name": "quantity",
+          "type": "integer"
+        }
+      ],
+      "accepted_by": [],
+      "returned_by": []
+    },
+    {
+      "name": "Order",
+      "description": "A purchase placed by a customer.",
+      "aliases": [
+        "pedido"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer"
+        },
+        {
+          "name": "status",
+          "type": "string enum: open|shipped"
+        },
+        {
+          "name": "lines",
+          "type": "Line[]"
+        }
+      ],
+      "accepted_by": [],
+      "returned_by": [
+        "orders.add_line",
+        "orders.get_order",
+        "orders.set_tags"
+      ]
+    },
+    {
+      "name": "OrderSummary",
+      "description": "",
+      "aliases": [],
+      "fields": [
+        {
+          "name": "order_id",
+          "type": "integer"
+        },
+        {
+          "name": "key",
+          "type": "string"
+        },
+        {
+          "name": "items",
+          "type": "integer"
+        }
+      ],
+      "accepted_by": [],
+      "returned_by": [
+        "orders.summary"
+      ]
+    }
+  ]
+}

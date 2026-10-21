@@ -1,0 +1,135 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Shop", "version": "2.3.0"},
+  "tags": [
+    {"name": "Accounts", "description": "Who is calling."},
+    {"name": "Orders", "description": "Customer orders and their lines."},
+    {"name": "Items"}
+  ],
+  "paths": {
+    "/me": {
+      "get": {
+        "operationId": "accounts.me",
+        "tags": ["Accounts"],
+        "summary": "The account of the credentials",
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Account"}}}}
+        }
+      }
+    },
+    "/orders/{order_id}": {
+      "parameters": [
+        {"name": "order_id", "in": "path", "required": true, "schema": {"type": "integer"}}
+      ],
+      "get": {
+        "operationId": "orders.getOrder",
+        "tags": ["Orders"],
+        "summary": "Get one order",
+        "parameters": [
+          {"name": "expand", "in": "query", "schema": {"type": "array", "items": {"type": "string"}}},
+          {"name": "verbose", "in": "query", "schema": {"type": "boolean"}}
+        ],
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "orders.cancelOrder",
+        "tags": ["Orders"],
+        "summary": "Cancel an order",
+        "responses": {"204": {"description": "Canceled"}}
+      }
+    },
+    "/orders/{order_id}/lines": {
+      "post": {
+        "operationId": "orders.addLine",
+        "tags": ["Orders"],
+        "summary": "Add a line to an order",
+        "parameters": [
+          {"name": "order_id", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddLineRequest"}}}
+        },
+        "responses": {
+          "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}}
+        }
+      }
+    },
+    "/orders/{order_id}/tags": {
+      "put": {
+        "operationId": "orders.setTags",
+        "tags": ["Orders"],
+        "summary": "Replace the tags of an order",
+        "parameters": [
+          {"name": "order_id", "in": "path", "required": true, "schema": {"type": "integer"}},
+          {"name": "X-Request-Id", "in": "header", "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "content": {"application/json": {"schema": {"type": "array", "items": {"type": "string"}}}}
+        },
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}}
+        }
+      }
+    },
+    "/items": {
+      "get": {
+        "operationId": "items.listItems",
+        "tags": ["Items"],
+        "summary": "List catalog items",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+        ],
+        "responses": {
+          "200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Item"}}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Account": {
+        "type": "object",
+        "description": "The caller of the API.",
+        "properties": {
+          "key": {"type": "string"}
+        }
+      },
+      "Order": {
+        "type": "object",
+        "description": "A customer order.",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "integer"},
+          "status": {"type": "string", "enum": ["open", "shipped"]},
+          "lines": {"type": "array", "items": {"$ref": "#/components/schemas/Line"}}
+        }
+      },
+      "Line": {
+        "type": "object",
+        "properties": {
+          "sku": {"type": "string"},
+          "quantity": {"type": "integer"}
+        }
+      },
+      "AddLineRequest": {
+        "type": "object",
+        "required": ["sku", "quantity"],
+        "properties": {
+          "sku": {"type": "string", "description": "Stock keeping unit"},
+          "quantity": {"type": "integer"},
+          "note": {"type": "string"}
+        }
+      },
+      "Item": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"}
+        }
+      }
+    }
+  }
+}
