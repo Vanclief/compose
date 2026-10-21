@@ -37,20 +37,38 @@ type StandardRequest struct {
 	Locale    string
 }
 
+// requestIDKey is the context key New stores the request ID under. An
+// unexported type keeps it from colliding with keys set by other packages.
+type requestIDKey struct{}
+
+// RequestID returns the request ID New stored in ctx, or "" when ctx does not
+// come from a request.
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
 // Option is a function that modifies the Request.
 type Option func(*StandardRequest)
 
 // WithTimeout returns an Option that sets the timeout for the request context.
+// It replaces the previous deadline and releases the timer of the context it
+// replaces, keeping the context values.
 func WithTimeout(timeout time.Duration) Option {
 	return func(req *StandardRequest) {
+		previousCancel := req.Cancel
 		req.Context, req.Cancel = context.WithTimeout(context.WithoutCancel(req.Context), timeout)
+
+		if previousCancel != nil {
+			previousCancel()
+		}
 	}
 }
 
 func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 	id := uuid.New().String()
 
-	ctx := context.WithValue(context.Background(), "request-id", id)
+	ctx := context.WithValue(context.Background(), requestIDKey{}, id)
 	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
 
 	locale, _ := types.NewLocaleString(header.Get("Accept-Language"))
