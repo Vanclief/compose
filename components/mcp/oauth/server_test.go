@@ -1,0 +1,900 @@
+package oauth
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/vanclief/ez"
+)
+
+// testRedirect is the redirect URI of the test clients.
+const testRedirect = "https://client.example/callback"
+
+// testGrant is what the test login grants.
+var testGrant = Grant{Subject: "user-1", Headers: http.Header{"Api-Key": {"k1"}, "Api-Secret": {"s1"}}}
+
+// verifyLogin accepts ana@acme.com with "pw"; "boom" fails as a server error.
+func verifyLogin(ctx context.Context, identifier, credential string) (Grant, error) {
+	if identifier == "boom" {
+		return Grant{}, ez.New(ez.EINTERNAL, "database is down", nil)
+	}
+	if identifier != "ana@acme.com" || credential != "pw" {
+		return Grant{}, ez.New(ez.ENOTAUTHENTICATED, "Wrong email or password.", nil)
+	}
+	return testGrant, nil
+}
+
+// testEnv is a server mounted on an Echo app served over HTTP.
+type testEnv struct {
+	s    *Server
+	url  string
+	http *http.Client
+}
+
+// newEnv builds a server with a public client "public" and a confidential
+// client "private" (secret "shh"). mutate adjusts the config; handler, when
+// set, builds the MCP handler, else the MCP endpoint reports the token user.
+func newEnv(t *testing.T, mutate func(*Config), handler func(*Server) http.Handler) *testEnv {
+	t.Helper()
+	e := echo.New()
+	ts := httptest.NewUnstartedServer(e)
+	base := "http://" + ts.Listener.Addr().String()
+	cfg := Config{
+		Issuer:   base,
+		Resource: base + "/mcp",
+		Store:    NewMemoryStore(),
+		Login:    Login{Title: "Acme", Verify: verifyLogin},
+		Clients: []Client{
+			{ID: "public", Name: "Public App", RedirectURIs: []string{testRedirect}},
+			{ID: "private", Name: "Private App", Secret: "shh", RedirectURIs: []string{testRedirect, "https://client.example/other"}},
+		},
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	s, err := New(cfg)
+	require.NoError(t, err)
+
+	mcpHandler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "user="+auth.TokenInfoFromContext(r.Context()).UserID)
+	}))
+	if handler != nil {
+		mcpHandler = handler(s)
+	}
+	s.Mount(e, mcpHandler)
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	return &testEnv{s: s, url: base, http: client}
+}
+
+// response is a finished HTTP exchange.
+type response struct {
+	status int
+	header http.Header
+	body   string
+}
+
+func (r response) json(t *testing.T) map[string]any {
+	t.Helper()
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(r.body), &out), r.body)
+	return out
+}
+
+func (r response) location(t *testing.T) *url.URL {
+	t.Helper()
+	u, err := url.Parse(r.header.Get("Location"))
+	require.NoError(t, err)
+	return u
+}
+
+func (env *testEnv) do(t *testing.T, req *http.Request) response {
+	t.Helper()
+	resp, err := env.http.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return response{status: resp.StatusCode, header: resp.Header, body: string(body)}
+}
+
+func (env *testEnv) get(t *testing.T, path string) response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, env.url+path, nil)
+	require.NoError(t, err)
+	return env.do(t, req)
+}
+
+func (env *testEnv) postForm(t *testing.T, path string, form url.Values) response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, env.url+path, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return env.do(t, req)
+}
+
+// bearer calls the MCP endpoint with token.
+func (env *testEnv) bearer(t *testing.T, token string) response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, env.url+"/mcp", nil)
+	require.NoError(t, err)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return env.do(t, req)
+}
+
+// pkce returns a verifier and its S256 challenge.
+func pkce(seed string) (string, string) {
+	verifier := strings.Repeat(seed, 43)[:43]
+	sum := sha256.Sum256([]byte(verifier))
+	return verifier, base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// authorizeParams are the parameters of a valid authorization request.
+func authorizeParams(clientID, challenge string) url.Values {
+	return url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {testRedirect},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"st-1"},
+		"scope":                 {"mcp"},
+	}
+}
+
+func (env *testEnv) authorize(t *testing.T, params url.Values) response {
+	t.Helper()
+	return env.get(t, "/oauth/authorize?"+params.Encode())
+}
+
+// startLogin runs the authorize step and returns the pending request id.
+func (env *testEnv) startLogin(t *testing.T, params url.Values) string {
+	t.Helper()
+	res := env.authorize(t, params)
+	require.Equal(t, http.StatusFound, res.status, res.body)
+	loc := res.location(t)
+	require.Equal(t, "/oauth/login", loc.Path)
+	id := loc.Query().Get("request")
+	require.NotEmpty(t, id)
+	return id
+}
+
+// login submits the login form.
+func (env *testEnv) login(t *testing.T, id, identifier, credential string) response {
+	t.Helper()
+	return env.postForm(t, "/oauth/login", url.Values{"request": {id}, "identifier": {identifier}, "credential": {credential}})
+}
+
+// codeFrom returns the code of a redirect to the client, checking the state.
+func codeFrom(t *testing.T, res response) string {
+	t.Helper()
+	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, res.status, res.body)
+	loc := res.location(t)
+	require.Equal(t, testRedirect, loc.Scheme+"://"+loc.Host+loc.Path)
+	assert.Equal(t, "st-1", loc.Query().Get("state"))
+	code := loc.Query().Get("code")
+	require.NotEmpty(t, code)
+	return code
+}
+
+// codeFor runs authorize and the password login for clientID.
+func (env *testEnv) codeFor(t *testing.T, clientID, challenge string) string {
+	t.Helper()
+	id := env.startLogin(t, authorizeParams(clientID, challenge))
+	return codeFrom(t, env.login(t, id, "ana@acme.com", "pw"))
+}
+
+// exchange redeems a code for the public client.
+func (env *testEnv) exchange(t *testing.T, code, verifier string) response {
+	t.Helper()
+	return env.postForm(t, "/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"public"},
+		"code":          {code},
+		"code_verifier": {verifier},
+		"redirect_uri":  {testRedirect},
+		"resource":      {env.s.cfg.Resource},
+	})
+}
+
+// tokens runs the whole flow for the public client and returns the access
+// and refresh tokens.
+func (env *testEnv) tokens(t *testing.T) (string, string) {
+	t.Helper()
+	verifier, challenge := pkce("a")
+	res := env.exchange(t, env.codeFor(t, "public", challenge), verifier)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	body := res.json(t)
+	return body["access_token"].(string), body["refresh_token"].(string)
+}
+
+func oauthErrorCode(t *testing.T, res response) string {
+	t.Helper()
+	code, _ := res.json(t)["error"].(string)
+	return code
+}
+
+func TestNewValidation(t *testing.T) {
+	valid := func() Config {
+		return Config{
+			Issuer:   "https://api.acme.com",
+			Resource: "https://api.acme.com/mcp",
+			Store:    NewMemoryStore(),
+			Login:    Login{Verify: verifyLogin},
+		}
+	}
+	cases := map[string]func(*Config){
+		"issuer missing":        func(c *Config) { c.Issuer = "" },
+		"issuer relative":       func(c *Config) { c.Issuer = "/auth" },
+		"issuer http":           func(c *Config) { c.Issuer = "http://api.acme.com" },
+		"issuer trailing slash": func(c *Config) { c.Issuer = "https://api.acme.com/" },
+		"issuer query":          func(c *Config) { c.Issuer = "https://api.acme.com?x=1" },
+		"issuer fragment":       func(c *Config) { c.Issuer = "https://api.acme.com#x" },
+		"issuer not a URL":      func(c *Config) { c.Issuer = "https://api.acme.com/%zz" },
+		"issuer user info":      func(c *Config) { c.Issuer = "https://me@api.acme.com" },
+		"resource http":         func(c *Config) { c.Resource = "http://api.acme.com/mcp" },
+		"store missing":         func(c *Config) { c.Store = nil },
+		"no login":              func(c *Config) { c.Login = Login{} },
+		"both logins":           func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
+		"login URL invalid": func(c *Config) {
+			c.Login = Login{}
+			c.LoginURL = "https://app.acme.com/%zz"
+		},
+		"client without name": func(c *Config) { c.Clients = []Client{{ID: "a", RedirectURIs: []string{testRedirect}}} },
+		"client without uris": func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A"}} },
+		"client with http uri": func(c *Config) {
+			c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"http://client.example/cb"}}}
+		},
+		"client with fragment": func(c *Config) {
+			c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"https://client.example/cb#x"}}}
+		},
+		"client with custom uri": func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"myapp://cb"}}} },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := valid()
+			mutate(&cfg)
+			_, err := New(cfg)
+			assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+		})
+	}
+
+	s, err := New(valid())
+	require.NoError(t, err)
+	assert.Equal(t, "/mcp", s.resourcePath)
+	assert.Equal(t, "", s.issuerPath)
+	assert.Equal(t, time.Hour, s.cfg.AccessTokenTTL)
+	assert.Equal(t, 30*24*time.Hour, s.cfg.RefreshTokenTTL)
+	assert.Equal(t, 10*time.Second, s.client.Timeout)
+	assert.IsType(t, &http.Transport{}, s.client.Transport, "the default client dials through the address guard")
+	assert.Equal(t, "Email", s.cfg.Login.IdentifierLabel)
+	assert.Equal(t, "Password", s.cfg.Login.CredentialLabel)
+
+	cfg := valid()
+	cfg.Issuer = "http://localhost:8080/auth"
+	cfg.Resource = "http://127.0.0.1:8080"
+	cfg.Login.Challenge = func(context.Context, string) error { return nil }
+	cfg.HTTPClient = &http.Client{}
+	s, err = New(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "/auth", s.issuerPath)
+	assert.Equal(t, "", s.resourcePath)
+	assert.Equal(t, "Code", s.cfg.Login.CredentialLabel)
+	assert.Nil(t, s.client.Transport, "a caller's client is used as is")
+	assert.Nil(t, cfg.HTTPClient.CheckRedirect, "the caller's client is not modified")
+}
+
+func TestMetadata(t *testing.T) {
+	env := newEnv(t, nil, nil)
+
+	res := env.get(t, "/.well-known/oauth-authorization-server")
+	require.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, "*", res.header.Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "public, max-age=3600", res.header.Get("Cache-Control"))
+	assert.Equal(t, "application/json", res.header.Get("Content-Type"))
+	assert.JSONEq(t, `{
+		"issuer": "`+env.url+`",
+		"authorization_endpoint": "`+env.url+`/oauth/authorize",
+		"token_endpoint": "`+env.url+`/oauth/token",
+		"registration_endpoint": "`+env.url+`/oauth/register",
+		"response_types_supported": ["code"],
+		"grant_types_supported": ["authorization_code", "refresh_token"],
+		"code_challenge_methods_supported": ["S256"],
+		"token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+		"client_id_metadata_document_supported": true
+	}`, res.body)
+
+	want := `{"resource": "` + env.url + `/mcp", "authorization_servers": ["` + env.url + `"], "bearer_methods_supported": ["header"]}`
+	for _, path := range []string{"/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"} {
+		res = env.get(t, path)
+		require.Equal(t, http.StatusOK, res.status, path)
+		assert.JSONEq(t, want, res.body)
+		assert.Equal(t, "*", res.header.Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "public, max-age=3600", res.header.Get("Cache-Control"))
+	}
+
+	req, err := http.NewRequest(http.MethodOptions, env.url+"/.well-known/oauth-protected-resource/mcp", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://claude.ai")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	res = env.do(t, req)
+	assert.Equal(t, http.StatusNoContent, res.status)
+	assert.Equal(t, "*", res.header.Get("Access-Control-Allow-Origin"))
+	assert.Contains(t, res.header.Get("Access-Control-Allow-Methods"), "GET")
+	assert.Equal(t, "Authorization, Content-Type", res.header.Get("Access-Control-Allow-Headers"))
+}
+
+func TestMetadataIssuerPath(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Issuer += "/auth"
+	}, nil)
+	for _, path := range []string{"/auth/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/auth"} {
+		res := env.get(t, path)
+		require.Equal(t, http.StatusOK, res.status, path)
+		body := res.json(t)
+		assert.Equal(t, env.url+"/auth", body["issuer"])
+		assert.Equal(t, env.url+"/auth/oauth/token", body["token_endpoint"])
+	}
+	res := env.get(t, "/.well-known/oauth-protected-resource/mcp")
+	assert.Equal(t, []any{env.url + "/auth"}, res.json(t)["authorization_servers"])
+
+	verifier, challenge := pkce("p")
+	res = env.get(t, "/auth/oauth/authorize?"+authorizeParams("public", challenge).Encode())
+	require.Equal(t, http.StatusFound, res.status, res.body)
+	loc := res.location(t)
+	assert.Equal(t, "/auth/oauth/login", loc.Path)
+	res = env.postForm(t, "/auth/oauth/login", url.Values{"request": {loc.Query().Get("request")}, "identifier": {"ana@acme.com"}, "credential": {"pw"}})
+	code := codeFrom(t, res)
+	res = env.postForm(t, "/auth/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code": {code}, "code_verifier": {verifier}, "redirect_uri": {testRedirect}})
+	assert.Equal(t, http.StatusOK, res.status, res.body)
+}
+
+func TestHandler(t *testing.T) {
+	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	require.NoError(t, err)
+	h := s.Handler()
+
+	for path, status := range map[string]int{
+		"/.well-known/oauth-authorization-server":   http.StatusOK,
+		"/.well-known/oauth-protected-resource/mcp": http.StatusOK,
+		"/.well-known/oauth-protected-resource":     http.StatusOK,
+		"/oauth/login":                              http.StatusNotFound,
+		"/oauth/authorize":                          http.StatusBadRequest,
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, status, rec.Code, path)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader("grant_type=password")))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAuthorizeErrors(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	_, challenge := pkce("a")
+
+	params := authorizeParams("nobody", challenge)
+	res := env.authorize(t, params)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Unknown application")
+
+	params = authorizeParams("public", challenge)
+	params.Set("redirect_uri", "https://evil.example/callback")
+	res = env.authorize(t, params)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "redirect URI is not registered")
+	assert.Empty(t, res.header.Get("Location"))
+
+	// Without redirect_uri a client with several URIs cannot be served...
+	params = authorizeParams("private", challenge)
+	params.Del("redirect_uri")
+	res = env.authorize(t, params)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+
+	// ...and a client with one uses it.
+	params = authorizeParams("public", challenge)
+	params.Del("redirect_uri")
+	res = env.authorize(t, params)
+	assert.Equal(t, http.StatusFound, res.status, res.body)
+
+	redirectError := func(params url.Values) url.Values {
+		t.Helper()
+		res := env.authorize(t, params)
+		require.Equal(t, http.StatusFound, res.status, res.body)
+		loc := res.location(t)
+		require.Equal(t, "client.example", loc.Host)
+		return loc.Query()
+	}
+
+	params = authorizeParams("public", challenge)
+	params.Del("code_challenge")
+	q := redirectError(params)
+	assert.Equal(t, "invalid_request", q.Get("error"))
+	assert.NotEmpty(t, q.Get("error_description"))
+	assert.Equal(t, "st-1", q.Get("state"))
+
+	params = authorizeParams("public", challenge)
+	params.Del("code_challenge_method")
+	params.Del("state")
+	q = redirectError(params)
+	assert.Equal(t, "invalid_request", q.Get("error"))
+	assert.False(t, q.Has("state"))
+
+	params = authorizeParams("public", challenge)
+	params.Set("code_challenge_method", "plain")
+	assert.Equal(t, "invalid_request", redirectError(params).Get("error"))
+
+	params = authorizeParams("public", challenge)
+	params.Set("response_type", "token")
+	assert.Equal(t, "unsupported_response_type", redirectError(params).Get("error"))
+
+	params = authorizeParams("public", challenge)
+	params.Set("resource", "https://other.example/mcp")
+	assert.Equal(t, "invalid_target", redirectError(params).Get("error"))
+
+	params = authorizeParams("public", challenge)
+	params.Set("resource", env.url+"/mcp/")
+	res = env.authorize(t, params)
+	assert.Equal(t, "/oauth/login", res.location(t).Path)
+
+	// A registered client gets the error page, never a redirect: registration
+	// is open, so redirecting would make authorize an open redirector.
+	registered := env.postJSON(t, "/oauth/register", `{"redirect_uris": ["https://evil.example/landing"]}`).json(t)["client_id"].(string)
+	params = authorizeParams(registered, challenge)
+	params.Set("redirect_uri", "https://evil.example/landing")
+	params.Set("response_type", "token")
+	res = env.authorize(t, params)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Empty(t, res.header.Get("Location"))
+	assert.Contains(t, res.body, "response_type must be code")
+}
+
+func TestSameResource(t *testing.T) {
+	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	require.NoError(t, err)
+	cases := map[string]bool{
+		"":                              true,
+		"https://api.acme.com/mcp":      true,
+		"https://api.acme.com/mcp/":     true,
+		"HTTPS://API.Acme.com/mcp":      true,
+		"https://api.acme.com/MCP":      false,
+		"https://api.acme.com/mcp//":    false,
+		"http://api.acme.com/mcp":       false,
+		"https://api.acme.com:8443/mcp": false,
+		"https://other.example/mcp":     false,
+		"https://api.acme.com/mcp?x=1":  false,
+		"https://api.acme.com/mcp#x":    false,
+		"https://me@api.acme.com/mcp":   false,
+		"https://api.acme.com/%zz":      false,
+	}
+	for resource, want := range cases {
+		assert.Equal(t, want, s.sameResource(resource), resource)
+	}
+}
+
+func TestTokenFlow(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	verifier, challenge := pkce("a")
+	code := env.codeFor(t, "public", challenge)
+
+	res := env.exchange(t, code, verifier)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.Equal(t, "no-store", res.header.Get("Cache-Control"))
+	body := res.json(t)
+	assert.Equal(t, "Bearer", body["token_type"])
+	assert.Equal(t, float64(3600), body["expires_in"])
+	assert.Equal(t, "mcp", body["scope"])
+	assert.Len(t, body["access_token"], 43)
+	assert.Len(t, body["refresh_token"], 43)
+
+	res = env.bearer(t, body["access_token"].(string))
+	assert.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, "user=user-1", res.body)
+
+	// Codes are single use.
+	res = env.exchange(t, code, verifier)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	assert.Equal(t, "no-store", res.header.Get("Cache-Control"))
+
+	// A wrong verifier burns the code.
+	code = env.codeFor(t, "public", challenge)
+	res = env.exchange(t, code, "wrong-verifier-wrong-verifier-wrong-verifier")
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	res = env.exchange(t, code, verifier)
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+
+	// The code is bound to its client and, when sent, its redirect URI.
+	code = env.codeFor(t, "public", challenge)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"private"}, "client_secret": {"shh"}, "code": {code}, "code_verifier": {verifier}, "redirect_uri": {testRedirect}})
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	code = env.codeFor(t, "public", challenge)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code": {code}, "code_verifier": {verifier}, "redirect_uri": {"https://client.example/other"}})
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+}
+
+// TestTokenRedirectURIOptional: a client with one redirect URI may omit it at
+// both steps; PKCE binds the code.
+func TestTokenRedirectURIOptional(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	verifier, challenge := pkce("o")
+	params := authorizeParams("public", challenge)
+	params.Del("redirect_uri")
+	code := codeFrom(t, env.login(t, env.startLogin(t, params), "ana@acme.com", "pw"))
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code": {code}, "code_verifier": {verifier}})
+	assert.Equal(t, http.StatusOK, res.status, res.body)
+}
+
+func TestTokenErrors(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	cases := []struct {
+		name   string
+		form   url.Values
+		status int
+		code   string
+	}{
+		{"no grant type", url.Values{"client_id": {"public"}}, http.StatusBadRequest, "invalid_request"},
+		{"password grant", url.Values{"grant_type": {"password"}, "client_id": {"public"}}, http.StatusBadRequest, "unsupported_grant_type"},
+		{"other resource", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "resource": {"https://other.example/mcp"}}, http.StatusBadRequest, "invalid_target"},
+		{"no client", url.Values{"grant_type": {"authorization_code"}, "code": {"x"}}, http.StatusUnauthorized, "invalid_client"},
+		{"unknown client", url.Values{"grant_type": {"authorization_code"}, "client_id": {"nobody"}}, http.StatusUnauthorized, "invalid_client"},
+		{"missing secret", url.Values{"grant_type": {"authorization_code"}, "client_id": {"private"}}, http.StatusUnauthorized, "invalid_client"},
+		{"wrong secret", url.Values{"grant_type": {"authorization_code"}, "client_id": {"private"}, "client_secret": {"nope"}}, http.StatusUnauthorized, "invalid_client"},
+		{"no code", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code_verifier": {"v"}}, http.StatusBadRequest, "invalid_request"},
+		{"no verifier", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code": {"c"}}, http.StatusBadRequest, "invalid_request"},
+		{"unknown code", url.Values{"grant_type": {"authorization_code"}, "client_id": {"public"}, "code": {"c"}, "code_verifier": {"v"}}, http.StatusBadRequest, "invalid_grant"},
+		{"no refresh token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}}, http.StatusBadRequest, "invalid_request"},
+		{"unknown refresh token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {"r"}}, http.StatusBadRequest, "invalid_grant"},
+	}
+	for _, c := range cases {
+		res := env.postForm(t, "/oauth/token", c.form)
+		assert.Equal(t, c.status, res.status, c.name)
+		assert.Equal(t, c.code, oauthErrorCode(t, res), c.name)
+		assert.Empty(t, res.header.Get("WWW-Authenticate"), c.name)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, env.url+"/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=r"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("private", "nope")
+	res := env.do(t, req)
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, "invalid_client", oauthErrorCode(t, res))
+	assert.Equal(t, `Basic realm="oauth"`, res.header.Get("WWW-Authenticate"))
+
+	req, err = http.NewRequest(http.MethodPost, env.url+"/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=r&client_id=public"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("private", "shh")
+	res = env.do(t, req)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Equal(t, "invalid_request", oauthErrorCode(t, res))
+
+	req, err = http.NewRequest(http.MethodPost, env.url+"/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=r"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("%zz", "shh")
+	res = env.do(t, req)
+	assert.Equal(t, "invalid_client", oauthErrorCode(t, res))
+}
+
+func TestConfidentialClient(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	verifier, challenge := pkce("c")
+
+	code := env.codeFor(t, "private", challenge)
+	req, err := http.NewRequest(http.MethodPost, env.url+"/oauth/token", strings.NewReader(url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "code_verifier": {verifier}, "redirect_uri": {testRedirect},
+	}.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("private", "shh")
+	res := env.do(t, req)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+
+	code = env.codeFor(t, "private", challenge)
+	res = env.postForm(t, "/oauth/token", url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"private"}, "client_secret": {"shh"}, "code": {code}, "code_verifier": {verifier}, "redirect_uri": {testRedirect},
+	})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+}
+
+func TestRefreshRotation(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	access, refresh := env.tokens(t)
+	var first tokenRecord
+	require.NoError(t, env.s.getRecord(context.Background(), KindRefresh, refresh, false, &first))
+
+	refreshWith := func(clientID, token string) response {
+		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {token}})
+	}
+	res := refreshWith("public", refresh)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	body := res.json(t)
+	newAccess := body["access_token"].(string)
+	newRefresh := body["refresh_token"].(string)
+	assert.NotEqual(t, access, newAccess)
+	assert.NotEqual(t, refresh, newRefresh)
+	assert.Equal(t, "mcp", body["scope"])
+
+	// The new refresh token keeps the expiry of the first one.
+	var second tokenRecord
+	require.NoError(t, env.s.getRecord(context.Background(), KindRefresh, newRefresh, false, &second))
+	assert.True(t, first.ExpiresAt.Equal(second.ExpiresAt))
+	assert.Equal(t, testGrant, second.Grant)
+
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, refreshWith("public", refresh)))
+	assert.Equal(t, http.StatusOK, env.bearer(t, newAccess).status)
+	assert.Equal(t, http.StatusOK, env.bearer(t, access).status, "the old access token lives until it expires")
+
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"private"}, "client_secret": {"shh"}, "refresh_token": {newRefresh}})
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+}
+
+func TestAccessTokenExpires(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.AccessTokenTTL = time.Millisecond
+	}, nil)
+	access, refresh := env.tokens(t)
+	time.Sleep(5 * time.Millisecond)
+	assert.Equal(t, http.StatusUnauthorized, env.bearer(t, access).status)
+
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})
+	assert.Equal(t, http.StatusOK, res.status, res.body)
+}
+
+func TestLoginURLMode(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Login = Login{}
+		c.LoginURL = "https://app.acme.com/connect?from=mcp"
+	}, nil)
+	verifier, challenge := pkce("l")
+
+	res := env.authorize(t, authorizeParams("public", challenge))
+	require.Equal(t, http.StatusFound, res.status, res.body)
+	loc := res.location(t)
+	assert.Equal(t, "app.acme.com", loc.Host)
+	assert.Equal(t, "/connect", loc.Path)
+	assert.Equal(t, "mcp", loc.Query().Get("from"))
+	id := loc.Query().Get("request")
+	require.NotEmpty(t, id)
+
+	assert.Equal(t, http.StatusNotFound, env.get(t, "/oauth/login?request="+id).status, "the built-in page is not mounted")
+
+	pending, err := env.s.Pending(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, Pending{ClientID: "public", ClientName: "Public App", RedirectHost: "client.example"}, pending)
+
+	redirect, err := env.s.Approve(context.Background(), id, testGrant)
+	require.NoError(t, err)
+	code := codeFrom(t, response{status: http.StatusFound, header: http.Header{"Location": {redirect}}})
+	res = env.exchange(t, code, verifier)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+
+	_, err = env.s.Approve(context.Background(), id, testGrant)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	_, err = env.s.Approve(context.Background(), "", testGrant)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	_, err = env.s.Pending(context.Background(), id)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+}
+
+func TestProtect(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	challenge := `Bearer resource_metadata="` + env.url + `/.well-known/oauth-protected-resource/mcp"`
+
+	res := env.bearer(t, "")
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, challenge, res.header.Get("WWW-Authenticate"))
+
+	res = env.bearer(t, "key:secret")
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, challenge, res.header.Get("WWW-Authenticate"))
+
+	access, _ := env.tokens(t)
+	res = env.bearer(t, access)
+	assert.Equal(t, http.StatusOK, res.status)
+
+	fallback := newEnv(t, func(c *Config) {
+		c.Fallback = func(ctx context.Context, token string) (http.Header, error) {
+			if token != "key:secret" {
+				return nil, ez.New(ez.EINVALID, "bad token", nil)
+			}
+			return http.Header{"Api-Key": {"key"}}, nil
+		}
+	}, nil)
+	res = fallback.bearer(t, "key:secret")
+	assert.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, "user=", res.body)
+	assert.Equal(t, http.StatusUnauthorized, fallback.bearer(t, "other").status)
+}
+
+func TestAuthFunc(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, nil, nil)
+	authFunc := env.s.AuthFunc()
+
+	header, err := authFunc(ctx, "")
+	require.NoError(t, err)
+	assert.Empty(t, header)
+
+	access, _ := env.tokens(t)
+	header, err = authFunc(ctx, access)
+	require.NoError(t, err)
+	assert.Equal(t, "k1", header.Get("API-KEY"))
+	assert.Equal(t, "s1", header.Get("API-SECRET"))
+	header.Set("API-KEY", "changed")
+	header, err = authFunc(ctx, access)
+	require.NoError(t, err)
+	assert.Equal(t, "k1", header.Get("API-KEY"))
+
+	_, err = authFunc(ctx, "key:secret")
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err))
+
+	fallback := newEnv(t, func(c *Config) {
+		c.Fallback = func(ctx context.Context, token string) (http.Header, error) {
+			if token != "key:secret" {
+				return nil, ez.New(ez.EINVALID, "bad token", nil)
+			}
+			return http.Header{"Api-Key": {"key"}}, nil
+		}
+	}, nil)
+	header, err = fallback.s.AuthFunc()(ctx, "key:secret")
+	require.NoError(t, err)
+	assert.Equal(t, "key", header.Get("API-KEY"))
+	_, err = fallback.s.AuthFunc()(ctx, "other")
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+}
+
+// brokenStore fails every call of the kinds set broken.
+type brokenStore struct {
+	Store
+	mu     sync.Mutex
+	broken map[string]bool
+}
+
+func (b *brokenStore) set(kind string, broken bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.broken[kind] = broken
+}
+
+func (b *brokenStore) fail(kind string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken[kind] {
+		return ez.New(ez.EUNAVAILABLE, "store is down", nil)
+	}
+	return nil
+}
+
+func (b *brokenStore) Put(ctx context.Context, kind, id string, value []byte, expiresAt time.Time) error {
+	err := b.fail(kind)
+	if err != nil {
+		return err
+	}
+	return b.Store.Put(ctx, kind, id, value, expiresAt)
+}
+
+func (b *brokenStore) Get(ctx context.Context, kind, id string) ([]byte, error) {
+	err := b.fail(kind)
+	if err != nil {
+		return nil, err
+	}
+	return b.Store.Get(ctx, kind, id)
+}
+
+func (b *brokenStore) Take(ctx context.Context, kind, id string) ([]byte, error) {
+	err := b.fail(kind)
+	if err != nil {
+		return nil, err
+	}
+	return b.Store.Take(ctx, kind, id)
+}
+
+func TestStoreFailures(t *testing.T) {
+	ctx := context.Background()
+	store := &brokenStore{Store: NewMemoryStore(), broken: map[string]bool{}}
+	var reported atomic.Int32
+	env := newEnv(t, func(c *Config) {
+		c.Store = store
+		c.OnError = func(ctx context.Context, err error) {
+			assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+			assert.Contains(t, err.Error(), "store is down")
+			reported.Add(1)
+		}
+	}, nil)
+	_, challenge := pkce("s")
+
+	registered := env.postJSON(t, "/oauth/register", `{"redirect_uris": ["`+testRedirect+`"]}`).json(t)["client_id"].(string)
+	store.set(KindRequest, true)
+	q := env.authorize(t, authorizeParams("public", challenge)).location(t).Query()
+	assert.Equal(t, "server_error", q.Get("error"))
+	res := env.authorize(t, authorizeParams(registered, challenge))
+	assert.Equal(t, http.StatusInternalServerError, res.status, "a registered client gets the error page")
+	assert.Empty(t, res.header.Get("Location"))
+	res = env.get(t, "/oauth/login?request=abc")
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Contains(t, res.body, "Something went wrong")
+	store.set(KindRequest, false)
+
+	store.set(KindClient, true)
+	res = env.authorize(t, authorizeParams("dynamic", challenge))
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"dynamic"}, "refresh_token": {"r"}})
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	res = env.postJSON(t, "/oauth/register", `{"redirect_uris": ["`+testRedirect+`"]}`)
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	store.set(KindClient, false)
+
+	id := env.startLogin(t, authorizeParams("public", challenge))
+	store.set(KindCode, true)
+	res = env.login(t, id, "ana@acme.com", "pw")
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	store.set(KindCode, false)
+
+	verifier, challenge := pkce("t")
+	code := env.codeFor(t, "public", challenge)
+	store.set(KindAccess, true)
+	res = env.exchange(t, code, verifier)
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	assert.Equal(t, http.StatusInternalServerError, env.bearer(t, "any").status)
+	_, err := env.s.AuthFunc()(ctx, "any")
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+	store.set(KindAccess, false)
+
+	code = env.codeFor(t, "public", challenge)
+	store.set(KindRefresh, true)
+	res = env.exchange(t, code, verifier)
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {"r"}})
+	assert.Equal(t, http.StatusInternalServerError, res.status, "a Store outage is not invalid_grant")
+	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	store.set(KindRefresh, false)
+
+	store.set(KindCode, true)
+	res = env.exchange(t, "c", verifier)
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	store.set(KindCode, false)
+
+	// A refresh whose Take succeeded and whose Put failed keeps the token.
+	_, refresh := env.tokens(t)
+	store.set(KindAccess, true)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})
+	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	store.set(KindAccess, false)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})
+	assert.Equal(t, http.StatusOK, res.status, "the refresh token survived the failed attempt: "+res.body)
+	assert.Greater(t, reported.Load(), int32(8), "every hidden Store failure reaches OnError")
+
+	_, err = env.s.Approve(ctx, "missing", testGrant)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	require.NoError(t, env.s.putRecord(ctx, KindRequest, "garbled", "not an object", time.Now().Add(time.Minute)))
+	_, err = env.s.Approve(ctx, "garbled", testGrant)
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+}
