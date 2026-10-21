@@ -3,7 +3,9 @@ package ses
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/suite"
 	"github.com/vanclief/compose/components/configurator"
@@ -82,4 +84,57 @@ func (suite *TestSuite) SetupTest() {
 
 func TestSuiteRun(t *testing.T) {
 	suite.Run(t, new(TestSuite))
+}
+
+func TestGetServicesConcurrentWithSessionRefresh(t *testing.T) {
+	// Static credentials make NewClient build its AWS config without any
+	// network call, so this runs offline.
+	client, err := NewClient(context.Background(), "us-east-1", "test-access-key", "test-secret-key")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
+				sesSvc, err := client.getSESService(ctx)
+				if err != nil || sesSvc == nil {
+					t.Errorf("getSESService: svc=%v err=%v", sesSvc, err)
+					return
+				}
+
+				snsSvc, err := client.getSNSService(ctx)
+				if err != nil || snsSvc == nil {
+					t.Errorf("getSNSService: svc=%v err=%v", snsSvc, err)
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 100; i++ {
+		client.sessionMutex.Lock()
+		client.sessionExpiry = time.Now().Add(-time.Minute)
+		client.sessionMutex.Unlock()
+
+		err := client.ensureValidSession(ctx)
+		if err != nil {
+			t.Errorf("ensureValidSession: %v", err)
+		}
+	}
+
+	close(stop)
+	wg.Wait()
 }
