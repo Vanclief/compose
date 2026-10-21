@@ -828,15 +828,17 @@ func scriptHostLog(ctx context.Context, mod api.Module, stack []uint64) {
 	if !ok {
 		return
 	}
-	if size > room {
+	// One line per log call: a line break in the text could forge the
+	// lines of the tool result after it. The escapes grow the line, so it
+	// is cut after them.
+	line = scriptLineBreaks.Replace(line)
+	cut := size > room || len(line) > room
+	if cut {
 		line = scriptCut(line, room)
 	}
-	// One line per log call: a line break in the text could forge the
-	// lines of the tool result after it.
-	line = scriptLineBreaks.Replace(line)
 	run.logs = append(run.logs, "log: "+line)
 	run.logBytes += len("log: ") + len(line)
-	if size > room {
+	if cut {
 		run.logs = append(run.logs, "log: [truncated]")
 		run.logCut = true
 	}
@@ -857,9 +859,9 @@ func interruptError(parent context.Context, timeout time.Duration) error {
 // carry terminal control sequences either.
 var scriptLineBreaks = strings.NewReplacer("\n", "\\n", "\r", "\\r", "\u0085", "\\u0085", "\u2028", "\\u2028", "\u2029", "\\u2029", "\v", "\\v", "\f", "\\f", "\x1b", "\\x1b")
 
-// scriptCut cuts text to at most limit bytes, then drops the bytes of a
-// character the cut split. It drops at most utf8.UTFMax-1 bytes, so text
-// that was not valid UTF-8 to begin with is not erased.
+// scriptCut cuts text to at most limit bytes, then drops up to three
+// trailing bytes that do not form a whole character: those of a character
+// the cut split, or invalid bytes at the end of the text.
 func scriptCut(text string, limit int) string {
 	text = text[:min(len(text), limit)]
 	for range utf8.UTFMax - 1 {

@@ -766,7 +766,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     {
       "name": "run_script",
       "title": "Run a read-only script",
-      "description": "Run a short JavaScript program on the server and return its console.log lines and its result. Use it for loops, pagination, joins and totals across many calls; do not use it for a single lookup or any write. Inside, api.&lt;module&gt;.&lt;function&gt;(args) calls the same functions with the same names and args as call_function, e.g. api.payments.list_balances({ complex_id: 14 }). Calls are synchronous, return the parsed result and throw an Error with code and message. The code runs as a function body; return a JSON-serializable value. Only read functions are allowed. No network, filesystem, timers, modules or async. Limits: 5 s wall time, 200 calls per run, about 6,000 tokens of output.",
+      "description": "Run a short JavaScript program on the server and return its result, then its console.log lines. Use it for loops, pagination, joins and totals across many calls; do not use it for a single lookup or any write. Inside, api.&lt;module&gt;.&lt;function&gt;(args) calls the same functions with the same names and args as call_function, e.g. api.payments.list_balances({ complex_id: 14 }). Calls are synchronous, return the parsed result and throw an Error with code and message. The code runs as a function body; return a JSON-serializable value. Only read functions are allowed. No network, filesystem, timers, modules or async. Limits: 5 s wall time, 200 calls per run, about 6,000 tokens of output.",
       "inputSchema": {
         "type": "object",
         "properties": { "code": { "type": "string", "minLength": 1 } },
