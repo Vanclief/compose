@@ -161,8 +161,8 @@ func (c *BaseController) WithSES(ctx context.Context, cfg *ses.Config, AWSSecret
 		ses.WithPushNotificationARN(cfg.PushNotificationARN),
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to setup AWS Client")
-		os.Exit(1)
+		log.Error().Err(err).Msg("Failed to setup AWS Client")
+		return nil, ez.Wrap(err)
 	}
 
 	return sesClient, nil
@@ -177,8 +177,8 @@ func (c *BaseController) WithS3(ctx context.Context, cfg *s3.Config, S3SecretKey
 
 	s3Client, err := s3.NewClient(ctx, cfg.Region, cfg.AccessKeyID, S3SecretKey, cfg.Bucket, opts...)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to setup S3 Client")
-		os.Exit(1)
+		log.Error().Err(err).Msg("Failed to setup S3 Client")
+		return nil, ez.Wrap(err)
 	}
 
 	return s3Client, nil
