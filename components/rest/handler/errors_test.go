@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/labstack/echo/v4"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/ez"
@@ -55,4 +58,33 @@ func TestManageErrorSentryGate(t *testing.T) {
 			require.Equal(t, tt.level, transport.events[0].Level)
 		})
 	}
+}
+
+type loginBody struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (b *loginBody) Validate() error { return nil }
+
+func TestManageErrorDoesNotLogBody(t *testing.T) {
+	var buf bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&buf)
+	t.Cleanup(func() { log.Logger = previous })
+
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", nil), httptest.NewRecorder())
+
+	request := requests.New(http.Header{}, "127.0.0.1")
+	request.SetBody(&loginBody{Email: "user@example.com", Password: "s3cr3t-password"})
+
+	err := NewHandler(nil).ManageError(c, "test", request, ez.New(ez.EINVALID, "bad credentials", nil))
+	require.NoError(t, err)
+
+	output := buf.String()
+	require.Contains(t, output, "Request Error")
+	require.Contains(t, output, "*handler.loginBody")
+	require.NotContains(t, output, "s3cr3t-password")
+	require.NotContains(t, output, "user@example.com")
+	require.NotContains(t, output, "request_json")
 }

@@ -21,7 +21,6 @@ func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Re
 		Str("error_message", ez.ErrorMessage(err)).
 		Str("request_client", request.GetClient()).
 		Str("request_ip", request.GetIP()).
-		Interface("request_json", request.GetBody()).
 		Msg("Request Error")
 
 	// Internal errors are bugs. Timeouts and unavailability are usually a vendor
