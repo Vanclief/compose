@@ -1292,7 +1292,7 @@
       const args = [];
       for (const [k, v] of formFields(text)) {
         fd.append(k, v);
-        args.push('-F ' + shellQuote(k + '=' + v));
+        args.push('--form-string ' + shellQuote(k + '=' + v));
       }
       return { body: fd, args };
     }

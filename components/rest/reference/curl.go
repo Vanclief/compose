@@ -24,8 +24,9 @@ import (
 // describes. Credentials from the first security requirement appear as shell
 // variables such as $API_KEY or $TOKEN, double-quoted so the shell expands
 // them. The body is the example of the first request content type: JSON as
-// -d, multipart/form-data as one -F per property, form-urlencoded as one
-// --data-urlencode per property, and anything else as --data-binary '@file'.
+// -d, multipart/form-data as one --form-string per property (-F field=@path
+// for binary properties), form-urlencoded as one --data-urlencode per
+// property, and anything else as --data-binary '@file'.
 func (d *Document) Curl(method, path string, item *PathItem, op *Operation, server string) string {
 	method = strings.ToUpper(method)
 	server = d.serverURL(op, server)
@@ -337,8 +338,8 @@ func (d *Document) bodyArgs(op *Operation) []string {
 
 	switch mediaType(contentType) {
 	case "multipart/form-data":
-		// curl -F sets the multipart Content-Type with its boundary.
-		return d.formArgs(mt, "-F ")
+		// curl sets the multipart Content-Type with its boundary.
+		return d.formArgs(mt, "--form-string ")
 	case "application/x-www-form-urlencoded":
 		return append([]string{"-H " + shellQuote("Content-Type: "+contentType)}, d.formArgs(mt, "--data-urlencode ")...)
 	}
@@ -356,9 +357,10 @@ func (d *Document) bodyArgs(op *Operation) []string {
 }
 
 // formArgs returns one flag per property of the media type's example object,
-// repeating the flag for each item of an array value. With -F, properties
-// whose schema is format: binary (or an array of those) are sent as a file
-// upload, field=@path.
+// repeating the flag for each item of an array value. For multipart,
+// properties whose schema is format: binary (or an array of those) are sent as
+// a file upload, -F field=@path; every other value uses --form-string, so a
+// value starting with @ or < is sent literally instead of reading a local file.
 func (d *Document) formArgs(mt *MediaType, flag string) []string {
 	v, ok := d.MediaExample(mt, ForRequest)
 	if !ok {
@@ -377,8 +379,8 @@ func (d *Document) formArgs(mt *MediaType, flag string) []string {
 	var args []string
 	for _, key := range keys {
 		prop, _ := props.Get(key)
-		if flag == "-F " && d.isBinary(prop) {
-			args = append(args, flag+shellQuote(key+"=@path"))
+		if flag == "--form-string " && d.isBinary(prop) {
+			args = append(args, "-F "+shellQuote(key+"=@path"))
 			continue
 		}
 		items, isArray := values[key].([]any)
@@ -456,8 +458,11 @@ func shellQuote(s string) string {
 }
 
 // shellPlaceholder double-quotes literal followed by $variable so the shell
-// expands the variable and nothing else: "API-KEY: $API_KEY".
+// expands the variable and nothing else: "API-KEY: $API_KEY". An
+// interactive bash also expands ! as history inside double quotes, and a
+// backslash before it would stay in the word, so ! closes the quotes and is
+// written single-quoted: "X-Key"'!'": $X_KEY".
 func shellPlaceholder(literal, variable string) string {
-	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(literal)
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`", "!", `"'!'"`).Replace(literal)
 	return `"` + escaped + "$" + variable + `"`
 }
