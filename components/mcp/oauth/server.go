@@ -97,19 +97,39 @@ func New(cfg Config) (*Server, error) {
 		return http.ErrUseLastResponse
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:          cfg,
 		resourcePath: resourcePath,
 		issuerPath:   issuerPath,
 		client:       &client,
-	}, nil
+	}
+	err = s.checkRoutes()
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+	return s, nil
+}
+
+// checkRoutes rejects an Issuer and Resource whose paths put two endpoints,
+// or an endpoint and the MCP endpoint of Mount, at the same method and path:
+// Handler would panic and Mount would let one replace the other.
+func (s *Server) checkRoutes() error {
+	seen := map[string]bool{}
+	for _, r := range s.routes() {
+		key := r.method + " " + r.path
+		if seen[key] || r.path == s.mcpPath() {
+			return ez.New(ez.EINVALID, "oauth: Config.Issuer and Config.Resource put two endpoints at "+r.path+", change one of them", nil)
+		}
+		seen[key] = true
+	}
+	return nil
 }
 
 // baseURLPath checks that raw is a URL whose path the routers can serve, and
 // returns that path decoded. raw must be absolute, without user info, use
 // https (http is allowed for localhost), have no query or fragment, not end
-// with a slash, percent-encode its path canonically, decode to a path without
-// { } % : or * and have a clean path.
+// with a slash, decode to a path without { } % : or *, percent-encode its path
+// canonically and have a clean path.
 func baseURLPath(name, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -127,15 +147,15 @@ func baseURLPath(name, raw string) (string, error) {
 	if strings.HasSuffix(raw, "/") {
 		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must not end with a slash", nil)
 	}
-	// Routes use the decoded path and the challenge the escaped one, so they
-	// only agree when the path is escaped the canonical way.
-	if u.RawPath != "" {
-		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path canonically, as (&url.URL{Path: p}).EscapedPath() writes it, with uppercase hex and no needless escapes, such as /m%C3%A9", nil)
-	}
 	// Handler and Mount use the path in route patterns, where these
 	// characters are wildcard or parameter syntax, or are unescaped again.
 	if strings.ContainsAny(u.Path, "{}%:*") {
 		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" path cannot contain { } % : or *, which the routers treat as syntax", nil)
+	}
+	// Routes use the decoded path and the challenge the escaped one, so they
+	// only agree when the path is escaped the canonical way.
+	if u.RawPath != "" {
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path canonically, as (&url.URL{Path: p}).EscapedPath() writes it for the decoded path p, with uppercase hex and no needless escapes, such as /m%C3%A9. Go also escapes ! ' ( ) [ ], so write them as %21 %27 %28 %29 %5B %5D", nil)
 	}
 	// Handler panics on a route pattern with an unclean path.
 	if u.Path != "" && path.Clean(u.Path) != u.Path {
@@ -150,16 +170,22 @@ func isLocalHost(host string) bool {
 }
 
 // Mount registers every endpoint on e and serves mcpHandler at the path of
-// Resource behind Protect.
+// Resource behind Protect. Echo matches the raw request path, so clients must
+// request the published URLs byte for byte: a re-encoded form such as %c3%a9
+// for %C3%A9 is not found.
 func (s *Server) Mount(e *echo.Echo, mcpHandler http.Handler) {
 	for _, r := range s.routes() {
 		e.Add(r.method, r.path, echo.WrapHandler(r.handler))
 	}
-	mcpPath := s.resourcePath
-	if mcpPath == "" {
-		mcpPath = "/"
+	e.Any(s.mcpPath(), echo.WrapHandler(s.Protect(mcpHandler)))
+}
+
+// mcpPath is the path Mount serves the MCP endpoint at.
+func (s *Server) mcpPath() string {
+	if s.resourcePath == "" {
+		return "/"
 	}
-	e.Any(mcpPath, echo.WrapHandler(s.Protect(mcpHandler)))
+	return s.resourcePath
 }
 
 // Handler serves the authorization server endpoints (metadata, register,
@@ -180,15 +206,19 @@ func (s *Server) routes() []route {
 	register := cors(s.serveRegister)
 	token := cors(s.serveToken)
 
-	metadataPaths := map[string]http.HandlerFunc{
-		s.issuerPath + "/.well-known/oauth-authorization-server": asMetadata,
-		"/.well-known/oauth-authorization-server" + s.issuerPath: asMetadata,
-		"/.well-known/oauth-protected-resource" + s.resourcePath: resourceMetadata,
-		"/.well-known/oauth-protected-resource":                  resourceMetadata,
-	}
 	var routes []route
-	for pattern, handler := range metadataPaths {
-		routes = append(routes, route{http.MethodGet, pattern, handler}, route{http.MethodOptions, pattern, handler})
+	metadata := func(p string, handler http.HandlerFunc) {
+		routes = append(routes, route{http.MethodGet, p, handler}, route{http.MethodOptions, p, handler})
+	}
+	// Each document is served at two paths, which are one when the path of
+	// Issuer or Resource is empty. Other repeats are left for checkRoutes.
+	metadata(s.issuerPath+"/.well-known/oauth-authorization-server", asMetadata)
+	if s.issuerPath != "" {
+		metadata("/.well-known/oauth-authorization-server"+s.issuerPath, asMetadata)
+	}
+	metadata("/.well-known/oauth-protected-resource", resourceMetadata)
+	if s.resourcePath != "" {
+		metadata("/.well-known/oauth-protected-resource"+s.resourcePath, resourceMetadata)
 	}
 	routes = append(routes,
 		route{http.MethodPost, s.issuerPath + "/oauth/register", register},

@@ -266,9 +266,32 @@ func TestNewValidation(t *testing.T) {
 		"issuer escaped %":      func(c *Config) { c.Issuer = "https://api.acme.com/a%2525b" },
 		"resource colon":        func(c *Config) { c.Resource = "https://api.acme.com/:id" },
 		"resource star":         func(c *Config) { c.Resource = "https://api.acme.com/a%2A" },
-		"store missing":         func(c *Config) { c.Store = nil },
-		"no login":              func(c *Config) { c.Login = Login{} },
-		"both logins":           func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
+		"resource is issuer authorize": func(c *Config) {
+			c.Issuer = "https://api.acme.com/.well-known/oauth-protected-resource"
+			c.Resource = "https://api.acme.com/oauth/authorize"
+		},
+		"resource is issuer register": func(c *Config) {
+			c.Issuer = "https://api.acme.com/.well-known/oauth-protected-resource"
+			c.Resource = "https://api.acme.com/oauth/register"
+		},
+		"resource metadata is issuer metadata": func(c *Config) {
+			c.Issuer = "https://api.acme.com/.well-known/oauth-protected-resource"
+			c.Resource = "https://api.acme.com/.well-known/oauth-authorization-server"
+		},
+		"resource is token endpoint": func(c *Config) {
+			c.Issuer = "https://api.acme.com/x"
+			c.Resource = "https://api.acme.com/x/oauth/token"
+		},
+		"resource is authorize endpoint": func(c *Config) {
+			c.Issuer = "https://api.acme.com/x"
+			c.Resource = "https://api.acme.com/x/oauth/authorize"
+		},
+		"resource is login endpoint":    func(c *Config) { c.Resource = "https://api.acme.com/oauth/login" },
+		"resource is server metadata":   func(c *Config) { c.Resource = "https://api.acme.com/.well-known/oauth-authorization-server" },
+		"resource is resource metadata": func(c *Config) { c.Resource = "https://api.acme.com/.well-known/oauth-protected-resource" },
+		"store missing":                 func(c *Config) { c.Store = nil },
+		"no login":                      func(c *Config) { c.Login = Login{} },
+		"both logins":                   func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
 		"login URL invalid": func(c *Config) {
 			c.Login = Login{}
 			c.LoginURL = "https://app.acme.com/%zz"
@@ -315,6 +338,31 @@ func TestNewValidation(t *testing.T) {
 	_, err = New(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Config.Issuer", "the error names the field")
+
+	cfg = valid()
+	cfg.Issuer = "https://api.acme.com/x"
+	cfg.Resource = "https://api.acme.com/x/oauth/token"
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.Resource", "the error names the field")
+	assert.Contains(t, err.Error(), "/x/oauth/token", "the error names the path")
+
+	// The syntax check runs on the decoded path first, so a path with a
+	// syntax character gets that error and not a canonical-encoding one.
+	for _, escaped := range []string{"/a%3Ab", "/a*", "/a}"} {
+		cfg = valid()
+		cfg.Resource = "https://api.acme.com" + escaped
+		_, err = New(cfg)
+		require.Error(t, err, escaped)
+		assert.Contains(t, err.Error(), "cannot contain", escaped)
+	}
+
+	cfg = valid()
+	cfg.Resource = "https://api.acme.com/a!b"
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "for the decoded path p", "the message says what p is")
+	assert.Contains(t, err.Error(), "%21", "the message names the escape Go writes")
 
 	s, err := New(valid())
 	require.NoError(t, err)
@@ -427,27 +475,66 @@ func TestHandler(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-// TestHandlerAcceptedPaths: every path New accepts makes valid ServeMux
-// patterns that serve the metadata documents.
+// TestHandlerAcceptedPaths: Issuer and Resource paths New accepts make valid
+// ServeMux and Echo routes that serve the metadata documents and the token
+// endpoint, and on Echo the MCP endpoint answers with a challenge whose URL
+// serves the resource metadata.
 func TestHandlerAcceptedPaths(t *testing.T) {
-	for _, escaped := range []string{"", "/mcp", "/m%20cp", "/m%C3%A9"} {
-		t.Run(escaped, func(t *testing.T) {
-			base := "https://x" + escaped
-			s, err := New(Config{Issuer: base, Resource: base, Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	pairs := [][2]string{
+		{"", ""},
+		{"/mcp", "/mcp"},
+		{"/m%20cp", "/m%20cp"},
+		{"/m%C3%A9", "/m%C3%A9"},
+		{"/a%20/b", "/a%20/b"},
+		{"/a%3Fb", "/a%3Fb"},
+		{"/a%23b", "/a%23b"},
+		{"/v1/mcp", "/v1/mcp"},
+		{"/a%21b", "/a%21b"},
+		// Close to the collisions TestNewValidation rejects.
+		{"/.well-known/oauth-protected-resource", "/mcp"},
+		{"/x", "/x/oauth"},
+	}
+	for _, pair := range pairs {
+		issuer := pair[0]
+		resource := pair[1]
+		t.Run(issuer+" "+resource, func(t *testing.T) {
+			s, err := New(Config{Issuer: "https://x" + issuer, Resource: "https://x" + resource, Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 			require.NoError(t, err)
-			var h http.Handler
+			var mux http.Handler
 			require.NotPanics(t, func() {
-				h = s.Handler()
+				mux = s.Handler()
 			})
-			for _, path := range []string{
-				escaped + "/.well-known/oauth-authorization-server",
-				"/.well-known/oauth-authorization-server" + escaped,
-				"/.well-known/oauth-protected-resource" + escaped,
-			} {
+			e := echo.New()
+			s.Mount(e, http.NotFoundHandler())
+
+			for name, h := range map[string]http.Handler{"ServeMux": mux, "Echo": e} {
+				for _, path := range []string{
+					issuer + "/.well-known/oauth-authorization-server",
+					"/.well-known/oauth-authorization-server" + issuer,
+					"/.well-known/oauth-protected-resource" + resource,
+					"/.well-known/oauth-protected-resource",
+				} {
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+					assert.Equal(t, http.StatusOK, rec.Code, name+" "+path)
+				}
 				rec := httptest.NewRecorder()
-				h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-				assert.Equal(t, http.StatusOK, rec.Code, path)
+				h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, issuer+"/oauth/token", strings.NewReader("grant_type=password")))
+				assert.Equal(t, http.StatusBadRequest, rec.Code, name+" token")
 			}
+
+			mcpPath := resource
+			if mcpPath == "" {
+				mcpPath = "/"
+			}
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, mcpPath, nil))
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			metadataURL := "https://x/.well-known/oauth-protected-resource" + resource
+			assert.Equal(t, `Bearer resource_metadata="`+metadataURL+`"`, rec.Header().Get("WWW-Authenticate"))
+			rec = httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, metadataURL, nil))
+			assert.Equal(t, http.StatusOK, rec.Code, metadataURL)
 		})
 	}
 }
