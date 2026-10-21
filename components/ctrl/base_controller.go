@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -14,6 +15,10 @@ import (
 	"github.com/vanclief/compose/integrations/promtail"
 	"github.com/vanclief/ez"
 )
+
+// fatalDrainTimeout bounds how long a Fatal exit waits for Loki to receive the
+// buffered log lines before the process exits.
+const fatalDrainTimeout = 5 * time.Second
 
 type BaseController struct {
 	Environment string
@@ -68,7 +73,7 @@ func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error
 		}
 
 		c.promtail = client
-		c.logWriter = io.MultiWriter(os.Stdout, client)
+		c.logWriter = &promtailWriter{stdout: os.Stdout, client: client}
 	}
 
 	log.Logger = log.Output(c.logWriter)
@@ -92,6 +97,45 @@ func (c *BaseController) CloseLogs(ctx context.Context) error {
 	}
 
 	err := c.promtail.Close(ctx)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	return nil
+}
+
+// promtailWriter writes every line to stdout and to Promtail. Unlike
+// io.MultiWriter it is an io.Closer, which zerolog's Fatal relies on: it closes
+// the logger's writer before os.Exit, and the zerolog.ConsoleWriter set by
+// WithZerolog forwards that Close to its Out. Without it the lines still
+// buffered in the client would be lost on log.Fatal or rest.Start's
+// e.Logger.Fatal.
+type promtailWriter struct {
+	stdout io.Writer
+	client *promtail.Client
+}
+
+var _ io.Closer = (*promtailWriter)(nil)
+
+// Write writes p to stdout and then to the client, returning the first error
+// like io.MultiWriter. The client queues p and never fails.
+func (w *promtailWriter) Write(p []byte) (int, error) {
+	n, err := w.stdout.Write(p)
+	if err != nil {
+		return n, ez.Wrap(err)
+	}
+
+	return w.client.Write(p)
+}
+
+// Close pushes the lines still buffered in the client, waiting at most
+// fatalDrainTimeout. Client.Close is idempotent, so it is safe for both
+// zerolog's Fatal hook and CloseLogs to close the same client.
+func (w *promtailWriter) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), fatalDrainTimeout)
+	defer cancel()
+
+	err := w.client.Close(ctx)
 	if err != nil {
 		return ez.Wrap(err)
 	}
