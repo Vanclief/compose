@@ -21,13 +21,14 @@ import (
 )
 
 const (
-	pushPath        = "/loki/api/v1/push"
-	flushInterval   = time.Second
-	maxBatchBytes   = 1 << 20
-	bufferedLines   = 10000
-	maxPushAttempts = 3
-	retryBackoff    = 250 * time.Millisecond
-	maxLabelValues  = 100
+	pushPath           = "/loki/api/v1/push"
+	flushInterval      = time.Second
+	maxBatchBytes      = 1 << 20
+	bufferedLines      = 10000
+	maxPushAttempts    = 3
+	retryBackoff       = 250 * time.Millisecond
+	maxLabelValues     = 100
+	labelResetInterval = time.Hour
 )
 
 // Taken from https://github.com/acarl005/stripansi
@@ -55,8 +56,9 @@ type Client struct {
 	done    chan struct{}
 
 	// seen holds the distinct values accepted per label name, capped at
-	// maxLabelValues to bound stream cardinality, and capped records the names
-	// already reported as over the cap. Both are only touched from run.
+	// maxLabelValues per labelResetInterval to bound stream cardinality, and
+	// capped records the names already reported as over the cap in the current
+	// interval. Both are cleared every interval and only touched from run.
 	seen   map[string]map[string]struct{}
 	capped map[string]bool
 
@@ -186,6 +188,9 @@ func (c *Client) run() {
 	ticker := time.NewTicker(c.flushInterval)
 	defer ticker.Stop()
 
+	labelReset := time.NewTicker(labelResetInterval)
+	defer labelReset.Stop()
+
 	var pending batch
 	for {
 		select {
@@ -193,6 +198,8 @@ func (c *Client) run() {
 			c.add(&pending, l)
 		case <-ticker.C:
 			c.flush(&pending)
+		case <-labelReset.C:
+			c.resetLabelValues()
 		case <-c.stop:
 			c.drain(&pending)
 			return
@@ -329,8 +336,8 @@ func (c *Client) request(lines []line) pushRequest {
 // fields, so a token injected through the message cannot override the real
 // field. The label is then dropped when that final value is outside
 // labelValueRegex, so an invalid real value never falls back to an injected
-// one. A name keeps at most maxLabelValues distinct values, later ones are
-// dropped.
+// one. A name keeps at most maxLabelValues distinct values per
+// labelResetInterval, later ones are dropped until the next reset.
 func (c *Client) labels(text string) map[string]string {
 	labels := map[string]string{}
 
@@ -357,7 +364,8 @@ func (c *Client) labels(text string) map[string]string {
 }
 
 // allowLabelValue records value for name and reports whether it fits within
-// maxLabelValues distinct values. The first rejection per name goes to stderr.
+// maxLabelValues distinct values. The first rejection per name and interval
+// goes to stderr.
 func (c *Client) allowLabelValue(name, value string) bool {
 	values, ok := c.seen[name]
 	if !ok {
@@ -381,4 +389,11 @@ func (c *Client) allowLabelValue(name, value string) bool {
 	}
 
 	return false
+}
+
+// resetLabelValues starts a new cardinality window, so an early burst of values
+// cannot remove a label for the rest of the process.
+func (c *Client) resetLabelValues() {
+	clear(c.seen)
+	clear(c.capped)
 }

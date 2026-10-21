@@ -412,3 +412,27 @@ func TestClientLabelsDropValuesPastLimit(t *testing.T) {
 	assert.True(t, client.capped["method"])
 	assert.False(t, client.capped["status"])
 }
+
+func TestClientLabelsAcceptValuesAgainAfterReset(t *testing.T) {
+	client, err := newClient(testParams("http://loki"))
+	require.NoError(t, err)
+
+	for i := range maxLabelValues {
+		labels := client.labels("INF request method=m" + strconv.Itoa(i) + " status=200")
+		assert.Equal(t, "m"+strconv.Itoa(i), labels["method"])
+	}
+
+	labels := client.labels("INF request method=late status=200")
+	assert.NotContains(t, labels, "method")
+	assert.True(t, client.capped["method"])
+
+	client.resetLabelValues()
+	assert.Empty(t, client.seen)
+	assert.Empty(t, client.capped)
+
+	// A new window accepts the value dropped before and can warn again
+	labels = client.labels("INF request method=late status=200")
+	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "late", "status": "200"}, labels)
+	assert.Len(t, client.seen["method"], 1)
+	assert.Empty(t, client.capped)
+}
