@@ -256,6 +256,10 @@ func TestNewValidation(t *testing.T) {
 		"resource http":         func(c *Config) { c.Resource = "http://api.acme.com/mcp" },
 		"resource escaped /":    func(c *Config) { c.Resource = "https://api.acme.com/a%2Fmcp" },
 		"issuer escaped a":      func(c *Config) { c.Issuer = "https://api.acme.com/%61uth" },
+		"issuer dot segment":    func(c *Config) { c.Issuer = "https://api.acme.com/a/../b" },
+		"issuer double slash":   func(c *Config) { c.Issuer = "https://api.acme.com/a//b" },
+		"resource dot segment":  func(c *Config) { c.Resource = "https://api.acme.com/a/../b" },
+		"resource double slash": func(c *Config) { c.Resource = "https://api.acme.com/a//b" },
 		"store missing":         func(c *Config) { c.Store = nil },
 		"no login":              func(c *Config) { c.Login = Login{} },
 		"both logins":           func(c *Config) { c.LoginURL = "https://app.acme.com/login" },
@@ -287,6 +291,12 @@ func TestNewValidation(t *testing.T) {
 	_, err := New(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Config.Resource", "the error names the field")
+
+	cfg = valid()
+	cfg.Issuer = "https://api.acme.com/a//b"
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.Issuer", "the error names the field")
 
 	s, err := New(valid())
 	require.NoError(t, err)
@@ -1017,6 +1027,30 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 		store.set(KindAccess, false)
 		store.setDelay(0)
 		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		retry(t, refresh)
+	})
+
+	t.Run("take outlasts refreshTimeout", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		saved := refreshTimeout
+		refreshTimeout = 50 * time.Millisecond
+		defer func() {
+			refreshTimeout = saved
+		}()
+		store.set(KindRefresh, true)
+		store.setDelay(2 * refreshTimeout)
+		mu.Lock()
+		before := len(reportedCtxErrs)
+		mu.Unlock()
+		res := refreshWith(context.Background(), refresh)
+		store.set(KindRefresh, false)
+		store.setDelay(0)
+		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		mu.Lock()
+		reported := reportedCtxErrs[before:]
+		mu.Unlock()
+		require.Len(t, reported, 1, "the failed take reaches OnError")
+		assert.NoError(t, reported[0], "OnError gets a live context after the take deadline")
 		retry(t, refresh)
 	})
 
