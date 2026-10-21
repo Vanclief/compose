@@ -2,6 +2,7 @@ package ctrl
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,7 +15,10 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/compose/integrations/aws/s3"
+	"github.com/vanclief/compose/integrations/aws/ses"
 	"github.com/vanclief/compose/integrations/promtail"
+	"github.com/vanclief/ez"
 )
 
 // fakeLoki records the log lines pushed to it.
@@ -161,4 +165,26 @@ func TestWithPromtailLogWriterIsCloser(t *testing.T) {
 	// CloseLogs closes the same client again and must still succeed
 	err = c.CloseLogs(t.Context())
 	require.NoError(t, err)
+}
+
+// TestWithSESReturnsClientError checks that a client setup failure is returned
+// to the caller instead of exiting the process.
+func TestWithSESReturnsClientError(t *testing.T) {
+	c := &BaseController{}
+
+	client, err := c.WithSES(context.Background(), &ses.Config{}, "secret")
+	require.Error(t, err)
+	assert.Nil(t, client)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+}
+
+// TestWithS3ReturnsClientError checks that a client setup failure is returned
+// to the caller instead of exiting the process.
+func TestWithS3ReturnsClientError(t *testing.T) {
+	c := &BaseController{}
+
+	client, err := c.WithS3(context.Background(), &s3.Config{}, "secret")
+	require.Error(t, err)
+	assert.Nil(t, client)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 }
