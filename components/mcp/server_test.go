@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -250,6 +251,14 @@ func TestServerNewErrors(t *testing.T) {
 	_, err = New(cfg)
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 	assert.Contains(t, ez.ErrorMessage(err), "accounts.nobody")
+
+	// whoami calls the function with no arguments, so one that requires an
+	// argument would fail on every call.
+	cfg = shopConfig(t)
+	cfg.WhoAmI = "orders.get_order"
+	_, err = New(cfg)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Contains(t, ez.ErrorMessage(err), "order_id is required")
 }
 
 func TestServerTools(t *testing.T) {
@@ -449,7 +458,7 @@ console.log("items", items.length)
 return {id: o.id, key: o.key, items: items.length}`
 	text, failed := callTool(t, session, "run_script", map[string]any{"code": code})
 	assert.False(t, failed, text)
-	assert.Equal(t, `log: items 3`+"\n"+`{"id":7,"key":"key","items":3}`, text)
+	assert.Equal(t, `{"id":7,"key":"key","items":3}`+"\n"+`log: items 3`, text)
 
 	code = `console.log("before")
 api.orders.cancel_order({order_id: 7})`
@@ -529,7 +538,7 @@ return 1`
 
 	text, failed = callTool(t, connect(t, s, "key:secret"), "run_script", map[string]any{"code": code})
 	assert.False(t, failed, text)
-	assert.Equal(t, "log: ran\n1", text)
+	assert.Equal(t, "1\nlog: ran", text)
 }
 
 func TestServerRecoversToolPanic(t *testing.T) {
@@ -649,4 +658,71 @@ func TestServerReference(t *testing.T) {
 	for _, f := range s.Catalog().Functions() {
 		assert.Contains(t, page, f.Name)
 	}
+}
+
+// TestServerRunScriptSlotBeforeWhoAmI: a run takes its slot before the
+// WhoAmI call, so callers cannot make identity requests while every slot is
+// busy.
+func TestServerRunScriptSlotBeforeWhoAmI(t *testing.T) {
+	shop := shopApp()
+	var whoami atomic.Int32
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	cfg := shopConfig(t)
+	cfg.Script.Enabled = true
+	cfg.Script.MaxConcurrent = 1
+	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me" {
+			whoami.Add(1)
+		}
+		if r.URL.Path == "/items" {
+			close(entered)
+			select {
+			case <-unblock:
+			case <-r.Context().Done():
+			}
+		}
+		shop.ServeHTTP(w, r)
+	})
+	s := newShopServer(t, cfg)
+	first := connect(t, s, "first:x")
+	second := connect(t, s, "second:x")
+
+	done := make(chan *mcp.CallToolResult)
+	go func() {
+		res, err := first.CallTool(context.Background(), &mcp.CallToolParams{Name: "run_script", Arguments: map[string]any{"code": `return api.items.list_items({limit: 1}).length`}})
+		assert.NoError(t, err)
+		done <- res
+	}()
+	<-entered
+
+	text, failed := callTool(t, second, "run_script", map[string]any{"code": "return 1"})
+	assert.True(t, failed)
+	assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": too many scripts are running; try again shortly", text)
+	assert.Equal(t, int32(1), whoami.Load())
+
+	close(unblock)
+	res := <-done
+	require.NotNil(t, res)
+	require.Len(t, res.Content, 1)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
+	assert.Equal(t, int32(1), whoami.Load())
+}
+
+// TestServerScriptKey: callers are keyed by a hash of the bearer token, or
+// of the WhoAmI response, in separate key spaces.
+func TestServerScriptKey(t *testing.T) {
+	token := scriptKey("key:secret", []byte(`{"id":1}`))
+	assert.True(t, strings.HasPrefix(token, "token:"), token)
+	assert.NotContains(t, token, "secret")
+	assert.Equal(t, token, scriptKey("key:secret", []byte(`{"id":2}`)))
+
+	me := scriptKey("", []byte(`{"id":1}`))
+	assert.True(t, strings.HasPrefix(me, "whoami:"), me)
+	assert.NotContains(t, me, "id")
+	assert.NotEqual(t, me, scriptKey("", []byte(`{"id":2}`)))
+
+	// A token equal to a WhoAmI response does not share its key.
+	assert.NotEqual(t, scriptKey(`{"id":1}`, nil), me)
 }

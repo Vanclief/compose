@@ -71,7 +71,8 @@ type Config struct {
 	// API authenticates with. Defaults to BearerToHeaders("API-KEY", "API-SECRET").
 	Auth AuthFunc
 	// WhoAmI names the catalog function that whoami calls with no arguments,
-	// for example "users.me". Empty makes whoami report the server identity only.
+	// for example "users.me"; New refuses a function with a required
+	// argument. Empty makes whoami report the server identity only.
 	WhoAmI string
 	// Composites are hand-written functions added to the catalog.
 	Composites []Composite
@@ -133,7 +134,9 @@ type Concept struct {
 // Timeout: the deadline is checked inside the compiled code, so native
 // builtins such as JSON.stringify, regular expressions and array scans stop
 // at the timeout too, and the runtime is then discarded. The timeout covers
-// the whole run, function calls included.
+// the whole run, function calls included. Go host code cannot be
+// interrupted, so a Caller that ignores its context can hold a script, and
+// its slot, past the timeout.
 //
 // Reach: the guest has no network, no environment, no files, no timers and
 // no modules: QuickJS's standard library is not linked, so there is no std,
@@ -149,16 +152,20 @@ type Concept struct {
 // guest, a result over its cap fails the script, and console.log output is
 // capped in lines and bytes. The source of a script is capped as well. A
 // panic in a function call reaches the script as a generic error and
-// Config.OnError with its stack.
+// Config.OnError with its stack. The tool result puts the script's result,
+// or its error, first and the console.log lines after it, so the output cap
+// of the tool cuts logs, not the result.
 //
 // Concurrency: MaxConcurrent bounds the scripts running at once across all
 // callers, and each caller runs one script at a time. Both refusals are
 // ERESOURCEEXHAUSTED: a caller whose script is still running is refused at
-// once, and a script that finds every slot busy waits briefly first. Callers
-// are told apart by their bearer token, or by the JSON their WhoAmI call
-// returns when the request carries none. A script takes only the memory it
-// uses, up to the linear memory maximum, so the scripts of one Server hold
-// at most MaxConcurrent times that maximum plus overhead; several Servers
+// once, and a script that finds every slot busy waits briefly first. A run
+// takes its slot before the WhoAmI call, so callers cannot make identity
+// requests while every slot is busy. Callers are told apart by a hash of
+// their bearer token, or of the JSON their WhoAmI call returns when the
+// request carries none. A script takes only the memory it uses, up to the
+// linear memory maximum, so the scripts of one Server hold at most
+// MaxConcurrent times that maximum plus overhead; several Servers
 // in one process each allow that many. The ceiling does not bound the REST
 // handler or the rest of the process, and decoding a call's arguments in
 // Go can briefly cost tens of MiB of heap per MiB of JSON.

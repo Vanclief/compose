@@ -21,8 +21,11 @@
  *         run(code)      compiles code with new Function and calls it,
  *         encode(value)  returns the JSON text of value, always a string,
  *         describe(e)    returns the text of a thrown value, always a string.
- *       run passes the code to shim.run as a string argument, never as
- *       source text, so it cannot break out of its function. It then runs
+ *       run passes the code to shim.run as a string argument and never
+ *       splices it into source the shim evaluates. new Function compiles
+ *       it at global scope, so code that closes its function body early
+ *       only reaches global scope, where the shim keeps nothing it depends
+ *       on. It then runs
  *       the pending jobs, settles a returned promise (fulfilled: its value;
  *       rejected: its reason is thrown; pending after the jobs ran: a
  *       TypeError) and encodes the value. It stores a malloc'd copy of a

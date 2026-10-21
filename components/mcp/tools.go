@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -227,14 +229,20 @@ func (s *Server) callFunction(ctx context.Context, req *mcp.CallToolRequest, cal
 	return text, true
 }
 
-// runScript runs the agent's program; on error the error line comes first
-// and the log lines collected so far follow it. Scripts are only for
-// callers whose credentials pass the WhoAmI call, and each caller, keyed
-// by its bearer token or else
-// the WhoAmI response, runs one at a time. Other WhoAmI failures, such as an
-// outage, are reported as what they are. Internal failures of the runtime
-// also go to Config.OnError.
+// runScript runs the agent's program. The result, or on error the error
+// line, comes first and the log lines collected follow it, so the output cap
+// cuts logs. Scripts are only for callers whose credentials pass the WhoAmI
+// call, and each caller, keyed by its bearer token or else the WhoAmI
+// response, runs one at a time. The slot is taken before the WhoAmI call, so
+// callers cannot make identity requests while every slot is busy. Other
+// WhoAmI failures, such as an outage, are reported as what they are.
+// Internal failures of the runtime also go to Config.OnError.
 func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *caller, in scriptInput) (string, bool) {
+	releaseSlot, err := s.scripts.slot(ctx)
+	if err != nil {
+		return errorText(err), true
+	}
+	defer releaseSlot()
 	me, err := call.Call(ctx, s.cfg.WhoAmI, nil)
 	if err != nil {
 		code := ez.ErrorCode(err)
@@ -246,11 +254,7 @@ func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *
 	if s.cfg.Script.Allow != nil && !s.cfg.Script.Allow(ctx, me) {
 		return errorText(ez.New(ez.ENOTAUTHORIZED, "mcp: run_script is not enabled for this account", nil)), true
 	}
-	key := bearerToken(req)
-	if key == "" {
-		key = string(me)
-	}
-	release, err := s.scripts.acquire(ctx, key)
+	release, err := s.scripts.claim(scriptKey(bearerToken(req), me))
 	if err != nil {
 		return errorText(err), true
 	}
@@ -268,4 +272,16 @@ func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *
 		text += "\n" + out
 	}
 	return text, true
+}
+
+// scriptKey identifies the caller of a script by its bearer token, or by its
+// WhoAmI response when it sent none. Both are hashed, so the limiter holds no
+// credentials, and prefixed, so a token cannot pose as a WhoAmI response.
+func scriptKey(token string, me []byte) string {
+	if token != "" {
+		sum := sha256.Sum256([]byte(token))
+		return "token:" + hex.EncodeToString(sum[:])
+	}
+	sum := sha256.Sum256(me)
+	return "whoami:" + hex.EncodeToString(sum[:])
 }

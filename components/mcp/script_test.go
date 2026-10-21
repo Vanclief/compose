@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -271,10 +272,10 @@ return "done"`
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, code)
 	require.NoError(t, err)
 	want := strings.Join([]string{
+		`"done"`,
 		`log: first 1 {"a":[1,2]} null undefined true`,
 		`log: total 2`,
 		`log: Error: packages.register_package is not read-only; run_script only allows read-only functions on this server`,
-		`"done"`,
 	}, "\n")
 	assert.Equal(t, want, out)
 }
@@ -365,7 +366,7 @@ func TestScriptNoFilesystem(t *testing.T) {
 return 1`
 		out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, code)
 		require.NoError(t, err, name)
-		assert.Equal(t, "log: ReferenceError: could not load module '"+name+"'\n1", out, name)
+		assert.Equal(t, "1\nlog: ReferenceError: could not load module '"+name+"'", out, name)
 	}
 }
 
@@ -423,10 +424,10 @@ return "done"`
 	require.NoError(t, err)
 	lines := strings.Split(out, "\n")
 	require.Len(t, lines, maxScriptLogLines+2)
-	assert.Equal(t, "log: line 0", lines[0])
-	assert.Equal(t, "log: line 199", lines[199])
-	assert.Equal(t, "log: [truncated]", lines[200])
-	assert.Equal(t, `"done"`, lines[201])
+	assert.Equal(t, `"done"`, lines[0])
+	assert.Equal(t, "log: line 0", lines[1])
+	assert.Equal(t, "log: line 199", lines[200])
+	assert.Equal(t, "log: [truncated]", lines[201])
 
 	// Each line is 10005 bytes, so the seventh passes 64 KB: what fits of
 	// it is kept, then logging stops.
@@ -550,9 +551,9 @@ try { api.packages.register_package({blob: "x".repeat(1 << 21)}) } catch (e) { r
 // TestScriptLogLinesAreOneLine: a logged value with line breaks cannot
 // forge the lines of the tool result after it.
 func TestScriptLogLinesAreOneLine(t *testing.T) {
-	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, "console.log(\"a\\nerror: fake\\r\\u0085b\"); return 1")
+	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, "console.log(\"a\\nerror: fake\\r\\u0085\\v\\f\\x1b[31mb\"); return 1")
 	require.NoError(t, err)
-	assert.Equal(t, "log: a\\nerror: fake\\r\\u0085b\n1", out)
+	assert.Equal(t, "1\nlog: a\\nerror: fake\\r\\u0085\\v\\f\\x1b[31mb", out)
 }
 
 // TestScriptLostWriteReply: a write whose response cannot be read by the
@@ -581,9 +582,9 @@ return "read"`
 // TestScriptErrorMessageIsOneLine: newlines in a thrown message cannot
 // forge lines of the tool result under the error line.
 func TestScriptErrorMessageIsOneLine(t *testing.T) {
-	_, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, "throw new Error(\"x\\nlog: fake\\r\\u2028\\u2029y\")")
+	_, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, "throw new Error(\"x\\nlog: fake\\r\\u2028\\u2029\\v\\f\\x1b[31my\")")
 	require.Error(t, err)
-	assert.Equal(t, `mcp: script error: Error: x\nlog: fake\r\u2028\u2029y (line 1)`, ez.ErrorMessage(err))
+	assert.Equal(t, `mcp: script error: Error: x\nlog: fake\r\u2028\u2029\v\f\x1b[31my (line 1)`, ez.ErrorMessage(err))
 }
 
 // TestScriptWritesListedOnFailure: a run that fails after calling a
@@ -838,42 +839,48 @@ return "x".repeat(1 << 20)`)
 func TestScriptConcurrencyLimit(t *testing.T) {
 	limiter := newScriptLimiter(1)
 
-	releaseA, err := limiter.acquire(context.Background(), "a")
+	releaseA, err := limiter.claim("a")
 	require.NoError(t, err)
 
-	// The same caller is refused at once.
-	start := time.Now()
-	_, err = limiter.acquire(context.Background(), "a")
+	// The same caller is refused at once; another caller is not.
+	_, err = limiter.claim("a")
 	require.Error(t, err)
 	assert.Equal(t, ez.ERESOURCEEXHAUSTED, ez.ErrorCode(err))
 	assert.Contains(t, err.Error(), "already running")
-	assert.Less(t, time.Since(start), 100*time.Millisecond)
+	releaseB, err := limiter.claim("b")
+	require.NoError(t, err)
 
-	// Another caller waits for a slot, then gives up.
-	start = time.Now()
-	_, err = limiter.acquire(context.Background(), "b")
+	releaseSlot, err := limiter.slot(context.Background())
+	require.NoError(t, err)
+
+	// With every slot busy, a script waits, then gives up.
+	start := time.Now()
+	_, err = limiter.slot(context.Background())
 	require.Error(t, err)
 	assert.Equal(t, ez.ERESOURCEEXHAUSTED, ez.ErrorCode(err))
 	assert.Contains(t, err.Error(), "too many scripts")
 	assert.GreaterOrEqual(t, time.Since(start), scriptSlotWait)
 
 	// A slot freed while waiting is taken.
-	time.AfterFunc(100*time.Millisecond, releaseA)
-	releaseB, err := limiter.acquire(context.Background(), "b")
+	time.AfterFunc(100*time.Millisecond, releaseSlot)
+	releaseSlot, err = limiter.slot(context.Background())
 	require.NoError(t, err)
 
 	// A canceled caller stops waiting.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = limiter.acquire(ctx, "c")
+	_, err = limiter.slot(ctx)
 	require.Error(t, err)
 	assert.Equal(t, ez.ECANCELED, ez.ErrorCode(err))
 
+	releaseSlot()
 	releaseB()
-	releaseA, err = limiter.acquire(context.Background(), "a")
+	releaseA()
+	releaseA, err = limiter.claim("a")
 	require.NoError(t, err)
 	releaseA()
 	assert.Empty(t, limiter.running)
+	assert.Empty(t, limiter.slots)
 
 	assert.Equal(t, defaultScriptMaxConcurrent, cap(newScriptLimiter(0).slots))
 }
@@ -959,6 +966,28 @@ func wasmSigned(b []byte) (int64, int) {
 func TestScriptRunsDoNotLeak(t *testing.T) {
 	engine, err := testScriptEngine()
 	require.NoError(t, err)
+	// The guest memory is mapped outside the Go heap, so the heap does not
+	// show a mapping that is never released; count them instead.
+	maps := 0
+	unmaps := 0
+	unavailable := false
+	mapGuestMemoryFunc = func(size int) ([]byte, error) {
+		buf, err := mapGuestMemory(size)
+		if err != nil {
+			unavailable = ez.ErrorCode(err) == ez.EUNAVAILABLE
+			return nil, err
+		}
+		maps++
+		return buf, nil
+	}
+	unmapGuestMemoryFunc = func(buf []byte) {
+		unmaps++
+		unmapGuestMemory(buf)
+	}
+	defer func() {
+		mapGuestMemoryFunc = mapGuestMemory
+		unmapGuestMemoryFunc = unmapGuestMemory
+	}()
 	unchecked := uncheckedScriptEngine(t)
 	cat := scriptTestCatalog()
 	caller := newFakeScriptCaller()
@@ -1005,6 +1034,10 @@ func TestScriptRunsDoNotLeak(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assert.LessOrEqual(t, runtime.NumGoroutine(), goroutines)
+	if !unavailable {
+		assert.Equal(t, 314, maps)
+		assert.Equal(t, maps, unmaps, "mappings released")
+	}
 }
 
 // TestScriptCallVolume: replies are freed once the script has them, so the
@@ -1091,11 +1124,12 @@ for (;;) { a.push(new ArrayBuffer(1 << 20)) }`)
 	assert.Contains(t, err.Error(), "InternalError: out of memory")
 }
 
-// TestScriptCodeCannotEscape: the code reaches new Function as a string
-// and no Go-side rule lives in JavaScript around it, so text that closed the
-// old wrapper is a syntax error or plain code, and the result cap holds
-// whatever the code returns.
-func TestScriptCodeCannotEscape(t *testing.T) {
+// TestScriptCodeReachesOnlyGlobalScope: the code reaches new Function as a
+// string and no Go-side rule lives in JavaScript around it. Text that closes
+// the function body early is a syntax error or code at global scope, where
+// the shim keeps nothing it depends on, and the result cap holds whatever
+// the code returns.
+func TestScriptCodeReachesOnlyGlobalScope(t *testing.T) {
 	_, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `})()); } catch (e) {} })(); (function () { return "R" + "x".repeat(5e6); try { const result = JSON.stringify((function () {`)
 	require.Error(t, err)
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
@@ -1140,7 +1174,7 @@ func TestScriptLogKeepsNUL(t *testing.T) {
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `console.log("a\0b")
 return "c\0d"`)
 	require.NoError(t, err)
-	assert.Equal(t, "log: a\x00b\n\"c\\u0000d\"", out)
+	assert.Equal(t, "\"c\\u0000d\"\nlog: a\x00b", out)
 }
 
 // TestScriptRefusedCallsCount: every call attempt counts toward MaxCalls,
@@ -1173,7 +1207,7 @@ func TestScriptConcurrentRuns(t *testing.T) {
 			out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `console.log("x")
 return api.units.list_units().total`)
 			assert.NoError(t, err)
-			assert.Equal(t, "log: x\n2", out)
+			assert.Equal(t, "2\nlog: x", out)
 		}()
 	}
 	wg.Wait()
@@ -1243,7 +1277,8 @@ return 1`
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{MaxCalls: 10, Timeout: 30 * time.Second}, code)
 	require.NoError(t, err)
 	// What fits of the first line is kept, then logging stops.
-	assert.True(t, strings.HasSuffix(out, "\nlog: [truncated]\n1"))
+	assert.True(t, strings.HasPrefix(out, "1\nlog: q"))
+	assert.True(t, strings.HasSuffix(out, "\nlog: [truncated]"))
 	assert.Len(t, strings.Split(out, "\n"), 3)
 	// Copying every refused payload would take 100 MiB; the guest's own
 	// memory grows by a few MiB.
@@ -1362,4 +1397,52 @@ func TestScriptWritesListedOnTimeout(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 	assert.Equal(t, "mcp: script failed after calls that write, which may have changed data (packages.register_package): script timed out after 50ms", ez.ErrorMessage(err))
+}
+
+// TestScriptPrepareStackTraceIsFixed: Error.prepareStackTrace would hand
+// the functions of the stack, the shim's included, to the script. Sloppy
+// code that assigns it is ignored and strict code gets a TypeError.
+func TestScriptPrepareStackTraceIsFixed(t *testing.T) {
+	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `Error.prepareStackTrace = () => "x"
+return [Error.prepareStackTrace === undefined, new Error("a").stack.includes("<input>")]`)
+	require.NoError(t, err)
+	assert.Equal(t, `[true,true]`, out)
+
+	_, err = runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `Error.prepareStackTrace = (e, frames) => frames
+throw new Error("boom")`)
+	require.Error(t, err)
+	assert.Equal(t, "mcp: script error: Error: boom (line 2)", ez.ErrorMessage(err))
+
+	_, err = runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `"use strict"
+Error.prepareStackTrace = () => "x"`)
+	require.Error(t, err)
+	assert.Contains(t, ez.ErrorMessage(err), "mcp: script error: TypeError")
+	assert.Contains(t, ez.ErrorMessage(err), "(line 2)")
+}
+
+// TestScriptCutsWholeCharacters: a log line, a thrown message and the
+// message of a failed call cut at their byte caps stay valid UTF-8.
+func TestScriptCutsWholeCharacters(t *testing.T) {
+	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `console.log("é".repeat(40000))`)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(out, "\nlog: [truncated]"))
+	assert.True(t, utf8.ValidString(out))
+
+	_, err = runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `throw new Error("é".repeat(10000))`)
+	require.Error(t, err)
+	message := ez.ErrorMessage(err)
+	assert.True(t, utf8.ValidString(message))
+	assert.True(t, strings.HasSuffix(message, "é [truncated] (line 1)"), message[len(message)-40:])
+
+	caller := newFakeScriptCaller()
+	caller.errors["units.get_unit"] = ez.New(ez.ENOTFOUND, strings.Repeat("é", 10000), nil)
+	out, err = runScript(context.Background(), scriptTestCatalog(), caller, ScriptConfig{}, `try { api.units.get_unit({}) } catch (e) { return e.message }`)
+	require.NoError(t, err)
+	assert.True(t, utf8.ValidString(out))
+	assert.True(t, strings.HasSuffix(out, `é [truncated]"`), out[len(out)-40:])
+
+	// Bytes that were invalid before the cut are not all erased.
+	assert.Equal(t, "ab\xff", scriptCut("ab\xff\xff\xff\xff\xff", 6))
+	assert.Equal(t, "a", scriptCut("aé", 2))
+	assert.Equal(t, "aé", scriptCut("aé", 3))
 }
