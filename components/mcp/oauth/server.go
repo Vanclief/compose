@@ -105,9 +105,11 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// baseURLPath checks that raw is an absolute https URL (http is allowed for
-// localhost) without query, fragment, trailing slash, unclean path or
-// non-canonical percent-encoding, and returns its path.
+// baseURLPath checks that raw is a URL whose path the routers can serve, and
+// returns that path decoded. raw must be absolute, without user info, use
+// https (http is allowed for localhost), have no query or fragment, not end
+// with a slash, percent-encode its path canonically, decode to a path without
+// { } % : or * and have a clean path.
 func baseURLPath(name, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -128,7 +130,12 @@ func baseURLPath(name, raw string) (string, error) {
 	// Routes use the decoded path and the challenge the escaped one, so they
 	// only agree when the path is escaped the canonical way.
 	if u.RawPath != "" {
-		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path exactly as url.URL.EscapedPath writes it, such as /m%C3%A9", nil)
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path canonically, as (&url.URL{Path: p}).EscapedPath() writes it, with uppercase hex and no needless escapes, such as /m%C3%A9", nil)
+	}
+	// Handler and Mount use the path in route patterns, where these
+	// characters are wildcard or parameter syntax, or are unescaped again.
+	if strings.ContainsAny(u.Path, "{}%:*") {
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" path cannot contain { } % : or *, which the routers treat as syntax", nil)
 	}
 	// Handler panics on a route pattern with an unclean path.
 	if u.Path != "" && path.Clean(u.Path) != u.Path {
@@ -180,8 +187,8 @@ func (s *Server) routes() []route {
 		"/.well-known/oauth-protected-resource":                  resourceMetadata,
 	}
 	var routes []route
-	for path, handler := range metadataPaths {
-		routes = append(routes, route{http.MethodGet, path, handler}, route{http.MethodOptions, path, handler})
+	for pattern, handler := range metadataPaths {
+		routes = append(routes, route{http.MethodGet, pattern, handler}, route{http.MethodOptions, pattern, handler})
 	}
 	routes = append(routes,
 		route{http.MethodPost, s.issuerPath + "/oauth/register", register},
