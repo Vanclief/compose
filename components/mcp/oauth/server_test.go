@@ -736,6 +736,24 @@ func TestProtect(t *testing.T) {
 	assert.Equal(t, "the bearer token is not accepted: invalid token\n", res.body)
 	assert.NotContains(t, res.body, "oauth.Server")
 	assert.NotContains(t, res.body, "verifyToken")
+
+	store := &brokenStore{Store: NewMemoryStore(), broken: map[string]bool{KindAccess: true}}
+	var reported []error
+	broken := newEnv(t, func(c *Config) {
+		c.Store = store
+		c.OnError = func(ctx context.Context, err error) {
+			reported = append(reported, err)
+		}
+	}, nil)
+	res = broken.bearer(t, "any")
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Equal(t, "the access token could not be checked\n", res.body)
+	assert.NotContains(t, res.body, "oauth.Server")
+	assert.NotContains(t, res.body, "verifyToken")
+	assert.NotContains(t, res.body, "store is down")
+	require.Len(t, reported, 1, "the Store error reaches OnError")
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(reported[0]))
+	assert.Contains(t, reported[0].Error(), "store is down")
 }
 
 // TestResourceMetadataURLEscaped: a percent-encoded Resource path stays
