@@ -1,0 +1,74 @@
+module finance
+  finance.add_bank_account_to_cluster  Add Bank Account To Cluster  -> AddToClusterResponse
+  finance.cancel_tax_receipt  Cancel Tax Receipt  -> string binary
+  finance.create_bank_account  Create Bank Account  -> BankAccount
+  finance.create_billing_profile  Create Billing Profile  -> Profile
+  finance.create_billing_service  Create Billing Service  -> Service
+  finance.create_category  Create Category  -> finance.Category
+  finance.create_expense  Create Expense  -> Expense
+  finance.create_income  Create Income  -> Income
+  finance.create_invoice  Create Invoice  -> CreateResponse[]
+  finance.create_provider  Create Provider  -> Provider
+  finance.create_tax_receipt  Create Tax Receipt  -> string binary
+  finance.create_utility_bill  Create Utility Bill  -> UtilityBill
+  finance.delete_bank_account  Delete Bank Account  -> string uuid
+  finance.delete_billing_profile  Delete Billing Profile  -> string uuid
+  finance.delete_billing_service  Delete Billing Service  -> string uuid
+  finance.delete_category  Delete Category  -> string uuid
+  finance.delete_expense  Delete Expense  -> string uuid
+  finance.delete_expenses  Delete Expenses  -> expenses.DeleteBatchResponse
+  finance.delete_income  Delete Income  -> string uuid
+  finance.delete_incomes  Delete Incomes  -> incomes.DeleteBatchResponse
+  finance.delete_invoice  Delete Invoice  -> string uuid
+  finance.delete_invoices  Delete Invoices  -> invoices.DeleteBatchResponse
+  finance.delete_provider  Delete Provider  -> string uuid
+  finance.delete_utility_bill  Delete Utility Bill  -> string uuid
+  finance.get_bank_account  Get Bank Account  -> BankAccount
+  finance.get_billing_profile  Get Billing Profile  -> Profile
+  finance.get_billing_service  Get Billing Service  -> Service
+  finance.get_category  Get Category  -> finance.Category
+  finance.get_expense  Get Expense  -> Expense
+  finance.get_expense_receipt  Get Expense Receipt  -> string binary
+  finance.get_finances_overview  Get Finances Overview  -> GetOverviewResponse
+  finance.get_income  Get Income  -> Income
+  finance.get_income_receipt  Get Income Receipt  -> string binary
+  finance.get_invoice  Get Invoice  -> Invoice
+  finance.get_invoice_receipt  Get Invoice Receipt  -> string binary
+  finance.get_provider  Get Provider  -> Provider
+  finance.get_tax_receipt  Get Tax Receipt  -> string binary
+  finance.get_tax_receipt_file  Get Tax Receipt File  -> string binary
+  finance.get_unit_finances  Get Unit Finances  -> units.GetResponse
+  finance.get_utility_bill  Get Utility Bill  -> UtilityBill
+  finance.get_utility_bill_share  Get Utility Bill Share  -> UtilityBillShare
+  finance.issue_utility_bill  Issue Utility Bill  -> IssueResponse
+  finance.list_bank_accounts  List Bank Accounts  -> bankaccounts.ListResponse
+  finance.list_billing_profiles  List Billing Profiles  -> profiles.ListResponse
+  finance.list_billing_services  List Billing Services  -> services.ListResponse
+  finance.list_categories  List Categories  -> finance.categories.ListResponse
+  finance.list_cluster_bank_accounts  List Cluster Bank Accounts  -> bankaccounts.ListResponse
+  finance.list_expenses  List Expenses  -> expenses.ListResponse
+  finance.list_incomes  List Incomes  -> incomes.ListResponse
+  finance.list_invoices  List Invoices  -> invoices.ListResponse
+  finance.list_providers  List Providers  -> providers.ListResponse
+  finance.list_unit_finances  List Unit Finances  -> finance.units.ListResponse
+  finance.list_unit_utility_bill_shares  List Unit Utility Bill Shares  -> ListUnitSharesResponse
+  finance.list_utility_bill_shares  List Utility Bill Shares  -> ListSharesResponse
+  finance.list_utility_bills  List Utility Bills  -> bills.ListResponse
+  finance.pair_bank_account_transfer  Create Pair Bank Account Transfer  -> Transfer
+  finance.remove_bank_account_from_cluster  Remove Bank Account From Cluster  -> RemoveFromClusterResponse
+  finance.send_income_receipt  Send Income Receipt  -> boolean
+  finance.send_invoice_receipt  Send Invoice Receipt  -> boolean
+  finance.unissue_utility_bill  Unissue Utility Bill  -> UtilityBill
+  finance.unpair_bank_account_transfer  Unpair Bank Account Transfer  -> string uuid
+  finance.update_bank_account  Update Bank Account  -> BankAccount
+  finance.update_billing_profile  Update Billing Profile  -> Profile
+  finance.update_billing_service  Update Billing Service  -> Service
+  finance.update_category  Update Category  -> finance.Category
+  finance.update_expense  Update Expense  -> Expense
+  finance.update_expenses  Update Expenses  -> expenses.UpdateBatchResponse
+  finance.update_income  Update Income  -> Income
+  finance.update_incomes  Update Incomes  -> incomes.UpdateBatchResponse
+  finance.update_invoice  Update Invoice  -> Invoice
+  finance.update_invoices  Update Invoices  -> invoices.UpdateBatchResponse
+  finance.update_provider  Update Provider  -> Provider
+  finance.update_utility_bill  Update Utility Bill  -> UtilityBill

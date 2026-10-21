@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Front Desk MCP reference</title>
+<style>
+:root { color-scheme: dark; --bg: #0f1216; --side: #14181d; --card: #181c22; --code: #0b0e12; --border: #2a3039; --text: #d8dde4; --muted: #8b96a5; --accent: #6ea8fe; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+nav { position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 16px 12px; background: var(--side); border-right: 1px solid var(--border); }
+nav input { width: 100%; margin-bottom: 12px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+nav a { display: flex; justify-content: space-between; gap: 8px; padding: 3px 8px; border-radius: 4px; color: var(--text); overflow-wrap: anywhere; }
+nav a:hover { background: var(--card); text-decoration: none; }
+nav .sub { padding-left: 20px; color: var(--muted); }
+nav .count { color: var(--muted); font-size: 12px; }
+main { min-width: 0; padding: 24px 32px 64px; }
+header h1 { margin: 0; font-size: 22px; }
+header .version { color: var(--muted); font: 13px var(--mono); margin-left: 8px; }
+header p { margin: 2px 0 0; color: var(--muted); }
+h2 { margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 18px; }
+h3 { margin: 0; font-size: 15px; font-family: var(--mono); overflow-wrap: anywhere; }
+.block { margin: 12px 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; }
+.op { color: var(--muted); font: 13px var(--mono); overflow-wrap: anywhere; }
+.subtitle { margin: 4px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font: 11px/17px var(--font); vertical-align: middle; }
+.ro { color: #7ee2a8; } .destructive { color: #ff8a80; } .composite { color: #c9a0ff; } .deprecated { color: #ffcc66; }
+pre { margin: 10px 0 0; padding: 10px 12px; max-width: 100%; overflow-x: auto; background: var(--code); border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.5 var(--mono); }
+pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+details summary { margin-top: 8px; color: var(--muted); cursor: pointer; }
+.description { color: var(--muted); white-space: pre-line; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+<input id="filter" type="search" placeholder="Filter functions and terms" aria-label="Filter functions and terms" hidden>
+<a href="#instructions">Instructions</a>
+<a href="#tools">Tools <span class="count">2</span></a>
+<a class="sub" href="#mod-default">default <span class="count">1</span></a>
+<a class="sub" href="#mod-packages">packages <span class="count">5</span></a>
+<a class="sub" href="#mod-units">units <span class="count">2</span></a>
+<a href="#terms">Terms <span class="count">9</span></a>
+</nav>
+<main>
+<header>
+<h1>Front Desk<span class="version">1.0</span></h1>
+<p>MCP reference</p>
+</header>
+
+<section id="instructions">
+<h2>Instructions</h2>
+<pre class="wrap">Use search_functions first.
+Then describe_function &lt;before&gt; call_function.</pre>
+</section>
+
+<section id="tools">
+<h2>Tools</h2>
+<div class="block" id="tool-search_functions">
+<h3>search_functions</h3>
+<pre class="wrap">List modules or find functions.</pre>
+<details>
+<summary>Input schema</summary>
+<pre>{
+  &#34;type&#34;: &#34;object&#34;,
+  &#34;properties&#34;: {
+    &#34;module&#34;: {
+      &#34;type&#34;: &#34;string&#34;
+    },
+    &#34;query&#34;: {
+      &#34;type&#34;: &#34;string&#34;
+    }
+  }
+}</pre>
+</details>
+</div>
+<div class="block" id="tool-describe_function">
+<h3>describe_function</h3>
+<pre class="wrap">Show how to call functions.</pre>
+<details>
+<summary>Input schema</summary>
+<pre>{
+  &#34;type&#34;: &#34;object&#34;,
+  &#34;properties&#34;: {
+    &#34;names&#34;: {
+      &#34;type&#34;: &#34;array&#34;,
+      &#34;items&#34;: {
+        &#34;type&#34;: &#34;string&#34;
+      }
+    }
+  },
+  &#34;required&#34;: [
+    &#34;names&#34;
+  ]
+}</pre>
+</details>
+</div>
+</section>
+
+<section class="group" id="mod-default">
+<h2>default</h2>
+<div class="block" id="fn-default-get_health" data-k="default.get_health get /health">
+<h3>default.get_health <span class="op">GET /health</span><span class="badge ro">read-only</span></h3>
+<p class="subtitle">GET /health  -&gt; ErrorResponse</p>
+<pre>default.get_health  GET /health
+  returns ErrorResponse: {message string}
+  see also: ErrorResponse</pre>
+</div>
+</section>
+
+<section class="group" id="mod-packages">
+<h2>packages</h2>
+<p class="description">Packages received at the front desk.</p>
+<div class="block" id="fn-packages-delete_packages_by_id" data-k="packages.delete_packages_by_id delete /packages/{id}">
+<h3>packages.delete_packages_by_id <span class="op">DELETE /packages/{id}</span><span class="badge destructive">destructive</span></h3>
+<p class="subtitle">DELETE /packages/{id}</p>
+<pre>packages.delete_packages_by_id  DELETE /packages/{id}
+  args:
+    id  integer  required</pre>
+</div>
+<div class="block" id="fn-packages-get_package" data-k="packages.get_package get one package.">
+<h3>packages.get_package <span class="op">GET /packages/{id}</span><span class="badge ro">read-only</span></h3>
+<p class="subtitle">Get one package.  -&gt; Package</p>
+<pre>packages.get_package  GET /packages/{id}
+  Get one package.
+  Includes the carrier.
+  args:
+    id  integer  required
+  returns Package: {id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit}
+  see also: Package, Unit, packages.Status</pre>
+</div>
+<div class="block" id="fn-packages-list_packages" data-k="packages.list_packages list packages">
+<h3>packages.list_packages <span class="op">GET /packages</span><span class="badge ro">read-only</span></h3>
+<p class="subtitle">List packages  -&gt; Package[]</p>
+<pre>packages.list_packages  GET /packages
+  List packages
+  args:
+    limit   integer int32
+    status  packages.Status  Only packages in this status
+  returns Package[]
+  see also: Package, packages.Status</pre>
+</div>
+<div class="block" id="fn-packages-register_package" data-k="packages.register_package register a package at the front desk.">
+<h3>packages.register_package <span class="op">POST /packages</span></h3>
+<p class="subtitle">Register a package at the front desk.  -&gt; Package</p>
+<pre>packages.register_package  POST /packages
+  Register a package at the front desk.
+  The resident is notified.
+  args:
+    unit_id  integer  required  Unit receiving the package
+    carrier  string   enum: dhl|fedex|ups
+    notes    string?
+  returns Package: {id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit}
+  see also: Package, RegisterPackageRequest, Unit, packages.Status</pre>
+</div>
+<div class="block" id="fn-packages-update_package" data-k="packages.update_package update a package">
+<h3>packages.update_package <span class="op">PATCH /packages/{id}</span><span class="badge deprecated">deprecated</span></h3>
+<p class="subtitle">Update a package</p>
+<pre>packages.update_package  PATCH /packages/{id}  [deprecated]
+  Update a package
+  args:
+    id    integer  required
+    body  Package  required
+  returns {ok boolean}
+  see also: Package</pre>
+</div>
+</section>
+
+<section class="group" id="mod-units">
+<h2>units</h2>
+<div class="block" id="fn-units-set_notes" data-k="units.set_notes replace the notes of a unit">
+<h3>units.set_notes <span class="op">PUT /units/{unit_id}/notes</span></h3>
+<p class="subtitle">Replace the notes of a unit  -&gt; units.Status</p>
+<pre>units.set_notes  PUT /units/{unit_id}/notes
+  Replace the notes of a unit
+  args:
+    unit_id       integer   required
+    X-Request-Id  string
+    body          string[]
+  returns units.Status: string enum: occupied|vacant
+  see also: units.Status</pre>
+</div>
+<div class="block" id="fn-units-summary" data-k="units.summary summarize a unit">
+<h3>units.summary <span class="op">composite</span><span class="badge ro">read-only</span><span class="badge composite">composite</span></h3>
+<p class="subtitle">Summarize a unit  -&gt; UnitSummary</p>
+<pre>units.summary  composite
+  Summarize a unit
+  Counts the packages of a unit.
+  args:
+    unit_id  integer  required  Unit to summarize
+    days     integer
+  returns UnitSummary: {packages integer, status string}
+  see also: UnitSummary</pre>
+</div>
+</section>
+
+<section class="group" id="terms">
+<h2>Terms</h2>
+<div class="block" id="term-errorresponse" data-k="errorresponse">
+<h3>ErrorResponse</h3>
+<pre>ErrorResponse
+  (no description)
+  fields: message string
+  returned by: default.get_health</pre>
+</div>
+<div class="block" id="term-front-desk" data-k="front desk recepción">
+<h3>Front desk <span class="op">aliases: recepción</span></h3>
+<pre>Front desk  (aliases: recepción)
+  The lobby counter.</pre>
+</div>
+<div class="block" id="term-package" data-k="package paquete parcel">
+<h3>Package <span class="op">aliases: paquete, parcel</span></h3>
+<pre>Package  (aliases: paquete, parcel)
+  A parcel held at the front desk until the resident picks it up.
+  fields: id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit
+  accepted by: packages.update_package
+  returned by: packages.get_package, packages.list_packages, packages.register_package</pre>
+</div>
+<div class="block" id="term-registerpackagerequest" data-k="registerpackagerequest">
+<h3>RegisterPackageRequest</h3>
+<pre>RegisterPackageRequest
+  (no description)
+  fields: unit_id integer, carrier string enum: dhl|fedex|ups, notes string?
+  accepted by: packages.register_package</pre>
+</div>
+<div class="block" id="term-unit" data-k="unit">
+<h3>Unit</h3>
+<pre>Unit
+  (no description)
+  fields: id integer, name string</pre>
+</div>
+<div class="block" id="term-unitref" data-k="unitref">
+<h3>UnitRef</h3>
+<pre>UnitRef
+  (no description)
+  fields: unit_id integer</pre>
+</div>
+<div class="block" id="term-unitsummary" data-k="unitsummary">
+<h3>UnitSummary</h3>
+<pre>UnitSummary
+  (no description)
+  fields: packages integer, status string
+  returned by: units.summary</pre>
+</div>
+<div class="block" id="term-packages.status" data-k="packages.status">
+<h3>packages.Status</h3>
+<pre>packages.Status
+  (no description)
+  type: string enum: pending|delivered
+  accepted by: packages.list_packages</pre>
+</div>
+<div class="block" id="term-units.status" data-k="units.status">
+<h3>units.Status</h3>
+<pre>units.Status
+  (no description)
+  type: string enum: occupied|vacant
+  returned by: units.set_notes</pre>
+</div>
+</section>
+</main>
+</div>
+<script>
+var filter = document.getElementById("filter");
+filter.hidden = false;
+filter.oninput = function () {
+  var q = filter.value.trim().toLowerCase();
+  document.querySelectorAll("[data-k]").forEach(function (e) { e.hidden = q !== "" && e.dataset.k.indexOf(q) < 0; });
+  document.querySelectorAll(".group").forEach(function (s) {
+    s.hidden = q !== "" && !s.querySelector("[data-k]:not([hidden])");
+    document.querySelector('nav a[href="#' + s.id + '"]').hidden = s.hidden;
+  });
+};
+</script>
+</body>
+</html>
