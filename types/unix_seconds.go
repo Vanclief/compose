@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/vanclief/ez"
@@ -92,16 +93,16 @@ func (us *UnixSeconds) Scan(v any) error {
 		*us = UnixSeconds(int64(x))
 		return nil
 	case []byte:
-		var n int64
-		if _, err := fmt.Sscan(string(x), &n); err != nil {
-			return err
+		n, err := strconv.ParseInt(string(x), 10, 64)
+		if err != nil {
+			return ez.New(ez.EINVALID, "invalid unix seconds", err)
 		}
 		*us = UnixSeconds(n)
 		return nil
 	case string:
-		var n int64
-		if _, err := fmt.Sscan(x, &n); err != nil {
-			return err
+		n, err := strconv.ParseInt(x, 10, 64)
+		if err != nil {
+			return ez.New(ez.EINVALID, "invalid unix seconds", err)
 		}
 		*us = UnixSeconds(n)
 		return nil
