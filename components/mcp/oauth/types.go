@@ -238,6 +238,9 @@ type authRequest struct {
 	Identifier string `json:"identifier,omitempty"`
 	// Attempts counts failed credential checks on the built-in page.
 	Attempts int `json:"attempts,omitempty"`
+	// ExpiresAt is set once when the request is created; putting the request
+	// back keeps it.
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // codeRecord is an authorization code waiting to be exchanged.

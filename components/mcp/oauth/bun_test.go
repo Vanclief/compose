@@ -86,6 +86,23 @@ func TestCreateTableIsIdempotent(t *testing.T) {
 	assert.Equal(t, []byte("v"), got)
 }
 
+func TestCreateTableIndex(t *testing.T) {
+	ctx := context.Background()
+	db := newSQLiteDB(t)
+	newBunStore(t, db)
+
+	var table, ddl string
+	err := db.NewSelect().
+		TableExpr("sqlite_master").
+		ColumnExpr("tbl_name, sql").
+		Where("type = ?", "index").
+		Where("name = ?", testTable+"_expires_at").
+		Scan(ctx, &table, &ddl)
+	require.NoError(t, err)
+	assert.Equal(t, testTable, table)
+	assert.Contains(t, ddl, `("expires_at")`)
+}
+
 func TestBunStoreMissingTable(t *testing.T) {
 	ctx := context.Background()
 	store := NewBunStore(newSQLiteDB(t), "no_such_table")

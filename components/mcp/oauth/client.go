@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/netip"
@@ -72,6 +73,9 @@ func isASCII(s string) bool {
 	return true
 }
 
+// errRefusedAddress is the cause of a fetch refused by publicAddressOnly.
+var errRefusedAddress = errors.New("oauth: the address is not public")
+
 // knownClient resolves a client_id without fetching anything: Config.Clients
 // first, then stored clients (registered or cached documents). Unknown ids
 // yield ez.ENOTFOUND.
@@ -95,7 +99,8 @@ func (s *Server) knownClient(ctx context.Context, clientID string) (Client, erro
 
 // lookupClient resolves a client_id for the authorize endpoint: knownClient,
 // then a Client ID Metadata Document when the id is an https URL. Unknown
-// ids yield ez.ENOTFOUND, a document that cannot be reached ez.EUNAVAILABLE.
+// ids yield ez.ENOTFOUND, a document that cannot be reached ez.EUNAVAILABLE,
+// an unusable one ez.EINVALID.
 func (s *Server) lookupClient(ctx context.Context, clientID string) (Client, error) {
 	client, err := s.knownClient(ctx, clientID)
 	if err == nil {
@@ -167,7 +172,7 @@ func publicAddressOnly(network, address string, conn syscall.RawConn) error {
 		refused = refused || prefix.Contains(ip)
 	}
 	if refused {
-		return ez.New(ez.EINVALID, "oauth: client metadata documents must be served from a public address", nil)
+		return ez.New(ez.EINVALID, "oauth: client metadata documents must be served from a public address", errRefusedAddress)
 	}
 	return nil
 }
@@ -197,7 +202,8 @@ type clientDocument struct {
 
 // fetchClientDocument downloads and validates the metadata document at
 // clientID. A document that cannot be reached (connection failure, timeout,
-// 5xx) is ez.EUNAVAILABLE: the user may try again. Everything else is
+// 5xx) is ez.EUNAVAILABLE: the user may try again. Everything else,
+// including a host that resolves to an address publicAddressOnly refuses, is
 // ez.EINVALID: the client cannot be used. Fetch failures share one message
 // so the error page does not echo what the upstream answered.
 func (s *Server) fetchClientDocument(ctx context.Context, clientID string) (Client, error) {
@@ -207,6 +213,9 @@ func (s *Server) fetchClientDocument(ctx context.Context, clientID string) (Clie
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := s.client.Do(req)
+	if errors.Is(err, errRefusedAddress) {
+		return Client{}, ez.New(ez.EINVALID, "oauth: client_id resolves to an address this server does not fetch", err)
+	}
 	if err != nil {
 		return Client{}, ez.New(ez.EUNAVAILABLE, errDocumentFetch, err)
 	}
