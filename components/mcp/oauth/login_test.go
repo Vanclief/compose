@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,6 +102,38 @@ func TestLoginChallengeFlow(t *testing.T) {
 	mu.Lock()
 	assert.Len(t, sent, 1)
 	mu.Unlock()
+}
+
+// TestLoginResubmitKeepsExpiry: resubmitting the form, even with empty
+// fields that count no attempt, never extends the pending request.
+func TestLoginResubmitKeepsExpiry(t *testing.T) {
+	store := NewMemoryStore().(*memoryStore)
+	env := newEnv(t, func(c *Config) {
+		c.Store = store
+	}, nil)
+	_, challenge := pkce("a")
+	id := env.startLogin(t, authorizeParams("public", challenge))
+	expiry := func() time.Time {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.records[memoryKey(KindRequest, id)].expiresAt
+	}
+	created := expiry()
+	assert.WithinDuration(t, time.Now().Add(requestTTL), created, time.Minute)
+
+	for i := 0; i < 2*maxLoginAttempts; i++ {
+		res := env.login(t, id, "", "")
+		require.Equal(t, http.StatusOK, res.status)
+		assert.Contains(t, res.body, "Enter your email.")
+		res = env.login(t, id, "ana@acme.com", "")
+		require.Equal(t, http.StatusOK, res.status)
+		assert.Contains(t, res.body, "Enter your password.")
+		assert.True(t, created.Equal(expiry()), "resubmit %d moved the expiry to %s", i, expiry())
+	}
+	res := env.login(t, id, "ana@acme.com", "wrong")
+	assert.Contains(t, res.body, "Wrong email or password.")
+	assert.True(t, created.Equal(expiry()))
+	codeFrom(t, env.login(t, id, "ana@acme.com", "pw"))
 }
 
 func TestLoginFailuresVoidRequest(t *testing.T) {

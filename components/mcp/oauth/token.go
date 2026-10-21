@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -125,8 +126,9 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		Scope:         query.Get("scope"),
 		CodeChallenge: query.Get("code_challenge"),
+		ExpiresAt:     time.Now().Add(requestTTL),
 	}
-	err = s.putRecord(r.Context(), KindRequest, id, request, time.Now().Add(requestTTL))
+	err = s.putRecord(r.Context(), KindRequest, id, request, request.ExpiresAt)
 	if err != nil {
 		s.report(r.Context(), err)
 		fail("server_error", "the request could not be stored")
@@ -344,19 +346,31 @@ func verifyPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }
 
+// refreshTimeout bounds the Store calls of a refresh that run detached from
+// the request: taking the refresh token and putting it back.
+const refreshTimeout = 10 * time.Second
+
 // exchangeRefresh rotates a refresh token. The new refresh token keeps the
 // expiry of the first one, so RefreshTokenTTL bounds the whole connection.
+//
+// The take, the restore and the reporting run on a context detached from the
+// request, so a client that disconnects mid-refresh cannot leave the token
+// taken and never put back, which would answer its retry invalid_grant.
+// Issuing stays on the request context: a client that is gone gets no new
+// tokens it cannot receive, and the restore keeps the one it holds.
 func (s *Server) exchangeRefresh(w http.ResponseWriter, r *http.Request, client Client) {
 	token := r.PostForm.Get("refresh_token")
 	if token == "" {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), refreshTimeout)
+	defer cancel()
 	var record tokenRecord
-	err := s.getRecord(r.Context(), KindRefresh, token, true, &record)
+	err := s.getRecord(ctx, KindRefresh, token, true, &record)
 	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
 		// Not invalid_grant: the client would drop a token that may be fine.
-		s.serverError(r.Context(), w, err, "the refresh token could not be checked")
+		s.serverError(ctx, w, err, "the refresh token could not be checked")
 		return
 	}
 	if err != nil {
@@ -369,8 +383,8 @@ func (s *Server) exchangeRefresh(w http.ResponseWriter, r *http.Request, client 
 	}
 	err = s.issueTokens(r.Context(), w, client.ID, record.Scope, record.Grant, record.ExpiresAt)
 	if err != nil {
-		s.restoreRefresh(r.Context(), token, record)
-		s.serverError(r.Context(), w, err, "the token could not be stored")
+		s.restoreRefresh(ctx, token, record)
+		s.serverError(ctx, w, err, "the token could not be stored")
 	}
 }
 
@@ -432,7 +446,7 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 
 // verifyToken is the auth.TokenVerifier of Protect. Unknown tokens wrap
 // auth.ErrInvalidToken so the middleware answers 401; Store failures answer
-// 500.
+// 500. The middleware writes the error text as the response body.
 func (s *Server) verifyToken(ctx context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
 	record, err := s.accessGrant(ctx, token)
 	if err == nil {
@@ -444,12 +458,14 @@ func (s *Server) verifyToken(ctx context.Context, token string, r *http.Request)
 		s.report(ctx, err)
 		return nil, ez.New(ez.EINTERNAL, "oauth: the access token could not be checked", nil)
 	}
+	// Not ez errors: their text reaches the client, and ez adds the
+	// operation name to it.
 	if s.cfg.Fallback == nil {
-		return nil, ez.New(ez.ENOTAUTHENTICATED, "oauth: unknown or expired access token", auth.ErrInvalidToken)
+		return nil, fmt.Errorf("unknown or expired access token: %w", auth.ErrInvalidToken)
 	}
 	_, err = s.cfg.Fallback(ctx, token)
 	if err != nil {
-		return nil, ez.New(ez.ENOTAUTHENTICATED, "oauth: the bearer token is not accepted", auth.ErrInvalidToken)
+		return nil, fmt.Errorf("the bearer token is not accepted: %w", auth.ErrInvalidToken)
 	}
 	return &auth.TokenInfo{}, nil
 }

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/vanclief/ez"
 )
@@ -134,10 +133,11 @@ func (s *Server) attemptMessage(ctx context.Context, err error, shown ...string)
 }
 
 // keepRequest puts the request back and shows the form again with message.
-// grug: putting it back restarts its 10 minute window; the attempt limit
-// still bounds how long a login can go on.
+// grug: the request keeps the expiry set when it was created, so no
+// resubmission extends its 10 minute window, not even the empty-field ones
+// that count no attempt.
 func (s *Server) keepRequest(w http.ResponseWriter, r *http.Request, id string, request authRequest, identifier, message string) {
-	err := s.putRecord(r.Context(), KindRequest, id, request, time.Now().Add(requestTTL))
+	err := s.putRecord(r.Context(), KindRequest, id, request, request.ExpiresAt)
 	if err != nil {
 		s.renderFailure(w, r, err)
 		return

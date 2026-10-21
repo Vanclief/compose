@@ -338,9 +338,29 @@ func TestClientMetadataDocumentHostGuard(t *testing.T) {
 	require.NoError(t, err)
 	for _, clientID := range []string{"https://127.0.0.1/client.json", "https://localhost/client.json", "https://[::1]/client.json", "https://10.0.0.1/client.json", "https://169.254.169.254/client.json"} {
 		_, err = s.lookupClient(context.Background(), clientID)
-		assert.Equal(t, ez.EUNAVAILABLE, ez.ErrorCode(err), clientID)
-		assert.Equal(t, errDocumentFetch, ez.ErrorMessage(err), clientID)
+		assert.Equal(t, ez.EINVALID, ez.ErrorCode(err), clientID)
+		assert.Equal(t, "oauth: client_id resolves to an address this server does not fetch", ez.ErrorMessage(err), clientID)
 	}
+}
+
+// TestClientMetadataDocumentHostGuardInvalid: a document served from a
+// loopback address is an invalid client, not one to try again later, and is
+// never fetched.
+func TestClientMetadataDocumentHostGuardInvalid(t *testing.T) {
+	var fetches atomic.Int32
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+	}))
+	t.Cleanup(host.Close)
+	env := newEnv(t, nil, nil)
+	_, challenge := pkce("g")
+
+	res := env.authorize(t, authorizeParams(host.URL+"/client.json", challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Invalid application")
+	assert.Contains(t, res.body, "client_id resolves to an address this server does not fetch")
+	assert.NotContains(t, res.body, "127.0.0.1")
+	assert.Equal(t, int32(0), fetches.Load())
 }
 
 func TestPublicAddressOnly(t *testing.T) {

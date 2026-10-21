@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -42,7 +43,8 @@ func NewBunStore(db *bun.DB, table string) Store {
 	return &bunStore{db: db, table: table}
 }
 
-// CreateTable creates the table of NewBunStore when it does not exist.
+// CreateTable creates the table of NewBunStore and its index on expires_at,
+// named after the table with an "_expires_at" suffix, when they do not exist.
 func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 	_, err := db.NewCreateTable().
 		Model((*bunRecord)(nil)).
@@ -52,11 +54,39 @@ func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 	if err != nil {
 		return ez.New(ez.EINTERNAL, "oauth: creating the "+table+" table failed", err)
 	}
+	// An index name cannot be schema-qualified, so a "schema.table" name
+	// becomes "schema_table_expires_at".
+	_, err = db.NewCreateIndex().
+		IfNotExists().
+		Index(strings.ReplaceAll(table, ".", "_")+"_expires_at").
+		TableExpr("?", bun.Ident(table)).
+		Column("expires_at").
+		Exec(ctx)
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: creating the expires_at index of the "+table+" table failed", err)
+	}
 	return nil
 }
 
 // Sweep deletes the expired rows of the NewBunStore table and returns how
-// many it deleted.
+// many it deleted. Run it periodically, for example from a goroutine started
+// with the application:
+//
+//	go func() {
+//		ticker := time.NewTicker(time.Hour)
+//		defer ticker.Stop()
+//		for {
+//			select {
+//			case <-ctx.Done():
+//				return
+//			case <-ticker.C:
+//				_, err := oauth.Sweep(ctx, db, "oauth_records")
+//				if err != nil {
+//					logger.Error("sweeping oauth records failed", "error", err)
+//				}
+//			}
+//		}
+//	}()
 func Sweep(ctx context.Context, db *bun.DB, table string) (int64, error) {
 	result, err := db.NewDelete().
 		TableExpr("?", bun.Ident(table)).

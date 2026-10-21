@@ -244,10 +244,15 @@ func (s *Server) serveResourceMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 // resourceMetadataURL is the RFC 9728 metadata URL of the MCP endpoint: the
-// well-known path inserted between the origin and the path of Resource.
+// well-known path inserted between the origin and the path of Resource, kept
+// percent-encoded as Resource has it.
 func (s *Server) resourceMetadataURL() string {
-	origin := strings.TrimSuffix(s.cfg.Resource, s.resourcePath)
-	return origin + "/.well-known/oauth-protected-resource" + s.resourcePath
+	u, err := url.Parse(s.cfg.Resource)
+	if err != nil {
+		// Unreachable: New has parsed Resource.
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + "/.well-known/oauth-protected-resource" + u.EscapedPath()
 }
 
 // writeJSON encodes v as the response body.

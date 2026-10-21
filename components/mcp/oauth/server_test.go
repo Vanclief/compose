@@ -712,6 +712,9 @@ func TestProtect(t *testing.T) {
 	res = env.bearer(t, "key:secret")
 	assert.Equal(t, http.StatusUnauthorized, res.status)
 	assert.Equal(t, challenge, res.header.Get("WWW-Authenticate"))
+	assert.Equal(t, "unknown or expired access token: invalid token\n", res.body)
+	assert.NotContains(t, res.body, "oauth.Server")
+	assert.NotContains(t, res.body, "verifyToken")
 
 	access, _ := env.tokens(t)
 	res = env.bearer(t, access)
@@ -728,7 +731,33 @@ func TestProtect(t *testing.T) {
 	res = fallback.bearer(t, "key:secret")
 	assert.Equal(t, http.StatusOK, res.status)
 	assert.Equal(t, "user=", res.body)
-	assert.Equal(t, http.StatusUnauthorized, fallback.bearer(t, "other").status)
+	res = fallback.bearer(t, "other")
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, "the bearer token is not accepted: invalid token\n", res.body)
+	assert.NotContains(t, res.body, "oauth.Server")
+	assert.NotContains(t, res.body, "verifyToken")
+}
+
+// TestResourceMetadataURLEscaped: a percent-encoded Resource path stays
+// encoded in the challenge, and the URL it names serves the metadata.
+func TestResourceMetadataURLEscaped(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Resource = c.Issuer + "/m%20cp"
+	}, nil)
+	metadataURL := env.url + "/.well-known/oauth-protected-resource/m%20cp"
+	assert.Equal(t, metadataURL, env.s.resourceMetadataURL())
+
+	req, err := http.NewRequest(http.MethodPost, env.url+"/m%20cp", nil)
+	require.NoError(t, err)
+	res := env.do(t, req)
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, `Bearer resource_metadata="`+metadataURL+`"`, res.header.Get("WWW-Authenticate"))
+
+	req, err = http.NewRequest(http.MethodGet, metadataURL, nil)
+	require.NoError(t, err)
+	res = env.do(t, req)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.Equal(t, env.url+"/m%20cp", res.json(t)["resource"])
 }
 
 func TestAuthFunc(t *testing.T) {
@@ -812,6 +841,130 @@ func (b *brokenStore) Take(ctx context.Context, kind, id string) ([]byte, error)
 		return nil, err
 	}
 	return b.Store.Take(ctx, kind, id)
+}
+
+// cancelStore fails every call whose context is done, as database drivers
+// do. The first Put of kind runs cancel before that check, so a request can
+// be cancelled after its refresh token was taken.
+type cancelStore struct {
+	Store
+	mu     sync.Mutex
+	kind   string
+	cancel context.CancelFunc
+}
+
+// arm makes the next Put of kind call cancel.
+func (c *cancelStore) arm(kind string, cancel context.CancelFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.kind = kind
+	c.cancel = cancel
+}
+
+func (c *cancelStore) done(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ez.New(ez.EUNAVAILABLE, "store: the context is done", ctx.Err())
+	}
+	return nil
+}
+
+func (c *cancelStore) Put(ctx context.Context, kind, id string, value []byte, expiresAt time.Time) error {
+	c.mu.Lock()
+	if c.cancel != nil && kind == c.kind {
+		c.cancel()
+		c.cancel = nil
+	}
+	c.mu.Unlock()
+	err := c.done(ctx)
+	if err != nil {
+		return err
+	}
+	return c.Store.Put(ctx, kind, id, value, expiresAt)
+}
+
+func (c *cancelStore) Get(ctx context.Context, kind, id string) ([]byte, error) {
+	err := c.done(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.Store.Get(ctx, kind, id)
+}
+
+func (c *cancelStore) Take(ctx context.Context, kind, id string) ([]byte, error) {
+	err := c.done(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.Store.Take(ctx, kind, id)
+}
+
+// TestRefreshSurvivesDisconnect: a refresh whose request is cancelled, or
+// whose Store fails, keeps the refresh token, so the retry is never answered
+// invalid_grant.
+func TestRefreshSurvivesDisconnect(t *testing.T) {
+	cancelling := &cancelStore{Store: NewMemoryStore()}
+	store := &brokenStore{Store: cancelling, broken: map[string]bool{}}
+	var mu sync.Mutex
+	var reportedCtxErrs []error
+	env := newEnv(t, func(c *Config) {
+		c.Store = store
+		c.OnError = func(ctx context.Context, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reportedCtxErrs = append(reportedCtxErrs, ctx.Err())
+		}
+	}, nil)
+	refreshWith := func(ctx context.Context, token string) response {
+		form := url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {token}}
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		env.s.Handler().ServeHTTP(rec, req)
+		return response{status: rec.Code, header: rec.Header(), body: rec.Body.String()}
+	}
+	retry := func(t *testing.T, token string) {
+		t.Helper()
+		res := refreshWith(context.Background(), token)
+		assert.Equal(t, http.StatusOK, res.status, "the refresh token survived: "+res.body)
+	}
+
+	t.Run("cancelled after the take", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cancelling.arm(KindAccess, cancel)
+		res := refreshWith(ctx, refresh)
+		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		retry(t, refresh)
+	})
+
+	t.Run("cancelled before the request", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res := refreshWith(ctx, refresh)
+		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		retry(t, refresh)
+	})
+
+	t.Run("failing Store", func(t *testing.T) {
+		_, refresh := env.tokens(t)
+		for _, kind := range []string{KindRefresh, KindAccess} {
+			store.set(kind, true)
+			res := refreshWith(context.Background(), refresh)
+			store.set(kind, false)
+			assert.Equal(t, http.StatusInternalServerError, res.status, kind)
+			assert.Equal(t, "server_error", oauthErrorCode(t, res), kind)
+		}
+		retry(t, refresh)
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, reportedCtxErrs)
+	for _, err := range reportedCtxErrs {
+		assert.NoError(t, err, "OnError gets a live context after a disconnect")
+	}
 }
 
 func TestStoreFailures(t *testing.T) {
