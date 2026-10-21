@@ -20,6 +20,8 @@ func TestNewConfigDefaults(t *testing.T) {
 	require.Equal(t, 120*time.Second, cfg.idleTimeout)
 	require.Empty(t, cfg.allowedOrigins)
 	require.Empty(t, cfg.bodyLimit)
+	require.Zero(t, cfg.readTimeout)
+	require.Zero(t, cfg.writeTimeout)
 }
 
 func TestNewConfigOverrides(t *testing.T) {
@@ -28,12 +30,16 @@ func TestNewConfigOverrides(t *testing.T) {
 		WithBodyLimit("10M"),
 		WithReadHeaderTimeout(5*time.Second),
 		WithIdleTimeout(30*time.Second),
+		WithReadTimeout(time.Minute),
+		WithWriteTimeout(2*time.Minute),
 	)
 
 	require.Equal(t, []string{"https://app.example.com", "https://admin.example.com"}, cfg.allowedOrigins)
 	require.Equal(t, "10M", cfg.bodyLimit)
 	require.Equal(t, 5*time.Second, cfg.readHeaderTimeout)
 	require.Equal(t, 30*time.Second, cfg.idleTimeout)
+	require.Equal(t, time.Minute, cfg.readTimeout)
+	require.Equal(t, 2*time.Minute, cfg.writeTimeout)
 }
 
 func newTestEcho(opts ...Option) *echo.Echo {
@@ -68,6 +74,14 @@ func TestConfigureServerTimeouts(t *testing.T) {
 	e = newTestEcho(WithReadHeaderTimeout(3*time.Second), WithIdleTimeout(time.Minute))
 	require.Equal(t, 3*time.Second, e.Server.ReadHeaderTimeout)
 	require.Equal(t, time.Minute, e.Server.IdleTimeout)
+	require.Zero(t, e.Server.ReadTimeout)
+	require.Zero(t, e.Server.WriteTimeout)
+
+	e = newTestEcho(WithReadTimeout(30*time.Second), WithWriteTimeout(45*time.Second))
+	require.Equal(t, 30*time.Second, e.Server.ReadTimeout)
+	require.Equal(t, 45*time.Second, e.Server.WriteTimeout)
+	require.Equal(t, 10*time.Second, e.Server.ReadHeaderTimeout)
+	require.Equal(t, 120*time.Second, e.Server.IdleTimeout)
 }
 
 func TestConfigureCORSDefaultAllowsEveryOrigin(t *testing.T) {
