@@ -163,22 +163,54 @@ func (d *Document) Example(e *Example) *Example {
 // discriminator} with Cat: {allOf: [Pet, {...}]}: Cat is one concrete variant,
 // not another "one of Cat or Dog".
 func (d *Document) Flatten(s *Schema) *Schema {
-	return d.flatten(s, map[*Schema]bool{})
+	resolved, _ := d.Schema(s)
+	if resolved == nil || len(resolved.AllOf) == 0 {
+		return resolved
+	}
+	f := &flattener{doc: d, visiting: map[*Schema]bool{}, done: map[*Schema]flattened{}}
+	out, _ := f.flatten(resolved)
+	return out
 }
 
-func (d *Document) flatten(s *Schema, visiting map[*Schema]bool) *Schema {
-	resolved, _ := d.Schema(s)
+// flattener flattens one schema. visiting holds the allOf chain being
+// flattened. done keeps each schema with allOf flattened so far, so a member
+// that several members share, as in a diamond (A: allOf [B, C] with B and C
+// both allOf [D]), is flattened once rather than once per path.
+//
+// A result depends on the chain only through the schemas flattening looked
+// up in it: the allOf members, for cycles, and the oneOf, anyOf and
+// discriminator targets of members, see polymorphicTargets. Those are the result's
+// deps, and a result is reused only while none of them is in the chain,
+// since flattening again would then find the same and give the same result.
+type flattener struct {
+	doc      *Document
+	visiting map[*Schema]bool
+	done     map[*Schema]flattened
+}
+
+type flattened struct {
+	out  *Schema
+	deps map[*Schema]bool
+}
+
+// flatten returns the flattened s and its deps, nil for a schema without
+// allOf, whose result never depends on the chain.
+func (f *flattener) flatten(s *Schema) (*Schema, map[*Schema]bool) {
+	resolved, _ := f.doc.Schema(s)
 	if resolved == nil {
-		return nil
+		return nil, nil
 	}
 	if len(resolved.AllOf) == 0 {
-		return resolved
+		return resolved, nil
 	}
-	if visiting[resolved] {
-		return resolved
+	if f.visiting[resolved] {
+		return resolved, map[*Schema]bool{resolved: true}
 	}
-	visiting[resolved] = true
-	defer delete(visiting, resolved)
+	memo, ok := f.done[resolved]
+	if ok && !f.inChain(memo.deps) {
+		return memo.out, memo.deps
+	}
+	f.visiting[resolved] = true
 
 	out := *resolved
 	out.AllOf = nil
@@ -191,12 +223,21 @@ func (d *Document) flatten(s *Schema, visiting map[*Schema]bool) *Schema {
 	}
 	out.Required = append(out.Required, resolved.Required...)
 
+	// The result depends on whether resolved itself is in the chain.
+	deps := map[*Schema]bool{resolved: true}
 	for _, member := range resolved.AllOf {
-		m := d.flatten(member, visiting)
+		m, memberDeps := f.flatten(member)
+		for dep := range memberDeps {
+			deps[dep] = true
+		}
 		if m == nil {
 			continue
 		}
-		if d.polymorphicOver(m, visiting) {
+		targets := f.doc.polymorphicTargets(m)
+		for _, target := range targets {
+			deps[target] = true
+		}
+		if f.anyInChain(targets) {
 			concrete := *m
 			concrete.OneOf = nil
 			concrete.AnyOf = nil
@@ -206,22 +247,46 @@ func (d *Document) flatten(s *Schema, visiting map[*Schema]bool) *Schema {
 		mergeInto(&out, m)
 	}
 
-	return &out
+	delete(f.visiting, resolved)
+	if !f.inChain(deps) {
+		f.done[resolved] = flattened{out: &out, deps: deps}
+	}
+	return &out, deps
 }
 
-// polymorphicOver reports whether a oneOf or anyOf member of m, or a
-// discriminator mapping target of m, resolves to a schema in chain.
-func (d *Document) polymorphicOver(m *Schema, chain map[*Schema]bool) bool {
+func (f *flattener) inChain(deps map[*Schema]bool) bool {
+	for dep := range deps {
+		if f.visiting[dep] {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *flattener) anyInChain(schemas []*Schema) bool {
+	for _, s := range schemas {
+		if f.visiting[s] {
+			return true
+		}
+	}
+	return false
+}
+
+// polymorphicTargets returns the oneOf and anyOf members of m and its
+// discriminator mapping targets, resolved. Flatten drops m's polymorphism
+// when one of them is in the allOf chain.
+func (d *Document) polymorphicTargets(m *Schema) []*Schema {
+	var out []*Schema
 	for _, list := range [][]*Schema{m.OneOf, m.AnyOf} {
 		for _, member := range list {
 			resolved, _ := d.Schema(member)
-			if chain[resolved] {
-				return true
+			if resolved != nil {
+				out = append(out, resolved)
 			}
 		}
 	}
 	if m.Discriminator == nil {
-		return false
+		return out
 	}
 	for _, target := range m.Discriminator.Mapping {
 		name := RefName(target, refSchemas)
@@ -229,11 +294,11 @@ func (d *Document) polymorphicOver(m *Schema, chain map[*Schema]bool) bool {
 			name = target
 		}
 		resolved, ok := d.Components.Schemas.Get(name)
-		if ok && chain[resolved] {
-			return true
+		if ok && resolved != nil {
+			out = append(out, resolved)
 		}
 	}
-	return false
+	return out
 }
 
 func mergeInto(out, m *Schema) {

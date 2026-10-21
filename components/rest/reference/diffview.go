@@ -631,7 +631,7 @@ func (b *builder) sampleDiffs(ov *opView, ref OperationRef, od *OperationDiff) {
 			if mt == nil {
 				continue
 			}
-			example := b.diff.base.MediaExampleJSON(mt, ForResponse)
+			example := b.exampleJSON(b.diff.base, mt, ForResponse)
 			if example == "" {
 				continue
 			}
@@ -691,7 +691,7 @@ func (b *builder) baseMediaSample(r *Response, ct string) *modelSample {
 	if mt == nil {
 		return nil
 	}
-	example := b.diff.base.MediaExampleJSON(mt, ForResponse)
+	example := b.exampleJSON(b.diff.base, mt, ForResponse)
 	if example == "" {
 		return nil
 	}
@@ -797,7 +797,7 @@ func (b *builder) machineDiffs(ops []*opView) {
 			name := code
 			s := old.responseSchema(bref.Operation.Responses.Map[code])
 			if s != nil {
-				name += " " + old.port(s, ForResponse).Type
+				name += " " + old.port(s, ForResponse, 0).Type
 			}
 			m.Outputs = append(m.Outputs, portView{Key: "out:removed:" + code, Name: name, Kind: "any", Ghost: true, Diff: removed})
 		}
