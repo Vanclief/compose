@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -105,8 +106,8 @@ func New(cfg Config) (*Server, error) {
 }
 
 // baseURLPath checks that raw is an absolute https URL (http is allowed for
-// localhost) without query, fragment, trailing slash or non-canonical
-// percent-encoding, and returns its path.
+// localhost) without query, fragment, trailing slash, unclean path or
+// non-canonical percent-encoding, and returns its path.
 func baseURLPath(name, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -127,7 +128,11 @@ func baseURLPath(name, raw string) (string, error) {
 	// Routes use the decoded path and the challenge the escaped one, so they
 	// only agree when the path is escaped the canonical way.
 	if u.RawPath != "" {
-		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path the canonical way, without %2F or needless escapes", nil)
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must percent-encode its path exactly as url.URL.EscapedPath writes it, such as /m%C3%A9", nil)
+	}
+	// Handler panics on a route pattern with an unclean path.
+	if u.Path != "" && path.Clean(u.Path) != u.Path {
+		return "", ez.New(ez.EINVALID, "oauth: Config."+name+" must have a clean path, without . or .. segments or repeated slashes", nil)
 	}
 	return u.Path, nil
 }
@@ -298,7 +303,8 @@ func (s *Server) putRecord(ctx context.Context, kind, id string, v any, expiresA
 // report hands err to Config.OnError when it is set.
 func (s *Server) report(ctx context.Context, err error) {
 	if s.cfg.OnError != nil {
-		s.cfg.OnError(ctx, err)
+		// Detached: the failure may be that ctx ran out, and OnError still needs a live context.
+		s.cfg.OnError(context.WithoutCancel(ctx), err)
 	}
 }
 

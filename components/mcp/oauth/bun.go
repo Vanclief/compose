@@ -56,18 +56,18 @@ func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 	if err != nil {
 		return ez.New(ez.EINTERNAL, "oauth: creating the "+table+" table failed", err)
 	}
-	// The index lives in the schema of the table. For "schema.table",
-	// PostgreSQL takes an unqualified index name and a qualified table:
-	//   CREATE INDEX IF NOT EXISTS "table_expires_at" ON "schema"."table" ("expires_at")
+	// The index lives in the schema of the table. For "db.schema.table",
+	// PostgreSQL takes an unqualified index name and the qualified table:
+	//   CREATE INDEX IF NOT EXISTS "table_expires_at" ON "db"."schema"."table" ("expires_at")
 	// SQLite takes the schema on the index name and a bare table:
 	//   CREATE INDEX IF NOT EXISTS "schema"."table_expires_at" ON "table" ("expires_at")
 	index := table + "_expires_at"
 	on := table
-	schema, name, qualified := strings.Cut(table, ".")
-	if qualified {
+	qualifier, name := indexParts(table)
+	if qualifier != "" {
 		index = name + "_expires_at"
 		if db.Dialect().Name() == dialect.SQLite {
-			index = schema + "." + index
+			index = qualifier + "." + index
 			on = name
 		}
 	}
@@ -81,6 +81,16 @@ func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 		return ez.New(ez.EINTERNAL, "oauth: creating the expires_at index of the "+table+" table failed", err)
 	}
 	return nil
+}
+
+// indexParts splits table at its last dot into the qualifier and the bare
+// table name. An unqualified table has an empty qualifier.
+func indexParts(table string) (qualifier, name string) {
+	i := strings.LastIndex(table, ".")
+	if i < 0 {
+		return "", table
+	}
+	return table[:i], table[i+1:]
 }
 
 // Sweep deletes the expired rows of the NewBunStore table and returns how

@@ -128,6 +128,21 @@ func TestCreateTableIndexDotted(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestIndexParts: a dotted table splits at its last dot, so PostgreSQL gets
+// an unqualified index name for "db.schema.table".
+func TestIndexParts(t *testing.T) {
+	cases := map[string][2]string{
+		"x":      {"", "x"},
+		"main.x": {"main", "x"},
+		"a.b.c":  {"a.b", "c"},
+	}
+	for table, want := range cases {
+		qualifier, name := indexParts(table)
+		assert.Equal(t, want[0], qualifier, table)
+		assert.Equal(t, want[1], name, table)
+	}
+}
+
 func TestBunStoreMissingTable(t *testing.T) {
 	ctx := context.Background()
 	store := NewBunStore(newSQLiteDB(t), "no_such_table")
