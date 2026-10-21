@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -456,10 +457,10 @@ func (s *Server) verifyToken(ctx context.Context, token string, r *http.Request)
 		// The middleware writes the error text to the response, so the
 		// Store error goes to OnError and stays out of it.
 		s.report(ctx, err)
-		return nil, ez.New(ez.EINTERNAL, "oauth: the access token could not be checked", nil)
+		return nil, errors.New("the access token could not be checked")
 	}
-	// Not ez errors: their text reaches the client, and ez adds the
-	// operation name to it.
+	// The errors returned from here on are not ez errors: their text
+	// reaches the client, and ez adds the operation name to it.
 	if s.cfg.Fallback == nil {
 		return nil, fmt.Errorf("unknown or expired access token: %w", auth.ErrInvalidToken)
 	}
