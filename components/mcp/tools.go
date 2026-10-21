@@ -234,11 +234,11 @@ func (s *Server) callFunction(ctx context.Context, req *mcp.CallToolRequest, cal
 // cuts logs. Scripts are only for callers whose credentials pass the WhoAmI
 // call, and each caller, keyed by its bearer token or else the WhoAmI
 // response, runs one at a time. A caller with a bearer token is claimed
-// before the slot is taken, so its parallel runs are refused at once and
-// hold no slot; a bogus token only blocks itself. The slot is taken before
-// the WhoAmI call, so callers cannot make identity requests while every
-// slot is busy; a caller without a token is claimed after that call. Other
-// WhoAmI failures, such as an outage, are reported as what they are.
+// first, so it is refused at once while its own script still runs. The slot
+// is taken only after the WhoAmI call and the Allow check, so a caller
+// without credentials the API accepts never takes one; a caller without a
+// token is claimed after the slot. Other WhoAmI failures, such as an outage,
+// are reported as what they are.
 // Internal failures of the runtime also go to Config.OnError.
 func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *caller, in scriptInput) (string, bool) {
 	token := bearerToken(req)
@@ -249,11 +249,6 @@ func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *
 		}
 		defer release()
 	}
-	releaseSlot, err := s.scripts.slot(ctx)
-	if err != nil {
-		return errorText(err), true
-	}
-	defer releaseSlot()
 	me, err := call.Call(ctx, s.cfg.WhoAmI, nil)
 	if err != nil {
 		code := ez.ErrorCode(err)
@@ -265,6 +260,11 @@ func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *
 	if s.cfg.Script.Allow != nil && !s.cfg.Script.Allow(ctx, me) {
 		return errorText(ez.New(ez.ENOTAUTHORIZED, "mcp: run_script is not enabled for this account", nil)), true
 	}
+	releaseSlot, err := s.scripts.slot(ctx)
+	if err != nil {
+		return errorText(err), true
+	}
+	defer releaseSlot()
 	if token == "" {
 		release, err := s.scripts.claim(scriptKey("", me))
 		if err != nil {

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -660,20 +659,31 @@ func TestServerReference(t *testing.T) {
 	}
 }
 
-// TestServerRunScriptSlotBeforeWhoAmI: a run takes its slot before the
-// WhoAmI call, so callers cannot make identity requests while every slot is
-// busy.
-func TestServerRunScriptSlotBeforeWhoAmI(t *testing.T) {
+// TestServerRunScriptSlotAfterWhoAmI: a run takes its slot only after the
+// WhoAmI call, so while every slot is busy a bogus token is refused for its
+// credentials and never waits for a slot, and a valid caller is refused by
+// the slot after its one WhoAmI call.
+func TestServerRunScriptSlotAfterWhoAmI(t *testing.T) {
 	shop := shopApp()
-	var whoami atomic.Int32
+	var mu sync.Mutex
+	whoami := map[string]int{}
 	entered := make(chan struct{})
 	unblock := make(chan struct{})
 	cfg := shopConfig(t)
 	cfg.Script.Enabled = true
 	cfg.Script.MaxConcurrent = 1
 	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("API-KEY")
 		if r.URL.Path == "/me" {
-			whoami.Add(1)
+			mu.Lock()
+			whoami[key]++
+			mu.Unlock()
+			if key == "bogus" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				io.WriteString(w, `{"error": {"code": "not_authenticated", "message": "invalid API key", "request_id": "req-1"}}`)
+				return
+			}
 		}
 		if r.URL.Path == "/items" {
 			close(entered)
@@ -684,22 +694,25 @@ func TestServerRunScriptSlotBeforeWhoAmI(t *testing.T) {
 		}
 		shop.ServeHTTP(w, r)
 	})
+	count := func(key string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return whoami[key]
+	}
 	s := newShopServer(t, cfg)
-	first := connect(t, s, "first:x")
-	second := connect(t, s, "second:x")
 
-	done := make(chan *mcp.CallToolResult)
-	go func() {
-		res, err := first.CallTool(context.Background(), &mcp.CallToolParams{Name: "run_script", Arguments: map[string]any{"code": `return api.items.list_items({limit: 1}).length`}})
-		assert.NoError(t, err)
-		done <- res
-	}()
+	done := runScriptAsync(t, connect(t, s, "a:x"), `return api.items.list_items({limit: 1}).length`)
 	<-entered
 
-	text, failed := callTool(t, second, "run_script", map[string]any{"code": "return 1"})
+	text, failed := callTool(t, connect(t, s, "bogus:x"), "run_script", map[string]any{"code": "return 2"})
+	assert.True(t, failed)
+	assert.Equal(t, "error not_authenticated: run_script requires credentials the API accepts", text)
+	assert.Equal(t, 1, count("bogus"))
+
+	text, failed = callTool(t, connect(t, s, "b:x"), "run_script", map[string]any{"code": "return 3"})
 	assert.True(t, failed)
 	assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": too many scripts are running; try again shortly", text)
-	assert.Equal(t, int32(1), whoami.Load())
+	assert.Equal(t, 1, count("b"))
 
 	close(unblock)
 	res := <-done
@@ -707,7 +720,7 @@ func TestServerRunScriptSlotBeforeWhoAmI(t *testing.T) {
 	require.Len(t, res.Content, 1)
 	assert.False(t, res.IsError)
 	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
-	assert.Equal(t, int32(1), whoami.Load())
+	assert.Equal(t, 1, count("a"))
 }
 
 // whoAmIBlocker serves the shop with a /me that blocks for the API key "a"
@@ -767,36 +780,10 @@ func runScriptAsync(t *testing.T, session *mcp.ClientSession, code string) chan 
 	return done
 }
 
-// TestServerRunScriptBlockedWhoAmI: while caller a is inside its WhoAmI
-// call, it holds its slot, so with one slot caller b is refused without a
-// WhoAmI call of its own.
-func TestServerRunScriptBlockedWhoAmI(t *testing.T) {
-	cfg := shopConfig(t)
-	cfg.Script.Enabled = true
-	cfg.Script.MaxConcurrent = 1
-	blocker := newWhoAmIBlocker(t, &cfg)
-	s := newShopServer(t, cfg)
-
-	done := runScriptAsync(t, connect(t, s, "a:x"), "return 1")
-	<-blocker.entered
-
-	text, failed := callTool(t, connect(t, s, "b:x"), "run_script", map[string]any{"code": "return 2"})
-	assert.True(t, failed)
-	assert.Equal(t, "error "+ez.ERESOURCEEXHAUSTED+": too many scripts are running; try again shortly", text)
-	assert.Equal(t, 0, blocker.count("b"))
-
-	blocker.unblock()
-	res := <-done
-	require.NotNil(t, res)
-	require.Len(t, res.Content, 1)
-	assert.False(t, res.IsError)
-	assert.Equal(t, "1", res.Content[0].(*mcp.TextContent).Text)
-}
-
 // TestServerRunScriptClaimBeforeSlot: a caller with a bearer token is
-// claimed before it takes a slot, so its second parallel script is refused
-// at once, holds no slot and makes no WhoAmI call, and another caller still
-// gets the second slot.
+// claimed first, so while its script is still in the WhoAmI call its second
+// parallel script is refused at once, takes no slot and makes no WhoAmI
+// call, and another caller still runs.
 func TestServerRunScriptClaimBeforeSlot(t *testing.T) {
 	cfg := shopConfig(t)
 	cfg.Script.Enabled = true

@@ -162,13 +162,12 @@ type Concept struct {
 // once, and a script that finds every slot busy waits briefly first. Callers
 // are told apart by a hash of their bearer token, or of the JSON their
 // WhoAmI call returns when the request carries none. A request with a bearer
-// token claims its caller first, then takes a slot, then makes the WhoAmI
-// call, so one caller's parallel scripts hold at most one slot and a bogus
-// token only blocks itself. A request without one takes a slot, makes the
-// WhoAmI call, then claims its caller. Either way the slot comes before the
-// WhoAmI call, so callers cannot make identity requests while every slot is
-// busy. A script takes only the memory it uses, up to the
-// linear memory maximum, so the scripts of one Server hold at most
+// token claims its caller first, so it is refused at once while its own
+// script is still running. Every request then makes the WhoAmI call and the
+// Allow check, and only after them takes a slot, so a caller without
+// credentials the API accepts never takes one; a request without a token
+// claims its caller after the slot. A script takes only the memory it uses,
+// up to the linear memory maximum, so the scripts of one Server hold at most
 // MaxConcurrent times that maximum plus overhead; several Servers
 // in one process each allow that many. The ceiling does not bound the REST
 // handler or the rest of the process, and decoding a call's arguments in
