@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,55 @@ func TestWithZerologColorsWholeFieldToken(t *testing.T) {
 	assert.Contains(t, line, "\x1b[31merror=\"connection refused\"\x1b[0m")
 }
 
+// TestWithZerologConfigure checks that configure functions run on the writer
+// before it is installed, so they replace the default field layout.
+func TestWithZerologConfigure(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
+	var buf bytes.Buffer
+	c := &BaseController{logWriter: &buf}
+	c.WithZerolog(func(w *zerolog.ConsoleWriter) {
+		w.FormatFieldName = func(i interface{}) string {
+			return fmt.Sprintf("<%s>:", i)
+		}
+		w.FormatFieldValue = func(i interface{}) string {
+			return fmt.Sprintf("[%s]", i)
+		}
+	})
+
+	log.Info().Str("field_name", "value").Msg("hello")
+
+	line := buf.String()
+	assert.Contains(t, line, "<field_name>:[value]")
+	assert.NotContains(t, line, "\x1b[36mfield_name=value\x1b[0m")
+}
+
+// TestWithZerologNilConfigure checks that a nil configure function is skipped
+// and the default layout is kept.
+func TestWithZerologNilConfigure(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
+	var buf bytes.Buffer
+	c := &BaseController{logWriter: &buf}
+	require.NotPanics(t, func() {
+		c.WithZerolog(nil)
+	})
+
+	log.Info().Str("field_name", "value").Msg("hello")
+
+	assert.Contains(t, buf.String(), "\x1b[36mfield_name=value\x1b[0m")
+}
+
 // TestWithZerologNoColor checks that NO_COLOR in the environment turns off the
 // field colors set by WithZerolog.
 func TestWithZerologNoColor(t *testing.T) {
@@ -207,6 +257,31 @@ func TestWithZerologNoColor(t *testing.T) {
 	var buf bytes.Buffer
 	c := &BaseController{logWriter: &buf}
 	c.WithZerolog()
+
+	log.Info().Err(errors.New("boom")).Str("field_name", "value").Int("status", 200).Msg("hello")
+
+	line := buf.String()
+	assert.Contains(t, line, "field_name=value")
+	assert.Contains(t, line, "status=200")
+	assert.Contains(t, line, "error=boom")
+	assert.NotContains(t, line, "\x1b[")
+}
+
+// TestWithZerologConfigureNoColor checks that setting NoColor in a configure
+// function turns off the field colors set by WithZerolog when NO_COLOR is unset.
+func TestWithZerologConfigureNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
+	var buf bytes.Buffer
+	c := &BaseController{logWriter: &buf}
+	c.WithZerolog(func(w *zerolog.ConsoleWriter) {
+		w.NoColor = true
+	})
 
 	log.Info().Err(errors.New("boom")).Str("field_name", "value").Int("status", 200).Msg("hello")
 

@@ -42,7 +42,22 @@ func (c *BaseController) LoadEnvVarsAndConfig(envVarsOutput, configOutput any, c
 	return nil
 }
 
-func (c *BaseController) WithZerolog() {
+// WithZerolog installs a zerolog.ConsoleWriter on the global logger. The
+// default layout colors each name=value field as one span (see
+// consoleFieldName). Each configure function then runs, in order, on the writer
+// before it is installed, so an app can override fields such as NoColor,
+// TimeFormat or the field formatters and own its own layout. Nil configure
+// functions are skipped.
+//
+// The default FormatFieldName opens a color span that only the default
+// FormatFieldValue closes, so replace the two together, and likewise
+// FormatErrFieldName and FormatErrFieldValue. Replacing only one leaves the
+// span unclosed or prints a stray reset.
+//
+// Do not replace Out: it is the Promtail writer when WithPromtail enabled it,
+// and replacing it stops forwarding lines to Loki and skips the flush on
+// Fatal. To wrap it, keep writing through the original w.Out.
+func (c *BaseController) WithZerolog(configure ...func(*zerolog.ConsoleWriter)) {
 	writer := c.logWriter
 	if writer == nil {
 		writer = os.Stdout
@@ -55,10 +70,17 @@ func (c *BaseController) WithZerolog() {
 		}
 		return ""
 	}
-	output.FormatFieldName = consoleFieldName(36)
-	output.FormatFieldValue = consoleFieldValue
-	output.FormatErrFieldName = consoleFieldName(31)
-	output.FormatErrFieldValue = consoleFieldValue
+	output.FormatFieldName = consoleFieldName(36, &output.NoColor)
+	output.FormatFieldValue = consoleFieldValue(&output.NoColor)
+	output.FormatErrFieldName = consoleFieldName(31, &output.NoColor)
+	output.FormatErrFieldValue = consoleFieldValue(&output.NoColor)
+
+	for _, fn := range configure {
+		if fn == nil {
+			continue
+		}
+		fn(&output)
+	}
 
 	log.Logger = log.Output(output)
 }
@@ -69,10 +91,11 @@ func (c *BaseController) WithZerolog() {
 // is one span with no escape codes inside, and a substring filter such as
 // "request_client=App" matches the colored line. zerolog's defaults reset
 // after the "=" and color error values on their own, which splits the token.
-// Like zerolog, no color is printed when NO_COLOR is in the environment.
-func consoleFieldName(color int) zerolog.Formatter {
+// Like zerolog, no color is printed when NO_COLOR is in the environment or
+// the writer's NoColor, read through noColor when a line is written, is set.
+func consoleFieldName(color int, noColor *bool) zerolog.Formatter {
 	return func(i interface{}) string {
-		if os.Getenv("NO_COLOR") != "" {
+		if *noColor || os.Getenv("NO_COLOR") != "" {
 			return fmt.Sprintf("%s=", i)
 		}
 		return fmt.Sprintf("\x1b[%dm%s=", color, i)
@@ -80,11 +103,13 @@ func consoleFieldName(color int) zerolog.Formatter {
 }
 
 // consoleFieldValue closes the span opened by consoleFieldName.
-func consoleFieldValue(i interface{}) string {
-	if os.Getenv("NO_COLOR") != "" {
-		return fmt.Sprintf("%s", i)
+func consoleFieldValue(noColor *bool) zerolog.Formatter {
+	return func(i interface{}) string {
+		if *noColor || os.Getenv("NO_COLOR") != "" {
+			return fmt.Sprintf("%s", i)
+		}
+		return fmt.Sprintf("%s\x1b[0m", i)
 	}
-	return fmt.Sprintf("%s\x1b[0m", i)
 }
 
 func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error {
