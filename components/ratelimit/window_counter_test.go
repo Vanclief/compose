@@ -162,3 +162,31 @@ func TestWindowCounterConcurrentExpiryKeepsOneQuota(t *testing.T) {
 	assert.Equal(t, int32(limit), allowed.Load())
 	assert.Equal(t, 1, countEntries(rl))
 }
+
+func TestWindowCounterExhaustedPeeksWithoutCharging(t *testing.T) {
+	rl, clock := newTestWindowCounter(60, 2)
+
+	// An unseen key is not exhausted, and peeking does not create a counter
+	assert.False(t, rl.Exhausted("user"))
+	assert.False(t, hasEntry(rl, "user"))
+
+	assert.True(t, rl.Allow("user"))
+	assert.False(t, rl.Exhausted("user"))
+
+	// Peeking does not charge: the second request still fits
+	assert.False(t, rl.Exhausted("user"))
+	assert.True(t, rl.Allow("user"))
+	assert.True(t, rl.Exhausted("user"))
+	assert.False(t, rl.Allow("user"))
+
+	// Peeking does not extend the window
+	clock.at = clock.at.Add(59 * time.Second)
+	assert.True(t, rl.Exhausted("user"))
+
+	clock.at = clock.at.Add(time.Second)
+	assert.False(t, rl.Exhausted("user"))
+	assert.True(t, rl.Allow("user"))
+
+	// Keys are peeked independently
+	assert.False(t, rl.Exhausted("other"))
+}
