@@ -49,11 +49,9 @@ func NewWindowCounter(windowSeconds, limit int) *WindowCounter {
 	}
 }
 
+// Allow charges one request to userID and reports whether it fits in the current window.
 func (rl *WindowCounter) Allow(userID string) bool {
-	now := time.Now()
-	if rl.now != nil {
-		now = rl.now()
-	}
+	now := rl.clock()
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -76,6 +74,31 @@ func (rl *WindowCounter) Allow(userID string) bool {
 	}
 
 	return false
+}
+
+// Exhausted reports whether userID has spent its limit in the current window
+// without charging it. It never creates or extends a counter, so peeking with a
+// caller-supplied key cannot grow the map or prolong a lockout.
+func (rl *WindowCounter) Exhausted(userID string) bool {
+	now := rl.clock()
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	userCounter, ok := rl.usersCounter[userID]
+	if !ok || now.Sub(userCounter.firstRequest) >= rl.window {
+		return false
+	}
+
+	return userCounter.currentCount >= rl.limit
+}
+
+func (rl *WindowCounter) clock() time.Time {
+	if rl.now != nil {
+		return rl.now()
+	}
+
+	return time.Now()
 }
 
 // sweep deletes the counters whose window has expired, at most once per window,
