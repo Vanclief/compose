@@ -55,8 +55,39 @@ func (c *BaseController) WithZerolog() {
 		}
 		return ""
 	}
+	output.FormatFieldName = consoleFieldName(36, output.NoColor)
+	output.FormatFieldValue = consoleFieldValue(output.NoColor)
+	output.FormatErrFieldName = consoleFieldName(31, output.NoColor)
+	output.FormatErrFieldValue = consoleFieldValue(output.NoColor)
 
 	log.Logger = log.Output(output)
+}
+
+// consoleFieldName opens the color span of a field and prints "name=" inside
+// it, and consoleFieldValue prints the value and closes the span. zerolog
+// writes the name and the value back to back, so the whole "name=value" token
+// is one span with no escape codes inside, and a substring filter such as
+// "request_client=App" matches the colored line. zerolog's defaults reset
+// after the "=" and color error values on their own, which splits the token.
+// Like zerolog, no color is printed when noColor is set or NO_COLOR is in the
+// environment.
+func consoleFieldName(color int, noColor bool) zerolog.Formatter {
+	return func(i interface{}) string {
+		if noColor || os.Getenv("NO_COLOR") != "" {
+			return fmt.Sprintf("%s=", i)
+		}
+		return fmt.Sprintf("\x1b[%dm%s=", color, i)
+	}
+}
+
+// consoleFieldValue closes the span opened by consoleFieldName.
+func consoleFieldValue(noColor bool) zerolog.Formatter {
+	return func(i interface{}) string {
+		if noColor || os.Getenv("NO_COLOR") != "" {
+			return fmt.Sprintf("%s", i)
+		}
+		return fmt.Sprintf("%s\x1b[0m", i)
+	}
 }
 
 func (c *BaseController) WithPromtail(params *promtail.WithPromtailParams) error {
