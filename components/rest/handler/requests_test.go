@@ -96,6 +96,35 @@ func TestBindedJSONResponseKeepsAppErrorMessage(t *testing.T) {
 	require.NotEqual(t, "Invalid request body", response.Error.Message)
 }
 
+func TestBindedJSONResponseLogsWrongTypedEnumField(t *testing.T) {
+	var buf bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&buf)
+	t.Cleanup(func() { log.Logger = previous })
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"color":42}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+
+	request := requests.New(http.Header{}, "127.0.0.1")
+
+	err := NewHandler(nil).BindedJSONResponse(c, "test", request, &colorBody{})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var response ErrorResponse
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	require.Equal(t, ez.EINVALID, response.Error.Code)
+	require.Equal(t, "Invalid request body", response.Error.Message)
+
+	// enums.Unmarshal returns the json error bare, so encoding/json names the field in the log
+	output := buf.String()
+	require.Contains(t, output, "Request Bind Error")
+	require.Contains(t, output, "field=color")
+}
+
 // email mirrors emma's types.Email: a translation key with the value as data,
 // and a wrapped json error for a wrong-typed value.
 type email string
