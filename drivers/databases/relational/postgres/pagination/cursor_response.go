@@ -23,6 +23,10 @@ func (r *CursorResponse) GetItems() interface{} {
 
 // BuildCursorResponse processes the query results and creates a paginated response
 func BuildCursorResponse[T Paginatable](items []T, limit int) (*CursorResponse, error) {
+	if limit < 1 {
+		return nil, ez.New(ez.EINVALID, "Page size must be positive", nil)
+	}
+
 	hasNextPage := len(items) > limit
 	if hasNextPage {
 		items = items[:limit]
