@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -100,11 +101,17 @@ func New(cfg Config) (*Server, error) {
 }
 
 // Handler serves the MCP streamable HTTP transport. It is stateless and
-// answers with plain JSON, so it runs behind any load balancer.
+// answers with plain JSON, so it runs behind any load balancer. The
+// RemoteAddr of each MCP request becomes the RemoteAddr of the REST requests
+// its tool call dispatches.
 func (s *Server) Handler() http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s.srv
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), remoteAddrKey{}, r.RemoteAddr)
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // Catalog returns the catalog the tools serve.
