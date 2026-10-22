@@ -31,6 +31,8 @@ const (
 	labelResetInterval = time.Hour
 )
 
+// ansiRegex matches ANSI escape sequences. request strips them from a copy of
+// each line for label extraction only, the pushed line keeps its colors.
 // Taken from https://github.com/acarl005/stripansi
 var ansiRegex = regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
 
@@ -301,14 +303,16 @@ func (c *Client) post(body []byte) error {
 	return ez.New(code, msg, nil)
 }
 
-// request groups the lines into one stream per label set.
+// request groups the lines into one stream per label set. Labels are read from
+// a copy of the line with the ANSI codes stripped, and the line is pushed with
+// its colors, which Grafana renders.
 func (c *Client) request(lines []line) pushRequest {
 	var req pushRequest
 	streams := map[string]*stream{}
 
 	for _, l := range lines {
-		text := ansiRegex.ReplaceAllString(strings.TrimRight(string(l.text), "\n"), "")
-		labels := c.labels(text)
+		raw := strings.TrimRight(string(l.text), "\n")
+		labels := c.labels(ansiRegex.ReplaceAllString(raw, ""))
 
 		var key strings.Builder
 		for _, name := range c.labelNames {
@@ -323,7 +327,7 @@ func (c *Client) request(lines []line) pushRequest {
 			req.Streams = append(req.Streams, s)
 		}
 
-		s.Values = append(s.Values, [2]string{strconv.FormatInt(l.at.UnixNano(), 10), text})
+		s.Values = append(s.Values, [2]string{strconv.FormatInt(l.at.UnixNano(), 10), raw})
 	}
 
 	return req

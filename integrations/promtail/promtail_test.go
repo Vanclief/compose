@@ -168,7 +168,7 @@ func TestClientBatchesLinesIntoStreamsByLabels(t *testing.T) {
 	client := newTestClient(t, server.URL)
 
 	writes := []string{
-		"\x1b[32mINF\x1b[0m request \x1b[36mmethod=\x1b[0mGET \x1b[36mstatus=\x1b[0m200\n",
+		"\x1b[32mINF\x1b[0m request \x1b[36mmethod=GET\x1b[0m \x1b[36mstatus=200\x1b[0m\n",
 		"INF request method=GET status=200 uri=/a\n",
 		"ERR request method=POST status=500\n",
 		"INF no labels here\n",
@@ -190,7 +190,9 @@ func TestClientBatchesLinesIntoStreamsByLabels(t *testing.T) {
 
 	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "GET", "status": "200"}, streams[0].Stream)
 	require.Len(t, streams[0].Values, 2)
-	assert.Equal(t, "INF request method=GET status=200", streams[0].Values[0][1])
+	assert.Equal(t, "\x1b[32mINF\x1b[0m request \x1b[36mmethod=GET\x1b[0m \x1b[36mstatus=200\x1b[0m", streams[0].Values[0][1])
+	assert.Contains(t, streams[0].Values[0][1], "method=GET")
+	assert.Contains(t, streams[0].Values[0][1], "status=200")
 	assert.Equal(t, "INF request method=GET status=200 uri=/a", streams[0].Values[1][1])
 
 	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "POST", "status": "500"}, streams[1].Stream)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,55 @@ func TestWithPromtailLogWriterIsCloser(t *testing.T) {
 	// CloseLogs closes the same client again and must still succeed
 	err = c.CloseLogs(t.Context())
 	require.NoError(t, err)
+}
+
+// TestWithZerologColorsWholeFieldToken checks that each "name=value" token is
+// one color span with no escape codes inside, so it is a contiguous substring
+// of the colored line and Loki substring filters match it.
+func TestWithZerologColorsWholeFieldToken(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
+	var buf bytes.Buffer
+	c := &BaseController{logWriter: &buf}
+	c.WithZerolog()
+
+	log.Info().Err(errors.New("connection refused")).Str("field_name", "value").Int("status", 200).Msg("hello")
+
+	line := buf.String()
+	assert.Contains(t, line, "field_name=value")
+	assert.Contains(t, line, "status=200")
+	assert.Contains(t, line, `error="connection refused"`)
+	assert.Contains(t, line, "\x1b[36mfield_name=value\x1b[0m")
+	assert.Contains(t, line, "\x1b[36mstatus=200\x1b[0m")
+	assert.Contains(t, line, "\x1b[31merror=\"connection refused\"\x1b[0m")
+}
+
+// TestWithZerologNoColor checks that NO_COLOR in the environment turns off the
+// field colors set by WithZerolog.
+func TestWithZerologNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
+	var buf bytes.Buffer
+	c := &BaseController{logWriter: &buf}
+	c.WithZerolog()
+
+	log.Info().Err(errors.New("boom")).Str("field_name", "value").Int("status", 200).Msg("hello")
+
+	line := buf.String()
+	assert.Contains(t, line, "field_name=value")
+	assert.Contains(t, line, "status=200")
+	assert.Contains(t, line, "error=boom")
+	assert.NotContains(t, line, "\x1b[")
 }
 
 // TestWithSESReturnsClientError checks that a client setup failure is returned
