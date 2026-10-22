@@ -15,7 +15,10 @@ import (
 // raised as ez errors keep their code, message and data, since the app wrote
 // them for the client. Echo's and encoding/json's messages name Go types and
 // fields, and an ez.Wrap of a json error carries only EINTERNAL, so those
-// become a generic EINVALID with the detail kept in the log.
+// become a generic EINVALID with the detail kept in the log. Echo attaches
+// every such detail with SetInternal, so an Echo error without Internal, like
+// 415 Unsupported Media Type or the body limit's 413, holds only a fixed status
+// text and is passed to the client as is.
 func (h *BaseHandler) handleEchoError(c echo.Context, op string, request requests.Request, err error) error {
 	var appErr *ez.Error
 	isAppErr := errors.As(err, &appErr)
@@ -28,6 +31,9 @@ func (h *BaseHandler) handleEchoError(c echo.Context, op string, request request
 	var echoErr *echo.HTTPError
 	if errors.As(err, &echoErr) {
 		detail = fmt.Sprintf("%v", echoErr.Message)
+		if echoErr.Internal == nil {
+			return h.ManageError(c, op, request, ez.New(ez.EINVALID, detail, err))
+		}
 	}
 
 	log.Warn().

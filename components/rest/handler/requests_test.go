@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
@@ -167,4 +168,58 @@ func TestBindedJSONResponseHidesWrappedJSONError(t *testing.T) {
 	// ez.Wrap of a json error carries EINTERNAL and no message; neither belongs in a 400
 	require.Equal(t, "Invalid request body", response.Error.Message)
 	require.NotContains(t, rec.Body.String(), "internal error")
+}
+
+func TestBindedJSONResponseKeepsEchoStatusText(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     func() *http.Request
+		message string
+	}{
+		{
+			name: "unsupported media type",
+			req: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"age":40}`))
+				req.Header.Set(echo.HeaderContentType, echo.MIMETextPlain)
+				return req
+			},
+			message: http.StatusText(http.StatusUnsupportedMediaType),
+		},
+		{
+			name: "body over the limit",
+			req: func() *http.Request {
+				body := `{"age":` + strings.Repeat(" ", 2048) + `40}`
+				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+				req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				// An unknown length, as with a chunked body, gets past the
+				// middleware's ContentLength check and trips the limit during bind
+				req.ContentLength = -1
+				return req
+			},
+			message: http.StatusText(http.StatusRequestEntityTooLarge),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := echo.New()
+			e.Use(middleware.BodyLimit("1K"))
+			e.POST("/", func(c echo.Context) error {
+				request := requests.New(http.Header{}, "127.0.0.1")
+				return NewHandler(nil).BindedJSONResponse(c, "test", request, &ageBody{})
+			})
+
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, tt.req())
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+
+			var response ErrorResponse
+			err := json.Unmarshal(rec.Body.Bytes(), &response)
+			require.NoError(t, err)
+			require.Equal(t, ez.EINVALID, response.Error.Code)
+
+			// Echo's fixed status text names no Go types or fields, and tells the client what to fix
+			require.Equal(t, tt.message, response.Error.Message)
+		})
+	}
 }
