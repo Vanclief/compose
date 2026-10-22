@@ -194,24 +194,27 @@ func TestWithZerologColorsWholeFieldToken(t *testing.T) {
 	assert.Contains(t, line, "\x1b[31merror=\"connection refused\"\x1b[0m")
 }
 
-func TestConsoleFieldNameNoColor(t *testing.T) {
+// TestWithZerologNoColor checks that NO_COLOR in the environment turns off the
+// field colors set by WithZerolog.
+func TestWithZerologNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	previous := log.Logger
+	t.Cleanup(func() {
+		log.Logger = previous
+	})
+
 	var buf bytes.Buffer
-	output := zerolog.ConsoleWriter{
-		Out:                 &buf,
-		NoColor:             true,
-		FormatFieldName:     consoleFieldName(36, true),
-		FormatFieldValue:    consoleFieldValue(true),
-		FormatErrFieldName:  consoleFieldName(31, true),
-		FormatErrFieldValue: consoleFieldValue(true),
-	}
+	c := &BaseController{logWriter: &buf}
+	c.WithZerolog()
 
-	logger := zerolog.New(output)
-	logger.Info().Err(errors.New("boom")).Str("field_name", "value").Int("status", 200).Msg("hello")
+	log.Info().Err(errors.New("boom")).Str("field_name", "value").Int("status", 200).Msg("hello")
 
-	assert.Contains(t, buf.String(), "field_name=value")
-	assert.Contains(t, buf.String(), "status=200")
-	assert.Contains(t, buf.String(), "error=boom")
-	assert.NotContains(t, buf.String(), "\x1b[")
+	line := buf.String()
+	assert.Contains(t, line, "field_name=value")
+	assert.Contains(t, line, "status=200")
+	assert.Contains(t, line, "error=boom")
+	assert.NotContains(t, line, "\x1b[")
 }
 
 // TestWithSESReturnsClientError checks that a client setup failure is returned
