@@ -103,19 +103,40 @@ func (g *generator) buildOpenAPISpec(routes []Route, facts handlerFacts, handler
 
 	components := map[string]any{}
 	securitySchemes := map[string]any{}
-	requirement := map[string]any{}
+	apiKeyRequirement := map[string]any{}
+	httpRequirements := []any{}
 	for _, scheme := range g.cfg.Security {
 		securityScheme := map[string]any{
 			"type": "apiKey",
 			"in":   "header",
 			"name": scheme.Header,
 		}
+		if scheme.Type == "http" {
+			securityScheme = map[string]any{
+				"type":   "http",
+				"scheme": scheme.Scheme,
+			}
+			if scheme.BearerFormat != "" {
+				securityScheme["bearerFormat"] = scheme.BearerFormat
+			}
+		}
 		if scheme.Description != "" {
 			securityScheme["description"] = scheme.Description
 		}
 		securitySchemes[scheme.Name] = securityScheme
-		requirement[scheme.Name] = []any{}
+		if scheme.Type == "http" {
+			httpRequirements = append(httpRequirements, map[string]any{scheme.Name: []any{}})
+		} else {
+			apiKeyRequirement[scheme.Name] = []any{}
+		}
 	}
+	// apiKey schemes are sent together, so they share one (ANDed) requirement. Each http
+	// scheme is an alternative credential with its own requirement.
+	security := []any{}
+	if len(apiKeyRequirement) > 0 {
+		security = append(security, apiKeyRequirement)
+	}
+	security = append(security, httpRequirements...)
 	if len(securitySchemes) > 0 {
 		components["securitySchemes"] = securitySchemes
 	}
@@ -161,8 +182,8 @@ func (g *generator) buildOpenAPISpec(routes []Route, facts handlerFacts, handler
 	if externalDocs != nil {
 		spec["externalDocs"] = nonEmptyFields(map[string]string{"description": externalDocs.Description, "url": externalDocs.URL})
 	}
-	if len(requirement) > 0 {
-		spec["security"] = []any{requirement}
+	if len(security) > 0 {
+		spec["security"] = security
 	}
 
 	tags := g.sortedTagList(tagsSet, facts.namespaceDocs)
