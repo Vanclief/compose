@@ -54,7 +54,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Version = doc.Info.Version
 	}
 	if cfg.Auth == nil {
-		cfg.Auth = BearerToHeaders("API-KEY", "API-SECRET")
+		cfg.Auth = BearerPassthrough()
 	}
 	if cfg.MaxOutputBytes <= 0 {
 		cfg.MaxOutputBytes = defaultMaxOutputBytes

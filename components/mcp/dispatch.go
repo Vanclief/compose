@@ -22,6 +22,19 @@ import (
 // compose error envelope.
 const maxErrorBody = 300
 
+// BearerPassthrough returns an AuthFunc that forwards the bearer token of the
+// MCP request to the REST API unchanged, as "Authorization: Bearer <token>".
+// An empty token yields no headers. It is the default Config.Auth.
+func BearerPassthrough() AuthFunc {
+	return func(ctx context.Context, token string) (http.Header, error) {
+		header := http.Header{}
+		if token != "" {
+			header.Set("Authorization", "Bearer "+token)
+		}
+		return header, nil
+	}
+}
+
 // BearerToHeaders maps a "key:secret" bearer token to the two headers the
 // REST API authenticates with. The token is split at the first ":". An empty
 // token yields no headers.

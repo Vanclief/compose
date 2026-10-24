@@ -11,6 +11,8 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/vanclief/ez"
+
+	"github.com/vanclief/compose/components/rest/requests"
 )
 
 type whoamiInput struct{}
@@ -172,18 +174,18 @@ func (s *Server) result(text string, failed bool) *mcp.CallToolResult {
 }
 
 // bearerToken returns the bearer token of the HTTP request behind req, or ""
-// when there is none or the transport is not HTTP.
+// when there is none, the Authorization header is malformed, or the
+// transport is not HTTP.
 func bearerToken(req *mcp.CallToolRequest) string {
 	extra := req.GetExtra()
 	if extra == nil {
 		return ""
 	}
-	value := strings.TrimSpace(extra.Header.Get("Authorization"))
-	prefix := "bearer "
-	if len(value) < len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
+	token, err := requests.ParseBearer(extra.Header)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(value[len(prefix):])
+	return token
 }
 
 // errorMessage is the message of err without the package prefix the agent
