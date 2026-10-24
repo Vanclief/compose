@@ -35,6 +35,9 @@ type StandardRequest struct {
 	Context   context.Context
 	Cancel    context.CancelFunc
 	Locale    string
+	// Method is the HTTP method, set by WithMethod. Authenticate needs it to
+	// apply the CSRF rule of WithCookie; empty counts as unsafe.
+	Method string
 }
 
 // requestIDKey is the context key New stores the request ID under. An
@@ -62,6 +65,16 @@ func WithTimeout(timeout time.Duration) Option {
 		if previousCancel != nil {
 			previousCancel()
 		}
+	}
+}
+
+// WithMethod returns an Option that records the HTTP method of the request,
+// for example c.Request().Method. Pass it when Authenticate may accept a
+// cookie: the CSRF rule treats a request without a method as unsafe, so a
+// cookie then needs an allowed Origin on every method.
+func WithMethod(method string) Option {
+	return func(req *StandardRequest) {
+		req.Method = method
 	}
 }
 
