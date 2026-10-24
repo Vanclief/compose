@@ -37,9 +37,12 @@ type bunRecord struct {
 // NewBunStore returns a Store backed by one table with the columns kind, id,
 // value and expires_at, primary key (kind, id). Call CreateTable with the
 // same table at startup to create it. Take uses a single DELETE ... RETURNING
-// statement so a record is redeemed at most once. Expired rows stay in the
-// table until Sweep deletes them; nothing calls Sweep automatically, so run
-// it periodically, for example from a ticker goroutine as the Sweep doc shows.
+// statement so a record is redeemed at most once, and Swap a single
+// conditional UPDATE so a family rotates at most once per generation. Point
+// db at the primary: the Store contract needs read-your-writes, which read
+// replicas do not give. Expired rows stay in the table until Sweep deletes
+// them; nothing calls Sweep automatically, so run it periodically, for
+// example from a ticker goroutine as the Sweep doc shows.
 func NewBunStore(db *bun.DB, table string) Store {
 	return &bunStore{db: db, table: table}
 }
@@ -180,6 +183,40 @@ func (s *bunStore) Take(ctx context.Context, kind, id string) ([]byte, error) {
 		return nil, ez.New(ez.EINTERNAL, "oauth: taking the "+kind+" record failed", err)
 	}
 	return value, nil
+}
+
+// Swap is one conditional UPDATE: it changes the row only while it is live
+// and still holds old, so of two swaps from the same old value only one
+// affects a row.
+func (s *bunStore) Swap(ctx context.Context, kind, id string, old, value []byte, expiresAt time.Time) error {
+	// grug: bun writes a nil slice as NULL, which the NOT NULL column rejects
+	// and which never compares equal; Put stores nil as an empty value.
+	if old == nil {
+		old = []byte{}
+	}
+	if value == nil {
+		value = []byte{}
+	}
+	result, err := s.db.NewUpdate().
+		TableExpr("?", bun.Ident(s.table)).
+		Set("value = ?", value).
+		Set("expires_at = ?", expiresAt).
+		Where("kind = ?", kind).
+		Where("id = ?", id).
+		Where("value = ?", old).
+		Where("expires_at > ?", time.Now()).
+		Exec(ctx)
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: swapping the "+kind+" record failed", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: counting swapped "+kind+" records failed", err)
+	}
+	if count == 0 {
+		return ez.New(ez.ENOTFOUND, "oauth: no "+kind+" record holding the old value", nil)
+	}
+	return nil
 }
 
 func (s *bunStore) Delete(ctx context.Context, kind, id string) error {

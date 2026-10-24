@@ -169,6 +169,7 @@ func shopConfig(t *testing.T) Config {
 		Spec:         spec,
 		Handler:      shopApp(),
 		Instructions: "Shop is a test store.",
+		Auth:         BearerToHeaders("API-KEY", "API-SECRET"),
 		WhoAmI:       "accounts.me",
 		Composites:   []Composite{orderSummary()},
 		Concepts: map[string]Concept{
@@ -646,6 +647,44 @@ func TestBearerToHeaders(t *testing.T) {
 
 	_, err = auth(context.Background(), "abc")
 	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+}
+
+func TestBearerPassthrough(t *testing.T) {
+	auth := BearerPassthrough()
+
+	header, err := auth(context.Background(), "")
+	require.NoError(t, err)
+	assert.Empty(t, header)
+
+	header, err = auth(context.Background(), "abc:def")
+	require.NoError(t, err)
+	assert.Equal(t, http.Header{"Authorization": {"Bearer abc:def"}}, header)
+}
+
+// TestServerDefaultAuthPassthrough: without Config.Auth the bearer token of
+// the MCP request reaches the REST handler unchanged, and a malformed
+// Authorization header reaches it as no credentials at all.
+func TestServerDefaultAuthPassthrough(t *testing.T) {
+	s, err := New(Config{Spec: []byte(dispatchSpec), Handler: dispatchApp()})
+	require.NoError(t, err)
+
+	tokens := map[string]string{
+		"abc":       "Bearer abc",
+		"key:sec.1": "Bearer key:sec.1",
+		// An extra blank after the scheme is allowed by RFC 7235 and by the
+		// SDK's bearer gate, so it passes through normalised.
+		" abc":    "Bearer abc",
+		"abc def": "",
+	}
+	for token, want := range tokens {
+		t.Run(token, func(t *testing.T) {
+			text, failed := callTool(t, connect(t, s, token), "call_function", map[string]any{"name": "items.get", "args": map[string]any{"id": 1}})
+			require.False(t, failed, text)
+			var got dispatchEcho
+			require.NoError(t, json.Unmarshal([]byte(text), &got), text)
+			assert.Equal(t, want, got.Headers["Authorization"])
+		})
+	}
 }
 
 func TestServerReference(t *testing.T) {

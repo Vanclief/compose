@@ -14,10 +14,17 @@ const (
 
 	defaultReadHeaderTimeout = 10 * time.Second
 	defaultIdleTimeout       = 120 * time.Second
+
+	// sessionTokenHeader mirrors session.TokenHeader, the response header
+	// session.SetRotated writes a rotated token to. It is copied rather than
+	// imported so rest does not depend on the session package and its bun
+	// store; router_test.go checks the two stay equal.
+	sessionTokenHeader = "Session-Token"
 )
 
 type config struct {
 	allowedOrigins    []string
+	credentialedCORS  bool
 	bodyLimit         string
 	readHeaderTimeout time.Duration
 	idleTimeout       time.Duration
@@ -33,6 +40,19 @@ type Option func(*config)
 func WithAllowedOrigins(origins ...string) Option {
 	return func(c *config) {
 		c.allowedOrigins = origins
+	}
+}
+
+// WithCredentialedCORS sends Access-Control-Allow-Credentials: true, so a
+// browser app on another origin can send and receive cookies. It is needed for
+// cookie-based session auth from another origin. It only takes effect together
+// with WithAllowedOrigins: browsers reject credentials with a wildcard origin,
+// so without allowed origins it is ignored and Start logs a warning. The
+// cookie path also needs the origin checks of requests.WithCookie (the CSRF
+// rule in docs/auth.md), since CORS alone does not stop cross-site writes.
+func WithCredentialedCORS() Option {
+	return func(c *config) {
+		c.credentialedCORS = true
 	}
 }
 
@@ -120,11 +140,21 @@ func configure(e *echo.Echo, log zerolog.Logger, opts ...Option) {
 
 	e.Use(middleware.Recover())
 
-	if len(cfg.allowedOrigins) > 0 {
-		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{AllowOrigins: cfg.allowedOrigins}))
-	} else {
-		e.Use(middleware.CORS())
+	// With no allowed origins echo allows every origin, as middleware.CORS
+	// does. Session-Token is exposed so cross-origin clients can read a
+	// rotated session token.
+	cors := middleware.CORSConfig{
+		AllowOrigins:  cfg.allowedOrigins,
+		ExposeHeaders: []string{sessionTokenHeader},
 	}
+	if cfg.credentialedCORS {
+		if len(cfg.allowedOrigins) > 0 {
+			cors.AllowCredentials = true
+		} else {
+			log.Warn().Msg("rest: WithCredentialedCORS ignored without WithAllowedOrigins")
+		}
+	}
+	e.Use(middleware.CORSWithConfig(cors))
 
 	if cfg.bodyLimit != "" {
 		e.Use(middleware.BodyLimit(cfg.bodyLimit))

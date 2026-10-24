@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/compose/components/auth/session"
 )
 
 func TestNewConfigDefaults(t *testing.T) {
@@ -64,6 +66,17 @@ func preflight(e *echo.Echo, origin string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func crossOriginGet(e *echo.Echo, origin string) *httptest.ResponseRecorder {
+	e.GET("/get", func(c echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/get", nil)
+	req.Header.Set(echo.HeaderOrigin, origin)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestConfigureServerTimeouts(t *testing.T) {
 	e := newTestEcho()
 	require.Equal(t, 10*time.Second, e.Server.ReadHeaderTimeout)
@@ -100,6 +113,54 @@ func TestConfigureCORSAllowedOrigins(t *testing.T) {
 
 	rec = preflight(e, "https://evil.example.com")
 	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+}
+
+func TestSessionTokenHeaderMirrorsSession(t *testing.T) {
+	require.Equal(t, session.TokenHeader, sessionTokenHeader)
+}
+
+func TestConfigureCORSExposesSessionToken(t *testing.T) {
+	rec := crossOriginGet(newTestEcho(), "https://anywhere.example.com")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "*", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlExposeHeaders), session.TokenHeader)
+	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+
+	rec = crossOriginGet(newTestEcho(WithAllowedOrigins("https://app.example.com")), "https://app.example.com")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "https://app.example.com", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlExposeHeaders), session.TokenHeader)
+	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+}
+
+func TestConfigureCredentialedCORS(t *testing.T) {
+	e := newTestEcho(WithAllowedOrigins("https://app.example.com"), WithCredentialedCORS())
+
+	rec := crossOriginGet(e, "https://app.example.com")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "https://app.example.com", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Equal(t, "true", rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+
+	rec = preflight(e, "https://app.example.com")
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, "https://app.example.com", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Equal(t, "true", rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+
+	rec = preflight(e, "https://evil.example.com")
+	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+}
+
+func TestConfigureCredentialedCORSNeedsAllowedOrigins(t *testing.T) {
+	var logs bytes.Buffer
+	e := echo.New()
+	configure(e, zerolog.New(&logs), WithCredentialedCORS())
+
+	rec := crossOriginGet(e, "https://anywhere.example.com")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "*", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
+	require.Contains(t, logs.String(), "WithCredentialedCORS ignored without WithAllowedOrigins")
 }
 
 func TestConfigureBodyLimit(t *testing.T) {

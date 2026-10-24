@@ -196,12 +196,21 @@ type Server struct {
 	Variables map[string]string
 }
 
-// SecurityScheme is an API key sent in a request header. Every scheme is required globally;
+// SecurityScheme is an API key sent in a request header or an http (bearer) credential.
+// The global requirement puts every apiKey scheme in one requirement object, so they must
+// be sent together, and each http scheme in its own, so each is an alternative credential.
 // Public operations opt out.
 type SecurityScheme struct {
-	Name   string
+	Name string
+	// Type is "apiKey" (default, header named by Header) or "http".
+	Type string
+	// Header names the header of an apiKey scheme.
 	Header string
-	// Description tells clients how to obtain and send the key.
+	// Scheme is the http scheme, "bearer". Required when Type is "http".
+	Scheme string
+	// BearerFormat is a hint for clients, for example "opaque".
+	BearerFormat string
+	// Description tells clients how to obtain and send the credential.
 	Description string
 }
 
@@ -315,6 +324,17 @@ func (cfg Config) withDefaults() (Config, error) {
 	}
 	if cfg.HandlerGlob == "" {
 		return cfg, ez.New(ez.EINVALID, "generator: HandlerGlob is required", nil)
+	}
+	for _, scheme := range cfg.Security {
+		switch scheme.Type {
+		case "", "apiKey":
+		case "http":
+			if scheme.Scheme == "" {
+				return cfg, ez.New(ez.EINVALID, "generator: security scheme "+scheme.Name+" of type http needs a Scheme", nil)
+			}
+		default:
+			return cfg, ez.New(ez.EINVALID, "generator: security scheme "+scheme.Name+" has unknown type "+scheme.Type, nil)
+		}
 	}
 
 	if cfg.HandlersStruct == "" {

@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -80,6 +81,23 @@ func (m *memoryStore) lookup(kind, id string, remove bool) ([]byte, error) {
 		delete(m.records, key)
 	}
 	return append([]byte(nil), record.value...), nil
+}
+
+// Swap replaces the value and expiry of the live record under kind and id
+// when it still holds old, under the mutex, so of two swaps from the same
+// old value only one succeeds.
+func (m *memoryStore) Swap(ctx context.Context, kind, id string, old, value []byte, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, err := m.lookup(kind, id, false)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	if !bytes.Equal(current, old) {
+		return ez.New(ez.ENOTFOUND, "oauth: the "+kind+" record changed", nil)
+	}
+	m.records[memoryKey(kind, id)] = memoryRecord{value: append([]byte(nil), value...), expiresAt: expiresAt}
+	return nil
 }
 
 func (m *memoryStore) Delete(ctx context.Context, kind, id string) error {

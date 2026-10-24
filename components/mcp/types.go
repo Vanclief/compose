@@ -28,8 +28,9 @@
 //	}
 //	e.Any("/mcp", echo.WrapHandler(server.Handler()))
 //
-// Clients connect over streamable HTTP with "Authorization: Bearer key:secret";
-// the default Auth maps that token to the API-KEY and API-SECRET headers. The
+// Clients connect over streamable HTTP with "Authorization: Bearer <token>";
+// the default Auth forwards that header to the REST API unchanged, and
+// BearerToHeaders maps a "key:secret" token to two headers instead. The
 // server is stateless, so it runs behind any load balancer. Hosted clients
 // that cannot hold an API key, such as claude.ai and ChatGPT connectors, log
 // in through the OAuth server of the oauth subpackage, which supplies Auth
@@ -68,7 +69,7 @@ type Config struct {
 	// module list in the server instructions.
 	Instructions string
 	// Auth maps the bearer token of an MCP request to the headers the REST
-	// API authenticates with. Defaults to BearerToHeaders("API-KEY", "API-SECRET").
+	// API authenticates with. Defaults to BearerPassthrough().
 	Auth AuthFunc
 	// WhoAmI names the catalog function that whoami calls with no arguments,
 	// for example "users.me"; New refuses a function with a required
@@ -90,8 +91,10 @@ type Config struct {
 	OnError func(ctx context.Context, err error)
 }
 
-// AuthFunc turns the bearer token of an MCP request into REST headers. An
-// error means the token is not accepted; an empty token yields no headers.
+// AuthFunc turns the bearer token of an MCP request into REST headers. The
+// token is "" when the request has no well-formed "Authorization: Bearer
+// <token>" header. An error means the token is not accepted; an empty token
+// yields no headers.
 type AuthFunc func(ctx context.Context, token string) (http.Header, error)
 
 // Concept is a glossary entry supplied by the project.
@@ -175,12 +178,13 @@ type Concept struct {
 //
 // Who may run scripts: New requires Config.WhoAmI when run_script is
 // enabled, and every run first calls that function with the caller's
-// credentials and refuses the script when the call fails. BearerToHeaders,
-// the usual Fallback of the oauth package, only parses the token and
-// accepts any key:secret pair, so the WhoAmI call is what keeps anonymous
-// callers out; name a function that fails without valid credentials. Set
-// Allow to limit scripts to callers the operator trusts, for example by
-// role in the WhoAmI response, and keep run_script disabled otherwise.
+// credentials and refuses the script when the call fails. The default Auth,
+// BearerPassthrough, forwards any token without checking it, and
+// BearerToHeaders accepts any key:secret pair, so the WhoAmI call is what
+// keeps anonymous callers out; name a function that fails without valid
+// credentials. Set Allow to limit scripts to callers the operator trusts,
+// for example by role in the WhoAmI response, and keep run_script disabled
+// otherwise.
 //
 // Limit: this is an in-process sandbox, not a process boundary. It keeps a
 // script from crashing the process through recursion, from running a native

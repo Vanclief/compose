@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/compose/components/auth/token"
 	"github.com/vanclief/ez"
 )
 
@@ -26,7 +29,32 @@ import (
 const testRedirect = "https://client.example/callback"
 
 // testGrant is what the test login grants.
-var testGrant = Grant{Subject: "user-1", Headers: http.Header{"Api-Key": {"k1"}, "Api-Secret": {"s1"}}}
+var testGrant = Grant{Subject: "user-1"}
+
+// issuedGrant is what the server stores for testGrant: the scope of
+// authorizeParams is never copied into it.
+var issuedGrant = testGrant
+
+// testPrefix is the TokenPrefix of the test servers.
+const testPrefix = "test"
+
+// shapedToken returns a token with the shape of an access token of the test
+// servers that no server issued.
+func shapedToken(t *testing.T) string {
+	t.Helper()
+	generated, err := token.Generate(testPrefix + "at")
+	require.NoError(t, err)
+	return generated.Value
+}
+
+// shapedRefreshToken returns a token with the shape of a refresh token of the
+// test servers that no server issued.
+func shapedRefreshToken(t *testing.T) string {
+	t.Helper()
+	generated, err := token.Generate(testPrefix + "rt")
+	require.NoError(t, err)
+	return generated.Value
+}
 
 // verifyLogin accepts ana@acme.com with "pw"; "boom" fails as a server error.
 func verifyLogin(ctx context.Context, identifier, credential string) (Grant, error) {
@@ -55,10 +83,11 @@ func newEnv(t *testing.T, mutate func(*Config), handler func(*Server) http.Handl
 	ts := httptest.NewUnstartedServer(e)
 	base := "http://" + ts.Listener.Addr().String()
 	cfg := Config{
-		Issuer:   base,
-		Resource: base + "/mcp",
-		Store:    NewMemoryStore(),
-		Login:    Login{Title: "Acme", Verify: verifyLogin},
+		Issuer:      base,
+		Resource:    base + "/mcp",
+		TokenPrefix: testPrefix,
+		Store:       NewMemoryStore(),
+		Login:       Login{Title: "Acme", Verify: verifyLogin},
 		Clients: []Client{
 			{ID: "public", Name: "Public App", RedirectURIs: []string{testRedirect}},
 			{ID: "private", Name: "Private App", Secret: "shh", RedirectURIs: []string{testRedirect, "https://client.example/other"}},
@@ -238,10 +267,11 @@ func oauthErrorCode(t *testing.T, res response) string {
 func TestNewValidation(t *testing.T) {
 	valid := func() Config {
 		return Config{
-			Issuer:   "https://api.acme.com",
-			Resource: "https://api.acme.com/mcp",
-			Store:    NewMemoryStore(),
-			Login:    Login{Verify: verifyLogin},
+			Issuer:      "https://api.acme.com",
+			Resource:    "https://api.acme.com/mcp",
+			TokenPrefix: "acme",
+			Store:       NewMemoryStore(),
+			Login:       Login{Verify: verifyLogin},
 		}
 	}
 	cases := map[string]func(*Config){
@@ -304,7 +334,24 @@ func TestNewValidation(t *testing.T) {
 		"client with fragment": func(c *Config) {
 			c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"https://client.example/cb#x"}}}
 		},
-		"client with custom uri": func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"myapp://cb"}}} },
+		"client with custom uri":  func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"myapp://cb"}}} },
+		"token prefix missing":    func(c *Config) { c.TokenPrefix = "" },
+		"token prefix short":      func(c *Config) { c.TokenPrefix = "a" },
+		"token prefix uppercase":  func(c *Config) { c.TokenPrefix = "Acme" },
+		"token prefix with _":     func(c *Config) { c.TokenPrefix = "ac_me" },
+		"token prefix too long":   func(c *Config) { c.TokenPrefix = "abcdefghijk" },
+		"access ttl never":        func(c *Config) { c.AccessTokenTTL = Never },
+		"access ttl negative":     func(c *Config) { c.AccessTokenTTL = -time.Hour },
+		"refresh ttl negative":    func(c *Config) { c.RefreshTokenTTL = -time.Hour },
+		"idle ttl never":          func(c *Config) { c.IdleTTL = Never },
+		"idle ttl negative":       func(c *Config) { c.IdleTTL = -time.Hour },
+		"request ttl never":       func(c *Config) { c.RequestTTL = Never },
+		"code ttl never":          func(c *Config) { c.CodeTTL = Never },
+		"code ttl negative":       func(c *Config) { c.CodeTTL = -2 },
+		"client ttl never":        func(c *Config) { c.RegisteredClientTTL = Never },
+		"metadata cache never":    func(c *Config) { c.MetadataCacheTTL = Never },
+		"refresh timeout never":   func(c *Config) { c.RefreshTimeout = Never },
+		"login attempts negative": func(c *Config) { c.MaxLoginAttempts = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -364,14 +411,46 @@ func TestNewValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "for the decoded path p", "the message says what p is")
 	assert.Contains(t, err.Error(), "%21", "the message names the escape Go writes")
 
-	s, err := New(valid())
+	cfg = valid()
+	cfg.AccessTokenTTL = Never
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.AccessTokenTTL cannot be Never")
+
+	cfg = valid()
+	cfg.RefreshTokenTTL = Never
+	cfg.IdleTTL = Never
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Config.IdleTTL cannot be Never")
+
+	cfg = valid()
+	cfg.TokenPrefix = "abcdefghij"
+	_, err = New(cfg)
+	assert.NoError(t, err, "a 10 character prefix leaves room for at and rt")
+
+	cfg = valid()
+	cfg.RefreshTokenTTL = Never
+	s, err := New(cfg)
+	require.NoError(t, err, "refresh tokens may never expire")
+	assert.Equal(t, Never, s.cfg.RefreshTokenTTL)
+
+	s, err = New(valid())
 	require.NoError(t, err)
 	assert.Equal(t, "/mcp", s.resourcePath)
 	assert.Equal(t, "", s.issuerPath)
 	assert.Equal(t, time.Hour, s.cfg.AccessTokenTTL)
 	assert.Equal(t, 30*24*time.Hour, s.cfg.RefreshTokenTTL)
+	assert.Equal(t, 30*24*time.Hour, s.cfg.IdleTTL)
+	assert.Equal(t, 10*time.Minute, s.cfg.RequestTTL)
+	assert.Equal(t, time.Minute, s.cfg.CodeTTL)
+	assert.Equal(t, 365*24*time.Hour, s.cfg.RegisteredClientTTL)
+	assert.Equal(t, time.Hour, s.cfg.MetadataCacheTTL)
+	assert.Equal(t, 10*time.Second, s.cfg.RefreshTimeout)
+	assert.Equal(t, 5, s.cfg.MaxLoginAttempts)
 	assert.Equal(t, 10*time.Second, s.client.Timeout)
-	assert.IsType(t, &http.Transport{}, s.client.Transport, "the default client dials through the address guard")
+	require.IsType(t, &http.Transport{}, s.client.Transport, "the default client dials through the address guard")
+	assert.True(t, s.client.Transport.(*http.Transport).DisableKeepAlives, "the default client keeps no idle connections")
 	assert.Equal(t, "Email", s.cfg.Login.IdentifierLabel)
 	assert.Equal(t, "Password", s.cfg.Login.CredentialLabel)
 
@@ -455,7 +534,7 @@ func TestMetadataIssuerPath(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
-	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", TokenPrefix: "acme", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 	require.NoError(t, err)
 	h := s.Handler()
 
@@ -498,7 +577,7 @@ func TestHandlerAcceptedPaths(t *testing.T) {
 		issuer := pair[0]
 		resource := pair[1]
 		t.Run(issuer+" "+resource, func(t *testing.T) {
-			s, err := New(Config{Issuer: "https://x" + issuer, Resource: "https://x" + resource, Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+			s, err := New(Config{Issuer: "https://x" + issuer, Resource: "https://x" + resource, TokenPrefix: "acme", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 			require.NoError(t, err)
 			var mux http.Handler
 			require.NotPanics(t, func() {
@@ -620,7 +699,7 @@ func TestAuthorizeErrors(t *testing.T) {
 }
 
 func TestSameResource(t *testing.T) {
-	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", TokenPrefix: "acme", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 	require.NoError(t, err)
 	cases := map[string]bool{
 		"":                              true,
@@ -654,8 +733,8 @@ func TestTokenFlow(t *testing.T) {
 	assert.Equal(t, "Bearer", body["token_type"])
 	assert.Equal(t, float64(3600), body["expires_in"])
 	assert.Equal(t, "mcp", body["scope"])
-	assert.Len(t, body["access_token"], 43)
-	assert.Len(t, body["refresh_token"], 43)
+	assert.True(t, token.Check("testat", body["access_token"].(string)), body["access_token"])
+	assert.True(t, token.Check("testrt", body["refresh_token"].(string)), body["refresh_token"])
 
 	res = env.bearer(t, body["access_token"].(string))
 	assert.Equal(t, http.StatusOK, res.status)
@@ -770,10 +849,14 @@ func TestConfidentialClient(t *testing.T) {
 }
 
 func TestRefreshRotation(t *testing.T) {
+	ctx := context.Background()
 	env := newEnv(t, nil, nil)
 	access, refresh := env.tokens(t)
 	var first tokenRecord
-	require.NoError(t, env.s.getRecord(context.Background(), KindRefresh, refresh, false, &first))
+	require.NoError(t, env.s.getRecord(ctx, KindRefresh, hashID(refresh), false, &first))
+	require.NotEmpty(t, first.Family)
+	before, _, err := env.s.getFamily(ctx, first.Family)
+	require.NoError(t, err)
 
 	refreshWith := func(clientID, token string) response {
 		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {token}})
@@ -787,18 +870,22 @@ func TestRefreshRotation(t *testing.T) {
 	assert.NotEqual(t, refresh, newRefresh)
 	assert.Equal(t, "mcp", body["scope"])
 
-	// The new refresh token keeps the expiry of the first one.
+	// The new refresh token stays in the family, which keeps its expiry.
 	var second tokenRecord
-	require.NoError(t, env.s.getRecord(context.Background(), KindRefresh, newRefresh, false, &second))
-	assert.True(t, first.ExpiresAt.Equal(second.ExpiresAt))
-	assert.Equal(t, testGrant, second.Grant)
+	require.NoError(t, env.s.getRecord(ctx, KindRefresh, hashID(newRefresh), false, &second))
+	assert.Equal(t, first.Family, second.Family, "the family is kept through the rotation")
+	after, _, err := env.s.getFamily(ctx, second.Family)
+	require.NoError(t, err)
+	assert.True(t, before.ExpiresAt.Equal(after.ExpiresAt))
+	assert.Equal(t, issuedGrant, after.Grant)
+	assert.Equal(t, before.Generation+1, second.Generation)
 
-	assert.Equal(t, "invalid_grant", oauthErrorCode(t, refreshWith("public", refresh)))
 	assert.Equal(t, http.StatusOK, env.bearer(t, newAccess).status)
 	assert.Equal(t, http.StatusOK, env.bearer(t, access).status, "the old access token lives until it expires")
 
 	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"private"}, "client_secret": {"shh"}, "refresh_token": {newRefresh}})
 	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	assert.Equal(t, http.StatusOK, refreshWith("public", newRefresh).status, "a refresh token presented by another client is not revoked")
 }
 
 func TestAccessTokenExpires(t *testing.T) {
@@ -833,7 +920,13 @@ func TestLoginURLMode(t *testing.T) {
 
 	pending, err := env.s.Pending(context.Background(), id)
 	require.NoError(t, err)
-	assert.Equal(t, Pending{ClientID: "public", ClientName: "Public App", RedirectHost: "client.example"}, pending)
+	assert.Equal(t, Pending{ClientID: "public", ClientName: "Public App", RedirectHost: "client.example", Scope: "mcp"}, pending)
+
+	_, err = env.s.Approve(context.Background(), id, Grant{})
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err), "a grant without subject is refused")
+	res = env.authorize(t, authorizeParams("public", challenge))
+	require.Equal(t, http.StatusFound, res.status, res.body)
+	id = res.location(t).Query().Get("request")
 
 	redirect, err := env.s.Approve(context.Background(), id, testGrant)
 	require.NoError(t, err)
@@ -847,6 +940,61 @@ func TestLoginURLMode(t *testing.T) {
 	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
 	_, err = env.s.Pending(context.Background(), id)
 	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+}
+
+// TestApproveScope: Grant.Scope is what the application set, empty included.
+// The token response carries the granted scope, or the requested one when the
+// application granted none, and keeps it through a refresh.
+func TestApproveScope(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Login = Login{}
+		c.LoginURL = "https://app.acme.com/connect"
+	}, nil)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name         string
+		grant        Grant
+		wantResponse string
+	}{
+		{name: "application scope is granted", grant: Grant{Subject: "u", Scope: "read"}, wantResponse: "read"},
+		{name: "empty scope grants nothing", grant: Grant{Subject: "u"}, wantResponse: "write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier, challenge := pkce("s")
+			params := authorizeParams("public", challenge)
+			params.Set("scope", "write")
+			res := env.authorize(t, params)
+			require.Equal(t, http.StatusFound, res.status, res.body)
+			id := res.location(t).Query().Get("request")
+			require.NotEmpty(t, id)
+
+			pending, err := env.s.Pending(ctx, id)
+			require.NoError(t, err)
+			assert.Equal(t, "write", pending.Scope)
+
+			redirect, err := env.s.Approve(ctx, id, tc.grant)
+			require.NoError(t, err)
+			code := codeFrom(t, response{status: http.StatusFound, header: http.Header{"Location": {redirect}}})
+			res = env.exchange(t, code, verifier)
+			require.Equal(t, http.StatusOK, res.status, res.body)
+			body := res.json(t)
+			assert.Equal(t, tc.wantResponse, body["scope"])
+
+			grant, err := env.s.Verify(ctx, body["access_token"].(string))
+			require.NoError(t, err)
+			assert.Equal(t, tc.grant, grant, "Verify returns the grant as the application set it")
+
+			form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {body["refresh_token"].(string)}, "client_id": {"public"}}
+			res = env.postForm(t, "/oauth/token", form)
+			require.Equal(t, http.StatusOK, res.status, res.body)
+			body = res.json(t)
+			assert.Equal(t, tc.wantResponse, body["scope"], "the response scope survives a refresh")
+			grant, err = env.s.Verify(ctx, body["access_token"].(string))
+			require.NoError(t, err)
+			assert.Equal(t, tc.grant, grant)
+		})
+	}
 }
 
 func TestProtect(t *testing.T) {
@@ -868,12 +1016,15 @@ func TestProtect(t *testing.T) {
 	res = env.bearer(t, access)
 	assert.Equal(t, http.StatusOK, res.status)
 
+	res = env.bearer(t, shapedToken(t))
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, "unknown or expired access token: invalid token\n", res.body)
+
+	var fallbackCalls atomic.Int32
 	fallback := newEnv(t, func(c *Config) {
-		c.Fallback = func(ctx context.Context, token string) (http.Header, error) {
-			if token != "key:secret" {
-				return nil, ez.New(ez.EINVALID, "bad token", nil)
-			}
-			return http.Header{"Api-Key": {"key"}}, nil
+		c.Fallback = func(ctx context.Context, token string) (bool, error) {
+			fallbackCalls.Add(1)
+			return token == "key:secret", nil
 		}
 	}, nil)
 	res = fallback.bearer(t, "key:secret")
@@ -884,6 +1035,27 @@ func TestProtect(t *testing.T) {
 	assert.Equal(t, "the bearer token is not accepted: invalid token\n", res.body)
 	assert.NotContains(t, res.body, "oauth.Server")
 	assert.NotContains(t, res.body, "verifyToken")
+	assert.Equal(t, int32(2), fallbackCalls.Load())
+	res = fallback.bearer(t, shapedToken(t))
+	assert.Equal(t, http.StatusUnauthorized, res.status, "an unknown access token never reaches Fallback")
+	assert.Equal(t, int32(2), fallbackCalls.Load())
+
+	var fallbackReported []error
+	failing := newEnv(t, func(c *Config) {
+		c.Fallback = func(ctx context.Context, token string) (bool, error) {
+			return false, errors.New("key store is down")
+		}
+		c.OnError = func(ctx context.Context, err error) {
+			fallbackReported = append(fallbackReported, err)
+		}
+	}, nil)
+	res = failing.bearer(t, "key:secret")
+	assert.Equal(t, http.StatusInternalServerError, res.status, "a failed Fallback is not a refused token")
+	assert.Equal(t, "the bearer token could not be checked\n", res.body)
+	assert.Empty(t, res.header.Get("WWW-Authenticate"), "a failed check does not start discovery")
+	assert.NotContains(t, res.body, "key store is down")
+	require.Len(t, fallbackReported, 1, "the Fallback error reaches OnError")
+	assert.EqualError(t, fallbackReported[0], "key store is down")
 
 	store := &brokenStore{Store: NewMemoryStore(), broken: map[string]bool{KindAccess: true}}
 	var reported []error
@@ -894,6 +1066,9 @@ func TestProtect(t *testing.T) {
 		}
 	}, nil)
 	res = broken.bearer(t, "any")
+	assert.Equal(t, http.StatusUnauthorized, res.status, "a token of another shape is not looked up")
+	assert.Empty(t, reported)
+	res = broken.bearer(t, shapedToken(t))
 	assert.Equal(t, http.StatusInternalServerError, res.status)
 	assert.Equal(t, "the access token could not be checked\n", res.body)
 	assert.NotContains(t, res.body, "oauth.Server")
@@ -928,7 +1103,9 @@ func TestResourceMetadataURLEscaped(t *testing.T) {
 
 func TestAuthFunc(t *testing.T) {
 	ctx := context.Background()
-	env := newEnv(t, nil, nil)
+	env := newEnv(t, func(c *Config) {
+		c.AccessTokenTTL = 50 * time.Millisecond
+	}, nil)
 	authFunc := env.s.AuthFunc()
 
 	header, err := authFunc(ctx, "")
@@ -938,29 +1115,161 @@ func TestAuthFunc(t *testing.T) {
 	access, _ := env.tokens(t)
 	header, err = authFunc(ctx, access)
 	require.NoError(t, err)
-	assert.Equal(t, "k1", header.Get("API-KEY"))
-	assert.Equal(t, "s1", header.Get("API-SECRET"))
-	header.Set("API-KEY", "changed")
-	header, err = authFunc(ctx, access)
-	require.NoError(t, err)
-	assert.Equal(t, "k1", header.Get("API-KEY"))
+	assert.Equal(t, http.Header{"Authorization": {"Bearer " + access}}, header, "the access token is passed through")
 
-	_, err = authFunc(ctx, "key:secret")
+	_, err = authFunc(ctx, shapedToken(t))
 	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err))
+	_, err = authFunc(ctx, "key:secret")
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "without Fallback other tokens fail")
 
+	time.Sleep(100 * time.Millisecond)
+	_, err = authFunc(ctx, access)
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "an expired token fails so the client refreshes")
+
+	var seen []string
 	fallback := newEnv(t, func(c *Config) {
-		c.Fallback = func(ctx context.Context, token string) (http.Header, error) {
-			if token != "key:secret" {
-				return nil, ez.New(ez.EINVALID, "bad token", nil)
-			}
-			return http.Header{"Api-Key": {"key"}}, nil
+		c.Fallback = func(ctx context.Context, token string) (bool, error) {
+			seen = append(seen, token)
+			return token == "key:secret", nil
 		}
 	}, nil)
 	header, err = fallback.s.AuthFunc()(ctx, "key:secret")
 	require.NoError(t, err)
-	assert.Equal(t, "key", header.Get("API-KEY"))
+	assert.Equal(t, http.Header{"Authorization": {"Bearer key:secret"}}, header, "an accepted token is passed through")
 	_, err = fallback.s.AuthFunc()(ctx, "other")
-	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "a refused token fails as a bad credential")
+	_, err = fallback.s.AuthFunc()(ctx, shapedToken(t))
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err))
+	assert.Equal(t, []string{"key:secret", "other"}, seen, "access-token shaped tokens never reach Fallback")
+
+	var reported []error
+	failing := newEnv(t, func(c *Config) {
+		c.Fallback = func(ctx context.Context, token string) (bool, error) {
+			return false, errors.New("key store is down")
+		}
+		c.OnError = func(ctx context.Context, err error) {
+			reported = append(reported, err)
+		}
+	}, nil)
+	_, err = failing.s.AuthFunc()(ctx, "key:secret")
+	require.Error(t, err)
+	assert.NotEqual(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "a failed Fallback is not a bad credential")
+	assert.Contains(t, err.Error(), "key store is down")
+	require.Len(t, reported, 1, "the Fallback error reaches OnError")
+	assert.EqualError(t, reported[0], "key store is down")
+}
+
+func TestVerify(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, func(c *Config) {
+		c.AccessTokenTTL = 50 * time.Millisecond
+	}, nil)
+	access, refresh := env.tokens(t)
+
+	grant, err := env.s.Verify(ctx, access)
+	require.NoError(t, err)
+	assert.Equal(t, issuedGrant, grant, "the requested scope is not granted")
+
+	for name, value := range map[string]string{
+		"unknown":       shapedToken(t),
+		"malformed":     "key:secret",
+		"empty":         "",
+		"refresh token": refresh,
+		"other prefix":  "acmeat_" + access[len("testat_"):],
+	} {
+		_, err = env.s.Verify(ctx, value)
+		assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), name)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	_, err = env.s.Verify(ctx, access)
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "expired")
+
+	store := &brokenStore{Store: NewMemoryStore(), broken: map[string]bool{}}
+	broken := newEnv(t, func(c *Config) {
+		c.Store = store
+	}, nil)
+	access, _ = broken.tokens(t)
+	store.set(KindAccess, true)
+	_, err = broken.s.Verify(ctx, access)
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+	_, err = broken.s.Verify(ctx, "key:secret")
+	assert.Equal(t, ez.ENOTAUTHENTICATED, ez.ErrorCode(err), "a malformed token is refused without a Store read")
+}
+
+// TestStoreIDsAreHashed: no secret is ever a Store id. Codes, access and
+// refresh tokens, rotated ones included, are stored under their hex SHA-256.
+func TestStoreIDsAreHashed(t *testing.T) {
+	store := NewMemoryStore().(*memoryStore)
+	env := newEnv(t, func(c *Config) {
+		c.Store = store
+	}, nil)
+
+	// Keep a code unexchanged so it is in the Store too.
+	_, challenge := pkce("h")
+	code := env.codeFor(t, "public", challenge)
+	access, refresh := env.tokens(t)
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	newAccess := res.json(t)["access_token"].(string)
+	newRefresh := res.json(t)["refresh_token"].(string)
+	secrets := []string{code, access, refresh, newAccess, newRefresh}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	seen := map[string]int{}
+	for key, record := range store.records {
+		kind, id, found := strings.Cut(key, "\x00")
+		require.True(t, found)
+		for _, secret := range secrets {
+			assert.NotEqual(t, secret, id, kind)
+			assert.NotContains(t, string(record.value), secret, kind)
+		}
+		switch kind {
+		case KindAccess, KindRefresh, KindCode:
+			seen[kind]++
+			assert.Len(t, id, 64, kind)
+			_, err := hex.DecodeString(id)
+			assert.NoError(t, err, kind)
+		}
+	}
+	assert.Equal(t, map[string]int{KindAccess: 2, KindRefresh: 2, KindCode: 1}, seen)
+	_, ok := store.records[memoryKey(KindCode, hashID(code))]
+	assert.True(t, ok, "the code is stored under its hash")
+	_, ok = store.records[memoryKey(KindRefresh, hashID(refresh))]
+	assert.True(t, ok, "the rotated refresh token is kept under its hash for reuse detection")
+}
+
+// TestRefreshTokenTTLNever: a family issued with Never expires IdleTTL after
+// its issue, as does its refresh token, remembers IdleTTL, and keeps rotating.
+func TestRefreshTokenTTLNever(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore().(*memoryStore)
+	env := newEnv(t, func(c *Config) {
+		c.Store = store
+		c.RefreshTokenTTL = Never
+		c.IdleTTL = 2 * time.Hour
+	}, nil)
+	expiry := func(kind, id string) time.Time {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.records[memoryKey(kind, id)].expiresAt
+	}
+	_, refresh := env.tokens(t)
+	var record tokenRecord
+	require.NoError(t, env.s.getRecord(ctx, KindRefresh, hashID(refresh), false, &record))
+	assert.WithinDuration(t, time.Now().Add(2*time.Hour), expiry(KindRefresh, hashID(refresh)), 5*time.Second)
+	family, _, err := env.s.getFamily(ctx, record.Family)
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Hour, family.Idle)
+	assert.WithinDuration(t, time.Now().Add(2*time.Hour), family.ExpiresAt, 5*time.Second)
+	assert.WithinDuration(t, time.Now().Add(2*time.Hour), expiry(KindFamily, record.Family), 5*time.Second)
+
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	newRefresh := res.json(t)["refresh_token"].(string)
+	assert.WithinDuration(t, time.Now().Add(2*time.Hour), expiry(KindRefresh, hashID(newRefresh)), 5*time.Second)
+	assert.WithinDuration(t, time.Now().Add(2*time.Hour), expiry(KindFamily, record.Family), 5*time.Second)
 }
 
 // brokenStore fails every call of the kinds set broken, after sleeping
@@ -1021,33 +1330,28 @@ func (b *brokenStore) Take(ctx context.Context, kind, id string) ([]byte, error)
 }
 
 // cancelStore fails every call whose context is done, as database drivers
-// do. An armed Put runs cancel before that check, so a request can be
-// cancelled after its refresh token was taken. An armed Take deletes, then
-// runs cancel, then fails if the context is done: pgdriver and database/sql
-// can commit an autocommitted DELETE ... RETURNING and still return the
-// context error.
+// do. An armed Put runs cancel before that check, so a test can cancel a
+// request in the middle of a refresh.
 type cancelStore struct {
 	Store
 	mu     sync.Mutex
-	op     string
 	kind   string
 	cancel context.CancelFunc
 }
 
-// arm makes the next call of op ("Put" or "Take") for kind call cancel.
-func (c *cancelStore) arm(op, kind string, cancel context.CancelFunc) {
+// arm makes the next Put of kind call cancel.
+func (c *cancelStore) arm(kind string, cancel context.CancelFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.op = op
 	c.kind = kind
 	c.cancel = cancel
 }
 
-// fire calls the armed cancel when op and kind match it.
-func (c *cancelStore) fire(op, kind string) {
+// fire calls the armed cancel when kind matches it.
+func (c *cancelStore) fire(kind string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cancel != nil && op == c.op && kind == c.kind {
+	if c.cancel != nil && kind == c.kind {
 		c.cancel()
 		c.cancel = nil
 	}
@@ -1061,7 +1365,7 @@ func (c *cancelStore) done(ctx context.Context) error {
 }
 
 func (c *cancelStore) Put(ctx context.Context, kind, id string, value []byte, expiresAt time.Time) error {
-	c.fire("Put", kind)
+	c.fire(kind)
 	err := c.done(ctx)
 	if err != nil {
 		return err
@@ -1077,26 +1381,19 @@ func (c *cancelStore) Get(ctx context.Context, kind, id string) ([]byte, error) 
 	return c.Store.Get(ctx, kind, id)
 }
 
-func (c *cancelStore) Take(ctx context.Context, kind, id string) ([]byte, error) {
+func (c *cancelStore) Swap(ctx context.Context, kind, id string, old, value []byte, expiresAt time.Time) error {
 	err := c.done(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	value, err := c.Store.Take(ctx, kind, id)
-	if err != nil {
-		return nil, err
-	}
-	c.fire("Take", kind)
-	err = c.done(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return value, nil
+	return c.Store.Swap(ctx, kind, id, old, value, expiresAt)
 }
 
-// TestRefreshSurvivesDisconnect: a refresh whose request is cancelled, or
-// whose Store fails, keeps the refresh token, so the retry is never answered
-// invalid_grant.
+// TestRefreshSurvivesDisconnect: a refresh runs detached from its request,
+// so a cancelled request fails no Store call, and a request gone before the
+// Swap commits nothing and gets no answer; a refresh whose Store fails or
+// runs out of RefreshTimeout before the Swap keeps the refresh token too, so
+// the retry is never answered invalid_grant.
 func TestRefreshSurvivesDisconnect(t *testing.T) {
 	cancelling := &cancelStore{Store: NewMemoryStore()}
 	store := &brokenStore{Store: cancelling, broken: map[string]bool{}}
@@ -1104,12 +1401,14 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 	var reportedCtxErrs []error
 	env := newEnv(t, func(c *Config) {
 		c.Store = store
+		c.RefreshTimeout = 100 * time.Millisecond
 		c.OnError = func(ctx context.Context, err error) {
 			mu.Lock()
 			defer mu.Unlock()
 			reportedCtxErrs = append(reportedCtxErrs, ctx.Err())
 		}
 	}, nil)
+	refreshTimeout := env.s.cfg.RefreshTimeout
 	refreshWith := func(ctx context.Context, token string) response {
 		form := url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {token}}
 		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
@@ -1123,34 +1422,32 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 		res := refreshWith(context.Background(), token)
 		assert.Equal(t, http.StatusOK, res.status, "the refresh token survived: "+res.body)
 	}
+	// uncommitted checks that a request gone before the Swap was answered
+	// nothing, and that the presented token still rotates, which a
+	// committed rotation would answer as reuse.
+	uncommitted := func(t *testing.T, res response, token string) {
+		t.Helper()
+		assert.Empty(t, res.body, "no response, and no token, is written for a client that is gone")
+		retry(t, token)
+	}
 
-	t.Run("cancelled after the take", func(t *testing.T) {
+	t.Run("cancelled mid-refresh", func(t *testing.T) {
 		_, refresh := env.tokens(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		cancelling.arm("Put", KindAccess, cancel)
-		res := refreshWith(ctx, refresh)
-		assert.Equal(t, "server_error", oauthErrorCode(t, res))
-		retry(t, refresh)
+		cancelling.arm(KindAccess, cancel)
+		uncommitted(t, refreshWith(ctx, refresh), refresh)
 	})
 
-	t.Run("cancelled during the take", func(t *testing.T) {
+	t.Run("cancelled before the request", func(t *testing.T) {
 		_, refresh := env.tokens(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		cancelling.arm("Take", KindRefresh, cancel)
-		res := refreshWith(ctx, refresh)
-		assert.Equal(t, "server_error", oauthErrorCode(t, res))
-		retry(t, refresh)
+		cancel()
+		uncommitted(t, refreshWith(ctx, refresh), refresh)
 	})
 
-	t.Run("issuing outlasts the take deadline", func(t *testing.T) {
+	t.Run("write outlasts refreshTimeout", func(t *testing.T) {
 		_, refresh := env.tokens(t)
-		saved := refreshTimeout
-		refreshTimeout = 50 * time.Millisecond
-		defer func() {
-			refreshTimeout = saved
-		}()
 		store.set(KindAccess, true)
 		store.setDelay(2 * refreshTimeout)
 		res := refreshWith(context.Background(), refresh)
@@ -1160,13 +1457,8 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 		retry(t, refresh)
 	})
 
-	t.Run("take outlasts refreshTimeout", func(t *testing.T) {
+	t.Run("read outlasts refreshTimeout", func(t *testing.T) {
 		_, refresh := env.tokens(t)
-		saved := refreshTimeout
-		refreshTimeout = 50 * time.Millisecond
-		defer func() {
-			refreshTimeout = saved
-		}()
 		store.set(KindRefresh, true)
 		store.setDelay(2 * refreshTimeout)
 		mu.Lock()
@@ -1179,23 +1471,14 @@ func TestRefreshSurvivesDisconnect(t *testing.T) {
 		mu.Lock()
 		reported := reportedCtxErrs[before:]
 		mu.Unlock()
-		require.Len(t, reported, 1, "the failed take reaches OnError")
-		assert.NoError(t, reported[0], "OnError gets a live context after the take deadline")
-		retry(t, refresh)
-	})
-
-	t.Run("cancelled before the request", func(t *testing.T) {
-		_, refresh := env.tokens(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		res := refreshWith(ctx, refresh)
-		assert.Equal(t, "server_error", oauthErrorCode(t, res))
+		require.Len(t, reported, 1, "the failed read reaches OnError")
+		assert.NoError(t, reported[0], "OnError gets a live context after the refresh deadline")
 		retry(t, refresh)
 	})
 
 	t.Run("failing Store", func(t *testing.T) {
 		_, refresh := env.tokens(t)
-		for _, kind := range []string{KindRefresh, KindAccess} {
+		for _, kind := range []string{KindRefresh, KindFamily, KindAccess} {
 			store.set(kind, true)
 			res := refreshWith(context.Background(), refresh)
 			store.set(kind, false)
@@ -1261,8 +1544,10 @@ func TestStoreFailures(t *testing.T) {
 	res = env.exchange(t, code, verifier)
 	assert.Equal(t, http.StatusInternalServerError, res.status)
 	assert.Equal(t, "server_error", oauthErrorCode(t, res))
-	assert.Equal(t, http.StatusInternalServerError, env.bearer(t, "any").status)
-	_, err := env.s.AuthFunc()(ctx, "any")
+	assert.Equal(t, http.StatusInternalServerError, env.bearer(t, shapedToken(t)).status)
+	_, err := env.s.AuthFunc()(ctx, shapedToken(t))
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+	_, err = env.s.Verify(ctx, shapedToken(t))
 	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
 	store.set(KindAccess, false)
 
@@ -1270,9 +1555,11 @@ func TestStoreFailures(t *testing.T) {
 	store.set(KindRefresh, true)
 	res = env.exchange(t, code, verifier)
 	assert.Equal(t, http.StatusInternalServerError, res.status)
-	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {"r"}})
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {shapedRefreshToken(t)}})
 	assert.Equal(t, http.StatusInternalServerError, res.status, "a Store outage is not invalid_grant")
-	assert.Equal(t, "server_error", oauthErrorCode(t, res))
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {"r"}})
+	assert.Equal(t, http.StatusBadRequest, res.status, "a malformed refresh token is answered without the Store")
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
 	store.set(KindRefresh, false)
 
 	store.set(KindCode, true)
@@ -1281,7 +1568,7 @@ func TestStoreFailures(t *testing.T) {
 	assert.Equal(t, "server_error", oauthErrorCode(t, res))
 	store.set(KindCode, false)
 
-	// A refresh whose Take succeeded and whose Put failed keeps the token.
+	// A refresh whose token write failed keeps the presented token.
 	_, refresh := env.tokens(t)
 	store.set(KindAccess, true)
 	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {"public"}, "refresh_token": {refresh}})

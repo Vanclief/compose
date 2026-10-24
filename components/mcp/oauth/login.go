@@ -18,10 +18,6 @@ var loginFS embed.FS
 
 var loginTemplate = template.Must(template.ParseFS(loginFS, "templates/login.html"))
 
-// maxLoginAttempts is how many failed Challenge or Verify calls void a
-// request.
-const maxLoginAttempts = 5
-
 // loginPage is the view model of the login page. With Heading set the page
 // shows only Heading and Message.
 type loginPage struct {
@@ -111,10 +107,10 @@ func (s *Server) serveLoginSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 // failAttempt counts a failed Challenge or Verify: the request is voided at
-// maxLoginAttempts, else it is put back and the form shows message.
+// Config.MaxLoginAttempts, else it is put back and the form shows message.
 func (s *Server) failAttempt(w http.ResponseWriter, r *http.Request, id string, request authRequest, identifier, message string) {
 	request.Attempts++
-	if request.Attempts >= maxLoginAttempts {
+	if request.Attempts >= s.cfg.MaxLoginAttempts {
 		s.renderExpired(w)
 		return
 	}
@@ -134,7 +130,7 @@ func (s *Server) attemptMessage(ctx context.Context, err error, shown ...string)
 
 // keepRequest puts the request back and shows the form again with message.
 // grug: the request keeps the expiry set when it was created, so no
-// resubmission extends its 10 minute window, not even the empty-field ones
+// resubmission extends its RequestTTL window, not even the empty-field ones
 // that count no attempt.
 func (s *Server) keepRequest(w http.ResponseWriter, r *http.Request, id string, request authRequest, identifier, message string) {
 	err := s.putRecord(r.Context(), KindRequest, id, request, request.ExpiresAt)
