@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,12 +13,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/ez"
 
 	composemcp "github.com/vanclief/compose/components/mcp"
+	"github.com/vanclief/compose/components/rest/requests"
 )
 
-// accountsSpec is a one-function REST API: accounts.me reports the
-// credentials it was called with.
+// accountsSpec is a one-function REST API: accounts.me reports the bearer
+// token it was called with and what it resolves to.
 const accountsSpec = `{
   "openapi": "3.1.0",
   "info": {"title": "Acme", "version": "1.0"},
@@ -34,11 +37,23 @@ const accountsSpec = `{
   }
 }`
 
-func accountsAPI() http.Handler {
+// accountsAPI authenticates as a REST API behind the MCP server does: it
+// parses the bearer token and resolves OAuth access tokens with Verify. Other
+// tokens are reported as they came, as an API key check would see them.
+func accountsAPI(s *Server) http.Handler {
 	e := echo.New()
 	e.GET("/me", func(c echo.Context) error {
-		header := c.Request().Header
-		return c.JSON(http.StatusOK, map[string]string{"key": header.Get("API-KEY"), "secret": header.Get("API-SECRET")})
+		bearer, err := requests.ParseBearer(c.Request().Header)
+		if err != nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": ez.ErrorMessage(err)})
+		}
+		body := map[string]string{"authorization": c.Request().Header.Get("Authorization")}
+		grant, err := s.Verify(c.Request().Context(), bearer)
+		if err == nil {
+			body["subject"] = grant.Subject
+			body["scope"] = grant.Scope
+		}
+		return c.JSON(http.StatusOK, body)
 	})
 	return e
 }
@@ -50,7 +65,7 @@ func newMCPEnv(t *testing.T, mutate func(*Config)) *testEnv {
 	return newEnv(t, mutate, func(s *Server) http.Handler {
 		server, err := composemcp.New(composemcp.Config{
 			Spec:    []byte(accountsSpec),
-			Handler: accountsAPI(),
+			Handler: accountsAPI(s),
 			Auth:    s.AuthFunc(),
 			WhoAmI:  "accounts.me",
 		})
@@ -112,19 +127,25 @@ func TestMCPWithAccessToken(t *testing.T) {
 	require.NoError(t, err)
 	defer session.Close()
 
-	assert.JSONEq(t, `{"key":"k1","secret":"s1"}`, callText(t, session, "whoami", nil))
-	assert.JSONEq(t, `{"key":"k1","secret":"s1"}`, callText(t, session, "call_function", map[string]any{"name": "accounts.me"}))
+	// The REST handler receives the access token unchanged and Verify
+	// resolves it to the grant.
+	// The test login grants no scope, so the requested "mcp" is not in it.
+	want := `{"authorization":"Bearer ` + access + `","subject":"user-1","scope":""}`
+	assert.JSONEq(t, want, callText(t, session, "whoami", nil))
+	assert.JSONEq(t, want, callText(t, session, "call_function", map[string]any{"name": "accounts.me"}))
 }
 
 func TestMCPWithFallback(t *testing.T) {
 	env := newMCPEnv(t, func(c *Config) {
-		c.Fallback = composemcp.BearerToHeaders("API-KEY", "API-SECRET")
+		c.Fallback = func(ctx context.Context, token string) (bool, error) {
+			return strings.Contains(token, ":"), nil
+		}
 	})
 
 	session, err := env.connect("key:secret")
 	require.NoError(t, err)
 	defer session.Close()
-	assert.JSONEq(t, `{"key":"key","secret":"secret"}`, callText(t, session, "whoami", nil))
+	assert.JSONEq(t, `{"authorization":"Bearer key:secret"}`, callText(t, session, "whoami", nil))
 
 	_, err = env.connect("nocolon")
 	assert.Error(t, err)
@@ -163,5 +184,8 @@ func TestMCPSDKClient(t *testing.T) {
 	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: env.url + "/mcp", OAuthHandler: handler}, nil)
 	require.NoError(t, err)
 	defer session.Close()
-	assert.JSONEq(t, `{"key":"k1","secret":"s1"}`, callText(t, session, "whoami", nil))
+	var me map[string]string
+	require.NoError(t, json.Unmarshal([]byte(callText(t, session, "whoami", nil)), &me))
+	assert.Equal(t, "user-1", me["subject"])
+	assert.True(t, strings.HasPrefix(me["authorization"], "Bearer testat_"), me["authorization"])
 }

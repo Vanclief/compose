@@ -53,6 +53,30 @@ func TestLoginPasswordFlow(t *testing.T) {
 	assert.Contains(t, res.body, "This login link has expired. Start again from the application.")
 }
 
+// TestLoginVerifyScope: a Grant.Scope returned by Login.Verify is what the
+// tokens carry, not the scope the client requested.
+func TestLoginVerifyScope(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Login.Verify = func(ctx context.Context, identifier, credential string) (Grant, error) {
+			return Grant{Subject: "user-1", Scope: "read"}, nil
+		}
+	}, nil)
+	verifier, challenge := pkce("v")
+	params := authorizeParams("public", challenge)
+	params.Set("scope", "write")
+	id := env.startLogin(t, params)
+
+	code := codeFrom(t, env.login(t, id, "ana@acme.com", "pw"))
+	res := env.exchange(t, code, verifier)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	body := res.json(t)
+	assert.Equal(t, "read", body["scope"])
+
+	grant, err := env.s.Verify(context.Background(), body["access_token"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, Grant{Subject: "user-1", Scope: "read"}, grant)
+}
+
 func TestLoginChallengeFlow(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
@@ -119,9 +143,9 @@ func TestLoginResubmitKeepsExpiry(t *testing.T) {
 		return store.records[memoryKey(KindRequest, id)].expiresAt
 	}
 	created := expiry()
-	assert.WithinDuration(t, time.Now().Add(requestTTL), created, time.Minute)
+	assert.WithinDuration(t, time.Now().Add(env.s.cfg.RequestTTL), created, time.Minute)
 
-	for i := 0; i < 2*maxLoginAttempts; i++ {
+	for i := 0; i < 2*env.s.cfg.MaxLoginAttempts; i++ {
 		res := env.login(t, id, "", "")
 		require.Equal(t, http.StatusOK, res.status)
 		assert.Contains(t, res.body, "Enter your email.")
@@ -141,7 +165,7 @@ func TestLoginFailuresVoidRequest(t *testing.T) {
 	_, challenge := pkce("a")
 	id := env.startLogin(t, authorizeParams("public", challenge))
 
-	for i := 1; i < maxLoginAttempts; i++ {
+	for i := 1; i < env.s.cfg.MaxLoginAttempts; i++ {
 		res := env.login(t, id, "ana@acme.com", "wrong")
 		require.Equal(t, http.StatusOK, res.status)
 		assert.Contains(t, res.body, "Wrong email or password.")
@@ -174,7 +198,7 @@ func TestLoginServerError(t *testing.T) {
 	assert.Contains(t, reported[0].Error(), "database is down")
 
 	// Server errors count as attempts too.
-	for i := 2; i < maxLoginAttempts; i++ {
+	for i := 2; i < env.s.cfg.MaxLoginAttempts; i++ {
 		res = env.login(t, id, "boom", "pw")
 		assert.Contains(t, res.body, "Something went wrong. Try again.")
 	}
@@ -192,7 +216,7 @@ func TestLoginVerifyErrorsCount(t *testing.T) {
 	_, challenge := pkce("a")
 	id := env.startLogin(t, authorizeParams("public", challenge))
 
-	for i := 1; i < maxLoginAttempts; i++ {
+	for i := 1; i < env.s.cfg.MaxLoginAttempts; i++ {
 		res := env.login(t, id, "ana@acme.com", "pw")
 		require.Equal(t, http.StatusOK, res.status)
 		assert.Contains(t, res.body, "Something went wrong. Try again.")
@@ -217,7 +241,7 @@ func TestLoginChallengeErrorsCount(t *testing.T) {
 
 	res := env.login(t, id, "busy@acme.com", "")
 	assert.Contains(t, res.body, "Too many codes sent. Wait a minute.")
-	for i := 2; i < maxLoginAttempts; i++ {
+	for i := 2; i < env.s.cfg.MaxLoginAttempts; i++ {
 		res = env.login(t, id, "ana@acme.com", "")
 		require.Equal(t, http.StatusOK, res.status)
 		assert.Contains(t, res.body, "Something went wrong. Try again.")
@@ -226,6 +250,26 @@ func TestLoginChallengeErrorsCount(t *testing.T) {
 	res = env.login(t, id, "ana@acme.com", "")
 	assert.Equal(t, http.StatusBadRequest, res.status)
 	assert.Contains(t, res.body, "Login link expired")
+}
+
+func TestLoginGrantWithoutSubject(t *testing.T) {
+	var reported []error
+	env := newEnv(t, func(c *Config) {
+		c.Login.Verify = func(ctx context.Context, identifier, credential string) (Grant, error) {
+			return Grant{}, nil
+		}
+		c.OnError = func(ctx context.Context, err error) {
+			reported = append(reported, err)
+		}
+	}, nil)
+	_, challenge := pkce("a")
+	id := env.startLogin(t, authorizeParams("public", challenge))
+
+	res := env.login(t, id, "ana@acme.com", "pw")
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	assert.Empty(t, res.header.Get("Location"), "no code is issued")
+	require.Len(t, reported, 1)
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(reported[0]))
 }
 
 func TestLoginUnknownRequest(t *testing.T) {
@@ -253,4 +297,21 @@ func TestLoginUnnamedClient(t *testing.T) {
 	page := env.get(t, "/oauth/login?request="+id)
 	assert.Contains(t, page.body, "<title>Sign in</title>")
 	assert.Contains(t, page.body, `An application</span> at <span class="host">client.example</span> wants to access your account.`)
+}
+
+func TestLoginMaxAttemptsConfigured(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.MaxLoginAttempts = 2
+	}, nil)
+	_, challenge := pkce("a")
+	id := env.startLogin(t, authorizeParams("public", challenge))
+
+	res := env.login(t, id, "ana@acme.com", "wrong")
+	require.Equal(t, http.StatusOK, res.status)
+	assert.Contains(t, res.body, "Wrong email or password.")
+	res = env.login(t, id, "ana@acme.com", "wrong")
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Login link expired")
+	res = env.login(t, id, "ana@acme.com", "pw")
+	assert.Equal(t, http.StatusBadRequest, res.status, "the voided request cannot be approved")
 }

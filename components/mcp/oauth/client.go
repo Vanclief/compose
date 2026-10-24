@@ -19,13 +19,6 @@ import (
 )
 
 const (
-	// registeredClientTTL keeps dynamically registered clients. Each
-	// authorize stores the client again with a fresh expiry, so only clients
-	// unused for a year expire.
-	registeredClientTTL = 365 * 24 * time.Hour
-	// documentCacheTTL keeps a fetched Client ID Metadata Document.
-	// grug: fixed at 1h instead of honoring the document Cache-Control.
-	documentCacheTTL = time.Hour
 	// maxDocumentBytes bounds a metadata document and a registration body.
 	maxDocumentBytes = 64 << 10
 	// errDocumentFetch is the message of every failure to fetch a metadata
@@ -100,6 +93,23 @@ func (s *Server) knownClient(ctx context.Context, clientID string) (Client, erro
 	return client, nil
 }
 
+// renewClient stores a dynamically registered client again with a fresh
+// RegisteredClientTTL expiry, so clients in use never expire while dormant
+// ones do. client must be the full stored record, as knownClient returns it.
+// Clients from Config.Clients are not stored, and cached Client ID Metadata
+// Documents keep their MetadataCacheTTL, so both are left alone. A failing
+// Store is ez.EINTERNAL.
+func (s *Server) renewClient(ctx context.Context, client Client) error {
+	if client.configured || isDocumentURL(client.ID) {
+		return nil
+	}
+	err := s.putRecord(ctx, KindClient, client.ID, client, time.Now().Add(s.cfg.RegisteredClientTTL))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
+}
+
 // lookupClient resolves a client_id for the authorize endpoint: knownClient,
 // then a Client ID Metadata Document when the id is an https URL. Unknown
 // ids yield ez.ENOTFOUND, a document that cannot be reached ez.EUNAVAILABLE,
@@ -120,7 +130,7 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (Client, err
 	if err != nil {
 		return Client{}, ez.Wrap(err)
 	}
-	err = s.putRecord(ctx, KindClient, clientID, client, time.Now().Add(documentCacheTTL))
+	err = s.putRecord(ctx, KindClient, clientID, client, time.Now().Add(s.cfg.MetadataCacheTTL))
 	if err != nil {
 		return Client{}, ez.Wrap(err)
 	}
@@ -295,7 +305,7 @@ func (s *Server) serveRegister(w http.ResponseWriter, r *http.Request) {
 	if method != "none" {
 		client.Secret = randomID()
 	}
-	err = s.putRecord(r.Context(), KindClient, client.ID, client, time.Now().Add(registeredClientTTL))
+	err = s.putRecord(r.Context(), KindClient, client.ID, client, time.Now().Add(s.cfg.RegisteredClientTTL))
 	if err != nil {
 		s.serverError(r.Context(), w, err, "the client could not be stored")
 		return

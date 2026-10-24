@@ -53,10 +53,14 @@ func TestBunStoreSQLite(t *testing.T) {
 	testStore(t, newBunStore(t, db))
 }
 
+// testPostgresDSN is the database CI provides (see
+// .github/workflows/test.yml); TEST_POSTGRES_DSN overrides it.
+const testPostgresDSN = "postgres://postgres@localhost:5432/compose_test?sslmode=disable"
+
 func TestBunStorePostgres(t *testing.T) {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
+		dsn = testPostgresDSN
 	}
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	db := bun.NewDB(sqldb, pgdialect.New())
@@ -65,7 +69,19 @@ func TestBunStorePostgres(t *testing.T) {
 		db.Close()                                                                                   // nolint:errcheck
 	})
 
-	_, err := db.NewDropTable().TableExpr("?", bun.Ident(testTable)).IfExists().Exec(context.Background())
+	// Without a local PostgreSQL the test skips so `go test ./...` stays
+	// runnable on any machine. CI sets COMPOSE_TEST_POSTGRES, turning an
+	// unreachable server into a hard failure so regressions cannot hide
+	// behind skips.
+	err := db.PingContext(context.Background())
+	if err != nil {
+		if os.Getenv("COMPOSE_TEST_POSTGRES") != "" {
+			t.Fatalf("PostgreSQL testing is enabled but the database is unavailable: %v", err)
+		}
+		t.Skipf("PostgreSQL is not available: %v", err)
+	}
+
+	_, err = db.NewDropTable().TableExpr("?", bun.Ident(testTable)).IfExists().Exec(context.Background())
 	require.NoError(t, err)
 	testStore(t, newBunStore(t, db))
 }
@@ -153,6 +169,8 @@ func TestBunStoreMissingTable(t *testing.T) {
 	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
 	err = store.Put(ctx, KindClient, "id", []byte("v"), time.Now().Add(time.Hour))
 	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+	err = store.Swap(ctx, KindFamily, "id", []byte("v"), []byte("w"), time.Now().Add(time.Hour))
+	assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err), "a failing Store is not a lost swap")
 }
 
 func TestSweep(t *testing.T) {

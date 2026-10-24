@@ -334,7 +334,7 @@ func TestClientMetadataDocumentRefreshWithoutHost(t *testing.T) {
 // TestClientMetadataDocumentHostGuard runs the default client: the guard
 // refuses the resolved addresses before connecting.
 func TestClientMetadataDocumentHostGuard(t *testing.T) {
-	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
+	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", TokenPrefix: "acme", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 	require.NoError(t, err)
 	for _, clientID := range []string{"https://127.0.0.1/client.json", "https://localhost/client.json", "https://[::1]/client.json", "https://10.0.0.1/client.json", "https://169.254.169.254/client.json"} {
 		_, err = s.lookupClient(context.Background(), clientID)
@@ -422,4 +422,141 @@ func TestIsDocumentURL(t *testing.T) {
 	for clientID, want := range cases {
 		assert.Equal(t, want, isDocumentURL(clientID), clientID)
 	}
+}
+
+// TestTokenRequestsRenewRegisteredClient: a successful token request renews
+// a dynamically registered client, so a client that keeps refreshing under
+// RefreshTokenTTL Never outlives RegisteredClientTTL; one that stops
+// refreshing still expires.
+func TestTokenRequestsRenewRegisteredClient(t *testing.T) {
+	ctx := context.Background()
+	ttl := 600 * time.Millisecond
+	env := newEnv(t, func(c *Config) {
+		c.RegisteredClientTTL = ttl
+		c.RefreshTokenTTL = Never
+	}, nil)
+	clientID := env.postJSON(t, "/oauth/register", `{"client_name": "Claude", "redirect_uris": ["`+testRedirect+`"], "token_endpoint_auth_method": "client_secret_post"}`).json(t)["client_id"].(string)
+	var registered Client
+	require.NoError(t, env.s.getRecord(ctx, KindClient, clientID, false, &registered))
+	refreshWith := func(refresh string) response {
+		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "client_secret": {registered.Secret}, "refresh_token": {refresh}})
+	}
+
+	verifier, challenge := pkce("n")
+	code := env.codeFor(t, clientID, challenge)
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "client_secret": {registered.Secret}, "code": {code}, "code_verifier": {verifier}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+
+	// Each refresh lands before the registration renewed by the previous
+	// token request expires; the second lands after the expiry the code
+	// exchange set.
+	time.Sleep(ttl * 3 / 5)
+	res = refreshWith(res.json(t)["refresh_token"].(string))
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	time.Sleep(ttl * 3 / 5)
+	res = refreshWith(res.json(t)["refresh_token"].(string))
+	require.Equal(t, http.StatusOK, res.status, "the first refresh renewed the registration: "+res.body)
+
+	var renewed Client
+	require.NoError(t, env.s.getRecord(ctx, KindClient, clientID, false, &renewed))
+	assert.Equal(t, registered, renewed, "the renewal stores the full client")
+
+	time.Sleep(ttl + 100*time.Millisecond)
+	res = refreshWith(res.json(t)["refresh_token"].(string))
+	assert.Equal(t, "invalid_client", oauthErrorCode(t, res), "a client that stops refreshing expires")
+}
+
+// TestTokenRequestsRenewClientBeforeTokens: a successful code exchange and a
+// successful refresh each renew a dynamically registered client, and a
+// renewal that fails is reported while the token request still succeeds.
+func TestTokenRequestsRenewClientBeforeTokens(t *testing.T) {
+	ctx := context.Background()
+	env := newHookEnv(t, nil)
+	clientID := env.postJSON(t, "/oauth/register", `{"redirect_uris": ["`+testRedirect+`"]}`).json(t)["client_id"].(string)
+	var client Client
+	require.NoError(t, env.s.getRecord(ctx, KindClient, clientID, false, &client))
+	year := 365 * 24 * time.Hour
+	// shorten moves the client's expiry an hour out, and with failRenewal
+	// fails the next write of the client.
+	shorten := func(failRenewal bool) {
+		t.Helper()
+		require.NoError(t, env.s.putRecord(ctx, KindClient, clientID, client, time.Now().Add(time.Hour)))
+		if failRenewal {
+			env.hooks.before("Put "+KindClient, storeDown)
+		}
+	}
+	renewed := func(t *testing.T) bool {
+		t.Helper()
+		return time.Until(env.expiry(t, KindClient, clientID)) > year-time.Minute
+	}
+	exchange := func(failRenewal bool) response {
+		verifier, challenge := pkce("r")
+		code := env.codeFor(t, clientID, challenge)
+		// The authorize step renews the client too, so only the exchange
+		// can renew it from here.
+		shorten(failRenewal)
+		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code}, "code_verifier": {verifier}})
+	}
+	refreshWith := func(refresh string, failRenewal bool) response {
+		shorten(failRenewal)
+		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {refresh}})
+	}
+
+	res := exchange(false)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.True(t, renewed(t), "the code exchange renews the client")
+	res = refreshWith(res.json(t)["refresh_token"].(string), false)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.True(t, renewed(t), "the refresh renews the client")
+	env.mu.Lock()
+	assert.Empty(t, env.reported)
+	env.mu.Unlock()
+
+	res = exchange(true)
+	require.Equal(t, http.StatusOK, res.status, "a failed renewal does not fail the exchange: "+res.body)
+	assert.False(t, renewed(t))
+	res = refreshWith(res.json(t)["refresh_token"].(string), true)
+	require.Equal(t, http.StatusOK, res.status, "a failed renewal does not fail the refresh: "+res.body)
+	assert.False(t, renewed(t))
+
+	env.mu.Lock()
+	defer env.mu.Unlock()
+	require.Len(t, env.reported, 2, "each failed renewal reaches OnError")
+	for _, err := range env.reported {
+		assert.Contains(t, err.Error(), "store is down")
+	}
+}
+
+// TestTokenRequestsDoNotStoreOtherClients: the renewal leaves clients from
+// Config.Clients and Client ID Metadata Documents out of the Store.
+func TestTokenRequestsDoNotStoreOtherClients(t *testing.T) {
+	ctx := context.Background()
+	host := newDocumentHost(t)
+	documentID := host.add("/client.json", map[string]any{"client_name": "Hosted Client", "redirect_uris": []string{testRedirect}})
+	env := newEnv(t, func(c *Config) {
+		c.HTTPClient = host.server.Client()
+	}, nil)
+	stored := func(id string) bool {
+		_, err := env.s.cfg.Store.Get(ctx, KindClient, id)
+		return err == nil
+	}
+	refreshWith := func(clientID, refresh string) response {
+		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {refresh}})
+	}
+
+	_, refresh := env.tokens(t)
+	res := refreshWith("public", refresh)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.False(t, stored("public"), "configured clients are not stored")
+
+	verifier, challenge := pkce("o")
+	code := env.codeFor(t, documentID, challenge)
+	// The cached document is dropped, so any later write is the renewal's.
+	require.NoError(t, env.s.cfg.Store.Delete(ctx, KindClient, documentID))
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {documentID}, "code": {code}, "code_verifier": {verifier}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.False(t, stored(documentID), "the code exchange does not store a document client")
+	res = refreshWith(documentID, res.json(t)["refresh_token"].(string))
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.False(t, stored(documentID), "the refresh does not store a document client")
 }

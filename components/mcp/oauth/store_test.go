@@ -81,6 +81,15 @@ func testStore(t *testing.T, store Store) {
 		assert.Equal(t, []byte("new"), got)
 	})
 
+	t.Run("far future expiry", func(t *testing.T) {
+		err := store.Put(ctx, KindFamily, "forever", []byte("v"), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC))
+		require.NoError(t, err)
+
+		got, err := store.Get(ctx, KindFamily, "forever")
+		require.NoError(t, err)
+		assert.Equal(t, []byte("v"), got)
+	})
+
 	t.Run("get missing", func(t *testing.T) {
 		_, err := store.Get(ctx, KindCode, "missing")
 		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
@@ -125,6 +134,55 @@ func testStore(t *testing.T, store Store) {
 		assert.NoError(t, err)
 	})
 
+	t.Run("swap", func(t *testing.T) {
+		err := store.Put(ctx, KindFamily, "swap", []byte("one"), later)
+		require.NoError(t, err)
+
+		err = store.Swap(ctx, KindFamily, "swap", []byte("one"), []byte("two"), later)
+		require.NoError(t, err, "a matching value is replaced")
+		got, err := store.Get(ctx, KindFamily, "swap")
+		require.NoError(t, err)
+		assert.Equal(t, []byte("two"), got)
+
+		err = store.Swap(ctx, KindFamily, "swap", []byte("one"), []byte("three"), later)
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "a stale old value is refused")
+		got, err = store.Get(ctx, KindFamily, "swap")
+		require.NoError(t, err)
+		assert.Equal(t, []byte("two"), got, "a refused swap leaves the value untouched")
+
+		err = store.Swap(ctx, KindFamily, "swap", []byte("two"), []byte("four"), time.Now().Add(-time.Second))
+		require.NoError(t, err)
+		_, err = store.Get(ctx, KindFamily, "swap")
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "the swap writes the new expiry")
+
+		err = store.Swap(ctx, KindFamily, "swap", []byte("four"), []byte("five"), later)
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "an expired record is absent")
+		_, err = store.Get(ctx, KindFamily, "swap")
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "a refused swap does not revive an expired record")
+
+		err = store.Swap(ctx, KindFamily, "never-stored", []byte("one"), []byte("two"), later)
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "an absent record is refused")
+		_, err = store.Get(ctx, KindFamily, "never-stored")
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), "a refused swap creates nothing")
+	})
+
+	t.Run("swap empty values", func(t *testing.T) {
+		err := store.Put(ctx, KindFamily, "swap-empty", nil, later)
+		require.NoError(t, err)
+		err = store.Swap(ctx, KindFamily, "swap-empty", nil, nil, later)
+		assert.NoError(t, err, "an empty value matches nil")
+	})
+
+	t.Run("swap keeps other kinds", func(t *testing.T) {
+		err := store.Put(ctx, KindAccess, "swap-kind", []byte("one"), later)
+		require.NoError(t, err)
+		err = store.Swap(ctx, KindFamily, "swap-kind", []byte("one"), []byte("two"), later)
+		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+		got, err := store.Get(ctx, KindAccess, "swap-kind")
+		require.NoError(t, err)
+		assert.Equal(t, []byte("one"), got)
+	})
+
 	t.Run("kinds are isolated", func(t *testing.T) {
 		err := store.Put(ctx, KindAccess, "shared", []byte("access"), later)
 		require.NoError(t, err)
@@ -147,6 +205,33 @@ func testStore(t *testing.T, store Store) {
 		require.NoError(t, err)
 		_, err = store.Get(ctx, KindRequest, "shared")
 		assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	})
+
+	t.Run("concurrent swaps from one value succeed once", func(t *testing.T) {
+		err := store.Put(ctx, KindFamily, "swap-race", []byte("old"), later)
+		require.NoError(t, err)
+
+		const swappers = 20
+		errs := make([]error, swappers)
+		var wg sync.WaitGroup
+		for i := 0; i < swappers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = store.Swap(ctx, KindFamily, "swap-race", []byte("old"), []byte{byte('a' + i)}, later)
+			}(i)
+		}
+		wg.Wait()
+
+		succeeded := 0
+		for _, err := range errs {
+			if err == nil {
+				succeeded++
+				continue
+			}
+			assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err), err)
+		}
+		assert.Equal(t, 1, succeeded)
 	})
 
 	t.Run("concurrent takes redeem once", func(t *testing.T) {

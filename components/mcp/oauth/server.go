@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -14,16 +15,21 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"github.com/vanclief/compose/components/auth/token"
 	"github.com/vanclief/ez"
 )
 
 const (
-	defaultAccessTokenTTL  = time.Hour
-	defaultRefreshTokenTTL = 30 * 24 * time.Hour
-	defaultHTTPTimeout     = 10 * time.Second
-	// requestTTL bounds a pending login, codeTTL an unexchanged code.
-	requestTTL = 10 * time.Minute
-	codeTTL    = time.Minute
+	defaultAccessTokenTTL      = time.Hour
+	defaultRefreshTokenTTL     = 30 * 24 * time.Hour
+	defaultIdleTTL             = 30 * 24 * time.Hour
+	defaultRequestTTL          = 10 * time.Minute
+	defaultCodeTTL             = time.Minute
+	defaultRegisteredClientTTL = 365 * 24 * time.Hour
+	defaultMetadataCacheTTL    = time.Hour
+	defaultRefreshTimeout      = 10 * time.Second
+	defaultMaxLoginAttempts    = 5
+	defaultHTTPTimeout         = 10 * time.Second
 	// metadataMaxAge is how long clients may cache the metadata documents.
 	metadataMaxAge = "public, max-age=3600"
 )
@@ -45,6 +51,11 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
+	// Both derived prefixes must pass token.ValidPrefix too, which caps
+	// TokenPrefix at 10 characters.
+	if !token.ValidPrefix(cfg.TokenPrefix) || !token.ValidPrefix(cfg.TokenPrefix+"at") {
+		return nil, ez.New(ez.EINVALID, "oauth: Config.TokenPrefix must match ^[a-z0-9]{2,10}$", nil)
+	}
 	if cfg.Store == nil {
 		return nil, ez.New(ez.EINVALID, "oauth: Config.Store is required", nil)
 	}
@@ -64,11 +75,37 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
-	if cfg.AccessTokenTTL <= 0 {
-		cfg.AccessTokenTTL = defaultAccessTokenTTL
+	durations := []struct {
+		name       string
+		value      *time.Duration
+		fallback   time.Duration
+		allowNever bool
+	}{
+		{"AccessTokenTTL", &cfg.AccessTokenTTL, defaultAccessTokenTTL, false},
+		{"RefreshTokenTTL", &cfg.RefreshTokenTTL, defaultRefreshTokenTTL, true},
+		{"IdleTTL", &cfg.IdleTTL, defaultIdleTTL, false},
+		{"RequestTTL", &cfg.RequestTTL, defaultRequestTTL, false},
+		{"CodeTTL", &cfg.CodeTTL, defaultCodeTTL, false},
+		{"RegisteredClientTTL", &cfg.RegisteredClientTTL, defaultRegisteredClientTTL, false},
+		{"MetadataCacheTTL", &cfg.MetadataCacheTTL, defaultMetadataCacheTTL, false},
+		{"RefreshTimeout", &cfg.RefreshTimeout, defaultRefreshTimeout, false},
 	}
-	if cfg.RefreshTokenTTL <= 0 {
-		cfg.RefreshTokenTTL = defaultRefreshTokenTTL
+	for _, d := range durations {
+		if *d.value == Never && !d.allowNever {
+			return nil, ez.New(ez.EINVALID, "oauth: Config."+d.name+" cannot be Never", nil)
+		}
+		if *d.value < 0 && *d.value != Never {
+			return nil, ez.New(ez.EINVALID, "oauth: Config."+d.name+" must not be negative", nil)
+		}
+		if *d.value == 0 {
+			*d.value = d.fallback
+		}
+	}
+	if cfg.MaxLoginAttempts < 0 {
+		return nil, ez.New(ez.EINVALID, "oauth: Config.MaxLoginAttempts must not be negative", nil)
+	}
+	if cfg.MaxLoginAttempts == 0 {
+		cfg.MaxLoginAttempts = defaultMaxLoginAttempts
 	}
 	if cfg.Login.IdentifierLabel == "" {
 		cfg.Login.IdentifierLabel = "Email"
@@ -81,13 +118,19 @@ func New(cfg Config) (*Server, error) {
 	}
 	// The default client checks every address it connects to, after DNS
 	// resolution, and uses no proxy, so a metadata document URL cannot reach
-	// the internal network. A caller that supplies HTTPClient owns where it may connect
-	// (tests serve documents from 127.0.0.1).
+	// the internal network. It keeps no idle connections: documents are
+	// cached for MetadataCacheTTL, and every client_id host would otherwise
+	// leave one open for good. A caller that supplies HTTPClient owns where
+	// it may connect (tests serve documents from 127.0.0.1) and its pooling.
 	if cfg.HTTPClient == nil {
 		dialer := &net.Dialer{Timeout: defaultHTTPTimeout, Control: publicAddressOnly}
 		cfg.HTTPClient = &http.Client{
-			Timeout:   defaultHTTPTimeout,
-			Transport: &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: defaultHTTPTimeout},
+			Timeout: defaultHTTPTimeout,
+			Transport: &http.Transport{
+				DialContext:         dialer.DialContext,
+				TLSHandshakeTimeout: defaultHTTPTimeout,
+				DisableKeepAlives:   true,
+			},
 		}
 	}
 	// Metadata documents are fetched without following redirects, so a
@@ -205,7 +248,7 @@ func (s *Server) routes() []route {
 	asMetadata := cors(s.serveAuthServerMetadata)
 	resourceMetadata := cors(s.serveResourceMetadata)
 	register := cors(s.serveRegister)
-	token := cors(s.serveToken)
+	tokenEndpoint := cors(s.serveToken)
 
 	var routes []route
 	metadata := func(p string, handler http.HandlerFunc) {
@@ -224,8 +267,8 @@ func (s *Server) routes() []route {
 	routes = append(routes,
 		route{http.MethodPost, s.issuerPath + "/oauth/register", register},
 		route{http.MethodOptions, s.issuerPath + "/oauth/register", register},
-		route{http.MethodPost, s.issuerPath + "/oauth/token", token},
-		route{http.MethodOptions, s.issuerPath + "/oauth/token", token},
+		route{http.MethodPost, s.issuerPath + "/oauth/token", tokenEndpoint},
+		route{http.MethodOptions, s.issuerPath + "/oauth/token", tokenEndpoint},
 		route{http.MethodGet, s.issuerPath + "/oauth/authorize", s.serveAuthorize},
 	)
 	if s.cfg.LoginURL == "" {
@@ -323,6 +366,12 @@ func randomID() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// hashID is the store id of a secret: the hex SHA-256 of a token or code, so
+// the Store never holds the secret itself.
+func hashID(value string) string {
+	return hex.EncodeToString(token.Hash(value))
+}
+
 // putRecord stores v as JSON under kind and id until expiresAt.
 func (s *Server) putRecord(ctx context.Context, kind, id string, v any, expiresAt time.Time) error {
 	data, err := json.Marshal(v)
@@ -334,6 +383,16 @@ func (s *Server) putRecord(ctx context.Context, kind, id string, v any, expiresA
 		// Whatever code the Store uses, a failing Store is an internal error
 		// here, distinct from the codes the handlers show to users.
 		return ez.New(ez.EINTERNAL, "oauth: saving the "+kind+" record failed", err)
+	}
+	return nil
+}
+
+// deleteRecord removes the record under kind and id. A failing Store is
+// ez.EINTERNAL.
+func (s *Server) deleteRecord(ctx context.Context, kind, id string) error {
+	err := s.cfg.Store.Delete(ctx, kind, id)
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: deleting the "+kind+" record failed", err)
 	}
 	return nil
 }
@@ -357,8 +416,23 @@ func (s *Server) serverError(ctx context.Context, w http.ResponseWriter, err err
 // record is deleted in the same step. Absent records yield ez.ENOTFOUND, a
 // failing Store ez.EINTERNAL.
 func (s *Server) getRecord(ctx context.Context, kind, id string, take bool, v any) error {
+	data, err := s.readRecord(ctx, kind, id, take)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	err = json.Unmarshal(data, v)
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: decoding a "+kind+" record failed", err)
+	}
+	return nil
+}
+
+// readRecord returns the stored bytes under kind and id, deleting them in the
+// same step when take is set. Absent records yield ez.ENOTFOUND, a failing
+// Store ez.EINTERNAL.
+func (s *Server) readRecord(ctx context.Context, kind, id string, take bool) ([]byte, error) {
 	if id == "" {
-		return ez.New(ez.ENOTFOUND, "oauth: no "+kind+" id", nil)
+		return nil, ez.New(ez.ENOTFOUND, "oauth: no "+kind+" id", nil)
 	}
 	var data []byte
 	var err error
@@ -370,14 +444,10 @@ func (s *Server) getRecord(ctx context.Context, kind, id string, take bool, v an
 	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
 		// Whatever code the Store uses, a failing Store is an internal error
 		// here, distinct from the codes the handlers show to users.
-		return ez.New(ez.EINTERNAL, "oauth: reading the "+kind+" record failed", err)
+		return nil, ez.New(ez.EINTERNAL, "oauth: reading the "+kind+" record failed", err)
 	}
 	if err != nil {
-		return ez.Wrap(err)
+		return nil, ez.Wrap(err)
 	}
-	err = json.Unmarshal(data, v)
-	if err != nil {
-		return ez.New(ez.EINTERNAL, "oauth: decoding a "+kind+" record failed", err)
-	}
-	return nil
+	return data, nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/vanclief/compose/components/auth/token"
 	"github.com/vanclief/ez"
 )
 
@@ -108,15 +110,11 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A dynamically registered client is stored again with a fresh expiry,
-	// so active clients never expire while dormant ones do.
-	if !client.configured && !isDocumentURL(client.ID) {
-		err = s.putRecord(r.Context(), KindClient, client.ID, client, time.Now().Add(registeredClientTTL))
-		if err != nil {
-			s.report(r.Context(), err)
-			fail("server_error", "the client could not be stored")
-			return
-		}
+	err = s.renewClient(r.Context(), client)
+	if err != nil {
+		s.report(r.Context(), err)
+		fail("server_error", "the client could not be stored")
+		return
 	}
 
 	id := randomID()
@@ -127,7 +125,7 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		Scope:         query.Get("scope"),
 		CodeChallenge: query.Get("code_challenge"),
-		ExpiresAt:     time.Now().Add(requestTTL),
+		ExpiresAt:     time.Now().Add(s.cfg.RequestTTL),
 	}
 	err = s.putRecord(r.Context(), KindRequest, id, request, request.ExpiresAt)
 	if err != nil {
@@ -174,21 +172,30 @@ func withParams(raw string, pairs ...string) string {
 	return u.String()
 }
 
-// Pending returns the client and redirect host of a pending request, for a
-// login page set with LoginURL to show before the user approves. An unknown
-// or expired request yields ez.ENOTFOUND.
+// Pending returns the client, redirect host and requested scope of a pending
+// request, for a login page set with LoginURL to show before the user
+// approves. An unknown or expired request yields ez.ENOTFOUND.
 func (s *Server) Pending(ctx context.Context, requestID string) (Pending, error) {
 	var request authRequest
 	err := s.getRecord(ctx, KindRequest, requestID, false, &request)
 	if err != nil {
 		return Pending{}, ez.Wrap(err)
 	}
-	return Pending{ClientID: request.ClientID, ClientName: request.ClientName, RedirectHost: redirectHost(request.RedirectURI)}, nil
+	pending := Pending{
+		ClientID:     request.ClientID,
+		ClientName:   request.ClientName,
+		RedirectHost: redirectHost(request.RedirectURI),
+		Scope:        request.Scope,
+	}
+	return pending, nil
 }
 
 // Approve redeems the pending request and returns the URL the browser must
 // be sent to: the client redirect URI carrying the authorization code and
-// state. An unknown or expired request yields ez.ENOTFOUND.
+// state. grant.Scope is stored exactly as given, empty included; the scope
+// the client requested only echoes in the token response. An unknown or
+// expired request yields ez.ENOTFOUND, and a grant without Subject
+// ez.EINTERNAL.
 func (s *Server) Approve(ctx context.Context, requestID string, grant Grant) (string, error) {
 	var request authRequest
 	err := s.getRecord(ctx, KindRequest, requestID, true, &request)
@@ -202,17 +209,24 @@ func (s *Server) Approve(ctx context.Context, requestID string, grant Grant) (st
 	return redirect, nil
 }
 
-// approve issues the code of a request already taken from the Store.
+// approve issues the code of a request already taken from the Store. The
+// grant is stored as the application gave it: the scope the client requested
+// is kept beside it for the token response and never copied into
+// grant.Scope, so Verify only ever returns a scope the application set. A
+// grant without Subject is refused: its tokens would carry no identity.
 func (s *Server) approve(ctx context.Context, request authRequest, grant Grant) (string, error) {
+	if grant.Subject == "" {
+		return "", ez.New(ez.EINTERNAL, "oauth: the grant has no subject", nil)
+	}
 	code := randomID()
 	record := codeRecord{
-		ClientID:      request.ClientID,
-		RedirectURI:   request.RedirectURI,
-		Scope:         request.Scope,
-		CodeChallenge: request.CodeChallenge,
-		Grant:         grant,
+		ClientID:       request.ClientID,
+		RedirectURI:    request.RedirectURI,
+		CodeChallenge:  request.CodeChallenge,
+		Grant:          grant,
+		RequestedScope: request.Scope,
 	}
-	err := s.putRecord(ctx, KindCode, code, record, time.Now().Add(codeTTL))
+	err := s.putRecord(ctx, KindCode, hashID(code), record, time.Now().Add(s.cfg.CodeTTL))
 	if err != nil {
 		return "", ez.Wrap(err)
 	}
@@ -304,7 +318,9 @@ func (s *Server) authenticateClient(w http.ResponseWriter, r *http.Request) (Cli
 	return client, true
 }
 
-// exchangeCode redeems an authorization code.
+// exchangeCode redeems an authorization code, renews a dynamically
+// registered client (see renewClient) and starts a token family at
+// generation 1.
 func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request, client Client) {
 	code := r.PostForm.Get("code")
 	verifier := r.PostForm.Get("code_verifier")
@@ -313,7 +329,7 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request, client Cli
 		return
 	}
 	var record codeRecord
-	err := s.getRecord(r.Context(), KindCode, code, true, &record)
+	err := s.getRecord(r.Context(), KindCode, hashID(code), true, &record)
 	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
 		// Not invalid_grant: the client would drop a grant that may be fine.
 		s.serverError(r.Context(), w, err, "the code could not be checked")
@@ -334,10 +350,41 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request, client Cli
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code_verifier does not match the code challenge")
 		return
 	}
-	err = s.issueTokens(r.Context(), w, client.ID, record.Scope, record.Grant, time.Now().Add(s.cfg.RefreshTokenTTL))
+	family := familyRecord{
+		ClientID:       client.ID,
+		Grant:          record.Grant,
+		RequestedScope: record.RequestedScope,
+		Generation:     1,
+	}
+	if s.cfg.RefreshTokenTTL == Never {
+		family.Idle = s.cfg.IdleTTL
+		family.ExpiresAt = time.Now().Add(s.cfg.IdleTTL)
+	} else {
+		family.ExpiresAt = time.Now().Add(s.cfg.RefreshTokenTTL)
+	}
+	familyID := randomID()
+	// The client is renewed before the tokens are written, best effort, so
+	// the commit stays the last write before the response: its failure is
+	// only reported, and a Store that is down fails the writes below anyway.
+	err = s.renewClient(r.Context(), client)
+	if err != nil {
+		s.report(r.Context(), err)
+	}
+	// The token rows go first and are inert until the family row exists, so
+	// storing the family is the commit. A failure leaves only inert rows,
+	// and the code is spent: the user authorizes again.
+	pair, err := s.putTokens(r.Context(), familyID, family)
 	if err != nil {
 		s.serverError(r.Context(), w, err, "the token could not be stored")
+		return
 	}
+	family.Refresh = hashID(pair.refresh)
+	err = s.putRecord(r.Context(), KindFamily, familyID, family, family.ExpiresAt)
+	if err != nil {
+		s.serverError(r.Context(), w, err, "the token could not be stored")
+		return
+	}
+	writeTokens(w, pair, family)
 }
 
 // verifyPKCE checks the S256 code challenge.
@@ -347,103 +394,333 @@ func verifyPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }
 
-// refreshTimeout bounds each group of Store calls of a refresh that runs
-// detached from the request: taking the refresh token, and putting it back.
-// A var so tests can shorten it.
-var refreshTimeout = 10 * time.Second
-
-// exchangeRefresh rotates a refresh token. The new refresh token keeps the
-// expiry of the first one, so RefreshTokenTTL bounds the whole connection.
+// exchangeRefresh rotates a refresh token. The family row is the single
+// source of truth (see familyRecord): a refresh token rotates only while its
+// generation is the family's, and the rotation commits with one Swap of the
+// family row to the next generation, the last write before the response. The
+// new tokens take the expiry of the family, so RefreshTokenTTL bounds the
+// whole connection; a family issued under Never has its expiry moved to
+// Idle from now first, so the connection ends Idle after its last refresh.
 //
-// The take, the restore and the reporting run on contexts detached from the
-// request, so a client that disconnects mid-refresh cannot leave the token
-// taken and never put back, which would answer its retry invalid_grant. The
-// restore gets its own deadline: issuing may outlast the one of the take.
-// Issuing stays on the request context: a client that is gone gets no new
-// tokens it cannot receive, and the restore keeps the one it holds. That is
-// best-effort, since database/sql checks cancellation only when it gets a
-// connection and pgdriver honours deadlines, not cancellation: a disconnect
-// after the new tokens are stored but before the response is read loses the
-// rotation, and the user must log in again. That is preferred to a reuse
-// grace period, because a rotated token stays dead. The token is also lost
-// when the take commits but then fails, on refreshTimeout or a dropped
-// database connection, since nothing is restored after a failed take.
+// Every failure before the Swap leaves the presented token as it was, so the
+// client's retry rotates it. The new rows already written stay behind: the
+// refresh row never rotates, since the family never names it, and the
+// access row is refused until a retry commits its generation, then
+// accepted, which exposes nothing as it was never sent to a client. A token
+// of another generation than the family's was rotated already, or a
+// concurrent request presenting it won the Swap: either way it was presented
+// twice, and revokeFamily deletes the family. That includes a client that
+// lost the response of a committed rotation and retries: the user logs in
+// again, which is preferred to a reuse grace period because a rotated token
+// stays dead.
+//
+// The Store calls run on a context detached from the request, under
+// RefreshTimeout, so a client that disconnects cannot stop a rotation
+// halfway once the Swap has started. A client gone before the Swap gets no
+// commit and no response, so its retry with the same token rotates it.
+// Before the new tokens are written a dynamically registered client is
+// renewed (see renewClient), so a client that keeps refreshing never
+// expires; the renewal only reports its failure.
 func (s *Server) exchangeRefresh(w http.ResponseWriter, r *http.Request, client Client) {
-	token := r.PostForm.Get("refresh_token")
-	if token == "" {
+	refreshToken := r.PostForm.Get("refresh_token")
+	if refreshToken == "" {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), refreshTimeout)
+	// A token of the wrong shape was never issued here, so it is answered
+	// without reading the Store.
+	if !token.Check(s.cfg.TokenPrefix+"rt", refreshToken) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired or already used")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.cfg.RefreshTimeout)
 	defer cancel()
+	id := hashID(refreshToken)
 	var record tokenRecord
-	err := s.getRecord(ctx, KindRefresh, token, true, &record)
+	err := s.getRecord(ctx, KindRefresh, id, false, &record)
 	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
 		// Not invalid_grant: the client would drop a token that may be fine.
 		s.serverError(ctx, w, err, "the refresh token could not be checked")
 		return
 	}
 	if err != nil {
+		// Nothing is known about the token: never issued, expired, or
+		// rotated longer ago than reuse detection remembers.
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired or already used")
 		return
 	}
-	if record.ClientID != client.ID {
+	family, raw, err := s.getFamily(ctx, record.Family)
+	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
+		s.serverError(ctx, w, err, "the refresh token could not be checked")
+		return
+	}
+	if err != nil {
+		// The family expired or was revoked.
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired or already used")
+		return
+	}
+	if family.ClientID != client.ID {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token was issued to another client")
 		return
 	}
-	err = s.issueTokens(r.Context(), w, client.ID, record.Scope, record.Grant, record.ExpiresAt)
-	if err != nil {
-		s.restoreRefresh(r.Context(), w, token, record, err)
+	// Only the refresh token the family names rotates. Any other row of the
+	// family is a rotated token presented again, or one a failed rotation
+	// left behind that nobody holds, and both are answered as reuse: the
+	// check fails closed.
+	if id != family.Refresh {
+		s.revokeFamily(ctx, w, record.Family, client.ID)
+		return
 	}
-}
 
-// restoreRefresh puts a taken refresh token back after issuing failed with
-// issueErr, so the client can retry instead of losing the connection, and
-// answers server_error. It runs on a fresh deadline detached from ctx.
-func (s *Server) restoreRefresh(ctx context.Context, w http.ResponseWriter, token string, record tokenRecord, issueErr error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
-	defer cancel()
-	err := s.putRecord(ctx, KindRefresh, token, record, record.ExpiresAt)
+	next := family
+	next.Generation++
+	if family.Idle > 0 {
+		next.ExpiresAt = time.Now().Add(family.Idle)
+	}
+	// The client is renewed before the tokens are written, best effort, so
+	// the Swap stays the last write before the response: its failure is only
+	// reported, and a Store that is down fails the writes below anyway. The
+	// presented token stays a dead row of the old generation until the
+	// expiry it was issued with, so a replay is detected until then.
+	err = s.renewClient(ctx, client)
 	if err != nil {
 		s.report(ctx, err)
 	}
-	s.serverError(ctx, w, issueErr, "the token could not be stored")
+	pair, err := s.putTokens(ctx, record.Family, next)
+	if err != nil {
+		s.serverError(ctx, w, err, "the token could not be stored")
+		return
+	}
+	next.Refresh = hashID(pair.refresh)
+	// A client gone before the Swap, its own timeout fired while the Store
+	// was slow for instance, never reads the new tokens and retries with the
+	// presented one, which a committed rotation would answer as reuse. So
+	// nothing commits and nothing is answered: the rows written so far are
+	// never sent, and the retry rotates normally. Once started, the Swap
+	// runs to the end.
+	if r.Context().Err() != nil {
+		return
+	}
+	err = s.swapFamily(ctx, record.Family, raw, next)
+	if err != nil && ez.ErrorCode(err) == ez.ENOTFOUND {
+		s.lostRotation(ctx, w, id, record.Family, client.ID)
+		return
+	}
+	if err != nil && !s.committed(r.Context(), record.Family, next.Refresh) {
+		s.serverError(ctx, w, err, "the token could not be stored")
+		return
+	}
+	if err != nil {
+		// The Swap committed and then failed, on its deadline for instance.
+		// Answering server_error would make the client retry with a rotated
+		// token and lose the connection, so the rotation is answered as the
+		// success it was, and the failure only reported.
+		s.report(ctx, err)
+	}
+	writeTokens(w, pair, next)
 }
 
-// issueTokens stores a new access and refresh token and writes the token
-// response. On error nothing has been written.
-func (s *Server) issueTokens(ctx context.Context, w http.ResponseWriter, clientID, scope string, grant Grant, refreshExpiresAt time.Time) error {
-	access := randomID()
-	refresh := randomID()
-	accessExpiresAt := time.Now().Add(s.cfg.AccessTokenTTL)
-	err := s.putRecord(ctx, KindAccess, access, tokenRecord{ClientID: clientID, Scope: scope, Grant: grant, ExpiresAt: accessExpiresAt}, accessExpiresAt)
+// revokeFamily answers a refresh token presented again, after or during its
+// rotation, by deleting the family row. Every access and refresh token of the
+// family points at that row, so all of them are refused from their next
+// check, and nothing else has to be found or deleted: their rows expire on
+// their own. The reuse is reported with the family and client ids, and
+// answered invalid_grant.
+//
+// When the delete fails the answer is server_error instead: a legitimate
+// client answered invalid_grant would log in anew while a thief's tokens live
+// on, whereas its retry with the same token repeats the detection.
+func (s *Server) revokeFamily(ctx context.Context, w http.ResponseWriter, familyID, clientID string) {
+	err := s.deleteRecord(ctx, KindFamily, familyID)
 	if err != nil {
-		return ez.Wrap(err)
+		s.serverError(ctx, w, err, "the refresh token could not be checked")
+		return
 	}
-	err = s.putRecord(ctx, KindRefresh, refresh, tokenRecord{ClientID: clientID, Scope: scope, Grant: grant, ExpiresAt: refreshExpiresAt}, refreshExpiresAt)
+	s.report(ctx, ez.New(ez.ENOTAUTHORIZED, "oauth: refresh token reuse detected, family "+familyID+" of client "+clientID+" revoked", nil))
+	writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired or already used")
+}
+
+// lostRotation answers a refresh of the token id whose Swap found the family
+// row gone or changed since it was read, after reading it again. Gone means
+// the family was revoked or expired meanwhile. Naming another refresh token
+// means a concurrent request presented the same token and won the Swap: the
+// token was presented twice, so the family is revoked. The rows this request
+// wrote stay inert either way.
+func (s *Server) lostRotation(ctx context.Context, w http.ResponseWriter, id, familyID, clientID string) {
+	family, _, err := s.getFamily(ctx, familyID)
+	if err != nil && ez.ErrorCode(err) == ez.ENOTFOUND {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired or already used")
+		return
+	}
 	if err != nil {
-		return ez.Wrap(err)
+		s.serverError(ctx, w, err, "the refresh token could not be checked")
+		return
 	}
+	if family.Refresh == id {
+		// No write of this package changes a family row and keeps its
+		// refresh token, so the Store is not behaving as the contract says.
+		s.serverError(ctx, w, ez.New(ez.EINTERNAL, "oauth: the family record changed without a rotation", nil), "the refresh token could not be rotated")
+		return
+	}
+	s.revokeFamily(ctx, w, familyID, clientID)
+}
+
+// committed reports whether the family row names refresh as its current
+// token, which only the Swap that published it writes. It is asked after a
+// Swap failed with anything but ENOTFOUND: the Swap may have committed before
+// running out of time. It reads on its own deadline and fails closed, so a
+// second failure is answered server_error and the client's retry is reuse.
+func (s *Server) committed(ctx context.Context, familyID, refresh string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.RefreshTimeout)
+	defer cancel()
+	family, _, err := s.getFamily(ctx, familyID)
+	if err != nil {
+		s.report(ctx, err)
+		return false
+	}
+	return family.Refresh == refresh
+}
+
+// tokenPair is an access and a refresh token stored for a family, with the
+// lifetime of the access token.
+type tokenPair struct {
+	access    string
+	refresh   string
+	expiresIn time.Duration
+}
+
+// putTokens generates an access and a refresh token for the generation of
+// family and stores both rows, pointing at familyID. The rows are inert until
+// the family row exists at that generation, so the caller commits by writing
+// the family afterwards, and a failure here leaves nothing usable behind.
+// The refresh token expires with the family as it is now, and keeps that
+// expiry once rotated; the access token after AccessTokenTTL or with the
+// family, whichever comes first.
+func (s *Server) putTokens(ctx context.Context, familyID string, family familyRecord) (tokenPair, error) {
+	access, err := token.Generate(s.cfg.TokenPrefix + "at")
+	if err != nil {
+		return tokenPair{}, ez.Wrap(err)
+	}
+	refresh, err := token.Generate(s.cfg.TokenPrefix + "rt")
+	if err != nil {
+		return tokenPair{}, ez.Wrap(err)
+	}
+	now := time.Now()
+	accessTTL := min(s.cfg.AccessTokenTTL, family.ExpiresAt.Sub(now))
+	row := tokenRecord{Family: familyID, Generation: family.Generation}
+	err = s.putRecord(ctx, KindAccess, hashID(access.Value), row, now.Add(accessTTL))
+	if err != nil {
+		return tokenPair{}, ez.Wrap(err)
+	}
+	err = s.putRecord(ctx, KindRefresh, hashID(refresh.Value), row, family.ExpiresAt)
+	if err != nil {
+		return tokenPair{}, ez.Wrap(err)
+	}
+	return tokenPair{access: access.Value, refresh: refresh.Value, expiresIn: accessTTL}, nil
+}
+
+// writeTokens answers with the token response of pair, issued for family.
+func writeTokens(w http.ResponseWriter, pair tokenPair, family familyRecord) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, tokenResponse{
-		AccessToken:  access,
+		AccessToken:  pair.access,
 		TokenType:    "Bearer",
-		ExpiresIn:    int64(s.cfg.AccessTokenTTL / time.Second),
-		RefreshToken: refresh,
-		Scope:        scope,
+		ExpiresIn:    int64(pair.expiresIn / time.Second),
+		RefreshToken: pair.refresh,
+		Scope:        family.responseScope(),
 	})
+}
+
+// getFamily returns the family row under id, decoded, with the exact bytes
+// read, which swapFamily needs as the value it expects. A missing or expired
+// family is ez.ENOTFOUND, a failing Store ez.EINTERNAL.
+func (s *Server) getFamily(ctx context.Context, id string) (familyRecord, []byte, error) {
+	raw, err := s.readRecord(ctx, KindFamily, id, false)
+	if err != nil {
+		return familyRecord{}, nil, ez.Wrap(err)
+	}
+	var family familyRecord
+	err = json.Unmarshal(raw, &family)
+	if err != nil {
+		return familyRecord{}, nil, ez.New(ez.EINTERNAL, "oauth: decoding a family record failed", err)
+	}
+	return family, raw, nil
+}
+
+// swapFamily stores next as the family row under id only while the row still
+// holds old, the bytes getFamily read: of two rotations from the same read,
+// one wins. A row that is gone or changed is ez.ENOTFOUND, a failing Store
+// ez.EINTERNAL.
+func (s *Server) swapFamily(ctx context.Context, id string, old []byte, next familyRecord) error {
+	data, err := json.Marshal(next)
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "oauth: encoding a family record failed", err)
+	}
+	err = s.cfg.Store.Swap(ctx, KindFamily, id, old, data, next.ExpiresAt)
+	if err != nil && ez.ErrorCode(err) == ez.ENOTFOUND {
+		return ez.Wrap(err)
+	}
+	if err != nil {
+		// Whatever code the Store uses, a failing Store is an internal error
+		// here, distinct from the codes the handlers show to users.
+		return ez.New(ez.EINTERNAL, "oauth: swapping the family record failed", err)
+	}
 	return nil
 }
 
-// accessGrant returns the grant of a live access token.
-func (s *Server) accessGrant(ctx context.Context, token string) (tokenRecord, error) {
+// isAccessToken reports whether value has the shape of an access token of
+// this server. Other values never reach the Store.
+func (s *Server) isAccessToken(value string) bool {
+	return token.Check(s.cfg.TokenPrefix+"at", value)
+}
+
+// accessGrant returns the family of a live access token. The token row only
+// points at its family, and the token lives only while the family row does,
+// so deleting a family revokes its access tokens at once. An access token
+// issued before a rotation stays valid until it expires; one of a later
+// generation than the family's was written by a rotation that has not
+// committed, and is refused. A row a failed rotation left behind is accepted
+// once a retry commits its generation: it was never sent to a client, so
+// nothing is exposed. Unknown, expired or revoked tokens yield ez.ENOTFOUND;
+// a failing Store, for the token or the family, ez.EINTERNAL.
+func (s *Server) accessGrant(ctx context.Context, accessToken string) (familyRecord, error) {
 	var record tokenRecord
-	err := s.getRecord(ctx, KindAccess, token, false, &record)
+	err := s.getRecord(ctx, KindAccess, hashID(accessToken), false, &record)
 	if err != nil {
-		return tokenRecord{}, ez.Wrap(err)
+		return familyRecord{}, ez.Wrap(err)
 	}
-	return record, nil
+	family, _, err := s.getFamily(ctx, record.Family)
+	if err != nil && ez.ErrorCode(err) == ez.ENOTFOUND {
+		return familyRecord{}, ez.New(ez.ENOTFOUND, "oauth: the access token family is revoked or expired", nil)
+	}
+	if err != nil {
+		return familyRecord{}, ez.Wrap(err)
+	}
+	if record.Generation > family.Generation {
+		// Written by a rotation that has not committed, or never will. A
+		// leftover of a failed rotation is accepted once a retry commits
+		// its generation; it was never sent to a client.
+		return familyRecord{}, ez.New(ez.ENOTFOUND, "oauth: the access token was never published", nil)
+	}
+	return family, nil
+}
+
+// Verify resolves a live access token to its grant. Unknown, malformed,
+// expired or revoked tokens return ez.ENOTAUTHENTICATED. Store failures
+// return ez.EINTERNAL.
+func (s *Server) Verify(ctx context.Context, accessToken string) (Grant, error) {
+	if !s.isAccessToken(accessToken) {
+		return Grant{}, ez.New(ez.ENOTAUTHENTICATED, "oauth: malformed access token", nil)
+	}
+	family, err := s.accessGrant(ctx, accessToken)
+	if err != nil && ez.ErrorCode(err) == ez.ENOTFOUND {
+		return Grant{}, ez.New(ez.ENOTAUTHENTICATED, "oauth: unknown or expired access token", nil)
+	}
+	if err != nil {
+		return Grant{}, ez.Wrap(err)
+	}
+	return family.Grant, nil
 }
 
 // Protect wraps the MCP handler: requests without a valid bearer token get
@@ -457,55 +734,80 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 	return require(next)
 }
 
-// verifyToken is the auth.TokenVerifier of Protect. Unknown tokens wrap
-// auth.ErrInvalidToken so the middleware answers 401; Store failures answer
-// 500. The middleware writes the error text as the response body.
-func (s *Server) verifyToken(ctx context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
-	record, err := s.accessGrant(ctx, token)
-	if err == nil {
-		return &auth.TokenInfo{Expiration: record.ExpiresAt, UserID: record.Grant.Subject}, nil
+// verifyToken is the auth.TokenVerifier of Protect. A token shaped like an
+// access token is looked up in the Store with accessGrant, so unknown,
+// expired and revoked tokens are refused alike; any other token goes to
+// Fallback without a Store read. Rejected tokens wrap auth.ErrInvalidToken so the
+// middleware answers 401; Store and Fallback failures go to OnError and
+// answer 500. The middleware writes the error text as the response body.
+func (s *Server) verifyToken(ctx context.Context, bearer string, r *http.Request) (*auth.TokenInfo, error) {
+	// The errors returned here are not ez errors: their text reaches the
+	// client, and ez adds the operation name to it.
+	if s.isAccessToken(bearer) {
+		family, err := s.accessGrant(ctx, bearer)
+		if err == nil {
+			// No Expiration: token rows do not carry theirs, the Store
+			// refuses expired ones, and Protect allows a missing expiry.
+			return &auth.TokenInfo{UserID: family.Grant.Subject}, nil
+		}
+		if ez.ErrorCode(err) != ez.ENOTFOUND {
+			// The middleware writes the error text to the response, so the
+			// Store error goes to OnError and stays out of it.
+			s.report(ctx, err)
+			return nil, errors.New("the access token could not be checked")
+		}
+		return nil, fmt.Errorf("unknown or expired access token: %w", auth.ErrInvalidToken)
 	}
-	if ez.ErrorCode(err) != ez.ENOTFOUND {
-		// The middleware writes the error text to the response, so the
-		// Store error goes to OnError and stays out of it.
-		s.report(ctx, err)
-		return nil, errors.New("the access token could not be checked")
-	}
-	// The errors returned from here on are not ez errors: their text
-	// reaches the client, and ez adds the operation name to it.
 	if s.cfg.Fallback == nil {
 		return nil, fmt.Errorf("unknown or expired access token: %w", auth.ErrInvalidToken)
 	}
-	_, err = s.cfg.Fallback(ctx, token)
+	accepted, err := s.cfg.Fallback(ctx, bearer)
 	if err != nil {
+		s.report(ctx, err)
+		return nil, errors.New("the bearer token could not be checked")
+	}
+	if !accepted {
 		return nil, fmt.Errorf("the bearer token is not accepted: %w", auth.ErrInvalidToken)
 	}
 	return &auth.TokenInfo{}, nil
 }
 
-// AuthFunc maps a bearer token to the REST headers of its grant, for
-// mcp.Config.Auth. Unknown tokens go to Fallback when it is set, else fail
-// with ez.ENOTAUTHENTICATED. An empty token yields no headers.
+// AuthFunc is the mcp.Config.Auth of an MCP server behind this one. It
+// returns the header "Authorization: Bearer <token>" for a live access token,
+// so the REST API receives the token unchanged and resolves it with Verify.
+// An unknown, expired or revoked access token fails with
+// ez.ENOTAUTHENTICATED, so the client refreshes. Any other token goes to
+// Fallback and, when accepted, is passed through the same way; when refused,
+// or without Fallback, it fails with ez.ENOTAUTHENTICATED. A Fallback
+// failure goes to OnError and is returned as it is. An empty token yields no
+// headers.
 func (s *Server) AuthFunc() func(ctx context.Context, token string) (http.Header, error) {
-	return func(ctx context.Context, token string) (http.Header, error) {
-		if token == "" {
+	return func(ctx context.Context, bearer string) (http.Header, error) {
+		if bearer == "" {
 			return http.Header{}, nil
 		}
-		record, err := s.accessGrant(ctx, token)
-		if err == nil {
-			return record.Grant.Headers.Clone(), nil
-		}
-		if ez.ErrorCode(err) != ez.ENOTFOUND {
-			s.report(ctx, err)
-			return nil, ez.Wrap(err)
+		passthrough := http.Header{"Authorization": {"Bearer " + bearer}}
+		if s.isAccessToken(bearer) {
+			_, err := s.Verify(ctx, bearer)
+			if err != nil {
+				if ez.ErrorCode(err) != ez.ENOTAUTHENTICATED {
+					s.report(ctx, err)
+				}
+				return nil, ez.Wrap(err)
+			}
+			return passthrough, nil
 		}
 		if s.cfg.Fallback == nil {
 			return nil, ez.New(ez.ENOTAUTHENTICATED, "oauth: unknown or expired access token", nil)
 		}
-		header, err := s.cfg.Fallback(ctx, token)
+		accepted, err := s.cfg.Fallback(ctx, bearer)
 		if err != nil {
+			s.report(ctx, err)
 			return nil, ez.Wrap(err)
 		}
-		return header, nil
+		if !accepted {
+			return nil, ez.New(ez.ENOTAUTHENTICATED, "oauth: the bearer token is not accepted", nil)
+		}
+		return passthrough, nil
 	}
 }
