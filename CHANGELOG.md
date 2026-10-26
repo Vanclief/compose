@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.19.0
+
+### Highlights
+
+- **`components/auth/oidc`**: verifies Google, Apple and Microsoft ID tokens. `Verifier.Verify` checks the RS256 signature, issuer (Google without the scheme, Microsoft multi-tenant issuers against `tid`), audience against the provider's `ClientIDs`, expiry and nonce (the raw value or its SHA-256 hex, required unless `AllowMissingNonce`), and returns an `Identity` normalized across providers (`Subject`, `Email`, `EmailVerified`, Apple's string-or-boolean claims and `PrivateEmail`, Google's `hd` as `HostedDomain`, Microsoft emails never verified). Discovery is lazy and cached; the key set is refreshed in the background after 24 hours and on an unknown `kid` (at most once a minute), serving cached keys through an outage for up to 7 days (`Config.OnFetchError` reports the failures the cache covers); a provider that does not answer is `ez.EUNAVAILABLE` and one that answers an unusable document `ez.EINTERNAL`, never `ez.ENOTAUTHENTICATED`. Discovery and signing keys are fetched and cached by the package itself, so Microsoft's per-key `issuer` restriction is enforced, and the token is verified with `github.com/go-jose/go-jose/v4` (new direct dependency).
+
 ## v1.18.0
 
 ### Breaking
