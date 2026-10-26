@@ -1,8 +1,8 @@
 # Changelog
 
-Earlier releases are documented on [GitHub releases](https://github.com/Vanclief/compose/releases).
+Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
-## Unreleased
+## v1.18.0
 
 ### Breaking
 
