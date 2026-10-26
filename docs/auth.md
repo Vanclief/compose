@@ -17,6 +17,7 @@ This guide covers:
 - [Cookies and the CSRF rule](#cookies-and-the-csrf-rule)
 - [Wiring one authentication function](#wiring-one-authentication-function)
 - [Sessions](#sessions)
+- [Verifying provider ID tokens](#verifying-provider-id-tokens)
 - [OAuth for MCP](#oauth-for-mcp)
 - [MCP](#mcp)
 - [Generator](#generator)
@@ -29,6 +30,7 @@ The packages are:
 | `components/auth/token` | Generates, checks and hashes tokens. |
 | `components/rest/requests` | Reads the credential of a request (`Authenticate`, `ParseBearer`). |
 | `components/auth/session` | Issues and resolves rotating session tokens for first-party apps. |
+| `components/auth/oidc` | Verifies Google, Apple and Microsoft ID tokens and returns a normalized identity. |
 | `components/mcp/oauth` | OAuth 2.1 server for hosted MCP clients, and `Verify` for the REST side. |
 | `components/mcp` | Forwards the MCP client's bearer to the REST API (`BearerPassthrough`). |
 | `components/rest/generator` | Documents the bearer scheme in the OpenAPI spec. |
@@ -444,6 +446,191 @@ matches) and, unless `IdleTTL` is `Never`, rows with `last_used_at <= now - Idle
 written at most once per `TouchEvery`, so a session can be swept up to `TouchEvery` before its idle
 expiry, as `Resolve` already allows. A custom `Store` implements this as `DeleteExpired(ctx, now,
 idleBefore)`; a migration written by hand adds the `expires_at` and `last_used_at` indexes.
+
+## Verifying provider ID tokens
+
+`components/auth/oidc` verifies the OpenID Connect ID tokens of Google, Apple and Microsoft.
+Clients obtain an ID token from the provider's SDK and POST it to the application.
+`Verifier.Verify` checks it and returns a normalized `Identity`. What the application does with
+the identity (match a user, link accounts, issue a session) is the application's job.
+
+The package fetches the provider's discovery document and signing keys itself. The token is
+parsed, confined to the compact form and RS256 (which is what all three providers sign with) and
+its signature verified by `github.com/go-jose/go-jose/v4`; the package reads no claim before that
+succeeds. On the verified claims it then checks expiry, issuer, audience against `ClientIDs`,
+nonce and the provider rules below.
+
+### Config
+
+`New(cfg Config) (*Verifier, error)` validates the configuration and does no network call. It
+fails with `ez.EINVALID` when no provider has `ClientIDs`, when a client id is empty, when an
+`Issuer` is not an absolute http(s) URL, when a Microsoft `Tenant` is not accepted or an `Issuer`
+is set with a multi-tenant `Tenant`. Discovery and the key set are fetched lazily, the first
+time a provider's `Verify` meets a token whose key is not cached. A fetched key set serves for
+24 hours, then the next `Verify` starts a refresh behind it without waiting (Microsoft's
+guidance is a refresh at least daily), so a key the provider removed stops verifying once that
+refresh lands: within a day and a fetch under steady traffic. A service with no sign-ins for
+days serves the first token after the quiet period from the cache; the 7 day limit below
+bounds that. While a refresh fails the cached keys keep serving, with a retry at most once a
+minute, for up to 7 days; after that `Verify` fails with the fetch's error rather than trust
+keys the provider may have withdrawn. Set `OnFetchError` to hear about those failures while
+the cache still covers them. A key fetch answered with a 4xx runs discovery again on the next
+attempt, so a provider that moves its key endpoint is followed; a transport failure or a 5xx
+keeps the known URL. `Verifier` is safe for concurrent use; build it once at startup.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `Google` | Disabled. | `ProviderConfig` for Google. |
+| `Apple` | Disabled. | `ProviderConfig` for Apple. |
+| `Microsoft` | Disabled. | `ProviderConfig` for Microsoft. |
+| `HTTPClient` | A client with a 10 second timeout. | Used for discovery and key fetching. A fetch runs detached from the `Verify` call that started it, capped at 30 seconds whatever the client's timeout, so a caller hanging up neither stops the fetch the other callers wait for nor skips the pacing below. Callers with no cached key to serve wait for it until their own context ends. |
+| `OnFetchError` | Nil, failures are not reported. | Called with the provider and the error each time a discovery or key fetch fails, from the fetch's own goroutine. `Verify` serves cached keys through failures for up to 7 days without surfacing them, so log or report them here to see an outage before sign-ins fail. |
+
+`ProviderConfig`:
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `ClientIDs` | Empty, which disables the provider. | The accepted audiences, one per client app (iOS, Android, web). `Verify` for a disabled provider is `ez.EINVALID`. |
+| `Issuer` | The provider's public issuer, see [Provider rules](#provider-rules). | Overrides the issuer URL, for tests and private deployments. For Microsoft it needs `Tenant` set to a tenant id; with `common`, `consumers` or `organizations` it must be empty, or `New` is `ez.EINVALID`. A private or sovereign cloud sets `Tenant` to the tenant id and `Issuer` to that cloud's issuer URL, and the token's issuer must match it exactly. |
+| `Tenant` | `common` | Microsoft only: `common`, `consumers`, `organizations` or a tenant id, in any case. A tenant id is a GUID in the 8-4-4-4-12 hex form and is lowercased. Anything else is `ez.EINVALID`. The three keywords are multi-tenant, public cloud only, and restrict the token's `tid`, see [Provider rules](#provider-rules). Ignored for the other providers. |
+| `AllowMissingNonce` | `false` | Accepts a call with an empty nonce, see [Nonce](#nonce). Microsoft's MSAL libraries manage the nonce themselves, so applications set it for Microsoft. Without a nonce every token the provider signed for one of the `ClientIDs` counts as a sign-in; pass a nonce where the client library takes one (MSAL.js does). |
+
+### Provider rules
+
+Default issuers:
+
+| Provider | Issuer | Notes |
+| --- | --- | --- |
+| Google | `https://accounts.google.com` | With this default, `accounts.google.com` without the scheme is accepted too, because Google has issued tokens in both forms. Nothing else is. |
+| Apple | `https://appleid.apple.com` | |
+| Microsoft | `https://login.microsoftonline.com/<Tenant>/v2.0` | For `common`, `consumers` and `organizations` every token names its real tenant: `iss` must match `https://login.microsoftonline.com/<tenant id>/v2.0` and the `tid` claim must equal that tenant id. `common` accepts any tenant, `consumers` only the personal-accounts tenant `9188040d-6c67-4c5b-b112-36a304b66dad`, and `organizations` any tenant but that one. For a fixed tenant id the issuer must match exactly. When the signing key carries an `issuer` property, its `{tenantid}` is replaced with the token's `tid` and the result must equal the token's `iss`, or the token is `ez.ENOTAUTHENTICATED`. |
+
+Claims:
+
+- `sub` is required for every provider.
+- Microsoft access tokens are refused. When the app registration exposes an API, Microsoft signs
+  its access tokens with the same keys, issuer and audience as the ID tokens, and an access token
+  is not a sign-in. Delegated access tokens carry `scp`; app-only (client credentials) tokens carry
+  no user, their `sub` equals `oid`, and `idtyp` is `app` when the registration asks for that
+  claim. All three forms are `ez.ENOTAUTHENTICATED`. This matters most with `AllowMissingNonce`,
+  where the nonce would not tell them apart; keep the sign-in app registration from exposing an
+  API where you can.
+- **Google.** `Email` from `email`, `EmailVerified` from the boolean `email_verified`,
+  `HostedDomain` from `hd`, the Google Workspace domain, empty for personal accounts. To
+  restrict sign-in to one workspace check `HostedDomain`, not the email suffix, as Google
+  advises.
+- **Apple.** `Email` from `email`. `email_verified` and `is_private_email` arrive as booleans or
+  as the strings `"true"` and `"false"`; both forms are accepted. `PrivateEmail` is
+  `is_private_email`. The user's name is never in the token.
+- **Microsoft.** `Email` from `email`, only when present. `EmailVerified` is always `false`,
+  because the claim is whatever the tenant admin typed. `preferred_username` is never read.
+
+`Identity`:
+
+| Field | Meaning |
+| --- | --- |
+| `Provider` | `oidc.Google`, `oidc.Apple` or `oidc.Microsoft`. |
+| `Subject` | The provider's stable account id (`sub`). |
+| `Email` | Empty when the token carries none. |
+| `EmailVerified` | See the claims above. |
+| `PrivateEmail` | An Apple "Hide My Email" relay address. |
+| `HostedDomain` | Google's `hd`, the Workspace domain; empty for Apple and Microsoft. |
+| `Issuer` | The token's issuer, for logging. |
+| `Audience` | The entry of `ClientIDs` found in `aud`. |
+
+### Nonce
+
+`Verify` compares the token's `nonce` claim to its nonce argument, nothing more:
+
+- The claim must equal the value or its SHA-256 as lowercase hex. Apple's native SDK sends the
+  hash and the app passes the raw value; Google sends the value as given.
+- An empty nonce argument is `ez.ENOTAUTHENTICATED`, unless the provider has
+  `AllowMissingNonce`. Then the token passes with or without a `nonce` claim, since there is
+  nothing to compare. MSAL manages the nonce itself, so Microsoft apps set it and rely on the
+  token's short lifetime instead.
+
+The check is only worth something when the application issued the nonce. Whoever holds a leaked
+ID token can decode its `nonce` claim and send it as the argument, so a nonce the client
+generates and forwards proves nothing. The application issues a random nonce per sign-in (for
+example `POST /sign-in/nonce`, stored with a short TTL), the client hands it to the provider's
+SDK, and the login handler consumes it exactly once before calling `Verify`. `Verify` cannot
+enforce single use.
+
+### Errors
+
+| Code | When |
+| --- | --- |
+| `ez.EINVALID` | Unknown provider, provider with no `ClientIDs`, empty token. |
+| `ez.ENOTAUTHENTICATED` | Bad signature, missing or unknown `kid`, a `kid` whose published entry cannot sign (the message names the `kid` and the reason: an encryption key, a key go-jose cannot read), wrong issuer, audience not in `ClientIDs`, expired, not yet valid, nonce mismatch or missing nonce, Microsoft access token. |
+| `ez.EUNAVAILABLE` | The provider did not answer discovery or the key fetch (network error, non-200 status, a body that stalls or breaks off) or the caller's context ended while waiting for a fetch, with no cached key younger than 7 days to serve. |
+| `ez.EINTERNAL` | The provider answered a malformed document, a discovery document naming another issuer or without `jwks_uri`, or a key set with no usable key, with no cached key younger than 7 days to serve. |
+
+`ez.EUNAVAILABLE` and `ez.EINTERNAL` stay distinct from `ez.ENOTAUTHENTICATED` so an
+application never answers "not registered" for an outage, and compose's handler maps
+`ez.EUNAVAILABLE` to HTTP 503 so an outage is not reported as the service's own 500.
+Messages are diagnostic strings. The application maps `ez.ENOTAUTHENTICATED` to its own
+client-facing message.
+
+The provider's keys are fetched again when a token names a `kid` that is not cached, at most
+once a minute per provider: the first forged token with a made-up `kid` sent to the sign-in
+route costs one outbound request, the ones in the minute after it are refused without one, and
+a token that does not parse or has no `kid` costs none. One fetch runs at a time per provider,
+discovery included; the tokens whose `kid` is cached are verified without waiting for it, and
+the others wait for its result, success or failure, instead of downloading again. The minute also bounds a legitimate rollover: a token
+signed with a key the provider added since the last fetch is refused until it passes.
+Rate-limit the sign-in route anyway, for example with compose's `components/ratelimit`.
+
+### Example
+
+```go
+verifier, err := oidc.New(oidc.Config{
+	Google:    oidc.ProviderConfig{ClientIDs: []string{iosClientID, webClientID}},
+	Apple:     oidc.ProviderConfig{ClientIDs: []string{bundleID, servicesID}},
+	Microsoft: oidc.ProviderConfig{ClientIDs: []string{azureClientID}, AllowMissingNonce: true},
+})
+if err != nil {
+	return ez.Wrap(err)
+}
+```
+
+```go
+// SignInRequest is the body of POST /sign-in.
+type SignInRequest struct {
+	Provider string `json:"provider"`
+	IDToken  string `json:"id_token"`
+	Nonce    string `json:"nonce"`
+}
+
+func (r *SignInRequest) Validate() error {
+	return nil
+}
+
+// SignIn binds the body and hands it to the application.
+func (h *Handler) SignIn(c echo.Context) error {
+	req := requests.New(c.Request().Header, c.RealIP(), requests.WithMethod(c.Request().Method))
+	return h.BindedJSONResponse(c, "SignIn", req, &SignInRequest{})
+}
+
+// SignIn runs for a SignInRequest. A Verify error keeps its ez code, which the
+// compose envelope answers with its HTTP status.
+func (a *Auth) SignIn(ctx context.Context, body *SignInRequest) (any, error) {
+	// nonces is the application's store of issued nonces. Consume deletes the row
+	// or fails with ez.ENOTAUTHENTICATED. Verify refuses an empty nonce itself
+	// unless the provider has AllowMissingNonce.
+	if body.Nonce != "" {
+		err := a.nonces.Consume(ctx, body.Nonce)
+		if err != nil {
+			return nil, ez.Wrap(err)
+		}
+	}
+	identity, err := a.verifier.Verify(ctx, oidc.Provider(body.Provider), body.IDToken, body.Nonce)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+	// Matching a user, linking accounts and issuing a session are the application's.
+	return a.app.SignIn(ctx, identity)
+}
+```
 
 ## OAuth for MCP
 
