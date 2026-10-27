@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -74,7 +73,7 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	if redirectURI == "" && len(client.RedirectURIs) == 1 {
 		redirectURI = client.RedirectURIs[0]
 	}
-	if !slices.Contains(client.RedirectURIs, redirectURI) {
+	if !redirectRegistered(client, redirectURI) {
 		s.renderMessage(w, http.StatusBadRequest, "Invalid request", "The redirect URI is not registered for this application.")
 		return
 	}
@@ -207,6 +206,19 @@ func (s *Server) Approve(ctx context.Context, requestID string, grant Grant) (st
 		return "", ez.Wrap(err)
 	}
 	return redirect, nil
+}
+
+// Deny ends a pending authorization request with access_denied and returns
+// the URL to send the browser to, carrying the client's state. Single use:
+// the request is taken from the Store. An unknown or expired request is
+// ez.ENOTFOUND.
+func (s *Server) Deny(ctx context.Context, requestID string) (string, error) {
+	var request authRequest
+	err := s.getRecord(ctx, KindRequest, requestID, true, &request)
+	if err != nil {
+		return "", ez.Wrap(err)
+	}
+	return withParams(request.RedirectURI, "error", "access_denied", "error_description", "The user denied the request.", "state", request.State), nil
 }
 
 // approve issues the code of a request already taken from the Store. The

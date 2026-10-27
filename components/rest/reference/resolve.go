@@ -356,6 +356,9 @@ func mergeInto(out, m *Schema) {
 	if m.Nullable {
 		out.Nullable = true
 	}
+	if m.NullMember {
+		out.NullMember = true
+	}
 	if m.Deprecated {
 		out.Deprecated = true
 	}

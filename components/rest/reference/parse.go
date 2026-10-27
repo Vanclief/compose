@@ -292,6 +292,7 @@ func normalizeNullMembers(s *Schema) {
 		return
 	}
 	s.Nullable = true
+	s.NullMember = true
 	s.OneOf = oneOf
 	s.AnyOf = anyOf
 
@@ -316,7 +317,7 @@ func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
 	var out []*Schema
 	removed := false
 	for _, m := range members {
-		if m != nil && reflect.DeepEqual(*m, Schema{Nullable: true}) {
+		if m != nil && onlyNull(*m) {
 			removed = true
 			continue
 		}
@@ -326,6 +327,14 @@ func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
 		return members, false
 	}
 	return out, true
+}
+
+// onlyNull reports whether s admits null and nothing else, written as
+// {type: "null"} or as a nested anyOf or oneOf of null members, which
+// normalizeNullMembers has already folded into Nullable and NullMember.
+func onlyNull(s Schema) bool {
+	s.NullMember = false
+	return reflect.DeepEqual(s, Schema{Nullable: true})
 }
 
 // withoutNil returns members without nil entries, which a document holds for

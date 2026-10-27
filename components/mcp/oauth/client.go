@@ -56,6 +56,37 @@ func validRedirectURI(raw string) bool {
 	return u.Scheme == "http" && isLocalHost(u.Hostname())
 }
 
+// redirectRegistered reports whether redirectURI is one of the client's
+// redirect URIs. An http URI on a loopback host also matches a registered
+// one that differs only in port, as RFC 8252 7.3 asks for native clients
+// listening on an ephemeral port; https URIs and other hosts match exactly.
+// The path is compared in its escaped form, so a re-encoded variant of a
+// registered path, %63allback for callback, does not match.
+func redirectRegistered(client Client, redirectURI string) bool {
+	if slices.Contains(client.RedirectURIs, redirectURI) {
+		return true
+	}
+	// validRedirectURI already requires a loopback host for http and refuses
+	// user info and fragments, so only the scheme is left to check.
+	if !validRedirectURI(redirectURI) {
+		return false
+	}
+	presented, _ := url.Parse(redirectURI)
+	if presented.Scheme != "http" {
+		return false
+	}
+	for _, uri := range client.RedirectURIs {
+		registered, err := url.Parse(uri)
+		if err != nil || registered.Scheme != "http" {
+			continue
+		}
+		if registered.Hostname() == presented.Hostname() && registered.EscapedPath() == presented.EscapedPath() && registered.RawQuery == presented.RawQuery {
+			return true
+		}
+	}
+	return false
+}
+
 // isASCII reports whether s has no byte outside ASCII.
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {

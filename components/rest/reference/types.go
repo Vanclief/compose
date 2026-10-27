@@ -223,8 +223,11 @@ type Discriminator struct {
 // Schema is a JSON Schema as used by OpenAPI 3.0 and 3.1.
 //
 // Type always holds the non-null types; Nullable is true when 3.0 said
-// nullable: true or when 3.1 listed "null" in the type array. Exclusive bounds
-// always hold the numeric form.
+// nullable: true, when 3.1 listed "null" in the type array, or when a oneOf
+// or anyOf member was {type: "null"}. NullMember is true in the last case
+// only: null is then valid whatever the enum or const say, while the other
+// two add null to the type and leave the enum and const deciding. Exclusive
+// bounds always hold the numeric form.
 type Schema struct {
 	Ref           string           `json:"$ref" yaml:"$ref"`
 	Title         string           `json:"title" yaml:"title"`
@@ -232,6 +235,7 @@ type Schema struct {
 	Type          TypeList         `json:"type" yaml:"type"`
 	Format        string           `json:"format" yaml:"format"`
 	Nullable      bool             `json:"nullable" yaml:"nullable"`
+	NullMember    bool             `json:"-" yaml:"-"`
 	Enum          []any            `json:"enum" yaml:"enum"`
 	Const         any              `json:"const" yaml:"const"`
 	Default       any              `json:"default" yaml:"default"`

@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -74,6 +76,21 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Script.Enabled && cfg.WhoAmI == "" {
 		return nil, ez.New(ez.EINVALID, "mcp: Config.Script.Enabled requires Config.WhoAmI", nil)
 	}
+	cfg.Tools = slices.Clone(cfg.Tools)
+	promoted := map[string]bool{}
+	for _, name := range cfg.Tools {
+		f, ok := catalog.Function(name)
+		if !ok {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.Tools names unknown function %q", name), nil)
+		}
+		if !toolNamePattern.MatchString(f.ToolName()) {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.Tools names %q, whose tool name %q breaks claude.ai's rule of 1 to 64 characters from [a-zA-Z0-9_-]", name, f.ToolName()), nil)
+		}
+		if promoted[name] {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.Tools names %q twice", name), nil)
+		}
+		promoted[name] = true
+	}
 
 	s := &Server{
 		cfg:       cfg,
@@ -112,6 +129,22 @@ func (s *Server) Catalog() *Catalog {
 	return s.catalog
 }
 
+// Call invokes a catalog function with the REST headers given, as
+// call_function would for an MCP request carrying them. The headers are the
+// credentials the REST API authenticates with (for example Authorization),
+// set after the arguments, so an argument never overrides them. There is no
+// MCP request to copy X-Forwarded-For or X-Request-Id from; set them in
+// header if the REST API should see them. Unlike a tool call, Call does not
+// recover a panic in a composite nor cut the result to MaxOutputBytes.
+func (s *Server) Call(ctx context.Context, header http.Header, name string, args map[string]any) (json.RawMessage, error) {
+	call := &caller{s: s, header: header}
+	raw, err := call.Call(ctx, name, args)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+	return raw, nil
+}
+
 // Instructions returns the server instructions sent to clients on initialize.
 func (s *Server) Instructions() string {
 	return s.instructions
@@ -147,6 +180,15 @@ func (s *Server) buildInstructions() string {
 		}
 		rules += " run_script chains several " + chained + " in one round trip."
 	}
+	if len(s.cfg.Tools) > 0 {
+		var tools []string
+		for _, name := range s.cfg.Tools {
+			f, _ := s.catalog.Function(name)
+			tools = append(tools, name+" as "+f.ToolName())
+		}
+		rules += " These functions are also tools you can call directly: " + strings.Join(tools, ", ") +
+			". Everything else is reached through search_functions and call_function."
+	}
 	parts = append(parts, rules)
 
 	return strings.Join(parts, "\n\n")
@@ -180,9 +222,10 @@ func (s *Server) referenceInfo() referenceInfo {
 	return info
 }
 
-// inputSchemaJSON encodes the input schema of a registered tool. The schemas
-// are inferred by jsonschema.For when the tool is registered, so encoding
-// them cannot fail; a failure yields nil.
+// inputSchemaJSON encodes the input schema of a registered tool. The fixed
+// schemas are inferred by jsonschema.For and the promoted ones are encoded
+// once when the tool is registered, so encoding them cannot fail; a failure
+// yields nil.
 func inputSchemaJSON(tool *mcp.Tool) json.RawMessage {
 	data, err := json.Marshal(tool.InputSchema)
 	if err != nil {

@@ -233,6 +233,7 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 		Deprecated:  op.Deprecated,
 		ReadOnly:    ref.Method == "GET" || ref.Method == "HEAD",
 		Destructive: ref.Method == "DELETE",
+		doc:         b.doc,
 	}
 
 	for _, p := range b.doc.Parameters(ref.Item, op) {
@@ -242,12 +243,19 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 		if p.In == "header" && dispatchHeader(p.Name) {
 			continue
 		}
+		schema := b.argSchema(p.Schema)
+		// dispatch refuses null for a path argument, so it never takes the
+		// nullable wrapper; argParts and InputSchema drop the null a path
+		// schema still carries.
+		if p.In == "path" {
+			schema = b.schema(p.Schema)
+		}
 		f.Args = append(f.Args, &Arg{
 			Name:        p.Name,
 			In:          p.In,
 			Required:    p.Required,
 			Description: p.Description,
-			Schema:      b.schema(p.Schema),
+			Schema:      schema,
 			param:       p,
 		})
 		b.index(b.accepted, b.termOf(p.Schema), f.Name)
@@ -386,7 +394,7 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 		In:          "body",
 		Required:    body.Required,
 		Description: body.Description,
-		Schema:      b.schema(raw),
+		Schema:      b.argSchema(raw),
 	}
 
 	flat := b.doc.Flatten(raw)
@@ -398,7 +406,7 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 
 	for _, arg := range f.Args {
 		prop, collides := flat.Properties.Get(arg.Name)
-		if collides && !b.readOnly(prop) {
+		if collides && !readOnly(b.doc, prop) {
 			f.Args = append(f.Args, single)
 			f.bodyWhole = true
 			return
@@ -407,14 +415,14 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 
 	for _, name := range flat.Properties.Keys {
 		prop := flat.Properties.Map[name]
-		if b.readOnly(prop) {
+		if readOnly(b.doc, prop) {
 			continue
 		}
 		arg := &Arg{
 			Name:     name,
 			In:       "body",
 			Required: flat.IsRequired(name),
-			Schema:   b.schema(prop),
+			Schema:   b.argSchema(prop),
 		}
 		if prop != nil {
 			arg.Description = prop.Description
@@ -425,22 +433,27 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 }
 
 // readOnly reports whether a property is readOnly, on the property itself or
-// on the schema it resolves and flattens to.
-func (b *catalogBuilder) readOnly(prop *reference.Schema) bool {
+// on the schema it resolves and flattens to in doc.
+func readOnly(doc *reference.Document, prop *reference.Schema) bool {
 	if prop == nil {
 		return false
 	}
-	flat := b.doc.Flatten(prop)
+	flat := doc.Flatten(prop)
 	return prop.ReadOnly || (flat != nil && flat.ReadOnly)
 }
 
-// plainObject reports whether s is an object with properties and no
-// alternatives, the only body shape that is flattened into arguments.
+// plainObject reports whether s is an object with properties, no
+// alternatives and no rule over its properties together, the only body
+// shape that is flattened into arguments.
 func plainObject(s *reference.Schema) bool {
 	if s == nil || s.Properties.Len() == 0 {
 		return false
 	}
 	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		return false
+	}
+	// A rule over the properties together has no argument to live in.
+	if s.Not != nil || s.MinProperties != nil || s.MaxProperties != nil {
 		return false
 	}
 	return len(s.Type) == 0 || s.Type.Has("object")
@@ -491,6 +504,21 @@ func (b *catalogBuilder) schema(s *reference.Schema) *reference.Schema {
 		return flat
 	}
 	return b.doc.Flatten(s)
+}
+
+// argSchema returns schema(s) for an argument, except that a nullable
+// wrapper of a non-nullable component, {$ref, nullable} or {nullable, allOf:
+// [$ref]}, becomes a nullable single-member allOf of a ref to the component,
+// so the null reaches describe_function and InputSchema, the term is still
+// named, and the cycle guard of InputSchema sees the component name.
+func (b *catalogBuilder) argSchema(s *reference.Schema) *reference.Schema {
+	flat := b.schema(s)
+	name := b.doc.SchemaName(s)
+	_, shared := b.flat[name]
+	if !shared || !s.Nullable || flat == nil || flat.Nullable {
+		return flat
+	}
+	return &reference.Schema{AllOf: []*reference.Schema{{Ref: schemaRefPrefix + name}}, Nullable: true, NullMember: s.NullMember}
 }
 
 // refTerm returns the term name of the component s refers to, or "".
