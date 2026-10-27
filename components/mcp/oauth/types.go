@@ -12,7 +12,8 @@
 //   - client registration: Client ID Metadata Documents (an https URL as
 //     client_id), RFC 7591 dynamic registration, and clients listed in Config;
 //   - the authorization code flow with PKCE (S256 only), the RFC 8707 resource
-//     parameter, exact redirect URI matching, and single-use codes;
+//     parameter, exact redirect URI matching (any port for http loopback
+//     URIs, RFC 8252), and single-use codes;
 //   - opaque access and refresh tokens kept in the Store, refresh rotation;
 //   - the bearer check in front of the MCP endpoint, answering 401 with the
 //     WWW-Authenticate challenge that starts discovery.
@@ -60,7 +61,8 @@
 // resolves the token with Server.Verify, so no REST credential is ever
 // stored. Applications with their own login page set LoginURL instead of
 // Login, show the client name and redirect host that Pending returns, and
-// call Approve once the user has authenticated and confirmed.
+// call Approve once the user has authenticated and confirmed, or Deny when
+// the user refuses.
 //
 // Access tokens look like "<TokenPrefix>at_<43 base62>" and refresh tokens
 // "<TokenPrefix>rt_<43 base62>" (see components/auth/token). The Store keeps
@@ -143,7 +145,8 @@ type Config struct {
 	// The page must show the ClientName and RedirectHost that Pending
 	// returns and get an explicit click from the user before the application
 	// calls Approve, so a user is never signed in to a client they did not
-	// see.
+	// see. A refusal calls Deny and sends the browser to the URL it
+	// returns, which carries access_denied.
 	LoginURL string
 	// Clients are pre-registered clients, for installations that hand out a
 	// client id instead of accepting registration from any client.
@@ -275,7 +278,10 @@ type Client struct {
 	Secret string `json:"secret,omitempty"`
 	// Name is shown on the login page.
 	Name string `json:"name"`
-	// RedirectURIs are the exact redirect URIs the client may use.
+	// RedirectURIs are the exact redirect URIs the client may use. An http
+	// URI on a loopback host also accepts any port on the same hostname,
+	// path and query (RFC 8252 7.3), so http://localhost/callback admits
+	// http://localhost:3118/callback.
 	RedirectURIs []string `json:"redirect_uris"`
 	// configured marks a client from Config.Clients, the only clients that
 	// authorize errors are redirected to.
@@ -352,7 +358,7 @@ type Server struct {
 }
 
 // authRequest is a pending authorization request, stored from the authorize
-// endpoint until Approve redeems it.
+// endpoint until Approve or Deny takes it.
 type authRequest struct {
 	ClientID      string `json:"client_id"`
 	ClientName    string `json:"client_name"`

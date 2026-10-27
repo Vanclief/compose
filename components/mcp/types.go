@@ -8,6 +8,14 @@
 //   - call_function: invoke any function through the REST handler in-process.
 //   - run_script: optional, run a short JavaScript program that chains calls.
 //
+// Config.Tools promotes chosen catalog functions to tools of their own, for
+// clients that should call them without searching and describing first.
+// Server.Call invokes a function in-process without the MCP transport, and
+// Function.InputSchema is the JSON Schema a promoted tool advertises, so a
+// host that embeds its own agent can build a tool list from the same
+// catalog. A promoted tool is named by Function.ToolName, units.list as
+// units-list.
+//
 // The catalog is derived from the document alone. Modules are the operation
 // tags, functions are the operations, terms are the named component schemas.
 // Nothing in this package knows about a particular application; projects add
@@ -82,6 +90,16 @@ type Config struct {
 	Concepts map[string]Concept
 	// Script enables and bounds run_script.
 	Script ScriptConfig
+	// Tools names catalog functions, operations or composites, that the server
+	// also exposes as first-class MCP tools next to the fixed set, for clients
+	// that should call them without search_functions and describe_function
+	// first. Each name is a full catalog name, "module.function", and becomes a
+	// tool named by Function.ToolName, units.list as units-list. New refuses a
+	// name the catalog does not have, one whose tool name does not match
+	// ^[a-zA-Z0-9_-]{1,64}$, one with an argument name that does not match
+	// ^[a-zA-Z0-9_.-]{1,64}$ (the Claude API's rule for property names), one
+	// whose input schema has more than 1000 nodes, or a name given twice.
+	Tools []string
 	// MaxOutputBytes caps the text of one tool result. Longer results are cut
 	// with a hint to narrow the request. Defaults to 24000 (about 6k tokens).
 	MaxOutputBytes int
@@ -236,7 +254,9 @@ type Composite struct {
 	// ReadOnly marks the composite as safe for read-only scripts.
 	ReadOnly bool
 	// Input and Output are zero values of the argument and result types.
-	// Their JSON Schemas are derived by reflection.
+	// Their JSON Schemas are derived by reflection, which follows the Go
+	// types: a field whose JSON form differs from its Go type, such as
+	// json:",string" or json.RawMessage, is advertised as the Go type.
 	Input  any
 	Output any
 	// Run executes the composite with the decoded arguments.
@@ -322,6 +342,9 @@ type Function struct {
 	Destructive bool
 
 	composite *Composite
+	// doc is the document of an operation, nil for composites. InputSchema
+	// resolves the refs nested in argument schemas through it.
+	doc *reference.Document
 	// bodyWhole is true when the request body is the single "body" argument
 	// rather than one argument per property.
 	bodyWhole bool
@@ -337,7 +360,10 @@ type Arg struct {
 	Required bool
 	// Description is the parameter or property description.
 	Description string
-	// Schema is the resolved schema of the argument.
+	// Schema is the schema of the argument with its ref resolved, except a
+	// nullable reference to a shared component, kept as {allOf: [{$ref}],
+	// nullable: true} so the component stays named. Function.InputSchema
+	// gives the resolved JSON Schema of every argument.
 	Schema *reference.Schema
 
 	// param is the document parameter of a path, query or header argument,

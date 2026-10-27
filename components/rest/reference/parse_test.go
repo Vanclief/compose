@@ -76,6 +76,7 @@ func TestSchemaTypeArrayWithNull(t *testing.T) {
 	for format, s := range parseSchemaBothWays(t, "3.1.0", `{"type": ["string", "null"]}`) {
 		require.Equal(t, TypeList{"string"}, s.Type, format)
 		require.True(t, s.Nullable, format)
+		require.False(t, s.NullMember, format)
 		require.Equal(t, "string", s.Type.Primary(), format)
 	}
 }
@@ -476,6 +477,7 @@ func TestParseCompose31Golden(t *testing.T) {
 	config := create.Properties.Map["config"]
 	require.Empty(t, config.AnyOf)
 	require.True(t, config.Nullable)
+	require.True(t, config.NullMember)
 	require.Equal(t, "#/components/schemas/fixture.Config", config.Ref)
 	_, configName := doc.Schema(config)
 	require.Equal(t, "fixture.Config", configName)
@@ -521,6 +523,8 @@ components:
           anyOf: [{$ref: '#/components/schemas/Pet'}, {type: "null", description: not bare}]
         onlyNull:
           oneOf: [{type: "null"}]
+        nested:
+          anyOf: [{type: string}, {anyOf: [{type: "null"}]}]
 `)
 	props := doc.Components.Schemas.Map["Holder"].Properties.Map
 
@@ -559,6 +563,13 @@ components:
 	onlyNull := props["onlyNull"]
 	require.True(t, onlyNull.Nullable)
 	require.Empty(t, onlyNull.OneOf)
+
+	// A member that is itself an anyOf of null is still only null.
+	nested := props["nested"]
+	require.True(t, nested.Nullable)
+	require.Empty(t, nested.AnyOf)
+	require.Len(t, nested.AllOf, 1)
+	require.Equal(t, "string", doc.Flatten(nested).Type.Primary())
 }
 
 // aliasBombSpec is a billion-laughs document made of schemas: A0 has nine

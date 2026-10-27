@@ -654,6 +654,9 @@ authServer, err := oauth.New(oauth.Config{
 		// Returns oauth.Grant{Subject: account.ID}.
 		Verify: app.VerifyLoginCode,
 	},
+	// Claude, ChatGPT and native clients on a loopback port, such as
+	// Claude Code.
+	AllowedRedirectHosts: []string{"claude.ai", "claude.com", "chatgpt.com", "localhost", "127.0.0.1"},
 	// Accepts the application's API keys at the MCP endpoint too. The
 	// codes ResolveAPIKey uses for "not my token" are rejections; any
 	// other error is a failed check and answers 500.
@@ -693,6 +696,30 @@ go func() {
 
 `oauth.CreateTable` creates the table if it does not exist; call it at startup. `oauth.Sweep`
 deletes the rows past their expiry in one statement and returns the count.
+
+`AllowedRedirectHosts` restricts dynamically registered clients and Client ID Metadata Documents
+to redirect URIs on those hosts, compared without port; `Clients` are not restricted. ChatGPT
+sends the RFC 8707 `resource` parameter, which the server accepts when it names `Resource`.
+Redirect URIs match exactly, except `http` URIs on a loopback host (`localhost`, `127.0.0.1`,
+`::1`), which match ignoring the port (RFC 8252 §7.3): Claude Code registers
+`http://localhost/callback` and returns to `http://localhost:<port>/callback`. A `redirect_uri`
+sent to the token endpoint must be the URI used at authorize, port included.
+
+### Your own consent page
+
+Set `LoginURL` instead of `Login` to sign users in on the application's page:
+
+1. Authorize sends the browser to `LoginURL` with the pending request id in the `request` query
+   parameter.
+2. `Pending(ctx, id)` returns the `ClientName`, `RedirectHost` and requested `Scope`. Show the
+   client name and redirect host, sign the user in and wait for an explicit click.
+3. On approval call `Approve(ctx, id, grant)`, which issues the authorization code. On refusal
+   call `Deny(ctx, id)`, which issues nothing and returns the redirect URI with
+   `error=access_denied` and the client's state.
+4. Redirect the browser to the URL either returns.
+
+`Approve` and `Deny` take the request from the Store, so each request is answered once. An
+unknown, expired or already answered request is `ez.ENOTFOUND`.
 
 ### Grant
 
@@ -840,6 +867,11 @@ server, err := mcp.New(mcp.Config{
 With `run_script` enabled, the `WhoAmI` call keeps anonymous callers out, because neither
 `BearerPassthrough` nor `BearerToHeaders` checks the token. Name a function that fails without
 valid credentials.
+
+`mcp.Server.Call` takes the REST headers directly and never goes through `Auth`: a host that embeds its
+own agent passes the headers of the account the agent acts for, for example `Authorization: Bearer
+<token>`, and the REST API authenticates the call as it would any request. The headers are set after
+the arguments, so an argument never overrides them.
 
 ## Generator
 

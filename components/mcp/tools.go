@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -60,7 +62,16 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-// registerTools adds the fixed tool set to the MCP server.
+// toolNamePattern is the tool name rule of claude.ai, which rejects the whole
+// tool list when one name breaks it, and of the LLM APIs.
+var toolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// propertyNamePattern is the rule the Claude API applies to the top-level
+// property names of a tool's input schema; one bad name fails the request.
+var propertyNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// registerTools adds the fixed tool set to the MCP server, then the promoted
+// functions of Config.Tools.
 func (s *Server) registerTools() error {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}
 
@@ -103,23 +114,26 @@ func (s *Server) registerTools() error {
 		return ez.Wrap(err)
 	}
 
-	if !s.cfg.Script.Enabled {
-		return nil
+	if s.cfg.Script.Enabled {
+		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites}
+		err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script), Annotations: scriptAnnotations}, s.runScript)
+		if err != nil {
+			return ez.Wrap(err)
+		}
 	}
-	scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites}
-	err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script), Annotations: scriptAnnotations}, s.runScript)
-	if err != nil {
-		return ez.Wrap(err)
+
+	for _, name := range s.cfg.Tools {
+		err = s.addFunctionTool(name)
+		if err != nil {
+			return ez.Wrap(err)
+		}
 	}
 	return nil
 }
 
 // addTool registers a text tool. The input schema is inferred from In; the
 // properties named in nonEmpty become arrays that need at least one item.
-// The handler gets a caller with the REST headers of the request bearer
-// token and returns the text and whether it reports a failure. A panic in
-// the handler becomes an internal error result instead of killing the
-// process.
+// The handler runs through runTool.
 func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mcp.CallToolRequest, *caller, In) (string, bool), nonEmpty ...string) error {
 	schema, err := jsonschema.For[In](nil)
 	if err != nil {
@@ -136,33 +150,121 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 	}
 	tool.InputSchema = schema
 
-	mcp.AddTool(s.srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (result *mcp.CallToolResult, output any, err error) {
-		defer func() {
-			value := recover()
-			if value != nil {
-				panicked := ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v", tool.Name, value), nil)
-				if s.cfg.OnError != nil {
-					s.cfg.OnError(ctx, ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v\n%s", tool.Name, value, debug.Stack()), nil))
-				}
-				result = s.result(errorText(panicked), true)
-				output = nil
-				err = nil
-			}
-		}()
-		header, err := s.cfg.Auth(ctx, bearerToken(req))
-		if err != nil {
-			return s.result(errorText(err), true), nil, nil
-		}
-		call := &caller{s: s, header: header}
-		extra := req.GetExtra()
-		if extra != nil {
-			call.forward = extra.Header
-		}
-		text, failed := handle(ctx, req, call, in)
-		return s.result(text, failed), nil, nil
+	mcp.AddTool(s.srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+		result := s.runTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
+			return handle(ctx, req, call, in)
+		})
+		return result, nil, nil
 	})
 	s.tools = append(s.tools, tool)
 	return nil
+}
+
+// addFunctionTool registers the catalog function name as a tool named
+// Function.ToolName that calls it as call_function would. Its schema is the
+// function's InputSchema, and the arguments reach the function unvalidated
+// by the SDK, so a bad call gets the same error and description as
+// call_function. A schema that cannot be encoded fails here rather than in
+// tools/list. DestructiveHint is true for a Destructive function and unset
+// otherwise: MCP reads false as "only additive updates", which PUT, PATCH
+// and write composites are not.
+func (s *Server) addFunctionTool(name string) error {
+	f, _ := s.catalog.Function(name)
+	schema, err := f.InputSchema()
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	_, err = json.Marshal(schema)
+	if err != nil {
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.Tools names %q, whose input schema cannot be encoded: %v", name, err), err)
+	}
+	for _, key := range schema.PropertyOrder {
+		if !propertyNamePattern.MatchString(key) {
+			return ez.New(ez.EINVALID, fmt.Sprintf("mcp: Config.Tools names %q, whose argument %q breaks the Claude API's rule of 1 to 64 characters from [a-zA-Z0-9_.-]", name, key), nil)
+		}
+	}
+	var destructive *bool
+	if f.Destructive {
+		destructive = boolPtr(true)
+	}
+	tool := &mcp.Tool{
+		Name:        f.ToolName(),
+		Description: s.catalog.toolDescription(f),
+		InputSchema: schema,
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:    f.ReadOnly,
+			DestructiveHint: destructive,
+			IdempotentHint:  f.ReadOnly,
+			OpenWorldHint:   boolPtr(false),
+		},
+	}
+
+	s.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		result := s.runTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
+			var args map[string]any
+			if len(req.Params.Arguments) > 0 {
+				err := json.Unmarshal(req.Params.Arguments, &args)
+				if err != nil {
+					return s.callErrorText(name, ez.New(ez.EINVALID, "mcp: arguments of "+name+" must be a JSON object", err)), true
+				}
+			}
+			return s.callFunction(ctx, req, call, callInput{Name: name, Args: args})
+		})
+		return result, nil
+	})
+	s.tools = append(s.tools, tool)
+	return nil
+}
+
+// toolDescription is the description of a promoted tool: "Deprecated." when
+// the function is, its summary, its description without a repeat of the
+// summary, and what it returns, the words describe_function shows.
+func (c *Catalog) toolDescription(f *Function) string {
+	var lines []string
+	if f.Deprecated {
+		lines = append(lines, "Deprecated.")
+	}
+	summary := summaryLine(f)
+	if summary != "" {
+		lines = append(lines, summary)
+	}
+	description := trimSummary(strings.TrimSpace(f.Description), summary)
+	if description != "" {
+		lines = append(lines, description)
+	}
+	returns := c.returnLabel(f)
+	if returns != "" {
+		lines = append(lines, "Returns "+returns)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// runTool runs one tool call with a caller holding the REST headers of the
+// request bearer token, and returns the text handle reports, cut to the
+// output limit. A panic in handle becomes an internal error result instead
+// of killing the process.
+func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, name string, handle func(*caller) (string, bool)) (result *mcp.CallToolResult) {
+	defer func() {
+		value := recover()
+		if value != nil {
+			panicked := ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v", name, value), nil)
+			if s.cfg.OnError != nil {
+				s.cfg.OnError(ctx, ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v\n%s", name, value, debug.Stack()), nil))
+			}
+			result = s.result(errorText(panicked), true)
+		}
+	}()
+	header, err := s.cfg.Auth(ctx, bearerToken(req))
+	if err != nil {
+		return s.result(errorText(err), true)
+	}
+	call := &caller{s: s, header: header}
+	extra := req.GetExtra()
+	if extra != nil {
+		call.forward = extra.Header
+	}
+	text, failed := handle(call)
+	return s.result(text, failed)
 }
 
 // result is the text tool result, cut to the output limit.
@@ -224,11 +326,18 @@ func (s *Server) callFunction(ctx context.Context, req *mcp.CallToolRequest, cal
 	if err == nil {
 		return string(raw), false
 	}
+	return s.callErrorText(name, err), true
+}
+
+// callErrorText is the error line of a failed call. An invalid-argument
+// error is followed by the function description so the agent can fix the
+// call.
+func (s *Server) callErrorText(name string, err error) string {
 	text := errorText(err)
 	if ez.ErrorCode(err) == ez.EINVALID {
 		text += "\n\n" + s.catalog.renderDescribe([]string{name})
 	}
-	return text, true
+	return text
 }
 
 // runScript runs the agent's program. The result, or on error the error

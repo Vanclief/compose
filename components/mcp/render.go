@@ -134,6 +134,17 @@ func functionMatches(f *Function, words []string) bool {
 	return true
 }
 
+// summaryLine is the summary describe_function and a promoted tool show:
+// the trimmed summary, or "" when it is only the method and path the
+// catalog fell back to.
+func summaryLine(f *Function) string {
+	summary := strings.TrimSpace(f.Summary)
+	if summary == f.Method+" "+f.Path {
+		return ""
+	}
+	return summary
+}
+
 // trimSummary drops a leading repeat of the summary from the description,
 // but only at a word boundary: "Get units by id" does not start with the
 // summary "Get unit".
@@ -197,10 +208,8 @@ func (c *Catalog) describeFunction(name string) string {
 	}
 	lines := []string{header}
 
-	// The summary is skipped when it is only the method and path of the
-	// header, and the description does not repeat a leading summary.
-	summary := strings.TrimSpace(f.Summary)
-	if summary != "" && summary != f.Method+" "+f.Path {
+	summary := summaryLine(f)
+	if summary != "" {
 		lines = append(lines, "  "+summary)
 	}
 	description := trimSummary(strings.TrimSpace(f.Description), summary)
@@ -255,7 +264,7 @@ func (c *Catalog) argLines(args []*Arg) []string {
 	nameWidth := 0
 	typeWidth := 0
 	for i, a := range args {
-		heads[i], enums[i] = c.typeParts(a.Schema)
+		heads[i], enums[i] = c.argParts(a)
 		nameWidth = max(nameWidth, len(a.Name))
 		typeWidth = max(typeWidth, len(heads[i]))
 	}
@@ -443,6 +452,26 @@ func (c *Catalog) collectTerms(s *reference.Schema, seen map[string]bool) {
 	for _, member := range s.AnyOf {
 		c.collectTerms(member, seen)
 	}
+}
+
+// argType is typeName for an argument.
+func (c *Catalog) argType(a *Arg) string {
+	head, enum := c.argParts(a)
+	if enum == "" {
+		return head
+	}
+	return head + " " + enum
+}
+
+// argParts is typeParts for an argument. A path argument is never nullable,
+// since dispatch refuses null for it, so its type has no "?" whatever the
+// schema says.
+func (c *Catalog) argParts(a *Arg) (string, string) {
+	head, enum := c.typeParts(a.Schema)
+	if a.In == "path" {
+		head = strings.TrimSuffix(head, "?")
+	}
+	return head, enum
 }
 
 // typeName is the compact type notation the agent reads: a term name,

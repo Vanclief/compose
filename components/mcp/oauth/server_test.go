@@ -942,6 +942,119 @@ func TestLoginURLMode(t *testing.T) {
 	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
 }
 
+func TestDeny(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.Login = Login{}
+		c.LoginURL = "https://app.acme.com/connect"
+	}, nil)
+	ctx := context.Background()
+	_, challenge := pkce("d")
+
+	res := env.authorize(t, authorizeParams("public", challenge))
+	require.Equal(t, http.StatusFound, res.status, res.body)
+	id := res.location(t).Query().Get("request")
+	require.NotEmpty(t, id)
+
+	redirect, err := env.s.Deny(ctx, id)
+	require.NoError(t, err)
+	loc, err := url.Parse(redirect)
+	require.NoError(t, err)
+	assert.Equal(t, testRedirect, loc.Scheme+"://"+loc.Host+loc.Path)
+	assert.Equal(t, "access_denied", loc.Query().Get("error"))
+	assert.Equal(t, "The user denied the request.", loc.Query().Get("error_description"))
+	assert.Equal(t, "st-1", loc.Query().Get("state"))
+	assert.False(t, loc.Query().Has("code"))
+
+	// The request is spent.
+	_, err = env.s.Deny(ctx, id)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	_, err = env.s.Approve(ctx, id, testGrant)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	_, err = env.s.Pending(ctx, id)
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+
+	_, err = env.s.Deny(ctx, "unknown")
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+	_, err = env.s.Deny(ctx, "")
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+}
+
+// TestLoopbackRedirect: a loopback http redirect URI matches with any port
+// (RFC 8252 7.3), and a redirect_uri sent to the token endpoint must be the
+// exact URI used at authorize.
+func TestLoopbackRedirect(t *testing.T) {
+	env := newEnv(t, func(c *Config) {
+		c.AllowedRedirectHosts = []string{"claude.ai", "claude.com", "chatgpt.com", "localhost", "127.0.0.1"}
+		c.Clients = append(c.Clients,
+			Client{ID: "native", Name: "Native", RedirectURIs: []string{"http://localhost/callback"}},
+			Client{ID: "native-ip", Name: "Native IP", RedirectURIs: []string{"http://127.0.0.1/callback"}},
+			Client{ID: "claude", Name: "Claude", RedirectURIs: []string{"https://claude.ai/api/mcp/auth_callback"}},
+		)
+	}, nil)
+	verifier, challenge := pkce("p")
+	const ported = "http://localhost:3118/callback"
+
+	authorize := func(clientID, redirectURI string) response {
+		t.Helper()
+		params := authorizeParams(clientID, challenge)
+		params.Set("redirect_uri", redirectURI)
+		return env.authorize(t, params)
+	}
+	refused := func(res response) {
+		t.Helper()
+		assert.Equal(t, http.StatusBadRequest, res.status)
+		assert.Contains(t, res.body, "redirect URI is not registered")
+		assert.Empty(t, res.header.Get("Location"))
+	}
+	refused(authorize("native", "http://localhost:3118/other"))
+	refused(authorize("native-ip", ported))
+	refused(authorize("claude", "https://claude.ai:8443/api/mcp/auth_callback"))
+
+	// A registered client gets the same rule.
+	registered := env.postJSON(t, "/oauth/register", `{"redirect_uris": ["http://localhost/callback"]}`)
+	require.Equal(t, http.StatusCreated, registered.status, registered.body)
+	res := authorize(registered.json(t)["client_id"].(string), ported)
+	assert.Equal(t, http.StatusFound, res.status, res.body)
+	assert.Equal(t, "/oauth/login", res.location(t).Path)
+
+	// The code goes to the ported URI and is bound to it.
+	code := func() string {
+		t.Helper()
+		res := authorize("native", ported)
+		require.Equal(t, http.StatusFound, res.status, res.body)
+		id := res.location(t).Query().Get("request")
+		res = env.login(t, id, "ana@acme.com", "pw")
+		require.Equal(t, http.StatusSeeOther, res.status, res.body)
+		loc := res.location(t)
+		require.Equal(t, ported, loc.Scheme+"://"+loc.Host+loc.Path)
+		assert.Equal(t, "st-1", loc.Query().Get("state"))
+		return loc.Query().Get("code")
+	}
+	exchange := func(code, redirectURI string) response {
+		t.Helper()
+		form := url.Values{
+			"grant_type":    {"authorization_code"},
+			"client_id":     {"native"},
+			"code":          {code},
+			"code_verifier": {verifier},
+		}
+		if redirectURI != "" {
+			form.Set("redirect_uri", redirectURI)
+		}
+		return env.postForm(t, "/oauth/token", form)
+	}
+	res = exchange(code(), "http://localhost/callback")
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	res = exchange(code(), "http://localhost:4000/callback")
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, res))
+	res = exchange(code(), ported)
+	assert.Equal(t, http.StatusOK, res.status, res.body)
+	// Without redirect_uri the PKCE verifier alone binds the code, as for
+	// any client.
+	res = exchange(code(), "")
+	assert.Equal(t, http.StatusOK, res.status, res.body)
+}
+
 // TestApproveScope: Grant.Scope is what the application set, empty included.
 // The token response carries the granted scope, or the requested one when the
 // application granted none, and keeps it through a refresh.

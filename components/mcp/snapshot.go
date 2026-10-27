@@ -106,7 +106,7 @@ func (s *Server) Snapshot() ([]byte, error) {
 				Deprecated:  f.Deprecated,
 			}
 			for _, a := range f.Args {
-				function.Args = append(function.Args, snapshotArg{Name: a.Name, In: a.In, Required: a.Required, Type: c.typeName(a.Schema)})
+				function.Args = append(function.Args, snapshotArg{Name: a.Name, In: a.In, Required: a.Required, Type: c.argType(a)})
 			}
 			module.Functions = append(module.Functions, function)
 		}

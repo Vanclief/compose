@@ -142,6 +142,42 @@ func TestAllowedRedirectHosts(t *testing.T) {
 	env.codeFor(t, "public", challenge)
 }
 
+func TestRedirectRegistered(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		registered string
+		presented  string
+		want       bool
+	}{
+		{name: "exact https", registered: "https://claude.ai/api/mcp/auth_callback", presented: "https://claude.ai/api/mcp/auth_callback", want: true},
+		{name: "exact loopback with port", registered: "http://127.0.0.1:3000/cb", presented: "http://127.0.0.1:3000/cb", want: true},
+		{name: "localhost port added", registered: "http://localhost/callback", presented: "http://localhost:3118/callback", want: true},
+		{name: "localhost port changed", registered: "http://localhost:3000/callback", presented: "http://localhost:3118/callback", want: true},
+		{name: "localhost port dropped", registered: "http://localhost:3000/callback", presented: "http://localhost/callback", want: true},
+		{name: "ipv4 loopback port added", registered: "http://127.0.0.1/callback", presented: "http://127.0.0.1:3118/callback", want: true},
+		{name: "ipv6 loopback port added", registered: "http://[::1]/callback", presented: "http://[::1]:3118/callback", want: true},
+		{name: "loopback same query", registered: "http://localhost/callback?app=1", presented: "http://localhost:3118/callback?app=1", want: true},
+		{name: "loopback other path", registered: "http://localhost/callback", presented: "http://localhost:3118/other", want: false},
+		{name: "loopback other query", registered: "http://localhost/callback?app=1", presented: "http://localhost:3118/callback?app=2", want: false},
+		{name: "loopback other host", registered: "http://127.0.0.1/callback", presented: "http://localhost:3118/callback", want: false},
+		{name: "loopback https", registered: "https://localhost/callback", presented: "https://localhost:3118/callback", want: false},
+		{name: "loopback scheme changed", registered: "http://localhost/callback", presented: "https://localhost:3118/callback", want: false},
+		{name: "loopback user info", registered: "http://localhost/callback", presented: "http://evil@localhost:3118/callback", want: false},
+		{name: "loopback fragment", registered: "http://localhost/callback", presented: "http://localhost:3118/callback#x", want: false},
+		{name: "loopback encoded path", registered: "http://localhost/callback", presented: "http://localhost:3118/%63allback", want: false},
+		{name: "loopback same encoded slash", registered: "http://localhost/a%2Fb", presented: "http://localhost:3118/a%2Fb", want: true},
+		{name: "loopback encoded slash", registered: "http://localhost/a/b", presented: "http://localhost:3118/a%2Fb", want: false},
+		{name: "https port variant", registered: "https://claude.ai/api/mcp/auth_callback", presented: "https://claude.ai:8443/api/mcp/auth_callback", want: false},
+		{name: "unparsable", registered: "http://localhost/callback", presented: "http://localhost:port/callback", want: false},
+		{name: "empty", registered: "http://localhost/callback", presented: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := Client{ID: "c", RedirectURIs: []string{tc.registered}}
+			assert.Equal(t, tc.want, redirectRegistered(client, tc.presented))
+		})
+	}
+}
+
 // TestRegisteredClientLifetime: a registration lives a year from its last
 // authorize; cached documents keep their 1h lifetime.
 func TestRegisteredClientLifetime(t *testing.T) {
