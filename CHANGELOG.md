@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.20.2
+
+### Highlights
+
+- **Dependencies**: go-jose v4.1.6 for GHSA-mgcc-cww5-fp2q, where a crafted RSA key in a JWK could consume excess CPU while parsing. The OIDC key set parses provider JWKs with go-jose, so this was reachable only through a provider serving a malicious key set.
+
 ## v1.20.1
 
 ### Highlights
