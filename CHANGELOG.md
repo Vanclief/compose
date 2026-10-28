@@ -2,7 +2,7 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
-## v1.21.0
+## v1.20.1
 
 ### Highlights
 
