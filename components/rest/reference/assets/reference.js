@@ -3671,10 +3671,15 @@
 
   // ------------------------------------------------------------- scopes
 
-  // Scopes are the operation tags, in page order, and all models.
+  // Scopes are all models, in diff mode the models that changed, and the
+  // operation tags, in page order. Counts leave out removed models, which
+  // only show while the Diff mode toggle is on.
   const scopes = new Map();
   scopes.set('all', { label: 'All models', names: data.nodes.map((n) => n.name) });
-  const removedCount = data.nodes.filter((n) => n.diff === 'd').length;
+  const changed = data.nodes.filter((n) => n.diff).map((n) => n.name);
+  if (changed.length) {
+    scopes.set('changed', { label: 'Changed models', names: changed });
+  }
   for (const t of data.tags || []) {
     const names = (t.nodes || []).filter((n) => nodes.has(n));
     if (names.length && !scopes.has(t.name)) {
@@ -3682,7 +3687,8 @@
     }
   }
   for (const [id, s] of scopes) {
-    const o = el('option', '', s.label + ' (' + (id === 'all' ? s.names.length - removedCount : s.names.length) + ')');
+    const count = s.names.filter((name) => nodes.get(name).diff !== 'd').length;
+    const o = el('option', '', s.label + ' (' + count + ')');
     o.value = id;
     scopeSelect.append(o);
   }

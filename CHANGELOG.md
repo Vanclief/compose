@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.21.0
+
+### Highlights
+
+- **Changed models on the schema map**: in diff mode the map's Scope menu has a "Changed models" entry, after "All models", that draws only the models added, changed or removed since the base spec, with the models they point at as compact cards. `#map/changed` opens it directly. Scope counts now leave out removed models, which show only while the Diff mode toggle is on.
+
 ## v1.20.2
 
 ### Highlights
