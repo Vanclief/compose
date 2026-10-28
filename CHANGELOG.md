@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.21.0
+
+### Highlights
+
+- **`compose` CLI**: `go install github.com/vanclief/compose/cmd/compose@latest` installs a `compose` binary whose `reference` subcommand renders the API reference page of an OpenAPI spec (YAML or JSON) given with `-head`. `-base` names an older spec and turns on diff mode, with the "What changed" section and change badges; `-title` and `-server` set the page title and the base URL of curl samples and the try-it client. `-out page.html` writes a self-contained page with its CSS and JavaScript inlined, stdout gets it when neither `-out` nor `-serve` is given, and `-serve 127.0.0.1:8090` serves it from a local server that re-reads and re-renders both specs on every request, answering a read or render failure with 500 and the error as text. Exit codes are 0 on success, 1 on a runtime error and 2 on a usage error.
+
 ## v1.20.0
 
 ### Highlights
