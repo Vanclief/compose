@@ -391,3 +391,29 @@ func TestGraphDeclaredTables(t *testing.T) {
 	require.Len(t, g.Nodes, 1)
 	require.Empty(t, g.Nodes[0].Table)
 }
+
+func TestGraphDropsInverseHasMany(t *testing.T) {
+	g := parseGraph(t, `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1"},
+  "components": {"schemas": {
+    "Route": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "checkpoints": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}},
+      "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}}
+    }},
+    "Checkpoint": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "route_id": {"type": "string"},
+      "route": {"$ref": "#/components/schemas/Route"}
+    }},
+    "Tag": {"type": "object", "properties": {"id": {"type": "string"}}}
+  }}
+}`)
+
+	require.NotNil(t, graphEdge(g, "Checkpoint", "Route", "route_id"))
+	require.Nil(t, graphEdge(g, "Route", "Checkpoint", "checkpoints"), "the other side of Checkpoint.route_id")
+	require.Equal(t, "Checkpoint", graphField(graphNode(g, "Route"), "checkpoints").Ref, "the field still links its model")
+	require.NotNil(t, graphEdge(g, "Route", "Tag", "tags"), "no key back, so the has-many stays")
+	require.Len(t, g.Edges, 2)
+}

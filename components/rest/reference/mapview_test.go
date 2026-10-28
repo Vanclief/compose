@@ -148,6 +148,7 @@ func TestSchemaMapDiff(t *testing.T) {
       "relic": {"$ref": "#/components/schemas/Legacy"}
     }},
     "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+    "Vet": {"type": "object", "properties": {"id": {"type": "string"}, "owner": {"$ref": "#/components/schemas/Owner"}}},
     "Legacy": {"type": "object", "properties": {"id": {"type": "string"}, "code": {"type": "string"}}}
   }}
 }`
@@ -162,6 +163,7 @@ func TestSchemaMapDiff(t *testing.T) {
       "tag": {"$ref": "#/components/schemas/Tag"}
     }},
     "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "email": {"type": "string"}}},
+    "Vet": {"type": "object", "properties": {"id": {"type": "string"}, "owner": {"$ref": "#/components/schemas/Owner"}}},
     "Tag": {"type": "object", "properties": {"id": {"type": "string"}}}
   }}
 }`
@@ -193,10 +195,14 @@ func TestSchemaMapDiff(t *testing.T) {
 		nodes[n.Name] = n
 		order = append(order, n.Name)
 	}
-	require.Equal(t, []string{"Pet", "Owner", "Tag", "Legacy"}, order, "removed entities follow the head ones")
+	require.Equal(t, []string{"Pet", "Owner", "Vet", "Tag", "Legacy"}, order, "removed entities follow the head ones")
 	require.Equal(t, diffChanged, nodes["Pet"].Diff)
 	require.Equal(t, diffChanged, nodes["Owner"].Diff)
 	require.Equal(t, diffAdded, nodes["Tag"].Diff)
+	baseDoc, err := Parse([]byte(base))
+	require.NoError(t, err)
+	require.NotNil(t, Diff(baseDoc, doc).Model("Vet"), "the report counts Vet as changed through Owner")
+	require.Empty(t, nodes["Vet"].Diff, "on the map only Owner shows its change")
 	require.Equal(t, diffRemoved, nodes["Legacy"].Diff)
 	require.Equal(t, "model/Legacy", nodes["Legacy"].Anchor, "a removed entity opens its removed model card")
 
@@ -217,6 +223,7 @@ func TestSchemaMapDiff(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{
 		"Pet>Owner":  "",
+		"Vet>Owner":  "",
 		"Pet>Tag":    diffAdded,
 		"Pet>Legacy": diffRemoved,
 	}, edges)

@@ -95,7 +95,8 @@ var wrapperSuffixes = []string{"Request", "Response", "Params", "Query", "Body"}
 // entity (has-one) or an array of them (has-many), from a foo_id property
 // next to such a foo property (the foreign key of that relation), and last
 // from a foo_id property alone, matched by name to an entity called Foo
-// (marked Inferred).
+// (marked Inferred). A has-many property is left out when its target holds
+// a foreign key back, as the other side of that key's relation.
 func (d *Document) Graph() *Graph {
 	return d.graph(shortNames(d.Components.Schemas.Keys))
 }
@@ -138,8 +139,30 @@ func (d *Document) graph(short map[string]string) *Graph {
 		}
 	}
 
+	g.Edges = dropInverses(g.Edges)
 	markHubs(g)
 	return g
+}
+
+// dropInverses removes a has-many edge from A to B when B holds a foreign
+// key to A: Route.checkpoints is the other side of Checkpoint.route_id, one
+// relation that the map draws once, from the key. The has-many field keeps
+// its Ref.
+func dropInverses(edges []*Edge) []*Edge {
+	keyed := map[string]bool{}
+	for _, e := range edges {
+		if e.Kind == EdgeFK {
+			keyed[e.From+"\x00"+e.To] = true
+		}
+	}
+	var out []*Edge
+	for _, e := range edges {
+		if e.Kind == EdgeHasMany && keyed[e.To+"\x00"+e.From] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // edgeKey identifies a relation: two edges with the same key are the same

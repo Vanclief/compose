@@ -81,7 +81,8 @@ func (b *builder) buildMap() *mapView {
 }
 
 // diffGraph marks what changed since the base document: the entities the
-// report counts as added, changed or removed, the fields added, changed or
+// report counts as added, changed or removed, changed only when they have a
+// change of their own (see ownChanges), the fields added, changed or
 // removed on a changed entity, and the relations added or removed. The
 // removed entities, fields and relations come from the base graph, so the
 // map can still draw them.
@@ -95,7 +96,7 @@ func (b *builder) diffGraph(g *Graph) {
 	state := map[string]string{}
 	for _, n := range g.Nodes {
 		md := b.diff.report.Model(n.Name)
-		if md == nil {
+		if md == nil || !ownChanges(md) {
 			continue
 		}
 		n.Diff = diffKind(md.Kind)
@@ -144,6 +145,18 @@ func (b *builder) diffGraph(g *Graph) {
 			g.Edges = append(g.Edges, e)
 		}
 	}
+}
+
+// ownChanges reports whether md has a change of its own. The report also
+// counts a model as changed when a model it references changed, but on the
+// map that change shows on the referenced card only.
+func ownChanges(md *ModelDiff) bool {
+	for _, c := range md.Changes {
+		if !c.inherited() {
+			return true
+		}
+	}
+	return false
 }
 
 func diffKind(k ChangeKind) string {

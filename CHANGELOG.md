@@ -7,6 +7,8 @@ Each section names the release its changes ship in; dates are on [GitHub release
 ### Highlights
 
 - **Changed models on the schema map**: in diff mode the map's Scope menu has a "Changed models" entry, after "All models", that draws only the models added, changed or removed since the base spec, with the models they point at as compact cards. `#map/changed` opens it directly. Scope counts now leave out removed models, which show only while the Diff mode toggle is on.
+- **Map marks only models with their own changes**: the diff report counts a model as changed when a model it references changed, so adding a field to Route marked Checkpoint, Patrol and CheckIn as well. On the map only Route is marked now, and the "Changed models" scope holds only models with changes of their own. The "What changed" section and the model badges still list the referencing models.
+- **One map line per relation**: a has-many property such as `Route.checkpoints` is no longer a separate edge when its target holds a foreign key back (`Checkpoint.route_id`). The map drew each such relation twice, and the reverse edges made cycles that pushed cards out of order and curled lines backwards. The field still links its model. `Document.Graph` drops these edges too.
 
 ## v1.20.2
 
