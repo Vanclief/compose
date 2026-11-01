@@ -14,7 +14,10 @@
 // Function.InputSchema is the JSON Schema a promoted tool advertises, so a
 // host that embeds its own agent can build a tool list from the same
 // catalog. A promoted tool is named by Function.ToolName, units.list as
-// units-list.
+// units-list. Server.Tools lists the registered tools themselves, with the
+// descriptions, schemas and hints a client sees, and Server.CallTool runs
+// one in-process with the REST headers given and returns the text a client
+// would get, so such a host can offer its model exactly the MCP tools.
 //
 // The catalog is derived from the document alone. Modules are the operation
 // tags, functions are the operations, terms are the named component schemas.

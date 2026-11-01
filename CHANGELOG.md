@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.21.0
+
+### Highlights
+
+- **In-process tools**: `mcp.Server.Tools()` returns the tools the server registers, in registration order (the fixed set, `run_script` when scripts are enabled, then the promoted functions), each as an `mcp.Tool` with its `Name`, `Description`, `InputSchema` as JSON and the `ReadOnly`, `Idempotent`, `Destructive` and `OpenWorld` hints of its annotations, an unset hint read as false. `mcp.Server.CallTool(ctx, header, name, args)` runs one of them without the MCP transport and returns the text and failed flag a client gets for the same call: tool errors such as invalid arguments, an unknown function or a REST error come back as text with `failed` set, the text is cut to `MaxOutputBytes`, and a panic becomes the same internal error text and reaches `OnError`. The arguments of a fixed tool are validated against its schema as the MCP SDK validates them for the transport, so a violation gets the SDK's `validating "arguments": ...` text; promoted tools are not validated by the schema there either. The headers are the REST credentials used as given: `Auth` does not run and no bearer token is involved, so `whoami` without `WhoAmI` reports `bearer token: none`, and no request headers are forwarded. The error is `ez.ENOTFOUND` for a name that is not a registered tool and `ez.EINVALID` for arguments that cannot be encoded as JSON or decoded into the tool's input. A host that embeds its own agent offers its model the same tools, descriptions and output a claude.ai connector sees, without copying any of them.
+
 ## v1.20.3
 
 ### Highlights

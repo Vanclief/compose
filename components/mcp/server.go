@@ -24,7 +24,7 @@ type Server struct {
 	cfg          Config
 	catalog      *Catalog
 	srv          *mcp.Server
-	tools        []*mcp.Tool
+	tools        []registeredTool
 	maxOutput    int
 	instructions string
 	scripts      *scriptLimiter
@@ -135,7 +135,8 @@ func (s *Server) Catalog() *Catalog {
 // set after the arguments, so an argument never overrides them. There is no
 // MCP request to copy X-Forwarded-For or X-Request-Id from; set them in
 // header if the REST API should see them. Unlike a tool call, Call does not
-// recover a panic in a composite nor cut the result to MaxOutputBytes.
+// recover a panic in a composite nor cut the result to MaxOutputBytes; use
+// CallTool for that.
 func (s *Server) Call(ctx context.Context, header http.Header, name string, args map[string]any) (json.RawMessage, error) {
 	call := &caller{s: s, header: header}
 	raw, err := call.Call(ctx, name, args)
@@ -143,6 +144,96 @@ func (s *Server) Call(ctx context.Context, header http.Header, name string, args
 		return nil, ez.Wrap(err)
 	}
 	return raw, nil
+}
+
+// Tool describes one tool the server registers, as a client sees it in
+// tools/list.
+type Tool struct {
+	Name        string
+	Description string
+	// InputSchema is the JSON Schema of the tool's arguments.
+	InputSchema json.RawMessage
+	// The hints copy the tool's annotations. A hint the server leaves unset
+	// is false here, although MCP reads an unset destructiveHint and
+	// openWorldHint as true.
+	ReadOnly    bool
+	Idempotent  bool
+	Destructive bool
+	OpenWorld   bool
+}
+
+// Tools returns the tools the server registers, in registration order: the
+// fixed set, run_script when scripts are enabled, then the functions of
+// Config.Tools. A host that embeds its own agent offers these to its model
+// and runs the calls through CallTool, so it never copies a description or
+// schema by hand. Each call returns new copies.
+func (s *Server) Tools() []Tool {
+	tools := make([]Tool, 0, len(s.tools))
+	for _, registered := range s.tools {
+		tool := registered.tool
+		out := Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: inputSchemaJSON(tool),
+		}
+		hints := tool.Annotations
+		if hints != nil {
+			out.ReadOnly = hints.ReadOnlyHint
+			out.Idempotent = hints.IdempotentHint
+			out.Destructive = hints.DestructiveHint != nil && *hints.DestructiveHint
+			out.OpenWorld = hints.OpenWorldHint != nil && *hints.OpenWorldHint
+		}
+		tools = append(tools, out)
+	}
+	return tools
+}
+
+// CallTool runs one tool of Tools with the REST headers given, as the
+// transport runs it for an MCP request, and returns the same text and the
+// same failed flag a client gets: tool errors such as invalid arguments, an
+// unknown function or a REST error come back as text with failed set, the
+// text is cut to MaxOutputBytes, and a panic becomes an internal error that
+// also goes to Config.OnError. The arguments of a fixed tool are validated
+// against its input schema, as the MCP SDK validates them for the transport.
+//
+// The headers are the credentials the REST API authenticates with, used as
+// given: Config.Auth does not run, and there is no bearer token, so whoami
+// without Config.WhoAmI reports none and run_script keys its one-at-a-time
+// limit by the WhoAmI response. There is no MCP request to copy
+// X-Forwarded-For or X-Request-Id from; set them in header if the REST API
+// should see them.
+//
+// The error is ez.ENOTFOUND for a name that is not a registered tool, and
+// ez.EINVALID when args cannot be encoded as JSON or decoded into the
+// tool's input.
+func (s *Server) CallTool(ctx context.Context, header http.Header, name string, args map[string]any) (string, bool, error) {
+	i := slices.IndexFunc(s.tools, func(registered registeredTool) bool {
+		return registered.tool.Name == name
+	})
+	if i < 0 {
+		return "", false, ez.New(ez.ENOTFOUND, fmt.Sprintf("mcp: unknown tool %s; Server.Tools lists the tools", name), nil)
+	}
+	var raw json.RawMessage
+	if args != nil {
+		data, err := json.Marshal(args)
+		if err != nil {
+			return "", false, ez.New(ez.EINVALID, "mcp: arguments of "+name+" cannot be encoded as JSON: "+err.Error(), err)
+		}
+		raw = data
+	}
+	handle, invalid, err := s.tools[i].prepare(raw)
+	if err != nil {
+		return "", false, ez.Wrap(err)
+	}
+	if handle == nil {
+		// The SDK answers a schema violation before the handler runs, uncut.
+		return invalid, true, nil
+	}
+	call := &caller{s: s, header: header}
+	text, failed := s.runTool(ctx, name, func() (string, bool) {
+		return handle(ctx, nil, call)
+	})
+	return text, failed, nil
 }
 
 // Instructions returns the server instructions sent to clients on initialize.
@@ -212,7 +303,8 @@ func (s *Server) referenceInfo() referenceInfo {
 		Version:      s.cfg.Version,
 		Instructions: s.instructions,
 	}
-	for _, tool := range s.tools {
+	for _, registered := range s.tools {
+		tool := registered.tool
 		info.Tools = append(info.Tools, toolInfo{
 			Name:        tool.Name,
 			Description: tool.Description,
