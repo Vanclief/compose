@@ -871,7 +871,9 @@ valid credentials.
 `mcp.Server.Call` takes the REST headers directly and never goes through `Auth`: a host that embeds its
 own agent passes the headers of the account the agent acts for, for example `Authorization: Bearer
 <token>`, and the REST API authenticates the call as it would any request. The headers are set after
-the arguments, so an argument never overrides them.
+the arguments, so an argument never overrides them. `mcp.Server.CallTool` treats its headers the same
+way: it runs a registered tool such as `whoami` or `call_function` with them as given, without `Auth`
+and without a bearer token, so `whoami` without `WhoAmI` reports `bearer token: none`.
 
 ## Generator
 

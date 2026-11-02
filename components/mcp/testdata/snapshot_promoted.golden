@@ -8,6 +8,7 @@
       "description": "Return the account the current credentials belong to. Call it first to check the connection.",
       "annotations": {
         "idempotentHint": true,
+        "openWorldHint": false,
         "readOnlyHint": true
       },
       "input_schema": {
@@ -20,6 +21,7 @@
       "description": "Find functions. With no arguments, list the modules. With module, list every function in it. With query, list the functions whose name, summary, description, return type or argument names contain every word of it, optionally within one module. Each line shows module.function, its summary and what it returns. Next, describe_function.",
       "annotations": {
         "idempotentHint": true,
+        "openWorldHint": false,
         "readOnlyHint": true
       },
       "input_schema": {
@@ -42,6 +44,7 @@
       "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function before its first call_function.",
       "annotations": {
         "idempotentHint": true,
+        "openWorldHint": false,
         "readOnlyHint": true
       },
       "input_schema": {
@@ -67,6 +70,7 @@
       "description": "Explain domain terms: the fields of a data type and the functions that accept or return it, or a concept of the application. Accepts names and aliases, case-insensitively. Use it for any unfamiliar word in a summary, field or module name.",
       "annotations": {
         "idempotentHint": true,
+        "openWorldHint": false,
         "readOnlyHint": true
       },
       "input_schema": {
@@ -120,6 +124,7 @@
       "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: 5s timeout, 200 function calls, read-only functions only, 1024 KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.",
       "annotations": {
         "idempotentHint": false,
+        "openWorldHint": false,
         "readOnlyHint": true
       },
       "input_schema": {

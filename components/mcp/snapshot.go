@@ -80,7 +80,8 @@ func (s *Server) Snapshot() ([]byte, error) {
 		Terms:        []snapshotTerm{},
 	}
 
-	for _, tool := range s.tools {
+	for _, registered := range s.tools {
+		tool := registered.tool
 		snap.Tools = append(snap.Tools, snapshotTool{
 			Name:        tool.Name,
 			Description: tool.Description,

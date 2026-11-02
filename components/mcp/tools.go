@@ -70,10 +70,28 @@ var toolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // property names of a tool's input schema; one bad name fails the request.
 var propertyNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
 
+// toolHandler runs one tool call whose arguments are already decoded and
+// returns the text of the result and whether the call failed. req is nil for
+// an in-process call.
+type toolHandler func(ctx context.Context, req *mcp.CallToolRequest, call *caller) (string, bool)
+
+// registeredTool is a tool of the server with what Server.CallTool needs to
+// run it without the transport.
+type registeredTool struct {
+	tool *mcp.Tool
+	// prepare decodes the JSON arguments of a call as the transport does. It
+	// returns the handler to run, or the text of the tool error the
+	// transport answers when the arguments break the input schema or cannot
+	// be decoded into the tool's input type.
+	prepare func(args json.RawMessage) (toolHandler, string)
+}
+
 // registerTools adds the fixed tool set to the MCP server, then the promoted
 // functions of Config.Tools.
 func (s *Server) registerTools() error {
-	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}
+	// Every tool reaches only the catalog or the REST API, so none is open
+	// world; MCP reads an unset openWorldHint as true.
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: boolPtr(false)}
 
 	whoamiDescription := "Report the server name and version and whether a bearer token was sent."
 	if s.cfg.WhoAmI != "" {
@@ -115,7 +133,7 @@ func (s *Server) registerTools() error {
 	}
 
 	if s.cfg.Script.Enabled {
-		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites}
+		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites, OpenWorldHint: boolPtr(false)}
 		err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script), Annotations: scriptAnnotations}, s.runScript)
 		if err != nil {
 			return ez.Wrap(err)
@@ -149,15 +167,74 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 		prop.MinItems = jsonschema.Ptr(1)
 	}
 	tool.InputSchema = schema
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		return ez.New(ez.EINTERNAL, "mcp: cannot resolve the input schema of "+tool.Name+": "+err.Error(), err)
+	}
+
+	// The SDK validates and decodes the arguments of a transport call before
+	// the handler runs; prepare does the same for Server.CallTool.
+	prepare := func(args json.RawMessage) (toolHandler, string) {
+		input, invalid := applyInputSchema(args, resolved)
+		if invalid != "" {
+			return nil, invalid
+		}
+		// The SDK answers a decode failure with the decoder's error text. Its
+		// decoder is not encoding/json, so the wording can differ.
+		var in In
+		err := json.Unmarshal(input, &in)
+		if err != nil {
+			return nil, err.Error()
+		}
+		return func(ctx context.Context, req *mcp.CallToolRequest, call *caller) (string, bool) {
+			return handle(ctx, req, call, in)
+		}, ""
+	}
 
 	mcp.AddTool(s.srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		result := s.runTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
+		result := s.serveTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
 			return handle(ctx, req, call, in)
 		})
 		return result, nil, nil
 	})
-	s.tools = append(s.tools, tool)
+	s.tools = append(s.tools, registeredTool{tool: tool, prepare: prepare})
 	return nil
+}
+
+// applyInputSchema applies the defaults of the input schema to the JSON
+// arguments of a call and validates them, as the MCP SDK does before it
+// decodes the input of a typed tool. It returns the arguments with the
+// defaults, or the text of the tool error the SDK answers when they break
+// the schema.
+//
+// The SDK decodes with its own decoder, which matches keys case-sensitively
+// and refuses JSON nested more than 1000 levels deep, so the transport
+// answers such a request with a protocol error, Bad Request over HTTP,
+// before any tool runs. This uses encoding/json: a key in another case
+// still breaks the schema, which allows no other properties, but deeper
+// nesting reaches the tool here.
+func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, string) {
+	object := map[string]any{}
+	if len(args) > 0 {
+		err := json.Unmarshal(args, &object)
+		if err != nil {
+			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
+		}
+	}
+	var value any = object
+	err := resolved.ApplyDefaults(&value)
+	if err != nil {
+		return nil, "validating \"arguments\": applying schema defaults:\n" + err.Error()
+	}
+	err = resolved.Validate(&value)
+	if err != nil {
+		return nil, `validating "arguments": ` + err.Error()
+	}
+	input, err := json.Marshal(value)
+	if err != nil {
+		return nil, `validating "arguments": marshalling with defaults: ` + err.Error()
+	}
+	return input, ""
 }
 
 // addFunctionTool registers the catalog function name as a tool named
@@ -199,20 +276,31 @@ func (s *Server) addFunctionTool(name string) error {
 		},
 	}
 
-	s.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		result := s.runTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
-			var args map[string]any
-			if len(req.Params.Arguments) > 0 {
-				err := json.Unmarshal(req.Params.Arguments, &args)
-				if err != nil {
-					return s.callErrorText(name, ez.New(ez.EINVALID, "mcp: arguments of "+name+" must be a JSON object", err)), true
-				}
+	// The transport and Server.CallTool both run this handler on the raw
+	// arguments.
+	run := func(ctx context.Context, req *mcp.CallToolRequest, call *caller, raw json.RawMessage) (string, bool) {
+		var args map[string]any
+		if len(raw) > 0 {
+			err := json.Unmarshal(raw, &args)
+			if err != nil {
+				return s.callErrorText(name, ez.New(ez.EINVALID, "mcp: arguments of "+name+" must be a JSON object", err)), true
 			}
-			return s.callFunction(ctx, req, call, callInput{Name: name, Args: args})
+		}
+		return s.callFunction(ctx, req, call, callInput{Name: name, Args: args})
+	}
+	prepare := func(args json.RawMessage) (toolHandler, string) {
+		return func(ctx context.Context, req *mcp.CallToolRequest, call *caller) (string, bool) {
+			return run(ctx, req, call, args)
+		}, ""
+	}
+
+	s.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		result := s.serveTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
+			return run(ctx, req, call, req.Params.Arguments)
 		})
 		return result, nil
 	})
-	s.tools = append(s.tools, tool)
+	s.tools = append(s.tools, registeredTool{tool: tool, prepare: prepare})
 	return nil
 }
 
@@ -239,11 +327,33 @@ func (c *Catalog) toolDescription(f *Function) string {
 	return strings.Join(lines, "\n")
 }
 
-// runTool runs one tool call with a caller holding the REST headers of the
-// request bearer token, and returns the text handle reports, cut to the
-// output limit. A panic in handle becomes an internal error result instead
-// of killing the process.
-func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, name string, handle func(*caller) (string, bool)) (result *mcp.CallToolResult) {
+// serveTool answers one tool call of the transport: it maps the bearer token
+// of req to REST headers with Config.Auth, forwards the request headers and
+// runs handle through runTool.
+func (s *Server) serveTool(ctx context.Context, req *mcp.CallToolRequest, name string, handle func(*caller) (string, bool)) *mcp.CallToolResult {
+	text, failed := s.runTool(ctx, name, func() (string, bool) {
+		header, err := s.cfg.Auth(ctx, bearerToken(req))
+		if err != nil {
+			return errorText(err), true
+		}
+		call := &caller{s: s, header: header}
+		extra := req.GetExtra()
+		if extra != nil {
+			call.forward = extra.Header
+		}
+		return handle(call)
+	})
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+		IsError: failed,
+	}
+}
+
+// runTool runs one tool call and returns the text handle reports, cut to the
+// output limit, and whether the call failed. A panic in handle becomes an
+// internal error instead of killing the process, and goes to Config.OnError
+// with its stack. The transport and Server.CallTool both run through it.
+func (s *Server) runTool(ctx context.Context, name string, handle func() (string, bool)) (text string, failed bool) {
 	defer func() {
 		value := recover()
 		if value != nil {
@@ -251,34 +361,21 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, name str
 			if s.cfg.OnError != nil {
 				s.cfg.OnError(ctx, ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v\n%s", name, value, debug.Stack()), nil))
 			}
-			result = s.result(errorText(panicked), true)
+			text = truncate(errorText(panicked), s.maxOutput)
+			failed = true
 		}
 	}()
-	header, err := s.cfg.Auth(ctx, bearerToken(req))
-	if err != nil {
-		return s.result(errorText(err), true)
-	}
-	call := &caller{s: s, header: header}
-	extra := req.GetExtra()
-	if extra != nil {
-		call.forward = extra.Header
-	}
-	text, failed := handle(call)
-	return s.result(text, failed)
-}
-
-// result is the text tool result, cut to the output limit.
-func (s *Server) result(text string, failed bool) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: truncate(text, s.maxOutput)}},
-		IsError: failed,
-	}
+	text, failed = handle()
+	return truncate(text, s.maxOutput), failed
 }
 
 // bearerToken returns the bearer token of the HTTP request behind req, or ""
-// when there is none, the Authorization header is malformed, or the
-// transport is not HTTP.
+// when there is none, the Authorization header is malformed, the transport
+// is not HTTP, or there is no request because the call is in-process.
 func bearerToken(req *mcp.CallToolRequest) string {
+	if req == nil {
+		return ""
+	}
 	extra := req.GetExtra()
 	if extra == nil {
 		return ""
