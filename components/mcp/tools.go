@@ -208,9 +208,11 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 // the schema.
 //
 // The SDK decodes with its own decoder, which matches keys case-sensitively
-// and rejects JSON nested more than 1000 levels deep. This uses
-// encoding/json: a key in another case still breaks the schema, which
-// allows no other properties, but deeper nesting passes here.
+// and refuses JSON nested more than 1000 levels deep, so the transport
+// answers such a request with a protocol error, Bad Request over HTTP,
+// before any tool runs. This uses encoding/json: a key in another case
+// still breaks the schema, which allows no other properties, but deeper
+// nesting reaches the tool here.
 func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, string) {
 	object := map[string]any{}
 	if len(args) > 0 {
