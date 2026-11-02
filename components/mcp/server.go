@@ -153,9 +153,12 @@ type Tool struct {
 	Description string
 	// InputSchema is the JSON Schema of the tool's arguments.
 	InputSchema json.RawMessage
-	// The hints copy the tool's annotations. A hint the server leaves unset
-	// is false here, although MCP reads an unset destructiveHint and
-	// openWorldHint as true.
+	// The hints are the tool's annotations as an MCP client reads them. A
+	// destructiveHint or openWorldHint the server leaves unset is true, the
+	// MCP default, and Destructive is false for a read-only tool, where MCP
+	// gives the hint no meaning. A write promoted from Config.Tools that is
+	// not Function.Destructive is therefore Destructive: MCP reads a false
+	// destructiveHint as additive updates only, which PUT and PATCH are not.
 	ReadOnly    bool
 	Idempotent  bool
 	Destructive bool
@@ -177,12 +180,13 @@ func (s *Server) Tools() []Tool {
 			InputSchema: inputSchemaJSON(tool),
 		}
 		hints := tool.Annotations
-		if hints != nil {
-			out.ReadOnly = hints.ReadOnlyHint
-			out.Idempotent = hints.IdempotentHint
-			out.Destructive = hints.DestructiveHint != nil && *hints.DestructiveHint
-			out.OpenWorld = hints.OpenWorldHint != nil && *hints.OpenWorldHint
+		if hints == nil {
+			hints = &mcp.ToolAnnotations{}
 		}
+		out.ReadOnly = hints.ReadOnlyHint
+		out.Idempotent = hints.IdempotentHint
+		out.Destructive = !hints.ReadOnlyHint && (hints.DestructiveHint == nil || *hints.DestructiveHint)
+		out.OpenWorld = hints.OpenWorldHint == nil || *hints.OpenWorldHint
 		tools = append(tools, out)
 	}
 	return tools

@@ -73,9 +73,20 @@ func TestServerToolsList(t *testing.T) {
 	assert.Equal(t, [4]bool{true, true, false, false}, hints(byName["search_functions"]))
 	assert.Equal(t, [4]bool{false, false, true, false}, hints(byName["call_function"]))
 	assert.Equal(t, [4]bool{true, false, false, false}, hints(byName["run_script"]))
-	assert.Equal(t, [4]bool{false, false, false, false}, hints(byName["orders-add_line"]))
+	// destructiveHint is unset on a write that is not Function.Destructive,
+	// which MCP reads as true.
+	assert.Equal(t, [4]bool{false, false, true, false}, hints(byName["orders-add_line"]))
 	assert.Equal(t, [4]bool{true, true, false, false}, hints(byName["orders-summary"]))
 	assert.Equal(t, [4]bool{false, false, true, false}, hints(byName["orders-cancel_order"]))
+
+	// A run_script that may write is destructive, as MCP reads its unset
+	// destructiveHint.
+	cfg = shopConfig(t)
+	cfg.Script.Enabled = true
+	cfg.Script.AllowWrites = true
+	writes := newShopServer(t, cfg).Tools()
+	assert.Equal(t, "run_script", writes[5].Name)
+	assert.Equal(t, [4]bool{false, false, true, false}, hints(writes[5]))
 
 	// The slice and its schemas are copies.
 	tools[0].Name = "changed"

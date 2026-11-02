@@ -89,7 +89,9 @@ type registeredTool struct {
 // registerTools adds the fixed tool set to the MCP server, then the promoted
 // functions of Config.Tools.
 func (s *Server) registerTools() error {
-	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}
+	// Every tool reaches only the catalog or the REST API, so none is open
+	// world; MCP reads an unset openWorldHint as true.
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: boolPtr(false)}
 
 	whoamiDescription := "Report the server name and version and whether a bearer token was sent."
 	if s.cfg.WhoAmI != "" {
@@ -131,7 +133,7 @@ func (s *Server) registerTools() error {
 	}
 
 	if s.cfg.Script.Enabled {
-		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites}
+		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites, OpenWorldHint: boolPtr(false)}
 		err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script), Annotations: scriptAnnotations}, s.runScript)
 		if err != nil {
 			return ez.Wrap(err)
