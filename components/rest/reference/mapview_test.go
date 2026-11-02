@@ -148,6 +148,7 @@ func TestSchemaMapDiff(t *testing.T) {
       "relic": {"$ref": "#/components/schemas/Legacy"}
     }},
     "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+    "Vet": {"type": "object", "properties": {"id": {"type": "string"}, "owner": {"$ref": "#/components/schemas/Owner"}}},
     "Legacy": {"type": "object", "properties": {"id": {"type": "string"}, "code": {"type": "string"}}}
   }}
 }`
@@ -162,6 +163,7 @@ func TestSchemaMapDiff(t *testing.T) {
       "tag": {"$ref": "#/components/schemas/Tag"}
     }},
     "Owner": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "email": {"type": "string"}}},
+    "Vet": {"type": "object", "properties": {"id": {"type": "string"}, "owner": {"$ref": "#/components/schemas/Owner"}}},
     "Tag": {"type": "object", "properties": {"id": {"type": "string"}}}
   }}
 }`
@@ -193,10 +195,14 @@ func TestSchemaMapDiff(t *testing.T) {
 		nodes[n.Name] = n
 		order = append(order, n.Name)
 	}
-	require.Equal(t, []string{"Pet", "Owner", "Tag", "Legacy"}, order, "removed entities follow the head ones")
+	require.Equal(t, []string{"Pet", "Owner", "Vet", "Tag", "Legacy"}, order, "removed entities follow the head ones")
 	require.Equal(t, diffChanged, nodes["Pet"].Diff)
 	require.Equal(t, diffChanged, nodes["Owner"].Diff)
 	require.Equal(t, diffAdded, nodes["Tag"].Diff)
+	baseDoc, err := Parse([]byte(base))
+	require.NoError(t, err)
+	require.NotNil(t, Diff(baseDoc, doc).Model("Vet"), "the report counts Vet as changed through Owner")
+	require.Empty(t, nodes["Vet"].Diff, "on the map only Owner shows its change")
 	require.Equal(t, diffRemoved, nodes["Legacy"].Diff)
 	require.Equal(t, "model/Legacy", nodes["Legacy"].Anchor, "a removed entity opens its removed model card")
 
@@ -217,7 +223,68 @@ func TestSchemaMapDiff(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{
 		"Pet>Owner":  "",
+		"Vet>Owner":  "",
 		"Pet>Tag":    diffAdded,
 		"Pet>Legacy": diffRemoved,
 	}, edges)
+}
+
+// diffMapEdges renders head against base and returns the map's edges.
+func diffMapEdges(t *testing.T, base, head string) []*Edge {
+	t.Helper()
+	doc, err := Parse([]byte(head))
+	require.NoError(t, err)
+	out, err := Render(doc, Options{Base: []byte(base)})
+	require.NoError(t, err)
+	matches := mapDataPattern.FindAllStringSubmatch(string(out), -1)
+	require.Len(t, matches, 1)
+	var data Graph
+	require.NoError(t, json.Unmarshal([]byte(matches[0][1]), &data))
+	return data.Edges
+}
+
+func TestSchemaMapDiffInverseHasMany(t *testing.T) {
+	// routes is Route.checkpoints with or without Checkpoint.route_id and
+	// Checkpoint.route, or Route with no checkpoints at all.
+	routes := func(version string, list, key bool) string {
+		checkpoints := ""
+		if list {
+			checkpoints = `, "checkpoints": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}}`
+		}
+		route := ""
+		if key {
+			route = `, "route_id": {"type": "string"}, "route": {"$ref": "#/components/schemas/Route"}`
+		}
+		return `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "` + version + `"},
+  "paths": {},
+  "components": {"schemas": {
+    "Route": {"type": "object", "properties": {"id": {"type": "string"}` + checkpoints + `}},
+    "Checkpoint": {"type": "object", "properties": {"id": {"type": "string"}` + route + `}}
+  }}
+}`
+	}
+	lines := func(edges []*Edge) map[string]string {
+		out := map[string]string{}
+		for _, e := range edges {
+			out[e.From+"."+e.FromField+">"+e.To] = e.Diff
+		}
+		require.Len(t, out, len(edges), "one line per relation")
+		return out
+	}
+
+	edges := diffMapEdges(t, routes("1.0", true, false), routes("1.1", true, true))
+	require.Equal(t, map[string]string{"Checkpoint.route_id>Route": diffAdded}, lines(edges),
+		"the new key takes over the unchanged has-many, which is not removed")
+
+	edges = diffMapEdges(t, routes("1.0", true, true), routes("1.1", true, false))
+	require.Equal(t, map[string]string{
+		"Route.checkpoints>Checkpoint": "",
+		"Checkpoint.route_id>Route":    diffRemoved,
+	}, lines(edges), "the has-many was there all along and stays drawn once its key is gone")
+
+	edges = diffMapEdges(t, routes("1.0", true, true), routes("1.1", false, false))
+	require.Equal(t, map[string]string{"Checkpoint.route_id>Route": diffRemoved}, lines(edges),
+		"a relation removed from both sides is drawn once, from the key")
 }
