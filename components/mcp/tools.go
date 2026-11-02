@@ -81,9 +81,9 @@ type registeredTool struct {
 	tool *mcp.Tool
 	// prepare decodes the JSON arguments of a call as the transport does. It
 	// returns the handler to run, or the text of the tool error the
-	// transport answers when the arguments break the input schema, or an
-	// error when they cannot be decoded into the tool's input type.
-	prepare func(args json.RawMessage) (toolHandler, string, error)
+	// transport answers when the arguments break the input schema or cannot
+	// be decoded into the tool's input type.
+	prepare func(args json.RawMessage) (toolHandler, string)
 }
 
 // registerTools adds the fixed tool set to the MCP server, then the promoted
@@ -174,19 +174,21 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 
 	// The SDK validates and decodes the arguments of a transport call before
 	// the handler runs; prepare does the same for Server.CallTool.
-	prepare := func(args json.RawMessage) (toolHandler, string, error) {
+	prepare := func(args json.RawMessage) (toolHandler, string) {
 		input, invalid := applyInputSchema(args, resolved)
 		if invalid != "" {
-			return nil, invalid, nil
+			return nil, invalid
 		}
+		// The SDK answers a decode failure with the decoder's error text. Its
+		// decoder is not encoding/json, so the wording can differ.
 		var in In
 		err := json.Unmarshal(input, &in)
 		if err != nil {
-			return nil, "", ez.New(ez.EINVALID, "mcp: arguments of "+tool.Name+" do not fit its input: "+err.Error(), err)
+			return nil, err.Error()
 		}
 		return func(ctx context.Context, req *mcp.CallToolRequest, call *caller) (string, bool) {
 			return handle(ctx, req, call, in)
-		}, "", nil
+		}, ""
 	}
 
 	mcp.AddTool(s.srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
@@ -204,6 +206,11 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 // decodes the input of a typed tool. It returns the arguments with the
 // defaults, or the text of the tool error the SDK answers when they break
 // the schema.
+//
+// The SDK decodes with its own decoder, which matches keys case-sensitively
+// and rejects JSON nested more than 1000 levels deep. This uses
+// encoding/json: a key in another case still breaks the schema, which
+// allows no other properties, but deeper nesting passes here.
 func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, string) {
 	object := map[string]any{}
 	if len(args) > 0 {
@@ -279,10 +286,10 @@ func (s *Server) addFunctionTool(name string) error {
 		}
 		return s.callFunction(ctx, req, call, callInput{Name: name, Args: args})
 	}
-	prepare := func(args json.RawMessage) (toolHandler, string, error) {
+	prepare := func(args json.RawMessage) (toolHandler, string) {
 		return func(ctx context.Context, req *mcp.CallToolRequest, call *caller) (string, bool) {
 			return run(ctx, req, call, args)
-		}, "", nil
+		}, ""
 	}
 
 	s.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

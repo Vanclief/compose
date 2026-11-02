@@ -159,6 +159,9 @@ type Tool struct {
 	// gives the hint no meaning. A write promoted from Config.Tools that is
 	// not Function.Destructive is therefore Destructive: MCP reads a false
 	// destructiveHint as additive updates only, which PUT and PATCH are not.
+	// Idempotent is idempotentHint as set, also on a read-only tool, where
+	// MCP gives it no meaning either, so a read-only run_script reports false
+	// and the other read-only tools true.
 	ReadOnly    bool
 	Idempotent  bool
 	Destructive bool
@@ -196,9 +199,11 @@ func (s *Server) Tools() []Tool {
 // transport runs it for an MCP request, and returns the same text and the
 // same failed flag a client gets: tool errors such as invalid arguments, an
 // unknown function or a REST error come back as text with failed set, the
-// text is cut to MaxOutputBytes, and a panic becomes an internal error that
-// also goes to Config.OnError. The arguments of a fixed tool are validated
-// against its input schema, as the MCP SDK validates them for the transport.
+// text of a tool that runs is cut to MaxOutputBytes, and a panic becomes an
+// internal error that also goes to Config.OnError. The arguments of a fixed
+// tool are validated against its input schema and decoded into its input
+// before it runs, as the MCP SDK does for the transport, and a failure of
+// either is the uncut text of a failed call, as the SDK answers it.
 //
 // The headers are the credentials the REST API authenticates with, used as
 // given: Config.Auth does not run, and there is no bearer token, so whoami
@@ -208,8 +213,7 @@ func (s *Server) Tools() []Tool {
 // should see them.
 //
 // The error is ez.ENOTFOUND for a name that is not a registered tool, and
-// ez.EINVALID when args cannot be encoded as JSON or decoded into the
-// tool's input.
+// ez.EINVALID when args cannot be encoded as JSON.
 func (s *Server) CallTool(ctx context.Context, header http.Header, name string, args map[string]any) (string, bool, error) {
 	i := slices.IndexFunc(s.tools, func(registered registeredTool) bool {
 		return registered.tool.Name == name
@@ -225,12 +229,10 @@ func (s *Server) CallTool(ctx context.Context, header http.Header, name string, 
 		}
 		raw = data
 	}
-	handle, invalid, err := s.tools[i].prepare(raw)
-	if err != nil {
-		return "", false, ez.Wrap(err)
-	}
+	handle, invalid := s.tools[i].prepare(raw)
 	if handle == nil {
-		// The SDK answers a schema violation before the handler runs, uncut.
+		// The SDK answers arguments it cannot validate or decode before the
+		// handler runs, uncut.
 		return invalid, true, nil
 	}
 	call := &caller{s: s, header: header}

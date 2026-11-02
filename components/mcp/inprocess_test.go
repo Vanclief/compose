@@ -233,7 +233,9 @@ func TestServerCallToolRecoversPanic(t *testing.T) {
 // TestServerCallToolMatchesTransport: CallTool returns the text and flag a
 // client gets for the same call over the MCP transport.
 func TestServerCallToolMatchesTransport(t *testing.T) {
-	s := newShopServer(t, promotedConfig(t))
+	cfg := promotedConfig(t)
+	cfg.Script.Enabled = true
+	s := newShopServer(t, cfg)
 	session := connect(t, s, "key:secret")
 
 	calls := []struct {
@@ -256,6 +258,13 @@ func TestServerCallToolMatchesTransport(t *testing.T) {
 		{"describe_function", map[string]any{"names": []string{}}},
 		{"describe_function", map[string]any{"names": []string{"orders.add_line"}, "extra": 1}},
 		{"call_function", map[string]any{"args": map[string]any{}}},
+		{"run_script", map[string]any{"code": "const o = api.orders.get_order({order_id: 7})\nconsole.log(\"got\", o.id)\nreturn {id: o.id, key: o.key}"}},
+		{"run_script", map[string]any{"code": "return api.items.list_items({limit: 500})"}},
+		{"run_script", map[string]any{"code": "api.orders.cancel_order({order_id: 7})"}},
+		{"run_script", map[string]any{"code": `throw new Error("boom")`}},
+		{"run_script", map[string]any{"code": 1}},
+		{"run_script", map[string]any{"Code": "return 1"}},
+		{"run_script", nil},
 	}
 	for _, c := range calls {
 		var args any
