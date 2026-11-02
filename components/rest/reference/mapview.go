@@ -48,12 +48,16 @@ func escapeScriptJSON(s string) string {
 }
 
 // buildMap returns nil when the document has no entities, which leaves the
-// map and its view switcher out of the page.
+// map and its view switcher out of the page. In diff mode the inverse
+// has-many edges are dropped after the relations are compared, see
+// diffGraph.
 func (b *builder) buildMap() *mapView {
 	g := b.d.graph(b.short)
 	if b.diff != nil {
 		b.diffGraph(g)
 	}
+	g.Edges = dropInverses(g.Edges)
+	markHubs(g)
 	if len(g.Nodes) == 0 {
 		return nil
 	}
@@ -81,10 +85,13 @@ func (b *builder) buildMap() *mapView {
 }
 
 // diffGraph marks what changed since the base document: the entities the
-// report counts as added, changed or removed, the fields added, changed or
+// report counts as added, changed or removed, changed only when they have a
+// change of their own (see ownChanges), the fields added, changed or
 // removed on a changed entity, and the relations added or removed. The
 // removed entities, fields and relations come from the base graph, so the
-// map can still draw them.
+// map can still draw them. Both graphs still hold their inverse has-many
+// edges: dropped on one side only, an unchanged has-many would read as
+// added or removed next to a foreign key that came or went.
 func (b *builder) diffGraph(g *Graph) {
 	base := b.diff.base.graph(b.short)
 	old := map[string]*Node{}
@@ -95,7 +102,7 @@ func (b *builder) diffGraph(g *Graph) {
 	state := map[string]string{}
 	for _, n := range g.Nodes {
 		md := b.diff.report.Model(n.Name)
-		if md == nil {
+		if md == nil || !ownChanges(md) {
 			continue
 		}
 		n.Diff = diffKind(md.Kind)
@@ -115,7 +122,6 @@ func (b *builder) diffGraph(g *Graph) {
 			continue
 		}
 		n.Diff = diffRemoved
-		n.Hub = false
 		shown[name] = true
 		g.Nodes = append(g.Nodes, n)
 	}
@@ -144,6 +150,18 @@ func (b *builder) diffGraph(g *Graph) {
 			g.Edges = append(g.Edges, e)
 		}
 	}
+}
+
+// ownChanges reports whether md has a change of its own. The report also
+// counts a model as changed when a model it references changed, but on the
+// map that change shows on the referenced card only.
+func ownChanges(md *ModelDiff) bool {
+	for _, c := range md.Changes {
+		if !c.inherited() {
+			return true
+		}
+	}
+	return false
 }
 
 func diffKind(k ChangeKind) string {

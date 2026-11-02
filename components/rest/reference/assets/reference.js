@@ -3671,10 +3671,17 @@
 
   // ------------------------------------------------------------- scopes
 
-  // Scopes are the operation tags, in page order, and all models.
+  // Scopes are all models, in diff mode the models that changed (when not
+  // all of them were removed), and the operation tags, in page order. The
+  // changed scope's id starts with ~ to stay clear of a tag called changed.
+  // Counts leave out removed models, which only show while the Diff mode
+  // toggle is on.
   const scopes = new Map();
   scopes.set('all', { label: 'All models', names: data.nodes.map((n) => n.name) });
-  const removedCount = data.nodes.filter((n) => n.diff === 'd').length;
+  const changed = data.nodes.filter((n) => n.diff);
+  if (changed.some((n) => n.diff !== 'd')) {
+    scopes.set('~changed', { label: 'Changed models', names: changed.map((n) => n.name) });
+  }
   for (const t of data.tags || []) {
     const names = (t.nodes || []).filter((n) => nodes.has(n));
     if (names.length && !scopes.has(t.name)) {
@@ -3682,7 +3689,8 @@
     }
   }
   for (const [id, s] of scopes) {
-    const o = el('option', '', s.label + ' (' + (id === 'all' ? s.names.length - removedCount : s.names.length) + ')');
+    const count = s.names.filter((name) => nodes.get(name).diff !== 'd').length;
+    const o = el('option', '', s.label + ' (' + count + ')');
     o.value = id;
     scopeSelect.append(o);
   }
@@ -4331,7 +4339,10 @@
   // ------------------------------------------------------------- render
 
   // render draws the current scope: its models as full cards, the models
-  // they point at from outside it as compact cards, and their edges.
+  // they point at from outside it as compact cards, and their edges. A model
+  // outside that points at one of the scope comes in too when that one
+  // links it by a field: the has-many side of a foreign key, which the map
+  // draws once, from the key.
   function render(keepCamera) {
     world.querySelectorAll('.mcard').forEach((node) => node.remove());
     svg.textContent = '';
@@ -4346,13 +4357,20 @@
     const shown = names.slice();
     const seen = new Set(shown);
     const list = [];
+    const linksTo = (name, ref) => (nodes.get(name).fields || []).some((f) => f.ref === ref && live(f));
     for (const e of edges) {
-      if (!full.has(e.from) || !live(e) || !live(nodes.get(e.to))) {
+      let other = null;
+      if (full.has(e.from)) {
+        other = e.to;
+      } else if (full.has(e.to) && linksTo(e.to, e.from)) {
+        other = e.from;
+      }
+      if (!other || !live(e) || !live(nodes.get(other))) {
         continue;
       }
-      if (!seen.has(e.to)) {
-        seen.add(e.to);
-        shown.push(e.to);
+      if (!seen.has(other)) {
+        seen.add(other);
+        shown.push(other);
       }
       list.push(e);
       for (const [p, q] of [[e.from, e.to], [e.to, e.from]]) {

@@ -95,12 +95,19 @@ var wrapperSuffixes = []string{"Request", "Response", "Params", "Query", "Body"}
 // entity (has-one) or an array of them (has-many), from a foo_id property
 // next to such a foo property (the foreign key of that relation), and last
 // from a foo_id property alone, matched by name to an entity called Foo
-// (marked Inferred).
+// (marked Inferred). A has-many property is left out when its target holds
+// a foreign key back, as the other side of that key's relation.
 func (d *Document) Graph() *Graph {
-	return d.graph(shortNames(d.Components.Schemas.Keys))
+	g := d.graph(shortNames(d.Components.Schemas.Keys))
+	g.Edges = dropInverses(g.Edges)
+	markHubs(g)
+	return g
 }
 
-// graph builds the entity graph with the given display names.
+// graph builds the entity graph with the given display names, every edge
+// kept and no hub marked: the caller drops the inverse has-many edges and
+// then marks the hubs, so diff mode can compare the relations of two
+// documents before either side loses one (see builder.diffGraph).
 func (d *Document) graph(short map[string]string) *Graph {
 	declared := d.declaresTables()
 	objects := d.graphObjects(declared)
@@ -138,8 +145,38 @@ func (d *Document) graph(short map[string]string) *Graph {
 		}
 	}
 
-	markHubs(g)
 	return g
+}
+
+// dropInverses removes a has-many edge from A to B when B holds a foreign
+// key to A: Route.checkpoints is the other side of Checkpoint.route_id, one
+// relation that the map draws once, from the key. The has-many field keeps
+// its Ref. In diff mode a key marked removed only hides a has-many marked
+// removed too: a has-many still in the document is drawn once its key is
+// gone.
+func dropInverses(edges []*Edge) []*Edge {
+	keyed := map[string]bool{}
+	removed := map[string]bool{}
+	for _, e := range edges {
+		if e.Kind != EdgeFK {
+			continue
+		}
+		key := e.From + "\x00" + e.To
+		if e.Diff == diffRemoved {
+			removed[key] = true
+		} else {
+			keyed[key] = true
+		}
+	}
+	var out []*Edge
+	for _, e := range edges {
+		back := e.To + "\x00" + e.From
+		if e.Kind == EdgeHasMany && (keyed[back] || (e.Diff == diffRemoved && removed[back])) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // edgeKey identifies a relation: two edges with the same key are the same
@@ -149,11 +186,12 @@ func edgeKey(e *Edge) string {
 }
 
 // markHubs sets Hub on the entities that more than hubSources other
-// entities point at. Self references do not count.
+// entities point at. Self references and relations marked removed in diff
+// mode do not count, so a removed entity is never a hub.
 func markHubs(g *Graph) {
 	sources := map[string]map[string]bool{}
 	for _, e := range g.Edges {
-		if e.From == e.To {
+		if e.From == e.To || e.Diff == diffRemoved {
 			continue
 		}
 		if sources[e.To] == nil {

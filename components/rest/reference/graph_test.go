@@ -391,3 +391,76 @@ func TestGraphDeclaredTables(t *testing.T) {
 	require.Len(t, g.Nodes, 1)
 	require.Empty(t, g.Nodes[0].Table)
 }
+
+func TestGraphDropsInverseHasMany(t *testing.T) {
+	g := parseGraph(t, `{
+  "openapi": "3.1.0",
+  "info": {"title": "t", "version": "1"},
+  "components": {"schemas": {
+    "Route": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "checkpoints": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}},
+      "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}}
+    }},
+    "Checkpoint": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "route_id": {"type": "string"},
+      "route": {"$ref": "#/components/schemas/Route"}
+    }},
+    "Tag": {"type": "object", "properties": {"id": {"type": "string"}}}
+  }}
+}`)
+
+	require.NotNil(t, graphEdge(g, "Checkpoint", "Route", "route_id"))
+	require.Nil(t, graphEdge(g, "Route", "Checkpoint", "checkpoints"), "the other side of Checkpoint.route_id")
+	require.Equal(t, "Checkpoint", graphField(graphNode(g, "Route"), "checkpoints").Ref, "the field still links its model")
+	require.NotNil(t, graphEdge(g, "Route", "Tag", "tags"), "no key back, so the has-many stays")
+	require.Len(t, g.Edges, 2)
+}
+
+func TestGraphDropsInverseHasManyCases(t *testing.T) {
+	spec := func(schemas string) string {
+		return `{"openapi": "3.1.0", "info": {"title": "t", "version": "1"}, "components": {"schemas": {` + schemas + `}}}`
+	}
+
+	// A tree: Category.children is the other side of its own parent_id.
+	g := parseGraph(t, spec(`
+    "Category": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "parent_id": {"type": "string"},
+      "parent": {"$ref": "#/components/schemas/Category"},
+      "children": {"type": "array", "items": {"$ref": "#/components/schemas/Category"}}
+    }}`))
+	require.NotNil(t, graphEdge(g, "Category", "Category", "parent_id"))
+	require.Nil(t, graphEdge(g, "Category", "Category", "children"))
+	require.Len(t, g.Edges, 1, "one line for the self relation")
+
+	// Two lists of the same model and one key back: the key cannot tell
+	// which list it fills, so both read as its other side and the map
+	// draws the relation once.
+	g = parseGraph(t, spec(`
+    "Route": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "checkpoints": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}},
+      "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}}
+    }},
+    "Checkpoint": {"type": "object", "properties": {"id": {"type": "string"}, "route_id": {"type": "string"}, "route": {"$ref": "#/components/schemas/Route"}}}`))
+	require.NotNil(t, graphEdge(g, "Checkpoint", "Route", "route_id"))
+	require.Nil(t, graphEdge(g, "Route", "Checkpoint", "checkpoints"))
+	require.Nil(t, graphEdge(g, "Route", "Checkpoint", "skipped"))
+	require.Equal(t, "Checkpoint", graphField(graphNode(g, "Route"), "skipped").Ref)
+	require.Len(t, g.Edges, 1)
+
+	// A key guessed from its name drops the has-many as a declared one does.
+	g = parseGraph(t, spec(`
+    "Route": {"type": "object", "properties": {
+      "id": {"type": "string"},
+      "checkpoints": {"type": "array", "items": {"$ref": "#/components/schemas/Checkpoint"}}
+    }},
+    "Checkpoint": {"type": "object", "properties": {"id": {"type": "string"}, "route_id": {"type": "string"}}}`))
+	e := graphEdge(g, "Checkpoint", "Route", "route_id")
+	require.NotNil(t, e)
+	require.True(t, e.Inferred)
+	require.Nil(t, graphEdge(g, "Route", "Checkpoint", "checkpoints"))
+	require.Len(t, g.Edges, 1)
+}
