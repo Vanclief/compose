@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.21.1
+
+### Highlights
+
+- **Tests**: the promtail concurrent `Close` test no longer asserts that `Close` returns within 2s, a wall-clock bound that a busy `-race` CI runner could miss while the client pushed its buffered lines. Its context deadline is 10s, so a `Close` that never finishes still fails the test. No library code changed.
+
 ## v1.21.0
 
 ### Highlights

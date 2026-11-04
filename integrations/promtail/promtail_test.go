@@ -318,18 +318,18 @@ func TestClientCloseFinishesWithConcurrentWrites(t *testing.T) {
 	// Let the writers get going before closing
 	time.Sleep(50 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// A Close that never finishes times out and fails the NoError check. The
+	// deadline is generous because pushing the buffered lines under -race on a
+	// busy CI runner has taken over 2s.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	start := time.Now()
 	err := client.Close(ctx)
-	elapsed := time.Since(start)
 
 	close(stop)
 	writers.Wait()
 
 	require.NoError(t, err)
-	assert.Less(t, elapsed, 2*time.Second)
 	assert.Empty(t, client.lines)
 }
 
