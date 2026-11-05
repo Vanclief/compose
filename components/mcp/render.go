@@ -156,9 +156,17 @@ func searchWords(query string) []string {
 	return strings.Fields(strings.ReplaceAll(strings.ToLower(query), "_", " "))
 }
 
+// minSingularLen is the fewest letters a word may keep after dropping a
+// plural s and still count as a match, so "ids" does not match every "id".
+const minSingularLen = 3
+
 // functionMatches reports whether every word occurs in the name, summary,
 // description, return term or an argument name of f. Each word may match a
-// different field.
+// different field. A word ending in s also matches without the s, so
+// "payments" finds what "payment" finds.
+//
+// grug: only a trailing s is dropped, so "companies" does not find "company".
+// Add the other plural forms when searches that miss on them show up.
 func functionMatches(f *Function, words []string) bool {
 	fields := []string{f.Name, f.Summary, f.Description, f.Returns}
 	for _, a := range f.Args {
@@ -166,7 +174,11 @@ func functionMatches(f *Function, words []string) bool {
 	}
 	text := strings.ReplaceAll(strings.ToLower(strings.Join(fields, "\n")), "_", " ")
 	for _, word := range words {
-		if !strings.Contains(text, word) {
+		if strings.Contains(text, word) {
+			continue
+		}
+		singular, ok := strings.CutSuffix(word, "s")
+		if !ok || utf8.RuneCountInString(singular) < minSingularLen || !strings.Contains(text, singular) {
 			return false
 		}
 	}
