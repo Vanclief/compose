@@ -5,7 +5,7 @@
   "tools": [
     {
       "name": "whoami",
-      "description": "Return the account the current credentials belong to. Call it first to check the connection.",
+      "description": "Return the account the current credentials belong to. Call it when you need the caller's identity or ids.",
       "annotations": {
         "idempotentHint": true,
         "openWorldHint": false,
