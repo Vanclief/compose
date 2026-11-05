@@ -98,7 +98,7 @@ func (s *Server) registerTools() error {
 
 	whoamiDescription := "Report the server name and version and whether a bearer token was sent."
 	if s.cfg.WhoAmI != "" {
-		whoamiDescription = "Return the account the current credentials belong to. Call it first to check the connection."
+		whoamiDescription = "Return the account the current credentials belong to. Call it when you need the caller's identity or ids."
 	}
 	err := addTool(s, &mcp.Tool{Name: "whoami", Description: whoamiDescription, Annotations: readOnly}, s.whoami)
 	if err != nil {
