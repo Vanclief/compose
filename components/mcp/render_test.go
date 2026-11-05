@@ -47,16 +47,53 @@ units  2 functions`, c.renderSearch("", ""))
 
 func TestRenderSearchModule(t *testing.T) {
 	c := smallCatalog(t)
+
+	// Five functions or fewer fold: each shows its route, description and
+	// arguments. A fallback summary is the route already and is not repeated.
 	assert.Equal(t, `module packages: Packages received at the front desk.
   packages.delete_packages_by_id  DELETE /packages/{id}
+    args:
+      id  integer  required
+
   packages.get_package  Get one package.  -> Package
+    GET /packages/{id}
+    Includes the carrier.
+    args:
+      id  integer  required
+
   packages.list_packages  List packages  -> Package[]
+    GET /packages
+    args:
+      limit   integer int32
+      status  packages.Status  Only packages in this status
+
   packages.register_package  Register a package at the front desk.  -> Package
-  packages.update_package  Update a package [deprecated]`, c.renderSearch("packages", ""))
+    POST /packages
+    The resident is notified.
+    args:
+      unit_id  integer  required  Unit receiving the package
+      carrier  string   enum: dhl|fedex|ups
+      notes    string?
+
+  packages.update_package  Update a package [deprecated]
+    PATCH /packages/{id}
+    args:
+      id    integer  required
+      body  Package  required`, c.renderSearch("packages", ""))
 
 	assert.Equal(t, `module units
   units.set_notes  Replace the notes of a unit  -> units.Status
-  units.summary  Summarize a unit  -> UnitSummary [composite]`, c.renderSearch("Units", ""))
+    PUT /units/{unit_id}/notes
+    args:
+      unit_id       integer   required
+      X-Request-Id  string
+      body          string[]
+
+  units.summary  Summarize a unit  -> UnitSummary [composite]
+    Counts the packages of a unit.
+    args:
+      unit_id  integer  required  Unit to summarize
+      days     integer`, c.renderSearch("Units", ""))
 
 	assert.Equal(t, `unknown module "nope"; modules: default, packages, units`, c.renderSearch("nope", ""))
 	assert.Equal(t, `unknown module "nope"; modules: default, packages, units`, c.renderSearch("nope", "package"))
@@ -65,29 +102,109 @@ func TestRenderSearchModule(t *testing.T) {
 func TestRenderSearchQuery(t *testing.T) {
 	c := smallCatalog(t)
 
-	// Matches on an argument name (status) and on the return term.
+	// Matches on an argument name (status) and on the return term. Folded
+	// modules are separated by a blank line.
 	assert.Equal(t, `module packages
   packages.list_packages  List packages  -> Package[]
+    GET /packages
+    args:
+      limit   integer int32
+      status  packages.Status  Only packages in this status
+
 module units
-  units.set_notes  Replace the notes of a unit  -> units.Status`, c.renderSearch("", " STATUS "))
+  units.set_notes  Replace the notes of a unit  -> units.Status
+    PUT /units/{unit_id}/notes
+    args:
+      unit_id       integer   required
+      X-Request-Id  string
+      body          string[]`, c.renderSearch("", " STATUS "))
 
 	// Restricted to one module; matches on the description.
 	assert.Equal(t, `module units
-  units.summary  Summarize a unit  -> UnitSummary [composite]`, c.renderSearch("units", "package"))
+  units.summary  Summarize a unit  -> UnitSummary [composite]
+    Counts the packages of a unit.
+    args:
+      unit_id  integer  required  Unit to summarize
+      days     integer`, c.renderSearch("units", "package"))
 
 	// Matches on the summary.
 	assert.Equal(t, `module packages
-  packages.register_package  Register a package at the front desk.  -> Package`, c.renderSearch("", "front desk"))
+  packages.register_package  Register a package at the front desk.  -> Package
+    POST /packages
+    The resident is notified.
+    args:
+      unit_id  integer  required  Unit receiving the package
+      carrier  string   enum: dhl|fedex|ups
+      notes    string?`, c.renderSearch("", "front desk"))
+
+	// More than five matches keep one dense line per function.
+	assert.Equal(t, `module packages
+  packages.delete_packages_by_id  DELETE /packages/{id}
+  packages.get_package  Get one package.  -> Package
+  packages.list_packages  List packages  -> Package[]
+  packages.register_package  Register a package at the front desk.  -> Package
+  packages.update_package  Update a package [deprecated]
+module units
+  units.summary  Summarize a unit  -> UnitSummary [composite]`, c.renderSearch("", "package"))
 
 	// Every word must match, each in any field; underscores are spaces.
-	assert.Equal(t, `module packages
-  packages.register_package  Register a package at the front desk.  -> Package`, c.renderSearch("", "register package"))
+	assert.Equal(t, c.renderSearch("", "front desk"), c.renderSearch("", "register package"))
 	assert.Equal(t, c.renderSearch("", "register package"), c.renderSearch("", "register_package"))
 	assert.Equal(t, c.renderSearch("", "register package"), c.renderSearch("", "desk register"))
 	assert.Contains(t, c.renderSearch("", "register zzz"), "no functions match")
 
 	assert.Equal(t, `no functions match "zzz"
 modules: default, packages, units`, c.renderSearch("", " zzz "))
+}
+
+func TestRenderEmmaSearchFolded(t *testing.T) {
+	c := emmaCatalog(t)
+
+	// One match: the route and the arguments follow the search line, and the
+	// summary is not repeated.
+	out := c.renderSearch("", "unpair")
+	assert.Equal(t, `module finance
+  finance.unpair_bank_account_transfer  Unpair Bank Account Transfer  -> string uuid
+    DELETE /complexes/{complex_id}/bank-accounts/transfers/{id}
+    args:
+      complex_id  integer int64  required
+      id          string uuid    required`, out)
+	assert.Equal(t, 1, strings.Count(out, "Unpair Bank Account Transfer"))
+
+	// Five matches across two modules still fold.
+	out = c.renderSearch("", "fingerprint")
+	assert.Equal(t, 5, strings.Count(out, "\n    args:"))
+	assert.Contains(t, out, "\n    GET /users/{user_id}/fingerprints\n")
+	assert.Contains(t, out, "\n\nmodule users\n")
+
+	// Six matches are dense lines only.
+	out = c.renderSearch("", "invoices")
+	assert.Equal(t, 8, len(strings.Split(out, "\n")))
+	assert.NotContains(t, out, "args:")
+	assert.Contains(t, out, "\n  finance.list_invoices  List Invoices  -> invoices.ListResponse\n")
+
+	// A module listing of three functions folds too.
+	assert.Equal(t, `module system
+  system.client_version  Client Version
+    GET /client/version
+
+  system.head_health  Health Check
+    HEAD /health
+
+  system.health  Health Check
+    GET /health`, c.renderSearch("system", ""))
+
+	// The bare module list never folds.
+	assert.Equal(t, len(c.Modules), len(strings.Split(c.renderSearch("", ""), "\n")))
+
+	// A folded block leaves the return shape and related terms to
+	// describe_function.
+	for _, query := range []string{"unpair", "fingerprint"} {
+		out = c.renderSearch("", query)
+		assertClean(t, out)
+		assert.NotContains(t, out, "see also")
+		assert.NotContains(t, out, "\n    returns ")
+	}
 }
 
 func TestRenderDescribe(t *testing.T) {
@@ -275,6 +392,7 @@ func TestRenderEmmaGolden(t *testing.T) {
 		"emma_search_modules": c.renderSearch("", ""),
 		"emma_search_finance": c.renderSearch("finance", ""),
 		"emma_search_billing": c.renderSearch("", "billing"),
+		"emma_search_folded":  c.renderSearch("", "fingerprint"),
 		"emma_describe":       c.renderDescribe([]string{"finance.list_billing_profiles", "auth.login", "nope.missing"}),
 		"emma_explain":        c.renderExplain([]string{f.Returns, "nope"}),
 	}
@@ -289,13 +407,14 @@ func TestRenderEmmaGolden(t *testing.T) {
 func TestRenderEmmaSearchLineLength(t *testing.T) {
 	c := emmaCatalog(t)
 
+	// Small modules fold, so the dense line of every function is measured
+	// as a large listing prints it.
 	total := 0
 	lines := 0
 	for _, m := range c.Modules {
-		out := c.renderSearch(m.Name, "")
-		assertClean(t, out)
-		for _, line := range strings.Split(out, "\n")[1:] {
-			total += len(line)
+		assertClean(t, c.renderSearch(m.Name, ""))
+		for _, f := range m.Functions {
+			total += len("  " + c.searchLine(f))
 			lines++
 		}
 	}

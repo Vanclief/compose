@@ -1,0 +1,49 @@
+module access_control
+  access_control.register_fingerprint  Register Fingerprint  -> Fingerprint
+    POST /complexes/{complex_id}/access-control/devices/{id}/register-fingerprint
+    args:
+      complex_id            integer int64   required
+      id                    string          required
+      device_id             string
+      fingerprint_position  FingerPosition
+      user_id               integer int64
+
+  access_control.update_device  Update Device  -> AccessDevice
+    PUT /complexes/{complex_id}/access-control/devices/{id}
+    args:
+      complex_id            integer int64     required
+      id                    string            required
+      access_direction      AccessDirection?
+      amenity_id            integer int64?
+      card_format           CardFormat?
+      device_id             string
+      disable_debtors       boolean?
+      enable_amenity_mode   boolean?
+      enable_cards          boolean?
+      enable_faces          boolean?
+      enable_fingerprints   boolean?
+      enable_user_codes     boolean?
+      enable_visitor_codes  boolean?
+      reader_for_device_id  string?
+      reader_for_reader_no  integer int32?
+      vehicular_entry       boolean?
+
+module users
+  users.delete_fingerprint  Delete Fingerprint  -> string
+    DELETE /users/{user_id}/fingerprints/{id}
+    args:
+      user_id  integer int64  required
+      id       string uuid    required
+
+  users.get_fingerprint  Get Fingerprint  -> Fingerprint
+    GET /users/{user_id}/fingerprints/{id}
+    args:
+      user_id  integer int64  required
+      id       string uuid    required
+
+  users.list_fingerprints  List Fingerprints  -> fingerprints.ListResponse
+    GET /users/{user_id}/fingerprints
+    args:
+      user_id  integer int64  required
+      limit    integer int32
+      cursor   string

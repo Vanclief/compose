@@ -13,8 +13,20 @@ import (
 // maxSuggestions bounds the "did you mean" list of unknown names.
 const maxSuggestions = 5
 
+// maxFoldedResults is the most functions a search shows with their route and
+// arguments. Larger results keep one dense line per function.
+const maxFoldedResults = 5
+
+// matchedModule is a module header and the functions of it a search shows.
+type matchedModule struct {
+	header    string
+	functions []*Function
+}
+
 // renderSearch lists modules, the functions of one module, or the functions
-// matching a free-text query, optionally within one module.
+// matching a free-text query, optionally within one module. When the
+// functions listed are maxFoldedResults or fewer, each comes as its folded
+// block.
 func (c *Catalog) renderSearch(module, query string) string {
 	module = strings.TrimSpace(module)
 	query = strings.TrimSpace(query)
@@ -41,39 +53,66 @@ func (c *Catalog) renderSearch(module, query string) string {
 		return strings.Join(lines, "\n")
 	}
 
-	if query == "" {
-		m := modules[0]
-		header := "module " + m.Name
-		description := firstLine(m.Description)
-		if description != "" {
-			header += ": " + description
-		}
-		lines := []string{header}
-		for _, f := range m.Functions {
-			lines = append(lines, "  "+c.searchLine(f))
-		}
-		return strings.Join(lines, "\n")
-	}
-
 	words := searchWords(query)
-	var lines []string
+	var matched []matchedModule
+	total := 0
 	for _, m := range modules {
-		var matched []string
+		var functions []*Function
 		for _, f := range m.Functions {
 			if functionMatches(f, words) {
-				matched = append(matched, "  "+c.searchLine(f))
+				functions = append(functions, f)
 			}
 		}
-		if len(matched) == 0 {
+		if len(functions) == 0 && query != "" {
 			continue
 		}
-		lines = append(lines, "module "+m.Name)
-		lines = append(lines, matched...)
+		header := "module " + m.Name
+		description := firstLine(m.Description)
+		if query == "" && description != "" {
+			header += ": " + description
+		}
+		matched = append(matched, matchedModule{header: header, functions: functions})
+		total += len(functions)
 	}
-	if len(lines) == 0 {
+	if len(matched) == 0 {
 		return fmt.Sprintf("no functions match %q\nmodules: %s", query, c.moduleNames())
 	}
+
+	folded := total <= maxFoldedResults
+	var lines []string
+	for _, m := range matched {
+		if folded && len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, m.header)
+		for i, f := range m.functions {
+			if !folded {
+				lines = append(lines, "  "+c.searchLine(f))
+				continue
+			}
+			if i > 0 {
+				lines = append(lines, "")
+			}
+			for _, line := range c.foldedBlock(f) {
+				lines = append(lines, "  "+line)
+			}
+		}
+	}
 	return strings.Join(lines, "\n")
+}
+
+// foldedBlock is the entry of a function in a search with few results: its
+// search line, then its route, description and arguments as
+// describe_function prints them, without the return shape or related terms.
+// The route is left out when the search line already says it: a composite
+// carries its tag, and a summary can be the route the catalog fell back to.
+func (c *Catalog) foldedBlock(f *Function) []string {
+	lines := []string{c.searchLine(f)}
+	summaryIsRoute := strings.TrimSpace(f.Summary) == f.Method+" "+f.Path
+	if !f.Composite && !summaryIsRoute {
+		lines = append(lines, "  "+route(f))
+	}
+	return append(lines, c.detailLines(f)...)
 }
 
 // searchLine is the one-line entry of a function in search results.
@@ -199,10 +238,7 @@ func (c *Catalog) describeFunction(name string) string {
 		return unknownName("function", name, c.functionSuggestions(name))
 	}
 
-	header := f.Name + "  " + f.Method + " " + f.Path
-	if f.Composite {
-		header = f.Name + "  composite"
-	}
+	header := f.Name + "  " + route(f)
 	if f.Deprecated {
 		header += "  [deprecated]"
 	}
@@ -212,15 +248,7 @@ func (c *Catalog) describeFunction(name string) string {
 	if summary != "" {
 		lines = append(lines, "  "+summary)
 	}
-	description := trimSummary(strings.TrimSpace(f.Description), summary)
-	if description != "" {
-		lines = append(lines, indentLines(description)...)
-	}
-
-	if len(f.Args) > 0 {
-		lines = append(lines, "  args:")
-		lines = append(lines, c.argLines(f.Args)...)
-	}
+	lines = append(lines, c.detailLines(f)...)
 
 	if f.Returns != "" && f.ReturnSchema != nil {
 		lines = append(lines, "  returns "+f.Returns+": "+c.shape(f.ReturnSchema))
@@ -254,6 +282,26 @@ func (c *Catalog) describeFunction(name string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// route is the method and path of f, or "composite" for a composite function.
+func route(f *Function) string {
+	if f.Composite {
+		return "composite"
+	}
+	return f.Method + " " + f.Path
+}
+
+// detailLines is the description of f without a leading repeat of its
+// summary, then its argument table, indented under a function header.
+func (c *Catalog) detailLines(f *Function) []string {
+	description := trimSummary(strings.TrimSpace(f.Description), summaryLine(f))
+	lines := indentLines(description)
+	if len(f.Args) > 0 {
+		lines = append(lines, "  args:")
+		lines = append(lines, c.argLines(f.Args)...)
+	}
+	return lines
 }
 
 // argLines prints the arguments as aligned columns: name, type, then the

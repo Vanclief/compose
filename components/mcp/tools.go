@@ -34,7 +34,7 @@ type explainInput struct {
 
 type callInput struct {
 	Name string         `json:"name" jsonschema:"full function name, module.function"`
-	Args map[string]any `json:"args,omitempty" jsonschema:"one flat object merging the path, query and body arguments listed by describe_function"`
+	Args map[string]any `json:"args,omitempty" jsonschema:"one flat object merging the path, query and body arguments listed by search_functions or describe_function"`
 }
 
 type scriptInput struct {
@@ -44,15 +44,18 @@ type scriptInput struct {
 const (
 	searchDescription = "Find functions. With no arguments, list the modules. With module, list every function in it. " +
 		"With query, list the functions whose name, summary, description, return type or argument names contain every word of it, " +
-		"optionally within one module. Each line shows module.function, its summary and what it returns. Next, describe_function."
+		"optionally within one module. Each line shows module.function, its summary and what it returns. " +
+		"A result of five functions or fewer also shows each one's route, description and arguments, and a function shown " +
+		"without arguments takes none: call_function next, after explain_term for an argument type you do not know. " +
+		"Otherwise describe_function."
 	describeDescription = "Show how to call functions: the route, every argument with its type, location and required flag, " +
 		"the return shape and related terms. Pass full names, module.function, as listed by search_functions. " +
-		"Describe a function before its first call_function."
+		"Describe a function whose arguments search_functions did not show, or when you need the return shape."
 	explainDescription = "Explain domain terms: the fields of a data type and the functions that accept or return it, " +
 		"or a concept of the application. Accepts names and aliases, case-insensitively. " +
 		"Use it for any unfamiliar word in a summary, field or module name."
 	callDescription = "Call one function by its full name, module.function. args is one flat object merging the path, query " +
-		"and body arguments listed by describe_function; omit it when there are none. Returns the JSON response. " +
+		"and body arguments listed by search_functions or describe_function; omit it when there are none. Returns the JSON response. " +
 		"Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. " +
 		"Some functions write data: read their description first."
 )

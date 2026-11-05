@@ -1,7 +1,7 @@
 {
   "name": "Shop",
   "version": "2.3.0",
-  "instructions": "Shop is a test store.\n\nModules (pass one to search_functions):\n- accounts: Who is calling.\n- items: 1 function\n- orders: Customer orders and their lines.\n\nWorkflow: search_functions to find a function, describe_function to read its arguments, then call_function. Use explain_term for any unfamiliar term or module concept. Function names are module.function and arguments are one flat object. Errors come back as one line with a code, such as \"error invalid: ...\". run_script chains several read-only calls in one round trip. These functions are also tools you can call directly: orders.add_line as orders-add_line, orders.summary as orders-summary, orders.cancel_order as orders-cancel_order. Everything else is reached through search_functions and call_function.",
+  "instructions": "Shop is a test store.\n\nModules (pass one to search_functions):\n- accounts: Who is calling.\n- items: 1 function\n- orders: Customer orders and their lines.\n\nWorkflow: search_functions to find a function; a result of five functions or fewer shows their arguments, so call_function directly, otherwise describe_function first, then call_function. Use explain_term for any unfamiliar term or module concept. Function names are module.function and arguments are one flat object. Errors come back as one line with a code, such as \"error invalid: ...\". run_script chains several read-only calls in one round trip. These functions are also tools you can call directly: orders.add_line as orders-add_line, orders.summary as orders-summary, orders.cancel_order as orders-cancel_order. Everything else is reached through search_functions and call_function.",
   "tools": [
     {
       "name": "whoami",
@@ -18,7 +18,7 @@
     },
     {
       "name": "search_functions",
-      "description": "Find functions. With no arguments, list the modules. With module, list every function in it. With query, list the functions whose name, summary, description, return type or argument names contain every word of it, optionally within one module. Each line shows module.function, its summary and what it returns. Next, describe_function.",
+      "description": "Find functions. With no arguments, list the modules. With module, list every function in it. With query, list the functions whose name, summary, description, return type or argument names contain every word of it, optionally within one module. Each line shows module.function, its summary and what it returns. A result of five functions or fewer also shows each one's route, description and arguments, and a function shown without arguments takes none: call_function next, after explain_term for an argument type you do not know. Otherwise describe_function.",
       "annotations": {
         "idempotentHint": true,
         "openWorldHint": false,
@@ -41,7 +41,7 @@
     },
     {
       "name": "describe_function",
-      "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function before its first call_function.",
+      "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function whose arguments search_functions did not show, or when you need the return shape.",
       "annotations": {
         "idempotentHint": true,
         "openWorldHint": false,
@@ -93,7 +93,7 @@
     },
     {
       "name": "call_function",
-      "description": "Call one function by its full name, module.function. args is one flat object merging the path, query and body arguments listed by describe_function; omit it when there are none. Returns the JSON response. Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. Some functions write data: read their description first.",
+      "description": "Call one function by its full name, module.function. args is one flat object merging the path, query and body arguments listed by search_functions or describe_function; omit it when there are none. Returns the JSON response. Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. Some functions write data: read their description first.",
       "annotations": {
         "destructiveHint": true,
         "idempotentHint": false,
@@ -109,7 +109,7 @@
           },
           "args": {
             "type": "object",
-            "description": "one flat object merging the path, query and body arguments listed by describe_function",
+            "description": "one flat object merging the path, query and body arguments listed by search_functions or describe_function",
             "additionalProperties": true
           }
         },
