@@ -114,10 +114,7 @@ func renderReference(cat *Catalog, info referenceInfo) ([]byte, error) {
 
 // referenceFunction is the view of one function.
 func (c *Catalog) referenceFunction(f *Function) referenceFunction {
-	operation := f.Method + " " + f.Path
-	if f.Composite {
-		operation = "composite"
-	}
+	operation := route(f)
 	var subtitle []string
 	if f.Summary != "" {
 		subtitle = append(subtitle, f.Summary)

@@ -266,7 +266,8 @@ func (s *Server) buildInstructions() string {
 	}
 	parts = append(parts, strings.Join(lines, "\n"))
 
-	rules := "Workflow: search_functions to find a function, describe_function to read its arguments, then call_function. " +
+	rules := "Workflow: search_functions to find a function; a result of five functions or fewer shows their arguments, " +
+		"so call_function directly, otherwise describe_function first, then call_function. " +
 		"Use explain_term for any unfamiliar term or module concept. " +
 		"Function names are module.function and arguments are one flat object. " +
 		"Errors come back as one line with a code, such as \"error invalid: ...\"."

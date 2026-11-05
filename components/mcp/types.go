@@ -2,7 +2,8 @@
 // Model Context Protocol server with a fixed set of tools:
 //
 //   - whoami: who the caller is.
-//   - search_functions: what exists, by module or free text, one dense line per function.
+//   - search_functions: what exists, by module or free text, one dense line per function,
+//     with the route and arguments when it lists five functions or fewer.
 //   - describe_function: how to call one or more functions (typed args, return type).
 //   - explain_term: the glossary (schemas and concepts, with the functions that use them).
 //   - call_function: invoke any function through the REST handler in-process.
@@ -252,7 +253,8 @@ type Composite struct {
 	Name string
 	// Summary is the one-line description shown by search_functions.
 	Summary string
-	// Description is the longer text shown by describe_function.
+	// Description is the longer text shown by describe_function, and by
+	// search_functions when it lists five functions or fewer.
 	Description string
 	// ReadOnly marks the composite as safe for read-only scripts.
 	ReadOnly bool

@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.22.0
+
+### Highlights
+
+- **Folded search results**: when `search_functions` with `module`, `query` or both lists five functions or fewer in total across the matched modules, each function comes as a block instead of one line: the usual search line (name, summary, `-> returns`, `[composite]`, `[deprecated]`), then its route as `METHOD /path`, its description without a leading repeat of the summary, and its `args:` table when it has arguments. The return shape and `see also` stay in `describe_function`. The route line is left out when the search line already says it: for a composite, which carries its tag, and when the summary is the route the catalog fell back to. Blocks are indented under their `module` header and separated by a blank line. Module listings fold too, so a module of three functions shows their arguments, while the bare module list and listings or queries of six functions or more keep one dense line per function. The tool descriptions and server instructions follow: `search_functions` says that a result of five functions or fewer shows each one's route, description and arguments, that a function shown without arguments takes none, and that `call_function` comes next, after `explain_term` for an argument type the model does not know, and otherwise `describe_function`; `describe_function` is for functions whose arguments the search did not show or when the return shape is needed; `call_function` and its `args` field take the arguments listed by `search_functions` or `describe_function`; and the workflow rule reads "search_functions to find a function; a result of five functions or fewer shows their arguments, so call_function directly, otherwise describe_function first, then call_function." An agent saves the `describe_function` round trip whenever a search is narrow.
+
 ## v1.21.1
 
 ### Highlights
