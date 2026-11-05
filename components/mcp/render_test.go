@@ -153,6 +153,16 @@ module units
 	assert.Equal(t, c.renderSearch("", "register package"), c.renderSearch("", "desk register"))
 	assert.Contains(t, c.renderSearch("", "register zzz"), "no functions match")
 
+	// A plural word also matches its singular, but not down to two letters.
+	assert.NotContains(t, c.renderSearch("", "carrier"), "no functions match")
+	assert.Equal(t, c.renderSearch("", "carrier"), c.renderSearch("", "carriers"))
+	assert.Equal(t, c.renderSearch("", "front desk"), c.renderSearch("", "fronts desks"))
+	assert.NotContains(t, c.renderSearch("", "get"), "no functions match")
+	assert.Equal(t, c.renderSearch("", "get"), c.renderSearch("", "gets"))
+	assert.Contains(t, c.renderSearch("", "ids"), "no functions match")
+	// Letters are counted, not bytes: "más" keeps two.
+	assert.False(t, functionMatches(&Function{Name: "units.máximo"}, []string{"más"}))
+
 	assert.Equal(t, `no functions match "zzz"
 modules: default, packages, units`, c.renderSearch("", " zzz "))
 }
@@ -178,10 +188,10 @@ func TestRenderEmmaSearchFolded(t *testing.T) {
 	assert.Contains(t, out, "\n\nmodule users\n")
 
 	// Six matches are dense lines only.
-	out = c.renderSearch("", "invoices")
-	assert.Equal(t, 8, len(strings.Split(out, "\n")))
+	out = c.renderSearch("", "readings")
+	assert.Equal(t, 7, len(strings.Split(out, "\n")))
 	assert.NotContains(t, out, "args:")
-	assert.Contains(t, out, "\n  finance.list_invoices  List Invoices  -> invoices.ListResponse\n")
+	assert.Contains(t, out, "\n  property.list_meter_readings  List Meter Readings  -> readings.ListResponse\n")
 
 	// A module listing of three functions folds too.
 	assert.Equal(t, `module system
