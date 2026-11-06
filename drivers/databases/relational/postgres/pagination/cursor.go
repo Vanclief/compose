@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -13,18 +14,23 @@ import (
 )
 
 const (
+	// MAX_PAGE_SIZE is the largest page; a larger limit is clamped to it.
 	MAX_PAGE_SIZE = 1000
+	// DEFAULT_LIMIT is the page size of a request without a limit.
 	DEFAULT_LIMIT = 50
 )
 
 var signingKey atomic.Pointer[[]byte]
 
-// Cursor holds the values needed for pagination
+// Cursor holds the values needed for pagination. SortField and Direction pin
+// the order the cursor was issued for, so it cannot be replayed under another
+// sort. Cursors issued before Direction existed have it empty.
 type Cursor struct {
 	SortField   string      `json:"sort_field"`
 	SortValue   interface{} `json:"sort_value"`
 	UniqueField string      `json:"unique_field"`
 	UniqueValue interface{} `json:"unique_value"`
+	Direction   string      `json:"direction,omitempty"`
 }
 
 // SetSigningKey enables HMAC-SHA256 signing of cursors so clients cannot forge
@@ -70,8 +76,10 @@ func EncodeCursor(c Cursor) (string, error) {
 //
 // Numeric SortValue and UniqueValue are decoded without loss of precision:
 // integers come back as int64 (so values above 2^53, such as snowflake IDs or
-// unix nanoseconds, survive the round trip) and other numbers as float64.
-// Strings, bools and nil are returned unchanged.
+// unix nanoseconds, survive the round trip), integers above the int64 range
+// as uint64 and other numbers as float64. Strings, bools and nil are returned
+// unchanged. A value that is an object, an array or a number that fits none
+// of these types is ez.EINVALID.
 func DecodeCursor(encodedCursor string) (*Cursor, error) {
 	if encodedCursor == "" {
 		return nil, nil
@@ -111,32 +119,51 @@ func DecodeCursor(encodedCursor string) (*Cursor, error) {
 		return nil, ez.New(ez.EINVALID, "invalid cursor data", err)
 	}
 
-	cursor.SortValue = normalizeCursorValue(cursor.SortValue)
-	cursor.UniqueValue = normalizeCursorValue(cursor.UniqueValue)
+	cursor.SortValue, err = normalizeCursorValue(cursor.SortValue)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	cursor.UniqueValue, err = normalizeCursorValue(cursor.UniqueValue)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
 
 	return &cursor, nil
 }
 
 // normalizeCursorValue converts a json.Number into int64 when it is an
-// integer, float64 otherwise, and falls back to its string form. Any other
+// integer in int64 range, uint64 when it is an integer above that range that
+// fits uint64, float64 otherwise. An object, an array or a number that fits
+// none of them, which only a forged cursor carries, is ez.EINVALID. Any other
 // value is returned unchanged.
-func normalizeCursorValue(v any) any {
+func normalizeCursorValue(v any) (any, error) {
+	switch v.(type) {
+	case map[string]any, []any:
+		return nil, ez.New(ez.EINVALID, "invalid cursor data", nil)
+	}
+
 	number, ok := v.(json.Number)
 	if !ok {
-		return v
+		return v, nil
 	}
 
 	intValue, err := number.Int64()
 	if err == nil {
-		return intValue
+		return intValue, nil
+	}
+
+	uintValue, err := strconv.ParseUint(number.String(), 10, 64)
+	if err == nil {
+		return uintValue, nil
 	}
 
 	floatValue, err := number.Float64()
-	if err == nil {
-		return floatValue
+	if err != nil {
+		return nil, ez.New(ez.EINVALID, "invalid cursor data", err)
 	}
 
-	return number.String()
+	return floatValue, nil
 }
 
 func signCursor(key []byte, payload string) []byte {

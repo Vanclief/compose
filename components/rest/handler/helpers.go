@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +81,40 @@ func (h *BaseHandler) GetQueryParamInt64s(c echo.Context, key string) ([]int64, 
 	}
 
 	return ints, nil
+}
+
+// GetQueryParams returns every value of a query param that may be repeated
+// (?status=a&status=b) or comma separated (?status=a,b), trimmed, without
+// empties. It returns nil when the param is absent or holds only empty values.
+func (h *BaseHandler) GetQueryParams(c echo.Context, key string) []string {
+	var values []string
+	for _, param := range c.QueryParams()[key] {
+		for _, value := range strings.Split(param, ",") {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+
+	return values
+}
+
+// GetQueryParamBool parses an optional boolean query param with
+// strconv.ParseBool. It returns false when the param is absent or empty.
+func (h *BaseHandler) GetQueryParamBool(c echo.Context, key string) (bool, error) {
+	str := c.QueryParam(key)
+	if str == "" {
+		return false, nil
+	}
+
+	value, err := strconv.ParseBool(str)
+	if err != nil {
+		errMsg := fmt.Sprintf("Query param %s must be true or false", key)
+		return false, ez.New(ez.EINVALID, errMsg, err)
+	}
+
+	return value, nil
 }
 
 // GetQueryParamTime parses a required query param as RFC3339/RFC3339Nano

@@ -189,9 +189,8 @@ func TestCursorRequestSchemaLeavesOutServerSideFilters(t *testing.T) {
 	}
 
 	properties := builder.schemas["github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_CursorRequest"]["properties"].(map[string]any)
-	_, hasFilters := properties["filters"]
-	if hasFilters || len(properties) != 2 {
-		t.Fatalf("expected only limit and cursor, got %v", properties)
+	if !reflect.DeepEqual(sortedKeys(properties), []string{"cursor", "include_count", "limit", "sort"}) {
+		t.Fatalf("expected only limit, cursor, sort and include_count, got %v", sortedKeys(properties))
 	}
 	if len(builder.schemas) != 1 {
 		t.Fatalf("expected no query.Filter component, got %v", sortedKeys(builder.schemas))
