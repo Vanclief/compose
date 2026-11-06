@@ -100,8 +100,8 @@ type Config struct {
 	// SummaryVerbs are the leading words a summary is kept as is with; other GET and POST
 	// summaries get a "Get" or "Create" prefix. Defaults to DefaultSummaryVerbs.
 	SummaryVerbs []string
-	// MaxPageSize, when positive, is the largest limit a paginated list accepts, documented as
-	// the maximum of every limit query parameter.
+	// MaxPageSize, when positive, is the page size the server clamps a larger limit to,
+	// documented as the maximum of every limit query parameter.
 	MaxPageSize int
 	// TagNames overrides the tag of a namespace, e.g. {"crm": "CRM"}.
 	TagNames map[string]string
@@ -264,6 +264,17 @@ func DefaultQueryGetters() map[string]QueryGetter {
 				"type":  "array",
 				"items": map[string]any{"type": "integer", "format": "int64"},
 			},
+			NameArg: 1,
+		},
+		"GetQueryParams": {
+			Schema: map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			NameArg: 1,
+		},
+		"GetQueryParamBool": {
+			Schema:  map[string]any{"type": "boolean"},
 			NameArg: 1,
 		},
 		"GetQueryParamTime": {

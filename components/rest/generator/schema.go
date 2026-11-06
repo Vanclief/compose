@@ -1315,6 +1315,12 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 					"cursor": map[string]any{
 						"type": "string",
 					},
+					"sort": map[string]any{
+						"type": "string",
+					},
+					"include_count": map[string]any{
+						"type": "boolean",
+					},
 					// Filter is `json:"-"`: server-side only, never read from the client.
 				},
 			}, true
@@ -1328,11 +1334,12 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 					"has_next_page": map[string]any{
 						"type": "boolean",
 					},
-					"hash": map[string]any{
-						"type": "string",
+					"total_count": map[string]any{
+						"type":   "integer",
+						"format": "int64",
 					},
 				},
-				// HasNextPage has no omitempty; NextCursor and Hash do.
+				// HasNextPage has no omitempty; NextCursor and TotalCount do.
 				"required": []string{"has_next_page"},
 			}, true
 		}

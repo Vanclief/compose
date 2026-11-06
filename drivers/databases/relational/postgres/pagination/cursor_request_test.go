@@ -1,47 +1,28 @@
 package pagination
 
 import (
-	"database/sql"
 	"encoding/json"
-	"strings"
+	"encoding/xml"
+	"reflect"
 	"testing"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
-	pgquery "github.com/vanclief/compose/drivers/databases/relational/postgres/query"
 	"github.com/vanclief/ez"
 )
 
-type cursorRequestTestModel struct{}
-
-func (cursorRequestTestModel) GetSortField() string {
-	return "id"
-}
-
-func (cursorRequestTestModel) GetSortValue() interface{} {
-	return nil
-}
-
-func (cursorRequestTestModel) GetUniqueField() string {
-	return "id"
-}
-
-func (cursorRequestTestModel) GetUniqueValue() interface{} {
-	return nil
-}
-
-func TestCursorRequestDoesNotUnmarshalClientFilters(t *testing.T) {
+func TestCursorRequestUnmarshalsOnlyClientFields(t *testing.T) {
 	body := []byte(`{
 		"limit": 10,
-		"cursor": "",
+		"cursor": "abc",
+		"sort": "-name",
+		"include_count": true,
 		"filters": [
 			{
 				"field": "created_at drop table users",
 				"value": 123,
 				"comparison": ">="
 			}
-		]
+		],
+		"Filter": [{"Field": "x", "Comparison": ">="}]
 	}`)
 
 	var request CursorRequest
@@ -53,64 +34,32 @@ func TestCursorRequestDoesNotUnmarshalClientFilters(t *testing.T) {
 	if len(request.Filter) != 0 {
 		t.Fatalf("expected client filters to be ignored, got %d", len(request.Filter))
 	}
+
+	if request.Limit != 10 || request.Cursor != "abc" || request.Sort != "-name" || !request.IncludeCount {
+		t.Fatalf("expected the client fields to be read, got %+v", request)
+	}
 }
 
-func TestApplyCursorToQueryEscapesFilterField(t *testing.T) {
-	db := newCursorRequestTestDB()
-	defer db.Close()
+func TestCursorRequestXMLIgnoresServerSideFields(t *testing.T) {
+	// echo binds an XML body with encoding/xml, which does not honour json:"-".
+	body := []byte(`<CursorRequest>
+		<Limit>10</Limit>
+		<Filter><Field>password_hash</Field><Comparison>; drop</Comparison></Filter>
+	</CursorRequest>`)
 
-	request := &CursorRequest{
-		Limit: 10,
-		Filter: []pgquery.Filter{
-			{
-				Field:      "created_at drop table users",
-				Value:      int64(123),
-				Comparison: ">=",
-			},
-		},
-	}
-	selectQuery := db.NewSelect().TableExpr("records")
-
-	result, err := ApplyCursorToQuery(selectQuery, request, cursorRequestTestModel{}, ASC)
+	var request CursorRequest
+	err := xml.Unmarshal(body, &request)
 	if err != nil {
-		t.Fatalf("apply cursor to query: %v", err)
+		t.Fatalf("unmarshal cursor request: %v", err)
 	}
 
-	sql := result.String()
-	expected := `"created_at drop table users" >= 123`
-	if !strings.Contains(sql, expected) {
-		t.Fatalf("expected SQL to contain %q, got %q", expected, sql)
+	if len(request.Filter) != 0 {
+		t.Fatalf("expected the server-side filter to be ignored, got %+v", request)
 	}
-}
 
-func TestApplyCursorToQueryRejectsUnsafeFilterComparison(t *testing.T) {
-	db := newCursorRequestTestDB()
-	defer db.Close()
-
-	request := &CursorRequest{
-		Limit: 10,
-		Filter: []pgquery.Filter{
-			{
-				Field:      "created_at",
-				Value:      int64(123),
-				Comparison: ">= or true",
-			},
-		},
+	if request.Limit != 10 {
+		t.Fatalf("expected the client fields to be read, got %+v", request)
 	}
-	selectQuery := db.NewSelect().TableExpr("records")
-
-	_, err := ApplyCursorToQuery(selectQuery, request, cursorRequestTestModel{}, ASC)
-	if err == nil {
-		t.Fatal("expected unsafe filter comparison to return an error")
-	}
-}
-
-func newCursorRequestTestDB() *bun.DB {
-	sqldb := sql.OpenDB(pgdriver.NewConnector(
-		pgdriver.WithDSN("postgres://postgres@localhost:5432/compose_test?sslmode=disable"),
-	))
-
-	return bun.NewDB(sqldb, pgdialect.New())
 }
 
 func TestCursorRequestValidateLimit(t *testing.T) {
@@ -122,8 +71,10 @@ func TestCursorRequestValidateLimit(t *testing.T) {
 	}{
 		{name: "negative", limit: -1, wantErr: true},
 		{name: "zero applies default", limit: 0, wantLimit: DEFAULT_LIMIT},
+		{name: "one", limit: 1, wantLimit: 1},
 		{name: "max", limit: MAX_PAGE_SIZE, wantLimit: MAX_PAGE_SIZE},
-		{name: "above max", limit: MAX_PAGE_SIZE + 1, wantErr: true},
+		{name: "above max clamps", limit: MAX_PAGE_SIZE + 1, wantLimit: MAX_PAGE_SIZE},
+		{name: "far above max clamps", limit: 1000000, wantLimit: MAX_PAGE_SIZE},
 	}
 
 	for _, tc := range tests {
@@ -148,5 +99,119 @@ func TestCursorRequestValidateLimit(t *testing.T) {
 				t.Fatalf("expected limit %d, got %d", tc.wantLimit, request.Limit)
 			}
 		})
+	}
+}
+
+func TestCursorRequestOrder(t *testing.T) {
+	db := newFakeDB(&fakeConn{})
+	table := db.Table(reflect.TypeOf(record{}))
+	allowlist := map[string]string{
+		"name": "name",
+		"rank": "rank",
+	}
+	defaultOrder := sortOrder{expr: "?TableAlias.rank", direction: DESC}
+
+	tests := []struct {
+		name       string
+		sort       string
+		sortFields map[string]string
+		want       sortOrder
+		wantCode   string
+	}{
+		{name: "empty sort without allowlist", sort: "", want: defaultOrder},
+		{name: "empty sort with allowlist", sort: "", sortFields: allowlist, want: defaultOrder},
+		{name: "ascending", sort: "name", sortFields: allowlist, want: sortOrder{expr: `?TableAlias."name"`, schemaField: table.FieldMap["name"], direction: ASC}},
+		{name: "descending", sort: "-name", sortFields: allowlist, want: sortOrder{expr: `?TableAlias."name"`, schemaField: table.FieldMap["name"], direction: DESC}},
+		{name: "another column", sort: "rank", sortFields: allowlist, want: sortOrder{expr: `?TableAlias."rank"`, schemaField: table.FieldMap["rank"], direction: ASC}},
+		{name: "not in allowlist", sort: "email", sortFields: allowlist, wantCode: ez.EINVALID},
+		{name: "descending not in allowlist", sort: "-email", sortFields: allowlist, wantCode: ez.EINVALID},
+		{name: "double prefix", sort: "--name", sortFields: allowlist, wantCode: ez.EINVALID},
+		{name: "column expression as sort", sort: "?TableAlias.name", sortFields: allowlist, wantCode: ez.EINVALID},
+		{name: "no allowlist", sort: "name", wantCode: ez.EINVALID},
+		{name: "not a column of the model", sort: "name", sortFields: map[string]string{"name": "missing"}, wantCode: ez.EINTERNAL},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := &CursorRequest{Sort: tc.sort}
+
+			got, err := request.order(db, record{}, Options{Direction: DESC, SortFields: tc.sortFields})
+			if tc.wantCode == "" {
+				if err != nil {
+					t.Fatalf("order: %v", err)
+				}
+				if got != tc.want {
+					t.Fatalf("expected %+v, got %+v", tc.want, got)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected %s", tc.wantCode)
+			}
+			if ez.ErrorCode(err) != tc.wantCode {
+				t.Fatalf("expected %s, got %s: %v", tc.wantCode, ez.ErrorCode(err), err)
+			}
+		})
+	}
+}
+
+func TestCursorRequestOrderAcceptsSortColumnTypesTheCursorHolds(t *testing.T) {
+	db := newFakeDB(&fakeConn{})
+	table := db.Table(reflect.TypeOf(valuerRecord{}))
+
+	tests := []struct {
+		name   string
+		column string
+	}{
+		// by_value, by_ptr and value_ptr are string kinds, so only the struct
+		// and array Valuers exercise the Valuer branch of the type check.
+		{name: "value receiver Valuer", column: "by_value"},
+		{name: "pointer receiver Valuer", column: "by_ptr"},
+		{name: "struct with a pointer receiver Valuer", column: "by_struct"},
+		{name: "array kind with a Valuer", column: "uuid"},
+		{name: "pointer to a Valuer", column: "value_ptr"},
+		{name: "sql.NullString", column: "nullable"},
+		{name: "time.Time", column: "created_at"},
+		{name: "pointer to time.Time", column: "updated_at"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := &CursorRequest{Sort: tc.column}
+
+			got, err := request.order(db, valuerRecord{}, Options{Direction: DESC, SortFields: map[string]string{tc.column: tc.column}})
+			if err != nil {
+				t.Fatalf("order: %v", err)
+			}
+
+			want := sortOrder{expr: `?TableAlias."` + tc.column + `"`, schemaField: table.FieldMap[tc.column], direction: ASC}
+			if got != want {
+				t.Fatalf("expected %+v, got %+v", want, got)
+			}
+		})
+	}
+}
+
+func TestCursorRequestValidateIgnoresSort(t *testing.T) {
+	// The sort allowlist is an argument of Paginate, so Validate cannot check Sort.
+	request := &CursorRequest{Sort: "name"}
+
+	err := request.Validate()
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestCursorRequestOrderRejectsUnknownDirection(t *testing.T) {
+	db := newFakeDB(&fakeConn{})
+
+	for _, direction := range []OrderDirection{"", "DESC", "sideways"} {
+		request := &CursorRequest{}
+
+		_, err := request.order(db, record{}, Options{Direction: direction})
+		if ez.ErrorCode(err) != ez.EINTERNAL {
+			t.Fatalf("direction %q: expected %s, got %v", direction, ez.EINTERNAL, err)
+		}
 	}
 }

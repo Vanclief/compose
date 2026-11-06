@@ -155,12 +155,14 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		"\tamenityID := int64(h.GetNumericQueryParam(c, \"amenity_id\", 0))\n" +
 		"\tclusters, _ := h.GetQueryParamInt64s(c, \"clusters\")\n" +
 		"\tfrom, _ := h.GetQueryParamTime(c, \"date_from\")\n" +
+		"\tstatuses := h.GetQueryParams(c, \"status\")\n" +
+		"\tarchived, _ := h.GetQueryParamBool(c, \"archived\")\n" +
 		"\tids, _ := h.ParseQueryParamUUIDs(c, \"bank_account_ids\")\n" +
 		"\tcategories := handler.ParseQueryParamStrings(c, \"category\")\n" +
 		"\troles := handler.ParseQueryParamTokens(c, \"role\")\n" +
 		"\tlimit := h.GetListLimit(c, 50)\n" +
 		"\t_ = c.QueryParam(dynamicKey)\n" +
-		"\t_, _, _, _, _, _, _, _ = search, amenityID, clusters, from, ids, categories, roles, limit\n" +
+		"\t_, _, _, _, _, _, _, _, _, _ = search, amenityID, clusters, from, statuses, archived, ids, categories, roles, limit\n" +
 		"\treturn nil\n" +
 		"}\n"
 
@@ -191,6 +193,8 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		"amenity_id":       "integer",
 		"clusters":         "array",
 		"date_from":        "string",
+		"status":           "array",
+		"archived":         "boolean",
 		"bank_account_ids": "array",
 		"category":         "array",
 		"role":             "array",
@@ -220,7 +224,7 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 	if !ok || uuidItems["format"] != "uuid" {
 		t.Fatalf("expected bank_account_ids uuid items, got %v", params["bank_account_ids"]["items"])
 	}
-	for _, name := range []string{"category", "role"} {
+	for _, name := range []string{"category", "role", "status"} {
 		items, ok := params[name]["items"].(map[string]any)
 		if !ok || items["type"] != "string" {
 			t.Fatalf("expected %s string items, got %v", name, params[name]["items"])
@@ -235,7 +239,7 @@ func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 		map[string]any{"name": "complex_id", "in": "path", "required": true},
 	}
 	derived := derivedQueryParameters(params, existing, nil)
-	wantOrder := []string{"amenity_id", "bank_account_ids", "category", "clusters", "date_from", "limit", "role", "unit_id"}
+	wantOrder := []string{"amenity_id", "archived", "bank_account_ids", "category", "clusters", "date_from", "limit", "role", "status", "unit_id"}
 	if len(derived) != len(wantOrder) {
 		t.Fatalf("expected %d derived params, got %v", len(wantOrder), derived)
 	}
