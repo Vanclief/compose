@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+/compose
 
 # Test binary, built with `go test -c`
 *.test
@@ -21,3 +22,6 @@
 # Editor/IDE
 .idea/
 .vscode/
+
+# Claude Code local files
+.claude/
