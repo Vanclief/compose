@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -37,11 +38,12 @@ const dispatchSpec = `{"openapi": "3.1.0", "info": {"title": "Dispatch", "versio
 
 // dispatchEcho is what the dispatch app answers: the request as it arrived.
 type dispatchEcho struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Query   string            `json:"query"`
-	Headers map[string]string `json:"headers"`
-	Body    string            `json:"body"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Query      string            `json:"query"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+	RemoteAddr string            `json:"remote_addr"`
 }
 
 // dispatchApp echoes every request, except /report which answers CSV.
@@ -57,11 +59,12 @@ func dispatchApp() http.Handler {
 			return err
 		}
 		out := dispatchEcho{
-			Method:  r.Method,
-			Path:    r.URL.EscapedPath(),
-			Query:   r.URL.RawQuery,
-			Headers: map[string]string{},
-			Body:    string(data),
+			Method:     r.Method,
+			Path:       r.URL.EscapedPath(),
+			Query:      r.URL.RawQuery,
+			Headers:    map[string]string{},
+			Body:       string(data),
+			RemoteAddr: r.RemoteAddr,
 		}
 		for name, values := range r.Header {
 			out.Headers[name] = values[0]
@@ -176,4 +179,30 @@ func TestDispatchForwardedIdentity(t *testing.T) {
 	assert.Equal(t, "req-9", got.Headers["X-Request-Id"])
 	_, sent = got.Headers["Cookie"]
 	assert.False(t, sent, "only the identity headers are forwarded")
+}
+
+func TestDispatchRemoteAddr(t *testing.T) {
+	c := dispatchCaller(t, http.Header{})
+	got := callDispatch(t, c, "items.get", map[string]any{"id": 1})
+	assert.Equal(t, "192.0.2.1:1234", got.RemoteAddr, "without an MCP request the httptest placeholder stays")
+
+	ctx := context.WithValue(context.Background(), remoteAddrKey{}, "203.0.113.9:4321")
+	raw, err := c.Call(ctx, "items.get", map[string]any{"id": 1})
+	require.NoError(t, err)
+	var out dispatchEcho
+	require.NoError(t, json.Unmarshal(raw, &out), string(raw))
+	assert.Equal(t, "203.0.113.9:4321", out.RemoteAddr)
+}
+
+func TestDispatchRemoteAddrThroughHandler(t *testing.T) {
+	srv, err := New(Config{Spec: []byte(dispatchSpec), Handler: dispatchApp()})
+	require.NoError(t, err)
+	session := connect(t, srv, "")
+
+	text, failed := callTool(t, session, "call_function", map[string]any{"name": "items.get", "args": map[string]any{"id": 1}})
+	require.False(t, failed, text)
+	var got dispatchEcho
+	require.NoError(t, json.Unmarshal([]byte(text), &got), text)
+	assert.True(t, strings.HasPrefix(got.RemoteAddr, "127.0.0.1:"), "the app sees the MCP client's address, got %q", got.RemoteAddr)
+	assert.NotEqual(t, "192.0.2.1:1234", got.RemoteAddr)
 }

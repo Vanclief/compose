@@ -61,8 +61,15 @@ type caller struct {
 	header http.Header
 	// forward, when set, holds the headers of the MCP request whose
 	// X-Forwarded-For and X-Request-Id are copied onto every REST request.
+	// The RemoteAddr of the MCP request travels in the context instead, see
+	// remoteAddrKey.
 	forward http.Header
 }
+
+// remoteAddrKey is the context key under which Server.Handler stores the
+// RemoteAddr of the MCP request, so every REST request it dispatches carries
+// the client's address instead of the httptest placeholder 192.0.2.1:1234.
+type remoteAddrKey struct{}
 
 // Call invokes a function by catalog name. Operations go through the REST
 // handler in-process; composites run with this caller so their calls carry
@@ -169,6 +176,10 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	}
 
 	req := httptest.NewRequestWithContext(ctx, f.Method, target, reader)
+	remoteAddr, _ := ctx.Value(remoteAddrKey{}).(string)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
 	for name := range header {
 		req.Header.Set(name, header.Get(name))
 	}
