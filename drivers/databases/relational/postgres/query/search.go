@@ -9,10 +9,12 @@ import (
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // Search narrows q to rows where any of the columns contains term, case
-// insensitively. The term is trimmed, and an empty term or no columns leaves
-// q unchanged. Otherwise the columns become one parenthesised condition,
-// (a ILIKE ? OR b ILIKE ?), added with Where so it ANDs with the rest of the
-// WHERE clause.
+// insensitively. The term is matched as if it had no NUL bytes, since
+// Postgres text cannot hold one and bun refuses to format a string with one:
+// they are dropped, then the term is trimmed, so a term of only NUL bytes and
+// spaces is empty. An empty term or no columns leaves q unchanged. Otherwise
+// the columns become one parenthesised condition, (a ILIKE ? OR b ILIKE ?),
+// added with Where so it ANDs with the rest of the WHERE clause.
 //
 // The LIKE metacharacters \, % and _ in term are escaped with a backslash, so
 // they match literally; this relies on backslash being the Postgres default
@@ -35,7 +37,7 @@ var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 //	CREATE EXTENSION IF NOT EXISTS pg_trgm;
 //	CREATE INDEX users_name_trgm_idx ON users USING gin (name gin_trgm_ops);
 func Search(q *bun.SelectQuery, term string, columns ...string) *bun.SelectQuery {
-	term = strings.TrimSpace(term)
+	term = strings.TrimSpace(strings.ReplaceAll(term, "\x00", ""))
 	if term == "" || len(columns) == 0 {
 		return q
 	}

@@ -67,10 +67,11 @@ type Options struct {
 // and with which error, is up to database/sql and the driver.
 //
 // q's top-level conditions must be joined by AND: put OR conditions inside
-// WhereGroup(" AND ", ...). After a top-level OR, r.Filter, the cursor and
-// bun's soft-delete scope bind only to the last OR branch, so the cursor does
-// not hold back rows matching the other branches: pages repeat them, deleted
-// ones included, and once they fill a page paging never ends.
+// WhereGroup(" AND ", ...). After a top-level OR, r.Filter and the cursor
+// bind only to the last OR branch, so the cursor does not hold back rows
+// matching the other branches: pages repeat them, and once they fill a page
+// paging never ends. bun's soft-delete scope and WherePK stay outside the OR:
+// bun wraps the query's own conditions in parentheses before adding them.
 //
 // A query with Union is not supported: the cursor, the order and the limit
 // cover only its first member, and a count fails or is wrong.
@@ -138,20 +139,22 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		// Rendering a query runs the apply functions of its has-one and
 		// belongs-to relations on it, so counting on q would leave what they
 		// add twice in the page query. A copy of the query value takes what
-		// they append instead and, unlike bun's Clone, keeps q's connection,
-		// soft-delete flags, WherePK and stored error. The copy shares q's
-		// table model, the elements of its slices and the queries it embeds
-		// (With, union, subquery arguments), so an apply function's Relation,
-		// or JoinOn on a join q already had, and the relations of an embedded
-		// query, still reach the page query, as they would counting on q.
-		// Appends on the copy go past the end of q's slices or to a new array,
-		// so q never sees them.
+		// they append instead, with q's connection, flags, WherePK, stored
+		// error and whereHasOr copied by value. The copy shares q's table
+		// model, which bun's Clone would copy with its joins, as well as the
+		// elements of its slices and the queries it embeds (With, union,
+		// subquery arguments), so an apply function's Relation, or JoinOn on a
+		// join q already had, and the relations of an embedded query, still
+		// reach the page query, as they would counting on q. Appends on the
+		// copy go past the end of q's slices or to a new array, so q never
+		// sees them.
 		countQuery := *q
 		count, err := countQuery.Count(ctx)
 		if err != nil {
 			return nil, CursorResponse{}, ez.Wrap(err)
 		}
-		totalCount = &count
+		total := int(count)
+		totalCount = &total
 	}
 
 	q = applyCursor(q, cursor, order, model.GetUniqueField(), r.Limit)

@@ -142,5 +142,34 @@ func (suite *TestSuite) TestResetTables() {
 
 	count, err := suite.db.NewSelect().Model((*testRecord)(nil)).Count(ctx)
 	suite.NoError(err)
-	suite.Equal(0, count)
+	suite.Equal(int64(0), count)
+}
+
+type testDocument struct {
+	bun.BaseModel `bun:"table:test_documents"`
+
+	ID   int64             `bun:",pk,autoincrement"`
+	Data map[string]string `bun:"type:jsonb"`
+}
+
+// TestJSONWithEscapedBackslashRoundTrips covers jsonfmt.AppendJSON through
+// ConnectToDatabase: bun v1.3.0's own formatter renders the text \u0000 inside
+// a JSON value as \\\u0000, which Postgres rejects for jsonb.
+func (suite *TestSuite) TestJSONWithEscapedBackslashRoundTrips() {
+	ctx := context.Background()
+	models := []interface{}{(*testDocument)(nil)}
+
+	err := suite.db.ResetTables(models)
+	suite.Require().NoError(err)
+
+	doc := &testDocument{Data: map[string]string{"text": `x\u0000y`, "quote": `it's \'`, "nul": "a\x00b"}}
+	_, err = suite.db.NewInsert().Model(doc).Exec(ctx)
+	suite.Require().NoError(err)
+
+	var fetched testDocument
+	err = suite.db.NewSelect().Model(&fetched).Where("id = ?", doc.ID).Scan(ctx)
+	suite.Require().NoError(err)
+	suite.Equal(`x\u0000y`, fetched.Data["text"])
+	suite.Equal(`it's \'`, fetched.Data["quote"])
+	suite.Equal(`a\u0000b`, fetched.Data["nul"], "a NUL byte is stored as the text of its escape, as bun does")
 }

@@ -698,6 +698,37 @@ func TestAuthorizeErrors(t *testing.T) {
 	assert.Contains(t, res.body, "response_type must be code")
 }
 
+func TestNULByteIDsAreUnknown(t *testing.T) {
+	// bun v1.3.0 refuses to format a string with a NUL byte, so a lookup of a
+	// client-chosen id holding one failed the bun store and answered a 500.
+	// The server treats such an id as unknown without asking the store.
+	var reported []error
+	env := newEnv(t, func(cfg *Config) {
+		cfg.Store = newBunStore(t, newSQLiteDB(t))
+		cfg.OnError = func(_ context.Context, err error) {
+			reported = append(reported, err)
+		}
+	}, nil)
+	_, challenge := pkce("a")
+
+	res := env.authorize(t, authorizeParams("no\x00body", challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Unknown application")
+
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"\x00"}})
+	assert.Equal(t, http.StatusUnauthorized, res.status)
+	assert.Equal(t, "invalid_client", oauthErrorCode(t, res))
+
+	res = env.get(t, "/oauth/login?request="+url.QueryEscape("\x00"))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Login link expired")
+
+	_, err := env.s.Pending(context.Background(), "\x00")
+	assert.Equal(t, ez.ENOTFOUND, ez.ErrorCode(err))
+
+	assert.Empty(t, reported, "a NUL byte in an id is not a server error")
+}
+
 func TestSameResource(t *testing.T) {
 	s, err := New(Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", TokenPrefix: "acme", Store: NewMemoryStore(), LoginURL: "https://app.acme.com/login"})
 	require.NoError(t, err)

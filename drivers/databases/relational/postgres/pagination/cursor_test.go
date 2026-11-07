@@ -188,7 +188,7 @@ func TestDecodeCursorRejectsInvalidSignatures(t *testing.T) {
 	}
 }
 
-func TestDecodeCursorRejectsValuesThatAreNotScalars(t *testing.T) {
+func TestDecodeCursorRejectsValuesAQueryCannotTake(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload string
@@ -199,6 +199,9 @@ func TestDecodeCursorRejectsValuesThatAreNotScalars(t *testing.T) {
 		{name: "object unique value", payload: `{"sort_field":"id","sort_value":1,"unique_field":"id","unique_value":{}}`},
 		{name: "array unique value", payload: `{"sort_field":"id","sort_value":1,"unique_field":"id","unique_value":[]}`},
 		{name: "number out of range unique value", payload: `{"sort_field":"id","sort_value":1,"unique_field":"id","unique_value":-1e400}`},
+		// bun v1.3.0 writes a formatting error into the SQL for a string with a NUL byte.
+		{name: "NUL byte in sort value", payload: `{"sort_field":"name","sort_value":"a\u0000b","unique_field":"id","unique_value":1}`},
+		{name: "NUL byte in unique value", payload: `{"sort_field":"id","sort_value":1,"unique_field":"code","unique_value":"\u0000"}`},
 	}
 
 	for _, tc := range tests {

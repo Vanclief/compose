@@ -40,6 +40,20 @@ func TestSearchEmptyTermLeavesQueryUntouched(t *testing.T) {
 	require.Equal(t, want, got, "no columns")
 }
 
+func TestSearchDropsNULBytes(t *testing.T) {
+	// bun v1.3.0 refuses to format a string with a NUL byte, writing the error
+	// into the SQL text, and Postgres text cannot hold one anyway.
+	db := newSearchTestDB()
+	defer db.Close()
+
+	got := Search(db.NewSelect().Table("users"), "al\x00ice", "name").String()
+	require.Equal(t, `SELECT * FROM "users" WHERE (name ILIKE '%alice%')`, got)
+
+	want := db.NewSelect().Table("users").String()
+	got = Search(db.NewSelect().Table("users"), "\x00 \x00", "name").String()
+	require.Equal(t, want, got, "a term of only NUL bytes and spaces")
+}
+
 func TestSearchOneColumn(t *testing.T) {
 	db := newSearchTestDB()
 	defer db.Close()

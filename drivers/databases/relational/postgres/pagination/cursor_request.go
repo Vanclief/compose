@@ -146,5 +146,5 @@ func applyCursor(q *bun.SelectQuery, cursor *Cursor, order sortOrder, uniqueFiel
 		orderBy += ", " + uniqueField + " " + keyword
 	}
 
-	return q.OrderExpr(orderBy).Limit(limit + 1)
+	return q.OrderExpr(orderBy).Limit(int64(limit + 1))
 }

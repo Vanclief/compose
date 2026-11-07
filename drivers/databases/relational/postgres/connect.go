@@ -11,7 +11,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/vanclief/compose/drivers/databases/relational"
 	"github.com/vanclief/ez"
@@ -84,7 +83,7 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		sqldb.SetMaxIdleConns(cfg.MaxIdleConns)
 	}
 
-	db := bun.NewDB(sqldb, pgdialect.New())
+	db := bun.NewDB(sqldb, NewDialect())
 
 	ctx := context.Background()
 
