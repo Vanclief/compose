@@ -10,6 +10,37 @@ import (
 
 type DB struct {
 	*bun.DB
+	// MigrationDB is a second pool for migrations and the schema baseline load,
+	// with no statement or read timeout and its own lock timeout. It is nil
+	// when the driver does not provide one, then migrations run on DB.
+	MigrationDB *bun.DB
+}
+
+// migrationDB - The pool migrations run on
+func (db *DB) migrationDB() *bun.DB {
+	if db.MigrationDB != nil {
+		return db.MigrationDB
+	}
+
+	return db.DB
+}
+
+// Close - Closes the migration pool, when there is one, and then the main pool
+func (db *DB) Close() error {
+	if db.MigrationDB != nil {
+		err := db.MigrationDB.Close()
+		if err != nil {
+			db.DB.Close() // nolint:errcheck // The first error is the one returned
+			return ez.Wrap(err)
+		}
+	}
+
+	err := db.DB.Close()
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	return nil
 }
 
 // CreateTables - Creates the database schema if it doesn't already exist

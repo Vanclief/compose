@@ -100,6 +100,16 @@ func TestConnectToDatabaseRejectsNegativeMaxIdleConns(t *testing.T) {
 	assert.Nil(t, db)
 }
 
+func TestConnectToDatabaseRejectsNegativeMigrationLockTimeout(t *testing.T) {
+	db, err := ConnectToDatabase(&ConnectionConfig{
+		Host:                 "127.0.0.1:1",
+		MigrationLockTimeout: -1,
+	})
+	assert.Error(t, err)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Nil(t, db)
+}
+
 type testRecord struct {
 	bun.BaseModel `bun:"table:test_records"`
 

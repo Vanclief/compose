@@ -2,6 +2,17 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.27.0
+
+### Breaking
+
+- **`RunMigrations` marks a migration applied only after its `Up` succeeds and no longer rolls the group back on failure.** A failed migration returns its error, stays pending and runs again from the top on the next start, so every migration must be safe to run twice. `RollbackLastMigration` unmarks a migration only after its `Down` succeeds and returns nil on an empty migration set.
+- **Migrations run on a second pool, `relational.DB.MigrationDB`,** with no statement or read timeout, a `lock_timeout` from the new `migrationLockTimeout` config field (milliseconds, default 10 s) and `client_connection_check_interval`, which needs Postgres 14 or newer on Linux, 15 or newer on macOS and BSD, never Windows. Expect one or two extra connections while migrations run. `relational.DB.Close` closes both pools. On SQLite, or on a `relational.DB` built by hand, `MigrationDB` is nil and migrations run on the main pool. How the pool behaves is in [docs/migrations.md](docs/migrations.md).
+
+### Highlights
+
+- **Schema baseline**: `relational.Baseline{SQL, Floor}` and `DB.RunMigrationsFromBaseline(baseline, migrations)` let an app commit one `pg_dump --schema-only` of its database and delete the migration files named at or below the floor. A fresh database loads the dump and runs the files above the floor; a database that is behind the floor is refused with `ez.ECONFLICT`. A load that fails on an existing table or object, or a dump without the `bun_migrations` table, is `ez.ECONFLICT`, one that fails on a setting, role, type or collation the server does not have is `ez.EINVALID`, and any other Postgres error during the load, a missing extension included, is `ez.EINTERNAL` with the Postgres error in its text. Postgres only. To adopt it, pass `nil` models to `WithPostgres` and move `CreateTables` and the component `CreateTable` helpers after the call, so nothing creates a table before the load. The procedure is in [docs/migrations.md](docs/migrations.md).
+
 ## v1.26.1
 
 ### Highlights
