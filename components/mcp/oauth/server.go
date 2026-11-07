@@ -429,9 +429,12 @@ func (s *Server) getRecord(ctx context.Context, kind, id string, take bool, v an
 
 // readRecord returns the stored bytes under kind and id, deleting them in the
 // same step when take is set. Absent records yield ez.ENOTFOUND, a failing
-// Store ez.EINTERNAL.
+// Store ez.EINTERNAL. An id holding a NUL byte is absent without asking the
+// Store: no stored id has one (ids are generated, hashed or parsed URLs), and
+// bun refuses to format a string with one, which would make a client-chosen
+// client_id or request id a Store failure.
 func (s *Server) readRecord(ctx context.Context, kind, id string, take bool) ([]byte, error) {
-	if id == "" {
+	if id == "" || strings.ContainsRune(id, 0) {
 		return nil, ez.New(ez.ENOTFOUND, "oauth: no "+kind+" id", nil)
 	}
 	var data []byte

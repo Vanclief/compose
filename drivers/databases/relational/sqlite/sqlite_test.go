@@ -231,5 +231,28 @@ func (suite *TestSuite) TestResetTables() {
 
 	count, err := db.NewSelect().Model((*testItem)(nil)).Count(ctx)
 	suite.NoError(err)
-	suite.Equal(0, count)
+	suite.Equal(int64(0), count)
+}
+
+// TestJSONWithEscapedBackslashRoundTrips covers jsonfmt.AppendJSON through
+// ConnectToMemoryDatabase: bun v1.3.0's own formatter renders the text \u0000
+// inside a JSON value as \\\u0000, which changes the stored value.
+func (suite *TestSuite) TestJSONWithEscapedBackslashRoundTrips() {
+	db, err := ConnectToMemoryDatabase()
+	suite.Require().NoError(err)
+	defer db.Close() // nolint:errcheck
+
+	err = db.CreateTables(testModels())
+	suite.Require().NoError(err)
+
+	ctx := context.Background()
+	item := &testItem{Name: "json", Meta: map[string]any{"text": `x\u0000y`, "quote": `it's \'`}}
+	_, err = db.NewInsert().Model(item).Exec(ctx)
+	suite.Require().NoError(err)
+
+	var fetched testItem
+	err = db.NewSelect().Model(&fetched).Where("id = ?", item.ID).Scan(ctx)
+	suite.Require().NoError(err)
+	suite.Equal(`x\u0000y`, fetched.Meta["text"])
+	suite.Equal(`it's \'`, fetched.Meta["quote"])
 }

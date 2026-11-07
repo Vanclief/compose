@@ -712,6 +712,28 @@ func TestPaginateCountKeepsSoftDeleteScope(t *testing.T) {
 	}
 }
 
+func TestPaginateSoftDeleteScopeStaysOutsideTopLevelOr(t *testing.T) {
+	// bun wraps the query's own conditions in parentheses before adding the
+	// soft-delete scope, so a top-level OR cannot pull deleted rows into a
+	// page or its count. The cursor is still bound to the last OR branch, which
+	// is why Paginate's doc asks for OR conditions inside WhereGroup.
+	conn := newRecordConn()
+	db := newFakeDB(conn)
+	items := []archivedRecord{}
+	q := db.NewSelect().Model(&items).Where("?TableAlias.name = ?", "a").WhereOr("?TableAlias.name = ?", "b")
+
+	_, _, err := Paginate(context.Background(), q, &CursorRequest{Limit: 2, IncludeCount: true}, archivedRecord{}, Options{Direction: ASC, AllowCount: true})
+	if err != nil {
+		t.Fatalf("paginate: %v", err)
+	}
+
+	where := ` WHERE (("r".name = 'a') OR ("r".name = 'b')) AND "r"."deleted_at" IS NULL`
+	requireQueries(t, conn,
+		`SELECT count(*) FROM "records" AS "r"`+where,
+		`SELECT "r"."id", "r"."name", "r"."rank", "r"."deleted_at" FROM "records" AS "r"`+where+` ORDER BY "r".rank ASC, "r".id ASC LIMIT 3`,
+	)
+}
+
 func TestPaginateCountKeepsWherePK(t *testing.T) {
 	conn := newRecordConn()
 	db := newFakeDB(conn)

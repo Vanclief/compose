@@ -78,8 +78,9 @@ func EncodeCursor(c Cursor) (string, error) {
 // integers come back as int64 (so values above 2^53, such as snowflake IDs or
 // unix nanoseconds, survive the round trip), integers above the int64 range
 // as uint64 and other numbers as float64. Strings, bools and nil are returned
-// unchanged. A value that is an object, an array or a number that fits none
-// of these types is ez.EINVALID.
+// unchanged. A value that is an object, an array, a number that fits none of
+// these types or a string holding a NUL byte, which no Postgres text column
+// can have produced and bun refuses to format, is ez.EINVALID.
 func DecodeCursor(encodedCursor string) (*Cursor, error) {
 	if encodedCursor == "" {
 		return nil, nil
@@ -134,13 +135,17 @@ func DecodeCursor(encodedCursor string) (*Cursor, error) {
 
 // normalizeCursorValue converts a json.Number into int64 when it is an
 // integer in int64 range, uint64 when it is an integer above that range that
-// fits uint64, float64 otherwise. An object, an array or a number that fits
-// none of them, which only a forged cursor carries, is ez.EINVALID. Any other
-// value is returned unchanged.
+// fits uint64, float64 otherwise. An object, an array, a number that fits
+// none of them or a string holding a NUL byte, which only a forged cursor
+// carries, is ez.EINVALID. Any other value is returned unchanged.
 func normalizeCursorValue(v any) (any, error) {
-	switch v.(type) {
+	switch value := v.(type) {
 	case map[string]any, []any:
 		return nil, ez.New(ez.EINVALID, "invalid cursor data", nil)
+	case string:
+		if strings.ContainsRune(value, 0) {
+			return nil, ez.New(ez.EINVALID, "invalid cursor data", nil)
+		}
 	}
 
 	number, ok := v.(json.Number)
