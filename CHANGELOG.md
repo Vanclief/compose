@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.24.0
+
+### Breaking
+
+- **`relational.QueryBuilder` removed**: `DB.QueryBuilder`, `Condition`, `ConditionGroup`, `Operator` and `LogicalOperator` with their values (`EqualOperator`, `InOperator`, `ILikeOperator`, `AndOperator`, `OrOperator` and the rest) and `DB.QueryCount` are gone from `drivers/databases/relational`. Go code that uses them no longer compiles. The builder was a second WHERE language on top of bun that skipped zero values silently, so a zero scope ID widened a query instead of failing, and did not escape `%` or `_` in `LIKE` terms. Write the conditions on the bun query instead: a guarded `q.Where("unit_id = ?", request.UnitID)` for each optional filter, an unguarded `Where` for scope conditions so a zero value returns nothing, `q.Where("status_id IN (?)", bun.In(ids))` behind a `len(ids) > 0` check for a list, and `query.Search(q, term, columns...)` for the group of `OR ILIKE` conditions on a search term. Three behaviours change on the way: `%`, `_` and `\` in a search term match literally, a whitespace-only search term applies no filter where the builder matched it as `ILIKE '%  %'`, and a bool filter is bound only when the handler decides to, where the builder bound every bool.
+
 ## v1.23.0
 
 ### Breaking
