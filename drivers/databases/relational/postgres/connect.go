@@ -25,6 +25,9 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 	if cfg.MaxIdleConns < 0 {
 		return nil, ez.New(ez.EINVALID, "Max idle connections cannot be negative", nil)
 	}
+	if cfg.MigrationLockTimeout < 0 {
+		return nil, ez.New(ez.EINVALID, "Migration lock timeout cannot be negative", nil)
+	}
 
 	sslmode, err := resolveSSLMode(cfg)
 	if err != nil {
@@ -51,6 +54,11 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		writeTimeout = cfg.WriteTimeout
 	}
 
+	lockTimeout := DEFAULT_MIGRATION_LOCK_TIMEOUT
+	if cfg.MigrationLockTimeout != 0 {
+		lockTimeout = cfg.MigrationLockTimeout
+	}
+
 	log.Info().
 		Str("Host", cfg.Host).
 		Str("Username", cfg.Username).
@@ -59,21 +67,16 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 		Str("SSL Mode", sslmode).
 		Bool("Verbose", cfg.Verbose).
 		Int("Statement Timeout", statementTimeout).
+		Int("Migration Lock Timeout", lockTimeout).
 		Int("Max Open Conns", cfg.MaxOpenConns).
 		Int("Max Idle Conns", cfg.MaxIdleConns).
 		Msg("Connecting to Postgres Database")
 
 	dsn := buildDSN(cfg, sslmode)
 
-	sqldb := sql.OpenDB(pgdriver.NewConnector(
-		pgdriver.WithDSN(dsn),
-		pgdriver.WithDialTimeout(time.Duration(dialTimeout)*time.Millisecond),
-		pgdriver.WithReadTimeout(time.Duration(readTimeout)*time.Millisecond),
-		pgdriver.WithWriteTimeout(time.Duration(writeTimeout)*time.Millisecond),
-		pgdriver.WithConnParams(map[string]interface{}{
-			"statement_timeout": strconv.Itoa(statementTimeout),
-		}),
-	))
+	sqldb := sql.OpenDB(newConnector(dsn, dialTimeout, readTimeout, writeTimeout, map[string]interface{}{
+		"statement_timeout": strconv.Itoa(statementTimeout),
+	}))
 
 	if cfg.MaxOpenConns > 0 {
 		sqldb.SetMaxOpenConns(cfg.MaxOpenConns)
@@ -85,15 +88,48 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 
 	db := bun.NewDB(sqldb, NewDialect())
 
+	// Migrations get their own pool: a read timeout of 0 sets no socket
+	// deadline and statement_timeout 0 lets a long CREATE INDEX finish. The
+	// connection count is not capped, so a migration that holds a transaction
+	// can still query migrator.DB(). Idle connections are kept so a per-row
+	// backfill reuses one instead of dialing for every statement, and closed
+	// after 30 seconds so the pool holds nothing once migrations are done.
+	// client_connection_check_interval (PostgreSQL 14+) makes the server abort
+	// the statement of a client that died mid-migration within about 5 seconds,
+	// instead of running it and holding its locks until it finishes.
+	migrationSQLDB := sql.OpenDB(newConnector(dsn, dialTimeout, 0, writeTimeout, map[string]interface{}{
+		"statement_timeout":                "0",
+		"lock_timeout":                     strconv.Itoa(lockTimeout),
+		"client_connection_check_interval": "5000",
+	}))
+	migrationSQLDB.SetConnMaxIdleTime(30 * time.Second)
+
+	// The dialect is shared so both pools use one model registry, and models
+	// registered on the main pool resolve in migrations too
+	migrationDB := bun.NewDB(migrationSQLDB, db.Dialect())
+
 	ctx := context.Background()
 
 	_, err = db.ExecContext(ctx, "SELECT 1")
 	if err != nil {
-		db.Close() // nolint:errcheck // The connection error is the one that matters
+		migrationDB.Close() // nolint:errcheck // The connection error is the one that matters
+		db.Close()          // nolint:errcheck // The connection error is the one that matters
 		return nil, ez.Wrap(err)
 	}
 
-	return &relational.DB{DB: db}, nil
+	return &relational.DB{DB: db, MigrationDB: migrationDB}, nil
+}
+
+// newConnector - Builds a pgdriver connector. Timeouts are in milliseconds and
+// a timeout of 0 sets no deadline.
+func newConnector(dsn string, dialTimeout, readTimeout, writeTimeout int, params map[string]interface{}) *pgdriver.Connector {
+	return pgdriver.NewConnector(
+		pgdriver.WithDSN(dsn),
+		pgdriver.WithDialTimeout(time.Duration(dialTimeout)*time.Millisecond),
+		pgdriver.WithReadTimeout(time.Duration(readTimeout)*time.Millisecond),
+		pgdriver.WithWriteTimeout(time.Duration(writeTimeout)*time.Millisecond),
+		pgdriver.WithConnParams(params),
+	)
 }
 
 // resolveSSLMode returns the sslmode for cfg. SSLMode wins when set; otherwise

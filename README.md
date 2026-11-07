@@ -46,6 +46,7 @@ This serves the reference page of `openapi.yaml` with what changed since `previo
 ---
 
 - [config](https://github.com/vanclief/compose/docs/config.md) - Loading env/ settings
+- [migrations](docs/migrations.md) - how the migration runner and its own connection pool behave, and the schema baseline that replaces old migration files
 
 ## Dependencies
 

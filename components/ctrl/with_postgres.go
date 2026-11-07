@@ -17,6 +17,7 @@ func (c *BaseController) WithPostgres(cfg *postgres.ConnectionConfig, models []i
 	if cfg.Verbose {
 		queryHook := bundebug.NewQueryHook(bundebug.WithVerbose(cfg.Verbose))
 		db.AddQueryHook(queryHook)
+		db.MigrationDB.AddQueryHook(queryHook)
 		log.Info().Bool("Verbose", cfg.Verbose).Msg("Displaying database query logs")
 	}
 
