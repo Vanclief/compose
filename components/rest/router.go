@@ -111,13 +111,15 @@ func newConfig(opts ...Option) config {
 	return cfg
 }
 
-// Start configures logging, recovery, CORS and server timeouts on e and serves
-// on port. It always sets a 10s read-header timeout and a 120s idle timeout.
-// The read and write timeouts are unset (unlimited) unless WithReadTimeout or
-// WithWriteTimeout is passed.
+// Start configures logging, recovery, CORS, the body limit, RejectNUL and
+// server timeouts on e and serves on port. It always sets a 10s read-header
+// timeout and a 120s idle timeout. The read and write timeouts are unset
+// (unlimited) unless WithReadTimeout or WithWriteTimeout is passed.
 //
 // Without WithAllowedOrigins every origin is allowed, and without WithBodyLimit
 // request bodies are unbounded, so production callers should pass both.
+// Start also registers RejectNUL unconditionally, after CORS and the body
+// limit; see RejectNUL for what it inspects and its memory use.
 func Start(e *echo.Echo, log zerolog.Logger, port string, opts ...Option) {
 	configure(e, log, opts...)
 	e.Logger.Fatal(e.Start(":" + port))
@@ -159,6 +161,11 @@ func configure(e *echo.Echo, log zerolog.Logger, opts ...Option) {
 	if cfg.bodyLimit != "" {
 		e.Use(middleware.BodyLimit(cfg.bodyLimit))
 	}
+
+	// After CORS, so preflights are answered first and its 400 carries the
+	// CORS headers, and after the body limit, so a body over the limit gets
+	// the limit's 413, also when RejectNUL is the one reading it.
+	e.Use(RejectNUL())
 
 	// Server timeouts. e.Start serves e.Server and only sets Addr, Handler and
 	// ErrorLog on it, so these values take effect.
