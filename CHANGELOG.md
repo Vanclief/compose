@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.26.1
+
+### Highlights
+
+- **v1.26.0 could not be fetched**: it held `components/rest/nul.go`, and Go's module zip refuses a path element named `nul` (a reserved Windows device name), so `go get` and proxy.golang.org answered "create zip: malformed file path". The file is now `components/rest/reject_nul.go` and v1.26.0 is retracted in `go.mod`; nothing else changes.
+
 ## v1.26.0
 
 ### Highlights
