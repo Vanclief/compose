@@ -2,6 +2,10 @@ module github.com/vanclief/compose
 
 go 1.26.10
 
+// v1.26.0 held components/rest/nul.go, a file name Go's module zip refuses
+// (nul is a reserved Windows device name), so the version cannot be fetched.
+retract v1.26.0
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.6
