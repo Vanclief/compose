@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,12 +35,12 @@ type shopEcho struct {
 }
 
 // shopError writes the compose error envelope.
-func shopError(c echo.Context, status int, code, message string) error {
+func shopError(c *echo.Context, status int, code, message string) error {
 	return c.JSON(status, map[string]any{"error": map[string]string{"code": code, "message": message, "request_id": "req-1"}})
 }
 
 // echoShopRequest answers with everything the request carried.
-func echoShopRequest(c echo.Context, status int) error {
+func echoShopRequest(c *echo.Context, status int) error {
 	r := c.Request()
 	out := shopEcho{
 		Method:      r.Method,
@@ -52,8 +52,8 @@ func echoShopRequest(c echo.Context, status int) error {
 		Accept:      r.Header.Get("Accept"),
 		RequestID:   r.Header.Get("X-Request-Id"),
 	}
-	for _, name := range c.ParamNames() {
-		out.Path[name] = c.Param(name)
+	for _, param := range c.PathValues() {
+		out.Path[param.Name] = param.Value
 	}
 	id, err := strconv.Atoi(c.Param("order_id"))
 	if err != nil {
@@ -77,19 +77,19 @@ func echoShopRequest(c echo.Context, status int) error {
 // shopApp serves the routes of testdata/server.json.
 func shopApp() http.Handler {
 	e := echo.New()
-	e.GET("/me", func(c echo.Context) error {
+	e.GET("/me", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"key": c.Request().Header.Get("API-KEY")})
 	})
-	e.GET("/orders/:order_id", func(c echo.Context) error {
+	e.GET("/orders/:order_id", func(c *echo.Context) error {
 		if c.Param("order_id") == "999" {
 			return shopError(c, http.StatusNotFound, ez.ENOTFOUND, "order 999 not found")
 		}
 		return echoShopRequest(c, http.StatusOK)
 	})
-	e.DELETE("/orders/:order_id", func(c echo.Context) error {
+	e.DELETE("/orders/:order_id", func(c *echo.Context) error {
 		return c.String(http.StatusConflict, "order already shipped\n")
 	})
-	e.POST("/orders/:order_id/lines", func(c echo.Context) error {
+	e.POST("/orders/:order_id/lines", func(c *echo.Context) error {
 		var body map[string]any
 		err := json.NewDecoder(c.Request().Body).Decode(&body)
 		if err != nil {
@@ -105,10 +105,10 @@ func shopApp() http.Handler {
 		c.Request().Body = io.NopCloser(strings.NewReader(string(data)))
 		return echoShopRequest(c, http.StatusCreated)
 	})
-	e.PUT("/orders/:order_id/tags", func(c echo.Context) error {
+	e.PUT("/orders/:order_id/tags", func(c *echo.Context) error {
 		return echoShopRequest(c, http.StatusOK)
 	})
-	e.GET("/items", func(c echo.Context) error {
+	e.GET("/items", func(c *echo.Context) error {
 		limit, err := strconv.Atoi(c.QueryParam("limit"))
 		if err != nil {
 			limit = 10

@@ -65,7 +65,7 @@ func decodeWebhook(raw []byte) (*leads.Request, error) {
 	return &leads.Request{}, nil
 }
 
-func (h *Handler) Webhook(c echo.Context) error {
+func (h *Handler) Webhook(c *echo.Context) error {
 	body, err := decodeWebhook(nil)
 	if err != nil {
 		return err
@@ -96,7 +96,7 @@ func decodeWebhook(raw []byte) (*leads.Request, error) {
 	return &leads.Request{}, nil
 }
 
-func (h *Handler) Webhook(c echo.Context) error {
+func (h *Handler) Webhook(c *echo.Context) error {
 	body, err := decodeWebhook(nil)
 	if err != nil {
 		return err

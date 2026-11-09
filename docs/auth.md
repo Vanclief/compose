@@ -143,7 +143,8 @@ A failed check is `ez.ENOTAUTHORIZED` with the message
 
 A cookie only reaches an API on another origin when the browser is allowed to send it:
 `SameSite=Lax` limits that to the same site, and the response needs credentialed CORS. With
-`rest.Start` pass `rest.WithCredentialedCORS()` together with `rest.WithAllowedOrigins(...)`.
+`rest.Start` pass `rest.WithCredentialedCORS()` together with `rest.WithAllowedOrigins(...)`
+naming the origins (not `*`).
 
 The session token may also arrive in the `Authorization` header, for example from a mobile app
 that keeps it in the keychain. Only the cookie path runs the CSRF rule. `FromCookie` tells the two
@@ -187,7 +188,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 
@@ -228,7 +229,7 @@ type Auth struct {
 }
 
 // Authenticate builds the compose request and resolves its credential.
-func (a *Auth) Authenticate(c echo.Context) (*requests.AuthenticatedRequest, Requester, error) {
+func (a *Auth) Authenticate(c *echo.Context) (*requests.AuthenticatedRequest, Requester, error) {
 	req := requests.New(c.Request().Header, c.RealIP(), requests.WithMethod(c.Request().Method))
 	authReq, err := req.Authenticate(requests.WithCookie(sessionCookie, "https://app.acme.com"))
 	if err != nil {
@@ -316,7 +317,8 @@ read that header when the response carries `Access-Control-Expose-Headers: Sessi
 the app keeps sending the previous token, which is refused `Grace` after the rotation and the
 session is deleted.
 Cookies cross-origin also need `Access-Control-Allow-Credentials: true`, which `rest.Start` sends
-only with `rest.WithCredentialedCORS()` together with `rest.WithAllowedOrigins(...)`.
+only with `rest.WithCredentialedCORS()` together with `rest.WithAllowedOrigins(...)` naming the
+origins (not `*`).
 
 ## Sessions
 
@@ -606,7 +608,7 @@ func (r *SignInRequest) Validate() error {
 }
 
 // SignIn binds the body and hands it to the application.
-func (h *Handler) SignIn(c echo.Context) error {
+func (h *Handler) SignIn(c *echo.Context) error {
 	req := requests.New(c.Request().Header, c.RealIP(), requests.WithMethod(c.Request().Method))
 	return h.BindedJSONResponse(c, "SignIn", req, &SignInRequest{})
 }

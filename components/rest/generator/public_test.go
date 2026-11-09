@@ -41,7 +41,7 @@ func addAdminRoutes(e *echo.Echo, h *Handlers) {
 	files["api/handler/admin/admin.go"] = `package admin
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/api/handler"
 	"example.com/app/modules/catalog"
@@ -49,7 +49,7 @@ import (
 
 type Handler struct{ *handler.Base }
 
-func (h *Handler) InspectWidget(c echo.Context) error {
+func (h *Handler) InspectWidget(c *echo.Context) error {
 	id, err := h.GetParameterInt64(c, "id")
 	if err != nil {
 		return err
@@ -57,7 +57,7 @@ func (h *Handler) InspectWidget(c echo.Context) error {
 	return h.JSONResponse(c, "Admin.InspectWidget", nil, &catalog.GetRequest{ID: id})
 }
 
-func (h *Handler) Purge(c echo.Context) error {
+func (h *Handler) Purge(c *echo.Context) error {
 	body := &catalog.PurgeRequest{}
 	return h.BindedJSONResponse(c, "Admin.Purge", nil, body)
 }

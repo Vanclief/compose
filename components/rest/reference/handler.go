@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/ez"
 )
 
@@ -39,7 +39,7 @@ func New(spec []byte, opts Options) (*Page, error) {
 // If-None-Match get 304 Not Modified. The page is marked private because the
 // spec behind it is usually served to authenticated users only.
 func (p *Page) Handler() echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		header := c.Response().Header()
 		header.Set("ETag", p.ETag)
 		header.Set("Cache-Control", "private, no-cache")

@@ -39,7 +39,7 @@ func addRoutes(e *echo.Echo, h *Handlers) {
 	"api/handler/shop/shop.go": `package shop
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/api/handler"
 	"example.com/app/modules/shop/carts"
@@ -49,34 +49,34 @@ import (
 
 type Handler struct{ *handler.Base }
 
-func (h *Handler) CreateCart(c echo.Context) error {
+func (h *Handler) CreateCart(c *echo.Context) error {
 	return h.BindedJSONResponse(c, "Shop.CreateCart", nil, &carts.CreateRequest{})
 }
 
-func (h *Handler) GetCart(c echo.Context) error {
+func (h *Handler) GetCart(c *echo.Context) error {
 	return h.JSONResponse(c, "Shop.GetCart", nil, &carts.GetRequest{})
 }
 
-func (h *Handler) CreateOrder(c echo.Context) error {
+func (h *Handler) CreateOrder(c *echo.Context) error {
 	return h.BindedJSONResponse(c, "Shop.CreateOrder", nil, &orders.CreateRequest{})
 }
 
-func (h *Handler) GetOrder(c echo.Context) error {
+func (h *Handler) GetOrder(c *echo.Context) error {
 	return h.JSONResponse(c, "Shop.GetOrder", nil, &orders.GetRequest{})
 }
 
-func (h *Handler) GetOrderCart(c echo.Context) error {
+func (h *Handler) GetOrderCart(c *echo.Context) error {
 	return h.JSONResponse(c, "Shop.GetOrderCart", nil, &orders.CartRequest{})
 }
 
-func (h *Handler) ListItems(c echo.Context) error {
+func (h *Handler) ListItems(c *echo.Context) error {
 	return h.JSONResponse(c, "Shop.ListItems", nil, &items.ListRequest{})
 }
 `,
 	"api/handler/stock/stock.go": `package stock
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/api/handler"
 	"example.com/app/modules/stock/items"
@@ -84,7 +84,7 @@ import (
 
 type Handler struct{ *handler.Base }
 
-func (h *Handler) ListItems(c echo.Context) error {
+func (h *Handler) ListItems(c *echo.Context) error {
 	return h.JSONResponse(c, "Stock.ListItems", nil, &items.ListRequest{})
 }
 `,

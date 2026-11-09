@@ -38,7 +38,7 @@ func addGadgetRoutes(e *echo.Echo, h *Handlers) {
 	files["api/handler/gadgets/gadgets.go"] = `package gadgets
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/api/handler"
 	"example.com/app/models/gadget"
@@ -47,14 +47,14 @@ import (
 
 type Handler struct{ *handler.Base }
 
-func (h *Handler) Search(c echo.Context) error {
+func (h *Handler) Search(c *echo.Context) error {
 	return h.JSONResponse(c, "Gadgets.Search", nil, &shared.SearchRequest{})
 }
 
 // GetGadget returns one gadget.
 //
 // TODO: cache it.
-func (h *Handler) GetGadget(c echo.Context) error {
+func (h *Handler) GetGadget(c *echo.Context) error {
 	return h.JSONResponse(c, "Gadgets.GetGadget", nil, &gadget.GetRequest{})
 }
 `
@@ -74,12 +74,12 @@ func addWidgetRoutes(e *echo.Echo, h *Handlers) {
 	files["api/handler/widgets/search.go"] = `package widgets
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/modules/shared"
 )
 
-func (h *Handler) Search(c echo.Context) error {
+func (h *Handler) Search(c *echo.Context) error {
 	return h.JSONResponse(c, "Widgets.Search", nil, &shared.SearchRequest{})
 }
 `

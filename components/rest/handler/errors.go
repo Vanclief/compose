@@ -3,14 +3,14 @@ package handler
 import (
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/ez"
 )
 
 // ManageError translates an error into the appropriate HTTP error code
-func (h *BaseHandler) ManageError(c echo.Context, op string, request requests.Request, err error) error {
+func (h *BaseHandler) ManageError(c *echo.Context, op string, request requests.Request, err error) error {
 	code := ez.ErrorCode(err)
 
 	log.Error().

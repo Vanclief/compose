@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -42,7 +42,7 @@ const accountsSpec = `{
 // tokens are reported as they came, as an API key check would see them.
 func accountsAPI(s *Server) http.Handler {
 	e := echo.New()
-	e.GET("/me", func(c echo.Context) error {
+	e.GET("/me", func(c *echo.Context) error {
 		bearer, err := requests.ParseBearer(c.Request().Header)
 		if err != nil {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": ez.ErrorMessage(err)})

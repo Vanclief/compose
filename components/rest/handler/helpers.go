@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/ez"
 )
 
 // Parameters
-func (h *BaseHandler) GetParameterString(c echo.Context, name string) (string, error) {
+func (h *BaseHandler) GetParameterString(c *echo.Context, name string) (string, error) {
 	paramStr := c.Param(name)
 	if paramStr == "" {
 		errMsg := fmt.Sprintf("Parameter %s is required", name)
@@ -22,7 +22,7 @@ func (h *BaseHandler) GetParameterString(c echo.Context, name string) (string, e
 	return paramStr, nil
 }
 
-func (h *BaseHandler) GetParameterInt64(c echo.Context, name string) (int64, error) {
+func (h *BaseHandler) GetParameterInt64(c *echo.Context, name string) (int64, error) {
 	int64Str, err := h.GetParameterString(c, name)
 	if err != nil {
 		return 0, ez.Wrap(err)
@@ -36,7 +36,7 @@ func (h *BaseHandler) GetParameterInt64(c echo.Context, name string) (int64, err
 	return int64, nil
 }
 
-func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, error) {
+func (h *BaseHandler) GetParameterUUID(c *echo.Context, name string) (uuid.UUID, error) {
 	uuidStr, err := h.GetParameterString(c, name)
 	if err != nil {
 		return uuid.Nil, ez.Wrap(err)
@@ -53,7 +53,7 @@ func (h *BaseHandler) GetParameterUUID(c echo.Context, name string) (uuid.UUID, 
 
 // QueryParams
 
-func (h *BaseHandler) GetQueryParamInt64(c echo.Context, value string) (int64, error) {
+func (h *BaseHandler) GetQueryParamInt64(c *echo.Context, value string) (int64, error) {
 	int64Str := c.QueryParam(value)
 	if int64Str == "" {
 		errMsg := fmt.Sprintf("Query param %s is required", value)
@@ -68,7 +68,7 @@ func (h *BaseHandler) GetQueryParamInt64(c echo.Context, value string) (int64, e
 	return int64, nil
 }
 
-func (h *BaseHandler) GetQueryParamInt64s(c echo.Context, key string) ([]int64, error) {
+func (h *BaseHandler) GetQueryParamInt64s(c *echo.Context, key string) ([]int64, error) {
 	params := c.QueryParams()[key]
 
 	ints := []int64{}
@@ -86,7 +86,7 @@ func (h *BaseHandler) GetQueryParamInt64s(c echo.Context, key string) ([]int64, 
 // GetQueryParams returns every value of a query param that may be repeated
 // (?status=a&status=b) or comma separated (?status=a,b), trimmed, without
 // empties. It returns nil when the param is absent or holds only empty values.
-func (h *BaseHandler) GetQueryParams(c echo.Context, key string) []string {
+func (h *BaseHandler) GetQueryParams(c *echo.Context, key string) []string {
 	var values []string
 	for _, param := range c.QueryParams()[key] {
 		for _, value := range strings.Split(param, ",") {
@@ -102,7 +102,7 @@ func (h *BaseHandler) GetQueryParams(c echo.Context, key string) []string {
 
 // GetQueryParamBool parses an optional boolean query param with
 // strconv.ParseBool. It returns false when the param is absent or empty.
-func (h *BaseHandler) GetQueryParamBool(c echo.Context, key string) (bool, error) {
+func (h *BaseHandler) GetQueryParamBool(c *echo.Context, key string) (bool, error) {
 	str := c.QueryParam(key)
 	if str == "" {
 		return false, nil
@@ -118,7 +118,7 @@ func (h *BaseHandler) GetQueryParamBool(c echo.Context, key string) (bool, error
 }
 
 // GetQueryParamTime parses a required query param as RFC3339/RFC3339Nano
-func (h *BaseHandler) GetQueryParamTime(c echo.Context, key string) (time.Time, error) {
+func (h *BaseHandler) GetQueryParamTime(c *echo.Context, key string) (time.Time, error) {
 	dateStr := c.QueryParam(key)
 	if dateStr == "" {
 		errMsg := fmt.Sprintf("Query param %s is required", key)
@@ -137,15 +137,15 @@ func (h *BaseHandler) GetQueryParamTime(c echo.Context, key string) (time.Time, 
 	return t, nil
 }
 
-func (h *BaseHandler) GetListLimit(c echo.Context, defaultLimit int) int {
+func (h *BaseHandler) GetListLimit(c *echo.Context, defaultLimit int) int {
 	return h.GetNumericQueryParam(c, "limit", defaultLimit)
 }
 
-func (h *BaseHandler) GetListOffset(c echo.Context, defaultOffset int) int {
+func (h *BaseHandler) GetListOffset(c *echo.Context, defaultOffset int) int {
 	return h.GetNumericQueryParam(c, "offset", defaultOffset)
 }
 
-func (h *BaseHandler) GetNumericQueryParam(c echo.Context, param string, defaultValue int) int {
+func (h *BaseHandler) GetNumericQueryParam(c *echo.Context, param string, defaultValue int) int {
 	str := c.QueryParam(param)
 	if str == "" {
 		return defaultValue

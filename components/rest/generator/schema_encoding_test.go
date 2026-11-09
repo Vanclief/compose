@@ -54,7 +54,7 @@ import (
 	"math/rand/v2"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"gopkg.in/guregu/null.v4"
 	"gopkg.in/yaml.v3"
 	pg "github.com/go-pg/pg/v10"
@@ -70,7 +70,7 @@ import (
 	want := map[string]string{
 		"rand":    "math/rand/v2",
 		"uuid":    "github.com/gofrs/uuid/v5",
-		"echo":    "github.com/labstack/echo/v4",
+		"echo":    "github.com/labstack/echo/v5",
 		"null":    "gopkg.in/guregu/null.v4",
 		"yaml":    "gopkg.in/yaml.v3",
 		"pg":      "github.com/go-pg/pg/v10",
