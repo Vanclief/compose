@@ -77,10 +77,11 @@ const maxInspectedBody = 32 << 20
 // route path and the request id, never the URI, query or body. The middleware
 // writes the 400 itself, in the handler.ErrorResponse shape, so neither an app
 // ErrorTranslator nor Echo's HTTPErrorHandler sees it. Its request_id, and the
-// id of the log line, is the request's X-Request-Id header, else the
-// response's, as ErrorHandler has it; it is empty, and the log line has no
-// id, only when neither carries one, as when RejectNUL is used without
-// Configure and without a request ID middleware.
+// id of the log line, is the X-Request-Id of the response, as ErrorHandler
+// has it: under Configure the request's id, otherwise what the app's own
+// middleware set there; the request's X-Request-Id is never read. It is
+// empty, and the log line has no id, when nothing set that header, as when
+// RejectNUL is used without Configure and without a request ID middleware.
 func RejectNUL() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {

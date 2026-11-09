@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/rs/zerolog"
+	"github.com/vanclief/compose/components/rest/requests"
 )
 
 const (
@@ -189,8 +190,11 @@ func startConfig(cfg config, address string, log zerolog.Logger) echo.StartConfi
 
 // Configure sets e's logger and registers compose's middleware on e, in this
 // order:
-//   - Echo's request ID middleware, which sets X-Request-Id on every response:
-//     the request's X-Request-Id when the client sent one, else a new UUID;
+//   - the request id: every request gets a new UUID, whatever X-Request-Id
+//     the client sent, as X-Request-Id on the response and on the request and
+//     as the ID of the request requests.New builds, so the response header,
+//     the request log line, a handler's request and the errors answered for
+//     it all carry the same id (see assignRequestID);
 //   - the request logger, one line per request with the request's id (see
 //     requestLogger);
 //   - Echo's Recover, which turns a panic into a 500 error the request logger
@@ -232,11 +236,7 @@ func Configure(e *echo.Echo, log zerolog.Logger, opts ...Option) {
 
 	// Middlewares
 	// First, so the request logger and every later handler see the id.
-	e.Use(middleware.RequestIDWithConfig(middleware.RequestIDConfig{
-		Generator: func() string {
-			return uuid.New().String()
-		},
-	}))
+	e.Use(assignRequestID)
 
 	e.Use(middleware.RequestLoggerWithConfig(requestLogger(echoLog)))
 
@@ -284,15 +284,32 @@ func setTimeouts(s *http.Server, cfg config) {
 	s.WriteTimeout = cfg.writeTimeout
 }
 
+// assignRequestID gives every request an id of the server's own, a new UUID.
+// An X-Request-Id the client sent is never used: any caller can send one, so
+// it could put text of its choice in the logs and in error bodies, or give
+// several requests one id. The id is set as X-Request-Id on the response, for
+// the client to quote; as X-Request-Id on the request, replacing the
+// client's, which is where Echo's request logger and a handler read it; and
+// with requests.SetRequestID, which is where requests.New takes it from.
+func assignRequestID(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		id := uuid.New().String()
+		header := c.Request().Header
+		header.Set(echo.HeaderXRequestID, id)
+		requests.SetRequestID(header, id)
+		c.Response().Header().Set(echo.HeaderXRequestID, id)
+		return next(c)
+	}
+}
+
 // requestLogger logs one line per request with the fields lecho used to
 // write, so existing log queries keep working: id (the X-Request-Id header
-// of the request, else of the response; the request ID middleware Configure
-// registers first sets the response's, so every line has one), remote_ip,
-// host, method, uri, user_agent, status, referer, latency, latency_human,
-// bytes_in and bytes_out, with no message. A request whose handler returned an error is
-// logged at error level with the error; its status is the one already
-// written, else the one Echo maps the error to, since Echo's error handler
-// has not run yet.
+// of the request, which under Configure is the id assignRequestID gave it, so
+// every line has one), remote_ip, host, method, uri, user_agent, status,
+// referer, latency, latency_human, bytes_in and bytes_out, with no message. A
+// request whose handler returned an error is logged at error level with the
+// error; its status is the one already written, else the one Echo maps the
+// error to, since Echo's error handler has not run yet.
 func requestLogger(log zerolog.Logger) middleware.RequestLoggerConfig {
 	return middleware.RequestLoggerConfig{
 		LogLatency:       true,

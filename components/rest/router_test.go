@@ -14,10 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/compose/components/auth/session"
+	"github.com/vanclief/compose/components/rest/handler"
+	"github.com/vanclief/compose/components/rest/requests"
+	"github.com/vanclief/ez"
 )
 
 func TestNewConfigDefaults(t *testing.T) {
@@ -334,7 +338,9 @@ func TestConfigureRequestLog(t *testing.T) {
 	err := json.Unmarshal(logs.Bytes(), &line)
 	require.NoError(t, err)
 	require.Equal(t, "info", line["level"])
-	require.Equal(t, "req-1", line["id"])
+	// The id is the server's, not the one the client sent
+	require.NoError(t, uuid.Validate(rec.Header().Get(echo.HeaderXRequestID)))
+	require.Equal(t, rec.Header().Get(echo.HeaderXRequestID), line["id"])
 	require.Equal(t, "192.0.2.1", line["remote_ip"])
 	require.Equal(t, "example.com", line["host"])
 	require.Equal(t, http.MethodGet, line["method"])
@@ -358,7 +364,7 @@ func TestConfigureRequestLog(t *testing.T) {
 	require.Equal(t, "error", line["level"])
 	require.Equal(t, float64(http.StatusTeapot), line["status"])
 	require.Contains(t, line["error"], "no coffee")
-	// Without a client id the line has the generated one the response carries
+	// The line has the id the response carries
 	require.NotEmpty(t, rec.Header().Get(echo.HeaderXRequestID))
 	require.Equal(t, rec.Header().Get(echo.HeaderXRequestID), line["id"])
 	require.Equal(t, "0", line["bytes_in"])
@@ -377,6 +383,65 @@ func TestConfigureRequestLog(t *testing.T) {
 	require.Equal(t, float64(http.StatusInternalServerError), line["status"])
 	require.Contains(t, line["error"], "kaboom")
 	require.Contains(t, line["error"], "goroutine")
+}
+
+// A request has one id under Configure, a UUID of the server's own: the
+// response header, the request log line, the X-Request-Id a handler reads,
+// the request it builds with requests.New and the error handler.ManageError
+// answers all carry it. An id the client sent is used nowhere.
+func TestConfigureOneRequestID(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID string
+	}{
+		{name: "no id from the client"},
+		{name: "id from the client", clientID: "client-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			e := echo.New()
+			Configure(e, zerolog.New(&logs))
+			var handlerID string
+			var headerID string
+			e.GET("/missing", func(c *echo.Context) error {
+				request := requests.New(c.Request().Header, c.RealIP())
+				defer request.Cancel()
+				handlerID = requests.RequestID(request.GetContext())
+				headerID = c.Request().Header.Get(echo.HeaderXRequestID)
+				return handler.NewHandler(nil).ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "No such thing", nil))
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+			if tt.clientID != "" {
+				req.Header.Set(echo.HeaderXRequestID, tt.clientID)
+				// Not even an id already stored where requests.New reads it,
+				// which no client can do, survives
+				requests.SetRequestID(req.Header, tt.clientID)
+			}
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusNotFound, rec.Code)
+
+			id := rec.Header().Get(echo.HeaderXRequestID)
+			require.NoError(t, uuid.Validate(id))
+			require.Equal(t, id, handlerID)
+			require.Equal(t, id, headerID)
+			require.NotContains(t, rec.Body.String(), "client-1")
+			require.NotContains(t, logs.String(), "client-1")
+
+			var body handler.ErrorResponse
+			err := json.Unmarshal(rec.Body.Bytes(), &body)
+			require.NoError(t, err)
+			require.Equal(t, id, body.Error.RequestID)
+
+			var line map[string]any
+			err = json.Unmarshal(logs.Bytes(), &line)
+			require.NoError(t, err)
+			require.Equal(t, id, line["id"])
+		})
+	}
 }
 
 func TestConfigureCORSDefaultAllowsEveryOrigin(t *testing.T) {
