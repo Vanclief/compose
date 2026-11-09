@@ -90,10 +90,12 @@
 //
 // Known limits: cached Client ID Metadata Documents are kept for
 // MetadataCacheTTL regardless of their Cache-Control; registration is open
-// and not throttled; the MCP endpoint sends no CORS headers; a tool call
-// checks its token three times, in Protect, in AuthFunc and in the
-// application's Verify, two Store reads each, which is accepted as defense in
-// depth; access tokens issued before a rotation stay valid until they expire.
+// to any client and limited only per client address (RegistrationLimit,
+// counted against ClientIP), so clients spread over many addresses can still
+// fill the Store; the MCP endpoint sends no CORS headers; a tool call checks
+// its token three times, in Protect, in AuthFunc and in the application's
+// Verify, two Store reads each, which is accepted as defense in depth; access
+// tokens issued before a rotation stay valid until they expire.
 //
 // A refresh token presented twice revokes its family even when both requests
 // come from the client, so a client that retries a refresh with the same
@@ -111,6 +113,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/vanclief/compose/components/ratelimit"
 )
 
 // Never disables an expiry. A zero duration in Config selects the documented
@@ -209,6 +213,27 @@ type Config struct {
 	// MaxLoginAttempts is how many failed Challenge or Verify calls void a
 	// pending request on the built-in login page. Defaults to 5.
 	MaxLoginAttempts int
+	// RegistrationLimit is how many dynamic registration requests one client
+	// address may make per minute; the ones after it are answered 429 with
+	// Retry-After and store nothing. Every registration POST counts, refused
+	// and malformed ones too; the CORS preflight does not. Defaults to 20: a
+	// client registers once when a user connects it, and hosted clients such
+	// as claude.ai and ChatGPT reach the server from a few shared addresses,
+	// so the limit must cover many users connecting at once, while a script
+	// filling the Store is held to 20 records a minute per address. An IPv6
+	// address counts as its /64, since one host usually has a whole /64 to
+	// rotate through. A negative value turns the limit off.
+	RegistrationLimit int
+	// ClientIP returns the address a registration is counted against. It has
+	// the shape of Echo's IPExtractor, so an application passes the extractor
+	// it already has. When nil, Mount uses the IPExtractor of the Echo
+	// instance if one is set, read at each request so it may be set after
+	// Mount, and otherwise, as Handler always does, the host of the request's
+	// RemoteAddr (all of it when it cannot be split). Behind a proxy or load
+	// balancer without an extractor, every client has the proxy's address
+	// and so shares one count, which caps registrations for everyone at
+	// RegistrationLimit and lets one client use it up.
+	ClientIP func(*http.Request) string
 	// OnError, when set, receives the failures users see only as a generic
 	// page or a server_error response: Store failures, Challenge and Verify
 	// errors that are not shown, and the like. Optional. The context carries
@@ -355,6 +380,9 @@ type Server struct {
 	// issuerPath is the path of cfg.Issuer, usually empty.
 	issuerPath string
 	client     *http.Client
+	// registrations counts registrations per client address; nil when
+	// RegistrationLimit is negative.
+	registrations *ratelimit.WindowCounter
 }
 
 // authRequest is a pending authorization request, stored from the authorize

@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/vanclief/compose/components/auth/token"
+	"github.com/vanclief/compose/components/ratelimit"
 	"github.com/vanclief/ez"
 )
 
@@ -29,6 +30,7 @@ const (
 	defaultMetadataCacheTTL    = time.Hour
 	defaultRefreshTimeout      = 10 * time.Second
 	defaultMaxLoginAttempts    = 5
+	defaultRegistrationLimit   = 20
 	defaultHTTPTimeout         = 10 * time.Second
 	// metadataMaxAge is how long clients may cache the metadata documents.
 	metadataMaxAge = "public, max-age=3600"
@@ -107,6 +109,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.MaxLoginAttempts == 0 {
 		cfg.MaxLoginAttempts = defaultMaxLoginAttempts
 	}
+	if cfg.RegistrationLimit == 0 {
+		cfg.RegistrationLimit = defaultRegistrationLimit
+	}
 	if cfg.Login.IdentifierLabel == "" {
 		cfg.Login.IdentifierLabel = "Email"
 	}
@@ -146,6 +151,9 @@ func New(cfg Config) (*Server, error) {
 		issuerPath:   issuerPath,
 		client:       &client,
 	}
+	if cfg.RegistrationLimit > 0 {
+		s.registrations = ratelimit.NewWindowCounter(60, cfg.RegistrationLimit)
+	}
 	err = s.checkRoutes()
 	if err != nil {
 		return nil, ez.Wrap(err)
@@ -158,7 +166,7 @@ func New(cfg Config) (*Server, error) {
 // Handler would panic and Mount would let one replace the other.
 func (s *Server) checkRoutes() error {
 	seen := map[string]bool{}
-	for _, r := range s.routes() {
+	for _, r := range s.routes(remoteHost) {
 		key := r.method + " " + r.path
 		if seen[key] || r.path == s.mcpPath() {
 			return ez.New(ez.EINVALID, "oauth: Config.Issuer and Config.Resource put two endpoints at "+r.path+", change one of them", nil)
@@ -216,8 +224,22 @@ func isLocalHost(host string) bool {
 // Resource behind Protect. Echo matches the raw request path, so clients must
 // request the published URLs byte for byte: a re-encoded form such as %c3%a9
 // for %C3%A9 is not found.
+//
+// Registrations are limited to Config.RegistrationLimit a minute per client
+// address. Without Config.ClientIP, the address is what e.IPExtractor
+// returns, read at each request so it may be set after Mount, or the host of
+// the request's RemoteAddr when e has no extractor.
 func (s *Server) Mount(e *echo.Echo, mcpHandler http.Handler) {
-	for _, r := range s.routes() {
+	clientIP := s.cfg.ClientIP
+	if clientIP == nil {
+		clientIP = func(r *http.Request) string {
+			if e.IPExtractor != nil {
+				return e.IPExtractor(r)
+			}
+			return remoteHost(r)
+		}
+	}
+	for _, r := range s.routes(clientIP) {
 		e.Add(r.method, r.path, echo.WrapHandler(r.handler))
 	}
 	e.Any(s.mcpPath(), echo.WrapHandler(s.Protect(mcpHandler)))
@@ -235,19 +257,40 @@ func (s *Server) mcpPath() string {
 // authorize, login, token) for installations that do not use Echo. Unlike
 // Mount, ServeMux decodes each path segment, so it also accepts other
 // percent-encodings of the published paths.
+//
+// Registrations are limited to Config.RegistrationLimit a minute per client
+// address: Config.ClientIP, or else the host of the request's RemoteAddr.
+// Behind a proxy or load balancer, set Config.ClientIP: without it every
+// client has the proxy's address and shares one limit, which one client can
+// use up.
 func (s *Server) Handler() http.Handler {
+	clientIP := s.cfg.ClientIP
+	if clientIP == nil {
+		clientIP = remoteHost
+	}
 	mux := http.NewServeMux()
-	for _, r := range s.routes() {
+	for _, r := range s.routes(clientIP) {
 		mux.HandleFunc(r.method+" "+r.path, r.handler)
 	}
 	return mux
 }
 
-// routes lists the endpoints with their full paths.
-func (s *Server) routes() []route {
+// remoteHost is the host part of r.RemoteAddr, or all of it when it cannot be
+// split.
+func remoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// routes lists the endpoints with their full paths. Registrations are counted
+// against the address clientIP returns.
+func (s *Server) routes(clientIP func(*http.Request) string) []route {
 	asMetadata := cors(s.serveAuthServerMetadata)
 	resourceMetadata := cors(s.serveResourceMetadata)
-	register := cors(s.serveRegister)
+	register := cors(s.limitRegistrations(clientIP, s.serveRegister))
 	tokenEndpoint := cors(s.serveToken)
 
 	var routes []route
