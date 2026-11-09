@@ -73,11 +73,14 @@ const maxInspectedBody = 32 << 20
 // then goes to Echo's HTTPErrorHandler as Echo's own error, which Echo's
 // default handler answers with its status.
 //
-// A refusal is logged at warn level as "Request Error" with the method and
-// the route path, never the URI, query or body. The middleware writes the
-// 400 itself, in the handler.ErrorResponse shape with an empty request_id
-// since no handler has created its request yet, so neither an app
-// ErrorTranslator nor Echo's HTTPErrorHandler sees it.
+// A refusal is logged at warn level as "Request Error" with the method, the
+// route path and the request id, never the URI, query or body. The middleware
+// writes the 400 itself, in the handler.ErrorResponse shape, so neither an app
+// ErrorTranslator nor Echo's HTTPErrorHandler sees it. Its request_id, and the
+// id of the log line, is the request's X-Request-Id header, else the
+// response's, as ErrorHandler has it; it is empty, and the log line has no
+// id, only when neither carries one, as when RejectNUL is used without
+// Configure and without a request ID middleware.
 func RejectNUL() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -98,14 +101,18 @@ func RejectNUL() echo.MiddlewareFunc {
 			// c.Path() is the route template, not the client's URI.
 			code := ez.ErrorCode(err)
 			message := ez.ErrorMessage(err)
-			log.Warn().
-				Str("method", c.Request().Method).
+			id := requestID(c)
+			evt := log.Warn()
+			if id != "" {
+				evt = evt.Str("id", id)
+			}
+			evt.Str("method", c.Request().Method).
 				Str("path", c.Path()).
 				Str("error_code", code).
 				Str("error_message", message).
 				Msg("Request Error")
 
-			stdErr := handler.StandardError{Code: code, Message: message}
+			stdErr := handler.StandardError{Code: code, Message: message, RequestID: id}
 			return c.JSON(ez.ErrorToHTTPStatus(err), handler.ErrorResponse{Error: stdErr})
 		}
 	}
