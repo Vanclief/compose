@@ -40,6 +40,26 @@ type StandardRequest struct {
 	Method string
 }
 
+// requestIDHeader is the header key SetRequestID stores the request ID under
+// and New reads it from. It is in lower case on purpose: net/http gives the
+// name of every header it receives its canonical spelling (Compose-Request-Id),
+// over HTTP/1 and HTTP/2 alike, so nothing a client sends lands under this
+// key and only server code, through SetRequestID, puts a value there.
+const requestIDHeader = "compose-request-id"
+
+// SetRequestID stores id in header as the ID New gives the request it builds
+// from header. rest.Configure does it for every request, with the id the
+// response carries as X-Request-Id; an app with a middleware stack of its own
+// calls it from a middleware to the same end. A client cannot set this ID,
+// see requestIDHeader. The entry stays in header, so a dump of the request
+// headers or a copy of them onto an outbound request shows it, as
+// compose-request-id; a server receiving that copy canonicalises the name,
+// so it does not read it as its own.
+func SetRequestID(header http.Header, id string) {
+	//lint:ignore SA1008 the key is not canonical on purpose, see requestIDHeader
+	header[requestIDHeader] = []string{id}
+}
+
 // requestIDKey is the context key New stores the request ID under. An
 // unexported type keeps it from colliding with keys set by other packages.
 type requestIDKey struct{}
@@ -78,8 +98,21 @@ func WithMethod(method string) Option {
 	}
 }
 
+// New returns the request of one handler call. Its ID is the one
+// SetRequestID stored in header, which under rest.Configure is the id the
+// response carries as X-Request-Id and the request log line as id, and a new
+// UUID when none was stored. No header a client sends sets it, X-Request-Id
+// included.
 func New(header http.Header, ip string, opts ...Option) *StandardRequest {
-	id := uuid.New().String()
+	id := ""
+	//lint:ignore SA1008 the key is not canonical on purpose, see requestIDHeader
+	stored := header[requestIDHeader]
+	if len(stored) > 0 {
+		id = stored[0]
+	}
+	if id == "" {
+		id = uuid.New().String()
+	}
 
 	ctx := context.WithValue(context.Background(), requestIDKey{}, id)
 	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)

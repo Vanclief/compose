@@ -841,13 +841,18 @@ func TestConfigureRejectsNUL(t *testing.T) {
 	require.Equal(t, "warn", entry["level"])
 	require.Equal(t, id, entry["id"])
 
-	// A client's id is reused
+	// A client's id is not used
 	req = httptest.NewRequest(http.MethodGet, "/get?q=%00", nil)
 	req.Header.Set(echo.HeaderXRequestID, "client-id")
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Contains(t, rec.Body.String(), `"request_id":"client-id"`)
+	id = rec.Header().Get(echo.HeaderXRequestID)
+	require.NotEmpty(t, id)
+	require.NotEqual(t, "client-id", id)
+	require.Contains(t, rec.Body.String(), `"request_id":"`+id+`"`)
+	require.NotContains(t, rec.Body.String(), "client-id")
+	require.NotContains(t, buf.String(), "client-id")
 }
 
 // Configure registers the body limit before RejectNUL, so RejectNUL's own

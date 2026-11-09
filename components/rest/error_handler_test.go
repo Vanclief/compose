@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -104,10 +105,10 @@ func TestErrorHandler(t *testing.T) {
 			want:   handler.StandardError{Code: ez.EINTERNAL, Message: "Internal Server Error"},
 		},
 		{
-			name:   "request id from the request",
+			name:   "request id of the client is not used",
 			method: http.MethodGet, path: "/nope", requestID: "request-id",
 			status: http.StatusNotFound,
-			want:   handler.StandardError{Code: ez.ENOTFOUND, Message: "Not Found", RequestID: "request-id"},
+			want:   handler.StandardError{Code: ez.ENOTFOUND, Message: "Not Found"},
 		},
 		{
 			name:   "request id from the response",
@@ -213,10 +214,9 @@ func TestConfigureErrorHandlerRecoveredPanic(t *testing.T) {
 
 			require.Equal(t, http.StatusInternalServerError, rec.Code)
 			id := rec.Header().Get(echo.HeaderXRequestID)
-			require.NotEmpty(t, id)
-			if tt.clientID != "" {
-				require.Equal(t, tt.clientID, id)
-			}
+			require.NoError(t, uuid.Validate(id))
+			require.NotContains(t, rec.Body.String(), "client-1")
+			require.NotContains(t, logs.String(), "client-1")
 			require.Equal(t, handler.StandardError{
 				Code:      ez.EINTERNAL,
 				Message:   "Internal Server Error",

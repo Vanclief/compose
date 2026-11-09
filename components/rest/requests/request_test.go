@@ -1,11 +1,16 @@
 package requests
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,6 +41,86 @@ func TestRequestID(t *testing.T) {
 	//lint:ignore SA1029 the test checks that a string key does not collide
 	ctx := context.WithValue(context.Background(), "request-id", "other")
 	require.Empty(t, RequestID(ctx))
+}
+
+// New takes the ID SetRequestID stored in the header it is given, as
+// rest.Configure does for every request.
+func TestNewTakesStoredID(t *testing.T) {
+	header := http.Header{}
+	SetRequestID(header, "req-1")
+
+	request := New(header, "127.0.0.1")
+	defer request.Cancel()
+
+	require.Equal(t, "req-1", request.GetID())
+	require.Equal(t, "req-1", RequestID(request.GetContext()))
+
+	// Without the header each request has an ID of its own
+	other := New(http.Header{}, "127.0.0.1")
+	defer other.Cancel()
+	another := New(nil, "127.0.0.1")
+	defer another.Cancel()
+
+	require.NotEmpty(t, other.GetID())
+	require.NotEmpty(t, another.GetID())
+	require.NotEqual(t, other.GetID(), another.GetID())
+}
+
+// No header a client sends sets the ID, in any spelling, over HTTP/1 or
+// HTTP/2: net/http stores the names it receives in canonical form, never
+// under the lower-case key SetRequestID writes.
+func TestNewIgnoresClientHeaders(t *testing.T) {
+	names := []string{"compose-request-id", "Compose-Request-Id", "COMPOSE-REQUEST-ID", "X-Request-Id", "x-request-id"}
+	serve := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := New(r.Header, "127.0.0.1")
+		defer request.Cancel()
+		_, _ = io.WriteString(w, request.GetID())
+	})
+	requireOwnID := func(t *testing.T, res *http.Response) {
+		t.Helper()
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, res.StatusCode, string(body))
+		require.NoError(t, uuid.Validate(string(body)), string(body))
+	}
+
+	t.Run("HTTP/1", func(t *testing.T) {
+		server := httptest.NewServer(serve)
+		defer server.Close()
+
+		// Written by hand, so the names reach the server exactly as spelled
+		conn, err := net.Dial("tcp", server.Listener.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		raw := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n"
+		for _, name := range names {
+			raw += name + ": forged\r\n"
+		}
+		_, err = io.WriteString(conn, raw+"\r\n")
+		require.NoError(t, err)
+		res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		requireOwnID(t, res)
+	})
+
+	t.Run("HTTP/2", func(t *testing.T) {
+		server := httptest.NewUnstartedServer(serve)
+		server.EnableHTTP2 = true
+		server.StartTLS()
+		defer server.Close()
+
+		req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+		require.NoError(t, err)
+		for _, name := range names {
+			req.Header[name] = []string{"forged"}
+		}
+		res, err := server.Client().Do(req)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		require.Equal(t, 2, res.ProtoMajor)
+		requireOwnID(t, res)
+	})
 }
 
 func TestWithTimeoutReleasesDefaultTimeout(t *testing.T) {

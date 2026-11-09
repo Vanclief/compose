@@ -24,9 +24,12 @@ import (
 // *echo.BindingError embeds the HTTPError without being one, so a typed
 // binder's error returned straight to Echo gets the status text, the way
 // handler.BindedJSONResponse keeps binding detail out of its answer too. The
-// request_id is the request's X-Request-Id header, else the response's, the
-// id the request log line carries. A HEAD request gets the status with no
-// body. A response already committed is left alone.
+// request_id is the X-Request-Id of the response: under Configure the
+// request's id, the one the request log line carries, and otherwise whatever
+// the app's own middleware set there, which Echo's middleware.RequestID copies
+// from the client. The request's own X-Request-Id is never read. A HEAD
+// request gets the status with no body. A response already committed is left
+// alone.
 //
 // It logs nothing about the error, because the request logger that Configure
 // (and so Start) installs logs every error raised inside its stack at error
@@ -74,13 +77,10 @@ func ErrorHandler() echo.HTTPErrorHandler {
 	}
 }
 
-// requestID returns the request's X-Request-Id header, else the response's,
-// the lookup Echo's request logger does for the id it logs. It is empty when
-// neither carries one, as when no request ID middleware ran.
+// requestID returns the X-Request-Id of the response, which the server set:
+// under Configure the id of the request. The request's own X-Request-Id is
+// not read, since outside Configure it is whatever the client sent. It is
+// empty when nothing set the header, as when no request ID middleware ran.
 func requestID(c *echo.Context) string {
-	id := c.Request().Header.Get(echo.HeaderXRequestID)
-	if id == "" {
-		id = c.Response().Header().Get(echo.HeaderXRequestID)
-	}
-	return id
+	return c.Response().Header().Get(echo.HeaderXRequestID)
 }
