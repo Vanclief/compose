@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,66 @@ func TestServeRegistersNoMiddleware(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Empty(t, rec.Header().Get(echo.HeaderXRequestID))
 	require.Empty(t, logs.String())
+}
+
+// Serve listens on the port it is given and serves until its context ends.
+// The port is one the system just handed out and the test released, since
+// Serve does not report the address it listens on. If another process takes
+// the port in between, Serve exits the test binary with its fatal line, which
+// is why its logger writes to stderr.
+func TestServeListensOnPort(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(reserved.Addr().String())
+	require.NoError(t, err)
+	err = reserved.Close()
+	require.NoError(t, err)
+
+	var logs bytes.Buffer
+	e := echo.New()
+	Configure(e, zerolog.New(&logs))
+	e.GET("/ok", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		Serve(ctx, e, zerolog.New(os.Stderr), port)
+		close(done)
+	}()
+	stopped := func() bool {
+		cancel()
+		select {
+		case <-done:
+			return true
+		case <-time.After(5 * time.Second):
+			return false
+		}
+	}
+	t.Cleanup(func() {
+		stopped()
+	})
+
+	client := http.Client{Timeout: time.Second}
+	answered := func() bool {
+		res, err := client.Get("http://127.0.0.1:" + port + "/ok")
+		if err != nil {
+			return false
+		}
+		_ = res.Body.Close()
+		return res.StatusCode == http.StatusOK
+	}
+	require.Eventually(t, answered, 5*time.Second, 10*time.Millisecond)
+
+	require.True(t, stopped(), "Serve did not return after its context ended")
+
+	// Nothing answers on the port once Serve has returned
+	_, err = client.Get("http://127.0.0.1:" + port + "/ok")
+	require.Error(t, err)
+	require.Contains(t, logs.String(), "http(s) server started")
+	require.Contains(t, logs.String(), ":"+port+`"`)
+	require.Contains(t, logs.String(), `"status":200`)
 }
 
 func TestStartConfigServesAndStops(t *testing.T) {
