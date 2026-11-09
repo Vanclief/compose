@@ -15,9 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
 
+	"github.com/vanclief/compose/components/rest"
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/handler"
+	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
 )
 
@@ -31,10 +33,29 @@ type server struct {
 	app *fixture.App
 }
 
+// newEcho returns an Echo instance that answers errors with
+// rest.ErrorHandler and gives every request an id, as rest.Configure does:
+// on the response, where the error envelope takes it from, and where
+// requests.New reads it. It runs no other middleware, so nothing reads the
+// body before the registry does.
+func newEcho() *echo.Echo {
+	e := echo.New()
+	e.HTTPErrorHandler = rest.ErrorHandler()
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			id := uuid.New().String()
+			requests.SetRequestID(c.Request().Header, id)
+			c.Response().Header().Set(echo.HeaderXRequestID, id)
+			return next(c)
+		}
+	})
+	return e
+}
+
 func newServer(t *testing.T) *server {
 	t.Helper()
 
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	reg := api.New(e,
 		api.Info("auditor3", "1.0.0"),
@@ -313,7 +334,7 @@ func TestPublic(t *testing.T) {
 }
 
 func TestNotReady(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	reg := api.New(e, api.Authenticate(app.Authenticate))
 	g := reg.Group("/health")
@@ -393,7 +414,7 @@ func TestMaxBody(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "body exceeds 1048576 bytes")
 
 	// MaxBodyBytes on New is the default, overridden per group or operation.
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	reg := api.New(e, api.MaxBodyBytes(64), api.Authenticate(app.Authenticate))
 	api.POST(reg.Group("/small"), "", "archive", app.Archive)

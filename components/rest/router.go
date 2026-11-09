@@ -34,12 +34,15 @@ type config struct {
 	idleTimeout       time.Duration
 	readTimeout       time.Duration
 	writeTimeout      time.Duration
+	errorTranslator   func(c *echo.Context, err error) error
+	errorReporter     func(c *echo.Context, err error)
 }
 
-// Option configures Configure, Serve and Start. The options are one set:
-// Configure uses WithAllowedOrigins, WithCredentialedCORS and WithBodyLimit,
-// Serve uses the four timeout options, and each ignores the options that are
-// not its own, so an app passes the same options to both.
+// Option configures Configure, Serve, Start and ErrorHandler. The options are
+// one set: Configure uses WithAllowedOrigins, WithCredentialedCORS and
+// WithBodyLimit, Serve uses the four timeout options, ErrorHandler uses
+// WithErrorTranslator and WithErrorReporter, and each ignores the options
+// that are not its own, so an app passes the same options to all of them.
 type Option func(*config)
 
 // WithAllowedOrigins restricts CORS to the given origins. Without it, with no
@@ -138,9 +141,10 @@ func Start(ctx context.Context, e *echo.Echo, log zerolog.Logger, port string, o
 
 // Serve serves e on port with server timeouts. It registers no middleware;
 // Configure does that. It uses the timeout options and ignores the others, so
-// an app passes it the same options as Configure. It always sets a 10s
-// read-header timeout and a 120s idle timeout. The read and write timeouts are
-// unset (unlimited) unless WithReadTimeout or WithWriteTimeout is passed.
+// an app passes it the same options as Configure and ErrorHandler. It always
+// sets a 10s read-header timeout and a 120s idle timeout. The read and write
+// timeouts are unset (unlimited) unless WithReadTimeout or WithWriteTimeout
+// is passed.
 //
 // Serve blocks until ctx ends, then stops accepting connections, waits up to
 // 10s for the requests in flight, closes the connections of any still running
@@ -195,7 +199,8 @@ func startConfig(cfg config, address string, log zerolog.Logger) echo.StartConfi
 //     as the ID of the request requests.New builds, so the response header,
 //     the request log line, a handler's request and the errors answered for
 //     it all carry the same id (see assignRequestID);
-//   - the request logger, one line per request with the request's id (see
+//   - the request logger, one line per request with the request's id, which
+//     has e.HTTPErrorHandler answer an error before logging it (see
 //     requestLogger);
 //   - Echo's Recover, which turns a panic into a 500 error the request logger
 //     logs with its stack;
@@ -205,7 +210,8 @@ func startConfig(cfg config, address string, log zerolog.Logger) echo.StartConfi
 //     for what it inspects and its memory use.
 //
 // It uses WithAllowedOrigins, WithCredentialedCORS and WithBodyLimit and
-// ignores the other options, so an app passes it the same options as Serve.
+// ignores the other options, so an app passes it the same options as Serve
+// and ErrorHandler.
 // Without WithAllowedOrigins every origin is allowed, and without
 // WithBodyLimit request bodies are unbounded, so production callers should
 // pass both.
@@ -222,7 +228,8 @@ func startConfig(cfg config, address string, log zerolog.Logger) echo.StartConfi
 // one); middleware registered before Configure runs outside it. An app calls
 // either Start, or Configure then Serve, never both Configure and Start, which
 // would register everything twice. ErrorHandler answers, in compose's error
-// shape, the errors this stack logs; Configure does not install it.
+// shape, the errors this stack logs; Configure does not install it, and the
+// request logger calls whatever e.HTTPErrorHandler is when the request runs.
 func Configure(e *echo.Echo, log zerolog.Logger, opts ...Option) {
 	cfg := newConfig(opts...)
 
@@ -307,9 +314,12 @@ func assignRequestID(next echo.HandlerFunc) echo.HandlerFunc {
 // of the request, which under Configure is the id assignRequestID gave it, so
 // every line has one), remote_ip, host, method, uri, user_agent, status,
 // referer, latency, latency_human, bytes_in and bytes_out, with no message. A
-// request whose handler returned an error is logged at error level with the
-// error; its status is the one already written, else the one Echo maps the
-// error to, since Echo's error handler has not run yet.
+// request whose handler returned an error is first answered by Echo's
+// HTTPErrorHandler (HandleError), so its status is the one actually sent, an
+// ez error's own status under ErrorHandler, and then logged with the error at
+// warn level for a 4xx and error level for a 5xx. The logger returns the error
+// afterwards, so Echo calls the HTTPErrorHandler a second time on the
+// committed response, which ErrorHandler leaves alone.
 func requestLogger(log zerolog.Logger) middleware.RequestLoggerConfig {
 	return middleware.RequestLoggerConfig{
 		LogLatency:       true,
@@ -323,10 +333,16 @@ func requestLogger(log zerolog.Logger) middleware.RequestLoggerConfig {
 		LogStatus:        true,
 		LogContentLength: true,
 		LogResponseSize:  true,
+		HandleError:      true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
 			evt := log.Info()
+			if v.Status >= http.StatusInternalServerError {
+				evt = log.Error()
+			} else if v.Status >= http.StatusBadRequest {
+				evt = log.Warn()
+			}
 			if v.Error != nil {
-				evt = log.Error().Err(v.Error)
+				evt = evt.Err(v.Error)
 			}
 			if v.RequestID != "" {
 				evt = evt.Str("id", v.RequestID)

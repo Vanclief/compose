@@ -419,10 +419,11 @@ func TestConfigureRequestLog(t *testing.T) {
 	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fail", nil))
 	require.Equal(t, http.StatusTeapot, rec.Code)
 
+	// A client error is logged at warn level, with the error
 	line = map[string]any{}
 	err = json.Unmarshal(logs.Bytes(), &line)
 	require.NoError(t, err)
-	require.Equal(t, "error", line["level"])
+	require.Equal(t, "warn", line["level"])
 	require.Equal(t, float64(http.StatusTeapot), line["status"])
 	require.Contains(t, line["error"], "no coffee")
 	// The line has the id the response carries
@@ -444,6 +445,52 @@ func TestConfigureRequestLog(t *testing.T) {
 	require.Equal(t, float64(http.StatusInternalServerError), line["status"])
 	require.Contains(t, line["error"], "kaboom")
 	require.Contains(t, line["error"], "goroutine")
+}
+
+// Under Configure with ErrorHandler, an error a handler returns is answered
+// before it is logged, so the log line has the status sent: an ez EINVALID is
+// a 400 at warn level, a plain error a 500 at error level.
+func TestConfigureLogsAnsweredStatus(t *testing.T) {
+	var logs bytes.Buffer
+	e := echo.New()
+	Configure(e, zerolog.New(&logs))
+	e.HTTPErrorHandler = ErrorHandler()
+	e.GET("/invalid", func(c *echo.Context) error {
+		return ez.New(ez.EINVALID, "name is required", nil)
+	})
+	e.GET("/plain", func(c *echo.Context) error {
+		return errors.New("secret database detail")
+	})
+
+	tests := []struct {
+		path   string
+		status int
+		level  string
+		want   handler.StandardError
+	}{
+		{"/invalid", http.StatusBadRequest, "warn", handler.StandardError{Code: ez.EINVALID, Message: "name is required"}},
+		{"/plain", http.StatusInternalServerError, "error", handler.StandardError{Code: ez.EINTERNAL, Message: "Internal Server Error"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			logs.Reset()
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+
+			id := rec.Header().Get(echo.HeaderXRequestID)
+			tt.want.RequestID = id
+			require.Equal(t, tt.want, errorEnvelope(t, rec))
+
+			var line map[string]any
+			err := json.Unmarshal(logs.Bytes(), &line)
+			require.NoError(t, err, logs.String())
+			require.Equal(t, tt.level, line["level"])
+			require.Equal(t, float64(tt.status), line["status"])
+			require.Equal(t, id, line["id"])
+			require.NotEmpty(t, line["error"])
+		})
+	}
 }
 
 // A request has one id under Configure, a UUID of the server's own: the

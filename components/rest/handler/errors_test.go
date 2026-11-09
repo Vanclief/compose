@@ -3,7 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,59 +93,78 @@ func TestManageErrorDoesNotLogBody(t *testing.T) {
 	require.NotContains(t, output, "request_json")
 }
 
-func TestHandledErrorNilOnFreshContext(t *testing.T) {
+func TestRequestRoundTrip(t *testing.T) {
 	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
-
-	require.NoError(t, HandledError(c))
-}
-
-func TestHandledErrorReturnsOriginalError(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
-
-	h := NewHandler(nil)
-	h.ErrorTranslator = func(err error, request requests.Request) error {
-		return ez.New(ez.ENOTFOUND, "translated", err)
-	}
+	require.Nil(t, Request(c))
 
 	request := requests.New(http.Header{}, "127.0.0.1")
-	err := h.ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "x", nil))
-	require.NoError(t, err)
-
-	handled := HandledError(c)
-	require.Error(t, handled)
-	require.Equal(t, ez.ENOTFOUND, ez.ErrorCode(handled))
-	require.Equal(t, "x", ez.ErrorMessage(handled))
-
-	require.Equal(t, http.StatusNotFound, rec.Code)
-	var body ErrorResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &body)
-	require.NoError(t, err)
-	require.Equal(t, "translated", body.Error.Message)
+	SetRequest(c, request)
+	require.Same(t, request, Request(c))
 }
 
-func TestHandledErrorVisibleToMiddleware(t *testing.T) {
-	e := echo.New()
-	h := NewHandler(nil)
+func TestManageErrorSetsRequest(t *testing.T) {
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
 
-	var seen error
-	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c *echo.Context) error {
-			err := next(c)
-			seen = HandledError(c)
-			return err
-		}
-	})
-	e.GET("/", func(c *echo.Context) error {
-		request := requests.New(http.Header{}, "127.0.0.1")
-		return h.ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "x", nil))
-	})
+	request := requests.New(http.Header{}, "127.0.0.1")
+	err := NewHandler(nil).ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "x", nil))
+	require.NoError(t, err)
+	require.Same(t, request, Request(c))
+}
 
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+// reportErrors are the errors ReportToSentry is tested with, and whether
+// each is reported and at which level.
+var reportErrors = []struct {
+	name     string
+	err      error
+	reported bool
+	level    sentry.Level
+}{
+	{"internal", ez.New(ez.EINTERNAL, "boom", nil), true, sentry.LevelError},
+	{"wrapped internal", ez.Wrap(ez.New(ez.EINTERNAL, "boom", nil)), true, sentry.LevelError},
+	{"timeout", ez.New(ez.ETIMEOUT, "slow", nil), true, sentry.LevelWarning},
+	{"unavailable", ez.New(ez.EUNAVAILABLE, "down", nil), true, sentry.LevelWarning},
+	{"invalid", ez.New(ez.EINVALID, "bad", nil), false, ""},
+	{"not found", ez.New(ez.ENOTFOUND, "gone", nil), false, ""},
+	{"plain", errors.New("boom"), true, sentry.LevelError},
+	{"echo sentinel", echo.ErrNotFound, false, ""},
+	{"echo HTTPError", echo.NewHTTPError(http.StatusTeapot, "no coffee"), false, ""},
+}
 
-	require.Equal(t, http.StatusNotFound, rec.Code)
-	require.Error(t, seen)
-	require.Equal(t, ez.ENOTFOUND, ez.ErrorCode(seen))
-	require.Equal(t, "x", ez.ErrorMessage(seen))
+func TestReportToSentry(t *testing.T) {
+	for _, tt := range reportErrors {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &recordingTransport{}
+			client, err := sentry.NewClient(sentry.ClientOptions{Transport: transport})
+			require.NoError(t, err)
+			hub := sentry.NewHub(client, sentry.NewScope())
+
+			rec := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+			c.Set("sentry", hub) // same key sentryecho middleware uses
+			c.Response().Header().Set(echo.HeaderXRequestID, "request-1")
+			request := requests.New(http.Header{}, "127.0.0.1")
+			request.SetContext(context.WithValue(request.GetContext(), "user", map[string]interface{}{"id": "user-1"}))
+			SetRequest(c, request)
+
+			ReportToSentry(c, tt.err)
+
+			if !tt.reported {
+				require.Empty(t, transport.events)
+				return
+			}
+			require.Len(t, transport.events, 1)
+			require.Equal(t, tt.level, transport.events[0].Level)
+			require.Equal(t, "request-1", transport.events[0].Tags["Request ID"])
+			require.Equal(t, "user-1", transport.events[0].User.ID)
+		})
+	}
+}
+
+func TestReportToSentryWithoutHub(t *testing.T) {
+	for _, tt := range reportErrors {
+		c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
+		require.NotPanics(t, func() {
+			ReportToSentry(c, tt.err)
+		}, tt.name)
+	}
 }

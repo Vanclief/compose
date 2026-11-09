@@ -497,9 +497,6 @@ func TestRegistrationFailures(t *testing.T) {
 
 func TestOptionFailures(t *testing.T) {
 	app := &fixture.App{}
-	translate := func(err error, request requests.Request) error {
-		return err
-	}
 	newGroup := func() *api.Group {
 		return api.New(echo.New(), api.Authenticate(app.Authenticate)).Group("/runs")
 	}
@@ -522,9 +519,6 @@ func TestOptionFailures(t *testing.T) {
 		{func() { api.GET(newGroup(), "", "check", app.Health, api.Public(), api.Authenticate(app.Authenticate)) }, "api: GET /runs (runs.check): api.Public and api.Authenticate cannot both be passed to an operation"},
 		{func() { newGroup().Group("/x", api.Info("x", "1")) }, "api.Info is a registry option: pass it to api.New, not to a group"},
 		{func() { api.GET(newGroup(), "", "check", app.Health, api.Description("x")) }, "api.Description is a registry option: pass it to api.New, not to an operation"},
-		{func() { newGroup().Group("/x", api.ErrorTranslator(translate)) }, "api.ErrorTranslator is a registry option: pass it to api.New, not to a group"},
-		{func() { api.GET(newGroup(), "", "check", app.Health, api.ErrorTranslator(translate)) }, "api.ErrorTranslator is a registry option: pass it to api.New, not to an operation"},
-		{func() { api.ErrorTranslator(nil) }, "api: ErrorTranslator needs a function"},
 		{func() { api.New(echo.New(), api.ContentType("text/csv")) }, "api.ContentType is an operation option: pass it to the operation, not to api.New"},
 		{func() { newGroup().Group("/x", api.Produces("text/csv", app.ExportCSV)) }, "api.Produces is an operation option: pass it to the operation, not to a group"},
 		{func() { newGroup().Group("/x", api.Option{}) }, "zero api.Option"},

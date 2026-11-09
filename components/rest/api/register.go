@@ -69,11 +69,11 @@ type operation struct {
 }
 
 // Handle registers a typed operation. path uses Echo syntax (/:id) relative
-// to the group; name is the operationId suffix. Requests are validated
-// against the generated schema, decoded into a new Req, checked with
-// Validate, authenticated (see Authenticate) and passed to fn with the
-// request context; fn's Res is documented and written as the JSON 200
-// response. A Blob Res needs ContentType; Produces adds other
+// to the group; name is the operationId suffix. Requests are authenticated
+// (see Authenticate), validated against the generated schema, decoded into a
+// new Req, checked with Validate and passed to fn with the request context;
+// fn's error is returned to Echo, and fn's Res is documented and written as
+// the JSON 200 response. A Blob Res needs ContentType; Produces adds other
 // representations. Res must not be an interface type.
 func Handle[Req, Res any, P interface {
 	*Req

@@ -24,8 +24,8 @@ type Group struct {
 
 // Option configures the registry (api.New), a group or an operation. Each
 // option supports some of these scopes; using it at another one panics at
-// boot. Registry options (Info, Description, APIKeyHeader, Server, Namer,
-// ErrorTranslator) are only accepted by New. ContentType and Produces are
+// boot. Registry options (Info, Description, APIKeyHeader, Server, Namer)
+// are only accepted by New. ContentType and Produces are
 // only accepted by an operation. Every other option is accepted at every
 // scope and applies to every operation below it: options of New first, then
 // the group's, then the operation's, so the nearest one wins.
@@ -78,11 +78,13 @@ func checkOptions(opts []Option, scope string) error {
 	return nil
 }
 
-// AuthenticateFunc authenticates a request. It runs after the request passed
-// schema validation and Body.Validate, and before the handler. It may change
-// the request (request.SetContext, request.SetLocale); the handler receives
-// request.GetContext() as it is after the call. An error rejects the request
-// through ManageError.
+// AuthenticateFunc authenticates a request. It runs first, before any
+// parameter is coerced or any body byte is read, so request.GetBody() is nil
+// inside it; the headers, IP, method, cookies and context are there. It may
+// change the request (request.SetContext, request.SetLocale); the handler
+// receives request.GetContext() as it is after the call. An error rejects the
+// request: it is returned to Echo, so the client never learns whether its
+// body was valid.
 type AuthenticateFunc func(request requests.Request) error
 
 // Authenticate sets the authenticator of every operation in its scope and

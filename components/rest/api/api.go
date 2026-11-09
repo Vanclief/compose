@@ -10,16 +10,24 @@
 // finds a protected operation, hidden or not, without an authenticator.
 // Call Ready once every route is registered, before serving traffic.
 //
-// Each request is validated against the schema, decoded once, checked with
-// Body.Validate and authenticated, in that order, before exactly one handler
-// runs: the Produces handler of the negotiated media type, else the
-// operation's own. Authenticate sets the authenticator for api.New, a group
-// or an operation, the nearest one winning, and marks those operations
-// protected; Public skips authentication and drops the security requirement
-// from the spec. The request context derives from the Echo request's; Echo
-// middleware after next(c) reads the request the registry built, and the
-// context the authenticator produced, through Request (see also Accept and
-// handler.HandledError).
+// Each request is authenticated, then validated against the schema, decoded
+// once and checked with Body.Validate, in that order, before exactly one
+// handler runs: the Produces handler of the negotiated media type, else the
+// operation's own. Authentication runs before any body byte is read, so an
+// unauthenticated caller learns nothing about the request's shape.
+// Authenticate sets the authenticator for api.New, a group or an operation,
+// the nearest one winning, and marks those operations protected; Public skips
+// authentication and drops the security requirement from the spec. The
+// request context derives from the Echo request's; Echo middleware after
+// next(c) reads the request the registry built, and the context the
+// authenticator produced, through handler.Request (see also Accept).
+//
+// Errors, the pipeline's and the handler's, are returned to Echo and answered
+// by the app's HTTPErrorHandler, which middleware after next(c) sees first:
+// rest.ErrorHandler answers them in the handler.ErrorResponse envelope the
+// spec documents, and its WithErrorTranslator and WithErrorReporter options
+// localize and report them. An app that keeps Echo's default handler answers
+// every registry error as a 500 {"message":"Internal Server Error"}.
 //
 // Tags: an operation's tag is the last non-parameter segment of its group's
 // full prefix (/runs -> runs, /runs/:id/issues -> issues, /v1/runs -> runs).
@@ -39,7 +47,6 @@ import (
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/components/rest/api/openapi"
 	"github.com/vanclief/compose/components/rest/handler"
-	"github.com/vanclief/compose/components/rest/requests"
 )
 
 // securitySchemeName is the name of the API key security scheme.
@@ -57,8 +64,7 @@ var errorResponseType = reflect.TypeFor[handler.ErrorResponse]()
 // authenticate with a header, so this is not a CSRF vector for them. Apps
 // that authenticate with cookies must add a CSRF middleware.
 type Registry struct {
-	echo    *echo.Echo
-	handler *handler.BaseHandler
+	echo *echo.Echo
 
 	info         huma.Info
 	servers      []*huma.Server
@@ -112,18 +118,6 @@ func Server(url string) Option {
 	}}
 }
 
-// ErrorTranslator sets the function applied to every error right before it is
-// written, so applications can localize error messages; see
-// handler.BaseHandler.ErrorTranslator. Registry option. Panics when fn is nil.
-func ErrorTranslator(fn func(err error, request requests.Request) error) Option {
-	if fn == nil {
-		panic(ez.New(ez.EINVALID, "api: ErrorTranslator needs a function", nil))
-	}
-	return Option{name: "api.ErrorTranslator", registry: func(r *Registry) {
-		r.handler.ErrorTranslator = fn
-	}}
-}
-
 // Namer sets the component namer (openapi.WithNamer), for example
 // openapi.SegmentsNamer(2) when two packages declare the same type name.
 // Registry option.
@@ -133,9 +127,12 @@ func Namer(namer func(reflect.Type) string) Option {
 	}}
 }
 
-// New creates a registry bound to an Echo instance. Errors are written by
-// handler.BaseHandler.ManageError, as the handler.ErrorResponse envelope and
-// visible to handler.HandledError; ErrorTranslator localizes them. Operation
+// New creates a registry bound to an Echo instance. Its operations return
+// their errors to Echo, so the app sets e.HTTPErrorHandler to
+// rest.ErrorHandler for the handler.ErrorResponse envelope the spec
+// documents; with Echo's default handler every registry error is a 500
+// {"message":"Internal Server Error"}. Authentication runs before the body is
+// read, and handler.Request returns the request an operation built. Operation
 // options such as Authenticate, Timeout or MaxBodyBytes apply to every
 // operation, before the options of its groups and its own. Panics when an
 // option is an operation option (ContentType, Produces).
@@ -146,11 +143,10 @@ func New(e *echo.Echo, opts ...Option) *Registry {
 	}
 
 	r := &Registry{
-		echo:    e,
-		handler: &handler.BaseHandler{},
-		info:    huma.Info{Title: "API", Version: "0.0.0"},
-		ids:     map[string]bool{},
-		routes:  map[string]string{},
+		echo:   e,
+		info:   huma.Info{Title: "API", Version: "0.0.0"},
+		ids:    map[string]bool{},
+		routes: map[string]string{},
 	}
 	for _, opt := range opts {
 		if opt.registry == nil {

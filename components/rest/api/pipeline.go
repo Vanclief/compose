@@ -17,12 +17,9 @@ import (
 	"github.com/vanclief/ez"
 
 	"github.com/vanclief/compose/components/rest/api/validate"
+	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/compose/components/rest/requests"
 )
-
-// requestKey is the Echo context key serve stores the request under. It is
-// namespaced so applications do not collide with it by accident.
-const requestKey = "compose/rest/api:request"
 
 // acceptKey is the request context key of the negotiated media type.
 type acceptKey struct{}
@@ -35,25 +32,16 @@ func Accept(ctx context.Context) string {
 	return mediaType
 }
 
-// Request returns the request the registry built for the Echo request, or
-// nil when the request did not reach a registered operation. It is how Echo
-// middleware gets, after next(c), the context the authenticator produced
-// (request.GetContext()), for example to log what the authenticator set:
-// the Echo request's own context does not carry it. By then the registry has
-// cancelled that context: use it for its values.
-func Request(c *echo.Context) requests.Request {
-	request, _ := c.Get(requestKey).(requests.Request)
-	return request
-}
-
-// serve is the Echo handler of a typed operation: validate the request
-// against the compiled schema, decode it once, run Validate and the
-// authenticator, and pass it to the handler of the negotiated media type.
-// Multipart operations validate their form values against the body schema
-// the same way.
+// serve is the Echo handler of a typed operation: authenticate the request,
+// validate it against the compiled schema, decode it once, run Validate, and
+// pass it to the handler of the negotiated media type. The authenticator runs
+// before any parameter is coerced or any body byte is read, so an
+// unauthenticated caller learns nothing about the request's shape and nothing
+// is parsed for it; request.GetBody() is nil inside it. Multipart operations
+// validate their form values against the body schema the same way. Every
+// error is returned to Echo, for the app's HTTPErrorHandler to answer: the
+// pipeline's own errors are ez errors, the handler's are returned as is.
 func (op *operation) serve(c *echo.Context) error {
-	h := op.reg.handler
-
 	reqOpts := []requests.Option{requests.WithMethod(c.Request().Method)}
 	if op.timeout > 0 {
 		reqOpts = append(reqOpts, requests.WithTimeout(op.timeout))
@@ -64,14 +52,21 @@ func (op *operation) serve(c *echo.Context) error {
 			request.Cancel()
 		}
 	}()
-	c.Set(requestKey, request)
+	handler.SetRequest(c, request)
 
 	mediaType := negotiate(strings.Join(c.Request().Header.Values(echo.HeaderAccept), ","), op.produces)
 	request.SetAccept(mediaType)
 	request.SetContext(context.WithValue(request.GetContext(), acceptKey{}, mediaType))
 
 	if !op.reg.ready.Load() {
-		return h.ManageError(c, op.id, request, ez.New(ez.EINTERNAL, "api registry not ready", nil))
+		return ez.New(ez.EINTERNAL, "api registry not ready", nil)
+	}
+
+	if !op.public {
+		err := op.authenticate(request)
+		if err != nil {
+			return err
+		}
 	}
 
 	instance := map[string]any{}
@@ -98,7 +93,7 @@ func (op *operation) serve(c *echo.Context) error {
 		var err error
 		form, err = op.readForm(c)
 		if err != nil {
-			return h.ManageError(c, op.id, request, err)
+			return err
 		}
 		formValues, collisions = op.formBody(form)
 		if op.hasBody {
@@ -107,7 +102,7 @@ func (op *operation) serve(c *echo.Context) error {
 	} else if op.hasBody {
 		body, bodyRaw, err := op.readBody(c)
 		if err != nil {
-			return h.ManageError(c, op.id, request, err)
+			return err
 		}
 		if body != nil {
 			instance["body"] = body
@@ -120,29 +115,29 @@ func (op *operation) serve(c *echo.Context) error {
 	err := op.schema.Validate(instance)
 	fields := validate.Fields(err)
 	if err != nil && fields == nil {
-		return h.ManageError(c, op.id, request, err)
+		return err
 	}
 	err = validate.NewFieldsError(append(fields, collisions...))
 	if err != nil {
-		return h.ManageError(c, op.id, request, err)
+		return err
 	}
 
 	req := reflect.New(op.reqType)
 	if form != nil {
 		err = op.decodeForm(req, formValues, form)
 		if err != nil {
-			return h.ManageError(c, op.id, request, err)
+			return err
 		}
 	}
 	if raw != nil {
 		err = json.Unmarshal(raw, req.Interface())
 		if err != nil {
-			return h.ManageError(c, op.id, request, ez.New(ez.EINVALID, "body could not be decoded", err))
+			return ez.New(ez.EINVALID, "body could not be decoded", err)
 		}
 	}
 	err = setParams(req.Elem(), op.params, values)
 	if err != nil {
-		return h.ManageError(c, op.id, request, err)
+		return err
 	}
 
 	body := req.Interface().(requests.Body)
@@ -150,20 +145,13 @@ func (op *operation) serve(c *echo.Context) error {
 
 	err = body.Validate()
 	if err != nil {
-		return h.ManageError(c, op.id, request, err)
-	}
-
-	if !op.public {
-		err = op.authenticate(request)
-		if err != nil {
-			return h.ManageError(c, op.id, request, err)
-		}
+		return err
 	}
 
 	// Read the context after Authenticate, which may have replaced it.
 	response, err := op.call(request.GetContext(), mediaType, body)
 	if err != nil {
-		return h.ManageError(c, op.id, request, err)
+		return err
 	}
 
 	return writeResponse(c, response, mediaType)

@@ -3,8 +3,10 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
 
+	"github.com/vanclief/compose/components/rest"
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/handler"
@@ -74,7 +77,7 @@ func whoAmI(t *testing.T, s *server, target string) whoResponse {
 }
 
 func TestAuthenticateRuns(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	calls := 0
 	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	api.GET(reg.Group("/me"), "", "get", who)
@@ -87,7 +90,7 @@ func TestAuthenticateRuns(t *testing.T) {
 }
 
 func TestAuthenticateRejects(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	calls := 0
 	reg := api.New(e, api.Authenticate(reject(&calls)))
@@ -103,7 +106,7 @@ func TestAuthenticateRejects(t *testing.T) {
 }
 
 func TestPublicSkipsAuthenticate(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	calls := 0
 	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	g := reg.Group("/me")
@@ -123,7 +126,7 @@ func TestPublicSkipsAuthenticate(t *testing.T) {
 }
 
 func TestAuthenticateInheritance(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	callsA := 0
 	callsB := 0
 	reg := api.New(e, api.Authenticate(authAs("A", &callsA)))
@@ -199,25 +202,48 @@ func TestPublicAndAuthenticateConflict(t *testing.T) {
 	}
 }
 
-func TestValidateBeforeAuthenticate(t *testing.T) {
-	e := echo.New()
+// readCounter is a request body that counts the reads made of it.
+type readCounter struct {
+	r     io.Reader
+	reads int
+}
+
+func (b *readCounter) Read(p []byte) (int, error) {
+	b.reads++
+	return b.r.Read(p)
+}
+
+func TestAuthenticateBeforeBody(t *testing.T) {
+	e := newEcho()
 	app := &fixture.App{}
 	calls := 0
-	reg := api.New(e, api.Authenticate(reject(&calls)))
+	var bodies []requests.Body
+	auth := func(request requests.Request) error {
+		bodies = append(bodies, request.GetBody())
+		return reject(&calls)(request)
+	}
+	reg := api.New(e, api.Authenticate(auth))
 	api.PATCH(reg.Group("/runs"), "/:id", "update", app.Update)
 	reg.Ready()
-	s := &server{e: e, reg: reg}
 	target := "/runs/" + fixture.KnownID.String()
 
-	rec := s.do(http.MethodPatch, target, `{"status":"failed"}`)
-	requireError(t, rec, http.StatusBadRequest, "failure_reason is required when status is failed")
-	require.Equal(t, 0, calls)
+	// A body that breaks the schema, and one that passes it but breaks the
+	// cross-field rule of Validate: the authenticator rejects both before the
+	// body is read, so neither the schema nor Validate reports anything.
+	for _, body := range []string{`{"max_total_runs":-1}`, `{"status":"failed"}`} {
+		counter := &readCounter{r: strings.NewReader(body)}
+		req := httptest.NewRequest(http.MethodPatch, target, counter)
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
 
-	// A valid body reaches the authenticator, which rejects it.
-	rec = s.do(http.MethodPatch, target, `{"status":"failed","failure_reason":"x"}`)
-	requireError(t, rec, http.StatusUnauthorized, "no")
-	require.Equal(t, 1, calls)
-	require.Nil(t, app.Last())
+		resp := requireError(t, rec, http.StatusUnauthorized, "no")
+		require.Equal(t, ez.ENOTAUTHENTICATED, resp.Error.Code, body)
+		require.Zero(t, counter.reads, body)
+	}
+	require.Equal(t, 2, calls)
+	require.Equal(t, []requests.Body{nil, nil}, bodies)
+	require.Nil(t, app.Last(), "handler invoked despite the authenticator rejecting")
 }
 
 func TestSchemaBeforeValidate(t *testing.T) {
@@ -234,7 +260,7 @@ func TestSchemaBeforeValidate(t *testing.T) {
 }
 
 func TestContractHandlerNotInvokedOnFailure(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	calls := 0
 	auth := func(request requests.Request) error {
@@ -266,7 +292,8 @@ func TestContractHandlerNotInvokedOnFailure(t *testing.T) {
 		requireError(t, rec, tt.status, tt.want)
 		require.Nil(t, app.Last(), tt.name)
 	}
-	require.Equal(t, 1, calls)
+	// The authenticator runs first, so every request reached it.
+	require.Equal(t, 3, calls)
 
 	rec := s.do(http.MethodPatch, target, `{"status":"failed","failure_reason":"x"}`)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -285,7 +312,7 @@ func withTenant(tenant string) echo.MiddlewareFunc {
 }
 
 func TestHandlerSeesInboundContext(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/route"), "", "get", who, api.Middleware(withTenant("route")))
 	g := reg.Group("/group")
@@ -304,7 +331,7 @@ func TestHandlerSeesInboundContext(t *testing.T) {
 }
 
 func TestRequestCarriesAuthenticatorContextOnError(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	calls := 0
 
 	var echoContext context.Context
@@ -314,8 +341,8 @@ func TestRequestCarriesAuthenticatorContextOnError(t *testing.T) {
 		return func(c *echo.Context) error {
 			err := next(c)
 			echoContext = c.Request().Context()
-			handled = handler.HandledError(c)
-			request = api.Request(c)
+			handled = err
+			request = handler.Request(c)
 			return err
 		}
 	}
@@ -331,7 +358,8 @@ func TestRequestCarriesAuthenticatorContextOnError(t *testing.T) {
 	rec := s.do(http.MethodPost, "/runs", `{"name":"nightly"}`)
 	resp := requireError(t, rec, http.StatusConflict, "busy")
 
-	// The authenticator's values reach middleware through api.Request only:
+	// The authenticator's values reach middleware through handler.Request
+	// only:
 	// the Echo request's context is not replaced.
 	require.NotNil(t, request)
 	after := request.GetContext()
@@ -356,20 +384,21 @@ func TestRequestCarriesAuthenticatorContextOnError(t *testing.T) {
 }
 
 func TestErrorTranslator(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	calls := 0
 
 	var translatedID string
-	translate := func(err error, request requests.Request) error {
-		translatedID = request.GetID()
+	translate := func(c *echo.Context, err error) error {
+		translatedID = handler.Request(c).GetID()
 		return ez.New(ez.ENOTFOUND, "ocupado: "+ez.ErrorMessage(err), err)
 	}
+	e.HTTPErrorHandler = rest.ErrorHandler(rest.WithErrorTranslator(translate))
 
 	var handled error
 	observe := func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
 			err := next(c)
-			handled = handler.HandledError(c)
+			handled = err
 			return err
 		}
 	}
@@ -377,7 +406,7 @@ func TestErrorTranslator(t *testing.T) {
 	failing := func(ctx context.Context, body *fixture.CreateRequest) (fixture.Run, error) {
 		return fixture.Run{}, ez.New(ez.ECONFLICT, "busy", nil)
 	}
-	reg := api.New(e, api.ErrorTranslator(translate), api.Authenticate(authAs("alice", &calls)))
+	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	api.POST(reg.Group("/runs"), "", "create", failing, api.Middleware(observe))
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -389,7 +418,7 @@ func TestErrorTranslator(t *testing.T) {
 	require.Equal(t, ez.ECONFLICT, resp.Error.Code)
 	require.Equal(t, resp.Error.RequestID, translatedID)
 
-	// handler.HandledError reports the original error.
+	// Middleware receives the original error.
 	require.Error(t, handled)
 	require.Equal(t, ez.ECONFLICT, ez.ErrorCode(handled))
 	require.Equal(t, "busy", ez.ErrorMessage(handled))
@@ -399,8 +428,42 @@ func TestErrorTranslator(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "ocupado: ")
 }
 
+// Every registry error, a server error of the handler and a client error of
+// the pipeline, reaches the app's reporter once and is answered in the
+// envelope with the request's id.
+func TestErrorReporter(t *testing.T) {
+	e := newEcho()
+	var reported []error
+	report := func(c *echo.Context, err error) {
+		reported = append(reported, err)
+	}
+	e.HTTPErrorHandler = rest.ErrorHandler(rest.WithErrorReporter(report))
+
+	failure := ez.New(ez.EINTERNAL, "database down", nil)
+	failing := func(ctx context.Context, body *fixture.CreateRequest) (fixture.Run, error) {
+		return fixture.Run{}, failure
+	}
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/runs"), "", "create", failing)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/runs", `{"name":"nightly"}`)
+	resp := requireError(t, rec, http.StatusInternalServerError, "database down")
+	require.Equal(t, ez.EINTERNAL, resp.Error.Code)
+	require.Equal(t, rec.Header().Get(echo.HeaderXRequestID), resp.Error.RequestID)
+	require.Len(t, reported, 1)
+	require.Same(t, failure, reported[0])
+
+	rec = s.do(http.MethodPost, "/runs", `{"name":""}`)
+	resp = requireError(t, rec, http.StatusBadRequest, "name")
+	require.Equal(t, rec.Header().Get(echo.HeaderXRequestID), resp.Error.RequestID)
+	require.Len(t, reported, 2)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(reported[1]))
+}
+
 func TestContextRequestNilOutsideRegistry(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/me"), "", "get", who)
 	reg.Ready()
@@ -412,8 +475,8 @@ func TestContextRequestNilOutsideRegistry(t *testing.T) {
 		return func(c *echo.Context) error {
 			err := next(c)
 			observed = true
-			handled = handler.HandledError(c)
-			request = api.Request(c)
+			handled = err
+			request = handler.Request(c)
 			return err
 		}
 	})
@@ -434,7 +497,7 @@ func TestContextRequestNilOutsideRegistry(t *testing.T) {
 }
 
 func TestContextInboundCancellation(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	started := make(chan struct{})
 	var seen error
 	wait := func(ctx context.Context, body *whoRequest) (whoResponse, error) {
@@ -483,7 +546,7 @@ func TestContextRouteTimeoutWins(t *testing.T) {
 		return whoResponse{}, nil
 	}
 
-	e := echo.New()
+	e := newEcho()
 	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/short"), "", "get", wait, api.Timeout(50*time.Millisecond))
 	api.GET(reg.Group("/long"), "", "get", wait, api.Timeout(time.Minute))
@@ -517,7 +580,7 @@ func TestContextRouteTimeoutWins(t *testing.T) {
 }
 
 func TestProducesSelectsHandler(t *testing.T) {
-	e := echo.New()
+	e := newEcho()
 	app := &fixture.App{}
 	jsonCalls := 0
 	csvCalls := 0

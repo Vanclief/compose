@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/compose/components/rest/handler"
@@ -47,6 +48,15 @@ func TestErrorHandler(t *testing.T) {
 	})
 	e.GET("/plain", func(c *echo.Context) error {
 		return errors.New("secret database detail")
+	})
+	e.GET("/ez", func(c *echo.Context) error {
+		return ez.New(ez.ECONFLICT, "already running", errors.New("secret cause"))
+	})
+	e.GET("/ez-wrapped", func(c *echo.Context) error {
+		return ez.Wrap(ez.New(ez.ENOTFOUND, "no such run", nil))
+	})
+	e.GET("/ez-in-other", func(c *echo.Context) error {
+		return fmt.Errorf("save: %w", ez.New(ez.EINVALID, "secret detail", nil))
 	})
 	e.GET("/response-id", func(c *echo.Context) error {
 		c.Response().Header().Set(echo.HeaderXRequestID, "response-id")
@@ -103,6 +113,24 @@ func TestErrorHandler(t *testing.T) {
 			method: http.MethodGet, path: "/plain",
 			status: http.StatusInternalServerError,
 			want:   handler.StandardError{Code: ez.EINTERNAL, Message: "Internal Server Error"},
+		},
+		{
+			name:   "ez error",
+			method: http.MethodGet, path: "/ez",
+			status: http.StatusConflict,
+			want:   handler.StandardError{Code: ez.ECONFLICT, Message: "already running"},
+		},
+		{
+			name:   "wrapped ez error",
+			method: http.MethodGet, path: "/ez-wrapped",
+			status: http.StatusNotFound,
+			want:   handler.StandardError{Code: ez.ENOTFOUND, Message: "no such run"},
+		},
+		{
+			name:   "ez error inside another error",
+			method: http.MethodGet, path: "/ez-in-other",
+			status: http.StatusInternalServerError,
+			want:   handler.StandardError{Code: ez.EINTERNAL, Message: "An internal error has occurred. Please contact technical support."},
 		},
 		{
 			name:   "request id of the client is not used",
@@ -182,6 +210,144 @@ func TestErrorHandlerLogsWriteFailure(t *testing.T) {
 	e.ServeHTTP(failingWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/nope", nil))
 	require.Contains(t, logs.String(), "rest: error handler failed to send the error to the client")
 	require.Contains(t, logs.String(), "client gone")
+}
+
+// reported records the errors a WithErrorReporter hook was called with.
+type reported struct {
+	errs []error
+}
+
+func (r *reported) report(c *echo.Context, err error) {
+	r.errs = append(r.errs, err)
+}
+
+func TestErrorHandlerReporter(t *testing.T) {
+	invalid := ez.New(ez.EINVALID, "bad name", nil)
+	internal := ez.New(ez.EINTERNAL, "database down", nil)
+	plain := errors.New("secret database detail")
+
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"client ez error", invalid, http.StatusBadRequest},
+		{"server ez error", internal, http.StatusInternalServerError},
+		{"plain error", plain, http.StatusInternalServerError},
+		{"echo error", echo.ErrForbidden, http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var r reported
+			e := echo.New()
+			e.HTTPErrorHandler = ErrorHandler(WithErrorReporter(r.report))
+			e.GET("/fail", func(c *echo.Context) error {
+				return tt.err
+			})
+
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fail", nil))
+			require.Equal(t, tt.status, rec.Code)
+			require.Len(t, r.errs, 1)
+			require.Same(t, tt.err, r.errs[0])
+		})
+	}
+}
+
+// Under the request logger, which answers the error and returns it, Echo
+// calls the error handler a second time: the second call does nothing.
+func TestErrorHandlerRunsOnceUnderRequestLogger(t *testing.T) {
+	var r reported
+	translations := 0
+	translate := func(c *echo.Context, err error) error {
+		translations++
+		return nil
+	}
+	var logs bytes.Buffer
+	e := echo.New()
+	e.HTTPErrorHandler = ErrorHandler(WithErrorReporter(r.report), WithErrorTranslator(translate))
+	e.Use(middleware.RequestLoggerWithConfig(requestLogger(zerolog.New(&logs))))
+	failure := ez.New(ez.EINVALID, "bad name", nil)
+	e.GET("/fail", func(c *echo.Context) error {
+		return failure
+	})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fail", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, handler.StandardError{Code: ez.EINVALID, Message: "bad name"}, errorEnvelope(t, rec))
+	require.Len(t, r.errs, 1)
+	require.Same(t, failure, r.errs[0])
+	require.Equal(t, 1, translations)
+	require.Contains(t, logs.String(), `"status":400`)
+}
+
+func TestErrorHandlerTranslator(t *testing.T) {
+	var seen []error
+	translate := func(c *echo.Context, err error) error {
+		seen = append(seen, err)
+		if ez.ErrorMessage(err) == "keep" {
+			return nil
+		}
+		return ez.New(ez.EINTERNAL, "traducido: "+ez.ErrorMessage(err), err)
+	}
+	e := echo.New()
+	e.HTTPErrorHandler = ErrorHandler(WithErrorTranslator(translate))
+	conflict := ez.New(ez.ECONFLICT, "busy", nil)
+	e.GET("/translated", func(c *echo.Context) error {
+		return conflict
+	})
+	e.GET("/kept", func(c *echo.Context) error {
+		return ez.New(ez.ENOTFOUND, "keep", nil)
+	})
+	e.GET("/echo", func(c *echo.Context) error {
+		return echo.NewHTTPError(http.StatusTeapot, "no coffee")
+	})
+
+	// The message is translated; the code and status stay the original's.
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/translated", nil))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, handler.StandardError{Code: ez.ECONFLICT, Message: "traducido: busy"}, errorEnvelope(t, rec))
+	require.Len(t, seen, 1)
+	require.Same(t, conflict, seen[0])
+
+	// A nil translation keeps the original message.
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/kept", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Equal(t, handler.StandardError{Code: ez.ENOTFOUND, Message: "keep"}, errorEnvelope(t, rec))
+	require.Len(t, seen, 2)
+
+	// Errors that are not ez errors are not translated.
+	for _, path := range []string{"/echo", "/nope"} {
+		rec = httptest.NewRecorder()
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.NotContains(t, rec.Body.String(), "traducido", path)
+	}
+	require.Len(t, seen, 2)
+}
+
+// requirePanicsInvalid asserts fn panics with an ez EINVALID error with
+// message want.
+func requirePanicsInvalid(t *testing.T, want string, fn func()) {
+	t.Helper()
+	defer func() {
+		err, ok := recover().(error)
+		require.True(t, ok, "no error panic")
+		require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+		require.Equal(t, want, ez.ErrorMessage(err))
+	}()
+	fn()
+}
+
+func TestErrorHandlerOptionsNeedFunctions(t *testing.T) {
+	requirePanicsInvalid(t, "rest: WithErrorReporter needs a function", func() {
+		WithErrorReporter(nil)
+	})
+	requirePanicsInvalid(t, "rest: WithErrorTranslator needs a function", func() {
+		WithErrorTranslator(nil)
+	})
 }
 
 // Through Configure the envelope, the response header and the request log

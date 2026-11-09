@@ -1,43 +1,67 @@
 package handler
 
 import (
+	"errors"
+
 	"github.com/getsentry/sentry-go"
 	sentryecho "github.com/getsentry/sentry-go/echo"
 	"github.com/labstack/echo/v5"
-	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/ez"
 )
 
-// reportErrorToSentry reports an error to Sentry along with relevant request and user information.
-func (h *BaseHandler) reportErrorToSentry(c *echo.Context, request requests.Request, managedError error) {
+// ReportToSentry reports err to the Sentry hub the sentryecho middleware put
+// on c, and does nothing without one. It has the signature
+// rest.WithErrorReporter takes, so an app that reports to Sentry passes it
+// there; ManageError calls it for plain routes. Only errors worth a person's
+// attention are reported: an ez EINTERNAL at error level, an ez ETIMEOUT or
+// EUNAVAILABLE (usually a vendor outage) at warning level, and an error that
+// is neither an ez error nor carries an Echo status (a plain error, a
+// recovered panic) at error level. Client errors and Echo's own errors (404,
+// 405, 413, 415, *echo.HTTPError) are skipped. The event carries the
+// X-Request-Id of the response, the server's id under rest.Configure, and the
+// user the request's context holds (see Request).
+func ReportToSentry(c *echo.Context, err error) {
 	hub := sentryecho.GetHubFromContext(c)
 	if hub == nil {
 		// Sentry is not configured, nothing to do
 		return
 	}
 
-	hub.WithScope(func(scope *sentry.Scope) {
-		// Set the request ID
-		scope.SetTag("Request ID", request.GetID())
-
-		// Only internal errors are bugs. Everything else that reaches here is a
-		// vendor outage, so downgrade it to a warning to let alert rules tell
-		// the two apart.
-		if ez.ErrorCode(managedError) != ez.EINTERNAL {
-			scope.SetLevel(sentry.LevelWarning)
+	level := sentry.LevelError
+	var ezErr *ez.Error
+	if errors.As(err, &ezErr) {
+		switch ez.ErrorCode(err) {
+		case ez.EINTERNAL:
+			// A bug, at error level.
+		case ez.ETIMEOUT, ez.EUNAVAILABLE:
+			// A vendor outage rather than a bug: a warning lets alert rules
+			// tell the two apart.
+			level = sentry.LevelWarning
+		default:
+			return
 		}
+	} else if echo.StatusCode(err) != 0 {
+		return
+	}
+
+	hub.WithScope(func(scope *sentry.Scope) {
+		scope.SetTag("Request ID", c.Response().Header().Get(echo.HeaderXRequestID))
+		scope.SetLevel(level)
 
 		// Add breadcrumbs
-		breadcrumbStacktrace(scope, managedError)
+		breadcrumbStacktrace(scope, err)
 
 		// Add user context
-		user, ok := request.GetContext().Value("user").(map[string]interface{})
-		if !ok {
-			// Handle case where user information is not available/not a map
-			user = make(map[string]interface{})
+		user := map[string]interface{}{}
+		request := Request(c)
+		if request != nil {
+			value, ok := request.GetContext().Value("user").(map[string]interface{})
+			if ok {
+				user = value
+			}
 		}
 
-		sentryUser := sentry.User{IPAddress: request.GetIP()}
+		sentryUser := sentry.User{IPAddress: c.RealIP()}
 		id, exists := user["id"].(string)
 		if exists {
 			sentryUser.ID = id
@@ -54,7 +78,7 @@ func (h *BaseHandler) reportErrorToSentry(c *echo.Context, request requests.Requ
 		scope.SetUser(sentryUser)
 
 		// Finally, capturing the error.
-		hub.CaptureException(managedError)
+		hub.CaptureException(err)
 	})
 }
 
