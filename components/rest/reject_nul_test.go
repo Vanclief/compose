@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/ez"
 )
 
@@ -807,7 +808,14 @@ func TestRejectNULLogsRefusal(t *testing.T) {
 	}, entry)
 }
 
+// Under Configure the refusal carries the request id the response and the
+// request log line carry.
 func TestConfigureRejectsNUL(t *testing.T) {
+	var buf bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&buf)
+	t.Cleanup(func() { log.Logger = previous })
+
 	e := newTestEcho()
 	e.GET("/get", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
@@ -817,10 +825,32 @@ func TestConfigureRejectsNUL(t *testing.T) {
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.JSONEq(t, errorJSON("Query string contains a NUL byte"), rec.Body.String())
+
+	id := rec.Header().Get(echo.HeaderXRequestID)
+	require.NotEmpty(t, id)
+	want, err := json.Marshal(handler.ErrorResponse{Error: handler.StandardError{
+		Code:      ez.EINVALID,
+		Message:   "Query string contains a NUL byte",
+		RequestID: id,
+	}})
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry), buf.String())
+	require.Equal(t, "warn", entry["level"])
+	require.Equal(t, id, entry["id"])
+
+	// A client's id is reused
+	req = httptest.NewRequest(http.MethodGet, "/get?q=%00", nil)
+	req.Header.Set(echo.HeaderXRequestID, "client-id")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), `"request_id":"client-id"`)
 }
 
-// configure registers the body limit before RejectNUL, so RejectNUL's own
+// Configure registers the body limit before RejectNUL, so RejectNUL's own
 // read of a chunked body over the limit fails with Echo's 413, even when the
 // body holds a NUL byte before the limit. Were the order swapped, RejectNUL
 // would read the whole body and refuse that NUL byte with 400. The handler
