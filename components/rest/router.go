@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/rs/zerolog"
@@ -34,7 +35,10 @@ type config struct {
 	writeTimeout      time.Duration
 }
 
-// Option configures Start.
+// Option configures Configure, Serve and Start. The options are one set:
+// Configure uses WithAllowedOrigins, WithCredentialedCORS and WithBodyLimit,
+// Serve uses the four timeout options, and each ignores the options that are
+// not its own, so an app passes the same options to both.
 type Option func(*config)
 
 // WithAllowedOrigins restricts CORS to the given origins. Without it, with no
@@ -45,7 +49,7 @@ type Option func(*config)
 // browsers send it. A pattern such as "https://*.example.com" matches
 // nothing. An empty or padded origin (as from splitting an unset or spaced
 // variable), one without a scheme, or one with a path, trailing slash,
-// non-empty query or fragment makes Start panic.
+// non-empty query or fragment makes Configure, and so Start, panic.
 func WithAllowedOrigins(origins ...string) Option {
 	return func(c *config) {
 		c.allowedOrigins = origins
@@ -57,7 +61,7 @@ func WithAllowedOrigins(origins ...string) Option {
 // cookie-based session auth from another origin. It only takes effect together
 // with WithAllowedOrigins naming the origins: browsers reject credentials with
 // a wildcard origin, so without allowed origins, or with "*" among them, it is
-// ignored and Start logs a warning. The cookie path also needs the origin
+// ignored and Configure logs a warning. The cookie path also needs the origin
 // checks of requests.WithCookie (the CSRF rule in docs/auth.md), since CORS
 // alone does not stop cross-site writes.
 func WithCredentialedCORS() Option {
@@ -121,47 +125,48 @@ func newConfig(opts ...Option) config {
 	return cfg
 }
 
-// Start configures logging, recovery, CORS, the body limit, RejectNUL and
-// server timeouts on e and serves on port. It always sets a 10s read-header
-// timeout and a 120s idle timeout. The read and write timeouts are unset
-// (unlimited) unless WithReadTimeout or WithWriteTimeout is passed.
+// Start configures e with Configure and serves it on port with Serve,
+// passing both the same opts; see both for what they do. An app that needs
+// the configured stack without Start's server, or middleware of its own
+// inside the stack, calls Configure and then Serve instead of Start, never
+// Configure and Start, which would register everything twice.
+func Start(ctx context.Context, e *echo.Echo, log zerolog.Logger, port string, opts ...Option) {
+	Configure(e, log, opts...)
+	Serve(ctx, e, log, port, opts...)
+}
+
+// Serve serves e on port with server timeouts. It registers no middleware;
+// Configure does that. It uses the timeout options and ignores the others, so
+// an app passes it the same options as Configure. It always sets a 10s
+// read-header timeout and a 120s idle timeout. The read and write timeouts are
+// unset (unlimited) unless WithReadTimeout or WithWriteTimeout is passed.
 //
-// Start blocks until ctx ends, then stops accepting connections, waits up to
+// Serve blocks until ctx ends, then stops accepting connections, waits up to
 // 10s for the requests in flight, closes the connections of any still running
 // and returns. The caller owns the shutdown: signal.NotifyContext for SIGINT
 // and SIGTERM gives the usual behaviour, and closing the database or flushing
-// logs comes after Start returns. A handler still running at that point has
+// logs comes after Serve returns. A handler still running at that point has
 // lost its connection, so its reads and writes fail and c.Request().Context()
 // ends once net/http notices, but it runs on until it returns or its own
 // timeout ends (the context requests.New builds does not derive from the
 // connection's and ends after 15s by default), so it can hit what the caller
 // tears down.
 //
-// With a ctx that has already ended Start returns at once. If the server
-// cannot listen or fails while serving, Start logs the error at fatal level
-// and exits the process.
-//
-// The request log and Echo's own lines are written at info level and above
-// whatever level log has, as lecho did, so a logger set to warn still logs
-// requests.
-//
-// Without WithAllowedOrigins every origin is allowed, and without WithBodyLimit
-// request bodies are unbounded, so production callers should pass both.
-// Start also registers RejectNUL unconditionally, after CORS and the body
-// limit; see RejectNUL for what it inspects and its memory use.
-func Start(ctx context.Context, e *echo.Echo, log zerolog.Logger, port string, opts ...Option) {
-	cfg := configure(e, log, opts...)
+// With a ctx that has already ended Serve returns at once. If the server
+// cannot listen or fails while serving, Serve logs the error to log at fatal
+// level and exits the process.
+func Serve(ctx context.Context, e *echo.Echo, log zerolog.Logger, port string, opts ...Option) {
 	if ctx.Err() != nil {
 		return
 	}
 
-	err := startConfig(cfg, ":"+port, log).Start(ctx, e)
+	err := startConfig(newConfig(opts...), ":"+port, log).Start(ctx, e)
 	if err != nil {
 		log.Fatal().Err(err).Msg("rest: server failed")
 	}
 }
 
-// startConfig is the Echo server Start runs: no banner, the configured
+// startConfig is the Echo server Serve runs: no banner, the configured
 // timeouts put on the http.Server just before it serves, and the connections
 // still open when the graceful timeout runs out closed; the handlers
 // themselves are not waited for.
@@ -182,7 +187,39 @@ func startConfig(cfg config, address string, log zerolog.Logger) echo.StartConfi
 	}
 }
 
-func configure(e *echo.Echo, log zerolog.Logger, opts ...Option) config {
+// Configure sets e's logger and registers compose's middleware on e, in this
+// order:
+//   - Echo's request ID middleware, which sets X-Request-Id on every response:
+//     the request's X-Request-Id when the client sent one, else a new UUID;
+//   - the request logger, one line per request with the request's id (see
+//     requestLogger);
+//   - Echo's Recover, which turns a panic into a 500 error the request logger
+//     logs with its stack;
+//   - CORS, exposing Session-Token and X-Request-Id to cross-origin clients;
+//   - the body limit, when WithBodyLimit is passed;
+//   - RejectNUL, unconditionally, after CORS and the body limit; see RejectNUL
+//     for what it inspects and its memory use.
+//
+// It uses WithAllowedOrigins, WithCredentialedCORS and WithBodyLimit and
+// ignores the other options, so an app passes it the same options as Serve.
+// Without WithAllowedOrigins every origin is allowed, and without
+// WithBodyLimit request bodies are unbounded, so production callers should
+// pass both.
+//
+// The request log and Echo's own lines (the listening address, net/http
+// server errors, an app's c.Logger() calls) are written to log at info level
+// and above whatever level log has, as lecho did, so a logger set to warn
+// still logs requests.
+//
+// Configure needs no listener, so the configured stack can be served through
+// httptest in tests, or by an app that runs its own server. Middleware
+// registered with e.Use after Configure runs inside the stack, after
+// RejectNUL and so inside Recover (a Sentry middleware that re-panics, for
+// one); middleware registered before Configure runs outside it. An app calls
+// either Start, or Configure then Serve, never both Configure and Start, which
+// would register everything twice. ErrorHandler answers, in compose's error
+// shape, the errors this stack logs; Configure does not install it.
+func Configure(e *echo.Echo, log zerolog.Logger, opts ...Option) {
 	cfg := newConfig(opts...)
 
 	// Request lines and Echo's own lines are written from info level up
@@ -194,16 +231,24 @@ func configure(e *echo.Echo, log zerolog.Logger, opts ...Option) config {
 	e.Logger = slog.New(zerolog.NewSlogHandler(echoLog))
 
 	// Middlewares
+	// First, so the request logger and every later handler see the id.
+	e.Use(middleware.RequestIDWithConfig(middleware.RequestIDConfig{
+		Generator: func() string {
+			return uuid.New().String()
+		},
+	}))
+
 	e.Use(middleware.RequestLoggerWithConfig(requestLogger(echoLog)))
 
 	e.Use(middleware.Recover())
 
 	// With no allowed origins, or "*" among them, every origin is allowed,
 	// and Echo refuses credentials with "*". Session-Token is exposed so
-	// cross-origin clients can read a rotated session token.
+	// cross-origin clients can read a rotated session token, X-Request-Id so
+	// they can quote the request's id.
 	cors := middleware.CORSConfig{
 		AllowOrigins:  cfg.allowedOrigins,
-		ExposeHeaders: []string{sessionTokenHeader},
+		ExposeHeaders: []string{sessionTokenHeader, echo.HeaderXRequestID},
 	}
 	wildcard := len(cfg.allowedOrigins) == 0 || slices.Contains(cfg.allowedOrigins, "*")
 	if wildcard {
@@ -226,8 +271,6 @@ func configure(e *echo.Echo, log zerolog.Logger, opts ...Option) config {
 	// CORS headers, and after the body limit, so a body over the limit gets
 	// the limit's 413, also when RejectNUL is the one reading it.
 	e.Use(RejectNUL())
-
-	return cfg
 }
 
 // setTimeouts puts the configured timeouts on the server Echo is about to
@@ -243,9 +286,10 @@ func setTimeouts(s *http.Server, cfg config) {
 
 // requestLogger logs one line per request with the fields lecho used to
 // write, so existing log queries keep working: id (the X-Request-Id header
-// of the request or response, when present), remote_ip, host, method, uri,
-// user_agent, status, referer, latency, latency_human, bytes_in and
-// bytes_out, with no message. A request whose handler returned an error is
+// of the request, else of the response; the request ID middleware Configure
+// registers first sets the response's, so every line has one), remote_ip,
+// host, method, uri, user_agent, status, referer, latency, latency_human,
+// bytes_in and bytes_out, with no message. A request whose handler returned an error is
 // logged at error level with the error; its status is the one already
 // written, else the one Echo maps the error to, since Echo's error handler
 // has not run yet.
