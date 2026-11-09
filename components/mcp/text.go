@@ -43,12 +43,14 @@ func snake(s string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-// truncate cuts text to limit bytes and appends a hint that tells the agent
-// how to ask for less. The cut is on a line boundary when one falls within
-// the last 10% of the limit, else at the last rune start, so a long line is
-// kept mostly whole and never split mid-rune. Text within the limit is
-// returned unchanged.
-func truncate(text string, limit int) string {
+// truncate cuts text to limit bytes and appends a note, after the limit,
+// that says the output is incomplete, so cut JSON is not taken for whole,
+// followed by hint, which tells the agent how to get what it needs; an empty
+// hint adds nothing. The cut is on a line boundary when one falls within the
+// last 10% of the limit, else at the last rune start, so a long line is kept
+// mostly whole and never split mid-rune. Text within the limit is returned
+// unchanged.
+func truncate(text string, limit int, hint string) string {
 	if limit <= 0 || len(text) <= limit {
 		return text
 	}
@@ -61,5 +63,9 @@ func truncate(text string, limit int) string {
 			cut--
 		}
 	}
-	return text[:cut] + fmt.Sprintf("\n\n[output cut at %d bytes of %d: narrow the request with a module, a query, fewer names or a smaller limit]", cut, len(text))
+	note := fmt.Sprintf("\n\n[incomplete: output cut at %d bytes of %d", cut, len(text))
+	if hint != "" {
+		note += ". " + hint
+	}
+	return text[:cut] + note + "]"
 }

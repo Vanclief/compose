@@ -745,3 +745,15 @@ func TestJSONSchemaNullAndConst(t *testing.T) {
 	}}}`)
 	assert.JSONEq(t, `{"description": "Any JSON value"}`, convert("Any"))
 }
+
+// TestCallDescription: call_function states the cut at the server's limit
+// and names run_script only on a server that has it.
+func TestCallDescription(t *testing.T) {
+	text := callDescription(24000, false)
+	assert.Contains(t, text, "A response longer than 24000 bytes is cut and ends with an [incomplete: ...] note; for a read-only function, narrow the arguments (a filter or a smaller page size); do not repeat a write. Errors")
+	assert.NotContains(t, text, "run_script")
+
+	text = callDescription(8000, true)
+	assert.Contains(t, text, "longer than 8000 bytes is cut")
+	assert.Contains(t, text, "(a filter or a smaller page size) or use run_script to return only the part you need; do not repeat a write. Errors")
+}

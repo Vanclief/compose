@@ -27,6 +27,7 @@ type Server struct {
 	srv          *mcp.Server
 	tools        []registeredTool
 	maxOutput    int
+	cutHint      string
 	instructions string
 	scripts      *scriptLimiter
 	engine       *scriptEngine
@@ -93,10 +94,22 @@ func New(cfg Config) (*Server, error) {
 		promoted[name] = true
 	}
 
+	// cutHint ends the note of a cut result that succeeded: catalog output
+	// and lists are narrowed by the request, one large function response
+	// only by a script, which gets it whole. Every way to get the rest runs
+	// the call again, which only a read can afford, and Script.Allow may
+	// still refuse the caller, hence the hedges.
+	cutHint := "Narrow the request: a module, a query or fewer names or terms for a catalog tool, filters or a smaller page size for a read-only function."
+	if cfg.Script.Enabled {
+		cutHint += fmt.Sprintf(" For one large response of a read-only function, use run_script (where allowed): the script receives the whole response (up to %d MiB, memory permitting) and returns only the field or slice you need.", maxScriptResponseBytes>>20)
+	}
+	cutHint += " Do not repeat a write."
+
 	s := &Server{
 		cfg:       cfg,
 		catalog:   catalog,
 		maxOutput: cfg.MaxOutputBytes,
+		cutHint:   cutHint,
 		scripts:   newScriptLimiter(cfg.Script.MaxConcurrent),
 	}
 	if cfg.Script.Enabled {

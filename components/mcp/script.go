@@ -74,19 +74,22 @@ const (
 )
 
 // scriptUsage is the contract shown to the agent in the run_script tool
-// description. The verbs are the timeout, the call limit, the write rule
-// and the result limit; scriptDescription fills them.
-const scriptUsage = `Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: %s timeout, %d function calls, %s, %d KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.`
+// description. The verbs are the timeout, the call limit, the write rule,
+// the response limit, the result limit and the output limit of the tool;
+// scriptDescription fills them. The output limit is the one a reader hits;
+// a result over the result limit, maxScriptResultBytes, fails instead of
+// being cut.
+const scriptUsage = `Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: %s timeout, %d function calls, %s, no network, filesystem, timers or modules. A function response the script receives is whole up to %d MiB, memory permitting (a larger one throws); a result over %d MiB fails, and the tool's text (the result, then the console.log lines) is cut past %d bytes, so return only what you need. Use search_functions and describe_function to learn which functions exist and their arguments.`
 
 // scriptDescription is the run_script tool description with the configured
-// limits.
-func scriptDescription(cfg ScriptConfig) string {
+// limits and maxOutput, the output limit of the server.
+func scriptDescription(cfg ScriptConfig, maxOutput int) string {
 	timeout, maxCalls := scriptLimits(cfg)
 	writes := "read-only functions only"
 	if cfg.AllowWrites {
 		writes = "functions that write are allowed"
 	}
-	return fmt.Sprintf(scriptUsage, timeout, maxCalls, writes, maxScriptResultBytes>>10)
+	return fmt.Sprintf(scriptUsage, timeout, maxCalls, writes, maxScriptResponseBytes>>20, maxScriptResultBytes>>20, maxOutput)
 }
 
 // scriptLimits applies the ScriptConfig defaults.
@@ -427,11 +430,11 @@ type scriptRun struct {
 // run runs code as the body of a function in a fresh instance of the
 // QuickJS module whose global api object exposes every catalog function. It
 // returns the JSON of the returned value followed by the console.log lines,
-// so the output cap of the tool cuts logs, not the result. On error the log
-// lines collected so far are returned with the error. The
-// timeout bounds the whole run, function calls included. onError, when not
-// nil, receives the panics of function calls, which the script sees only
-// as a generic error.
+// so the output cap of the tool cuts the logs first and reaches the result
+// only when the result alone is over the cap. On error the log lines
+// collected so far are returned with the error. The timeout bounds the
+// whole run, function calls included. onError, when not nil, receives the
+// panics of function calls, which the script sees only as a generic error.
 func (e *scriptEngine) run(ctx context.Context, cat *Catalog, call Caller, cfg ScriptConfig, code string, onError func(context.Context, error)) (string, error) {
 	timeout, maxCalls := scriptLimits(cfg)
 	if len(code) > maxScriptBytes {
