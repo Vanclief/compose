@@ -1,22 +1,18 @@
 # compose REST: OpenAPI, schema-as-validator and SDK generation
 
-Status: implemented in compose on branch `Vanclief/sdk-generation` (packages
-`components/rest/api`, `components/rest/api/openapi`, `components/rest/api/validate`,
-`components/rest/apitest`), not yet released (first ships in compose v1.29.0, on Echo v5).
-Last updated 2026-11-09: retargeted from v1.27.0 on Echo v4 to v1.29.0 on Echo v5
-(`github.com/labstack/echo/v5`). 2026-11-08: typed handlers and the authentication slot
-replace `App.HandleRequest` dispatch on registered routes (section 4). 2026-10-20: `Legacy`
-removed; blob responses, content negotiation and multipart uploads added. Section 12 lists
-where the implementation deviates from the design.
+Status: implemented on branch `Vanclief/sdk-generation` (packages `components/rest/api`,
+`components/rest/api/openapi`, `components/rest/api/validate`, `components/rest/apitest`);
+first ships in compose v1.30.0, on Echo v5. Last updated 2026-11-09.
 
 ## 1. Decision
 
 Keep compose's REST layer as it is in spirit: Echo v5, the
-`{"error":{"code","message","request_id"}}` envelope, `ManageError`, Sentry,
-`requests.Request`. Add a declarative route registry that produces an OpenAPI document and
-validates every request against that document before the app sees it. Registered routes call
-one typed handler per operation instead of `App.HandleRequest`'s type switch, which stays for
-plain Echo routes (section 4). Ozzo leaves the request path.
+`{"error":{"code","message","request_id"}}` envelope (written by `rest.ErrorHandler` for
+registered routes, `ManageError` for plain ones), Sentry, `requests.Request`. Add a
+declarative route registry that produces an OpenAPI document and validates every request
+against that document before the app sees it. Registered routes call one typed handler per
+operation instead of `App.HandleRequest`'s type switch, which stays for plain Echo routes
+(section 4). Ozzo leaves the request path.
 
 Do **not** adopt huma (or any other framework). Do **not** write our own reflector.
 Glue two libraries (huma's code is copied into compose, see section 5):
@@ -31,8 +27,8 @@ loses because field-level constraint and enum tags are dropped when the field's 
 becomes a component, fields without a `json` tag vanish, its 3.0 output is lossy
 (`exclusiveMinimum` becomes a boolean with no bound), and 3.0-native output would force
 kin's lossy 3.0 validator. Astra confirmed in source that huma honours field-level `enum`
-tags on aliased named types (section 5), so there is no remaining condition under which
-swaggest wins.
+tags on aliased named types; the same tag handling narrows the enum components compose
+registers (section 5), so there is no remaining condition under which swaggest wins.
 
 ## 2. How we got here
 
@@ -95,7 +91,8 @@ type GetRequest struct {
 func (m *Module) Get(ctx context.Context, request *GetRequest) (project.Run, error)
 
 // api/rest/server.go
-reg := api.New(e, h,
+e.HTTPErrorHandler = rest.ErrorHandler() // answers the errors operations return to Echo
+reg := api.New(e,
     api.Info("auditor3", version),
     api.APIKeyHeader("API-KEY"),        // security scheme applied to every op unless api.Public()
     api.Authenticate(app.Authenticate), // every op is protected unless api.Public()
@@ -119,7 +116,11 @@ doc31, err := reg.Spec(api.V31)
 doc30, err := reg.Spec(api.V30)
 ```
 
-Blobs and alternate representations (emma's shape; auditor3 has none):
+`requests.NoRules` cannot be embedded next to `pagination.CursorRequest`: the two promoted
+`Validate` methods are ambiguous and the compiler rejects the registration. A type that
+embeds `CursorRequest` already satisfies `requests.Body`.
+
+Blobs and alternate representations (emma's shape; auditor3 has none; section 4):
 
 ```go
 // Report returns api.Blob, so its media type is declared.
@@ -147,24 +148,41 @@ Rules enforced at registration (fail boot):
 - every `path:`/`query:`/`header:` field carries `json:"-"`, so a body key can never fill a
   param field and params never leak into the body component (huma skips `-`, `schema.go:915`)
 - every path placeholder has a `path:` field and vice versa
-- operationId `<tag>.<name>` is unique
-- tag names come from an allowlist (`param`, `path`, `query`, `header`, `form`, `required`,
+- operationId `<tag>.<name>` is unique, and so is method plus path (placeholder names do not
+  count: `/runs/:id` and `/runs/:run_id` are one route); names and tags match
+  `[A-Za-z0-9_-]+`. The tag is the last non-parameter segment of the group's full prefix
+  (`/runs/:id/issues` gives `issues`); with none, the operationId is `<name>`
+- tag names come from an allowlist (`json`, `path`, `query`, `header`, `form`, `required`,
   `default`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`,
   `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`, `enum`,
-  `format`, `doc`, `example`, `deprecated`, `hidden`, `nullable`)
+  `format`, `doc`, `example`, `deprecated`, `hidden`, `nullable`, plus `bun`, `db`, `yaml`,
+  `xml`, `mapstructure` and `validate`, which the same structs carry for other libraries);
+  Echo's `param` is rejected with a pointer to `path`. The lint also rejects property names
+  `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
+  reference, `minimum`/`maximum` outside a sized integer's range, and a pointer to
+  `types.Optional`
+- the keys `encoding/json` binds are exactly the schema's properties, at every depth of the
+  request type: registration fails for unexported embedded structs, `hidden` fields, embedded
+  non-struct types and shadowed promoted fields, any of which would let a value the validator
+  never saw reach the handler (`openapi/jsonkeys.go`)
+- GET, HEAD and DELETE request types have no body properties (and no files); registration
+  fails and points at the `query:` tag
+- param fields are string, bool or number kinds, `encoding.TextUnmarshaler`s or slices of
+  those: no structs, maps, `[]byte` or `types.Optional`
 - `Res` is the handler's return type, so the documented response cannot drift from what is
   written; it must not be an interface type, and `*api.Blob` is rejected (a nil pointer would
   need a runtime check; handlers return `api.Blob` by value)
 - a `Produces` handler takes the operation's `Req`: a built `Option` has lost its type
   parameters, so the compiler cannot check it and registration does
-- every option is used at a scope it supports (`Info`, `APIKeyHeader`, `MaxBody`, ... on
-  `api.New` only; `ContentType`, `Produces` on an operation only), and one options list
-  cannot hold both `Public()` and `Authenticate()`
+- every option is used at a scope it supports (`Info`, `Description`, `APIKeyHeader`,
+  `Server`, `Namer` on `api.New` only; `ContentType`, `Produces` on an operation only), and
+  one options list cannot hold both `Public()` and `Authenticate()`
 
-Dropped from the first sketch after review: `api.DefaultError` (`ManageError` always writes
-`handler.ErrorResponse`, making it configurable invites drift), `api.Empty` (add it only when
-an endpoint needs it, and then it means 204 via `c.NoContent`, never `200 null`),
-`api.Tag` on groups (derived from the prefix, nested groups append), `SpecHandler`.
+Dropped from the first sketch after review: `api.DefaultError` (`rest.ErrorHandler`, like
+`ManageError`, always writes `handler.ErrorResponse`, making it configurable invites drift),
+`api.Empty` (add it only when an endpoint needs it, and then it means 204 via
+`c.NoContent`, never `200 null`), `api.Tag` on groups (derived from the prefix, above),
+`SpecHandler`.
 
 ## 4. Request pipeline per registered operation
 
@@ -179,53 +197,94 @@ as unknown keys, then bind). Decode once instead.
 2. `requests.NewWithContext(c.Request().Context(), ...)`: the request context derives from
    the inbound one, so it keeps the values Echo middleware set and is cancelled when the
    client goes away. Its deadline is the earlier of the inbound deadline and the route or
-   group timeout (`api.Timeout`; auditor3 uses 60s, not the 15s default). ID, `c.RealIP()`,
-   `Client` header, locale and method as before. `API-KEY` is a security scheme the
-   authenticator reads, not a header param. The request is stored for `api.Request(c)` and
-   the context sync of step 11 is deferred before anything can fail.
-3. Negotiate the response media type from `Accept` (section 12) and put it on
-   `request.GetAccept()` and `api.Accept(ctx)`. Requests that arrive before `Ready` fail
-   here with `EINTERNAL`.
-4. Coerce declared path, query and header params to the schema's type (integer, number,
+   group timeout (`api.Timeout`, passed as `requests.WithTimeout`, which replaces the 15s
+   default; auditor3 uses 60s). ID, `c.RealIP()`, `Client` header, locale and method as
+   before. `API-KEY` is a security scheme the authenticator reads, not a header param. The
+   request is stored with `handler.SetRequest` before anything can fail, so
+   `handler.Request(c)` returns it to middleware and to the error handler's reporter and
+   translator. `requests.New` roots the context in `context.Background()`, so a client
+   disconnect never cancels the app's work and values set by Echo middleware are lost; that
+   bug is latent in every `HandleRequest` route. `requests.New` is unchanged for plain Echo
+   routes, which can switch on their own. `requests.WithTimeout` derives from the request's
+   current context: as an option of `New` the deadline is exactly its duration, of
+   `NewWithContext` the earlier of the parent's and its own, and applied later it can only
+   shorten the deadline. Both add `DEFAULT_TIMEOUT` only when no `WithTimeout` option ran.
+3. Negotiate the response media type from `Accept` ("Content negotiation", below) and put it
+   on `request.GetAccept()` and `api.Accept(ctx)`. Then requests that arrive before `Ready`
+   fail with `EINTERNAL`.
+4. The operation's `Authenticate` function, unless it is `Public()`. No parameter has been
+   coerced and no body byte read yet: `request.GetBody()` is nil inside it.
+5. Coerce declared path, query and header params to the schema's type (integer, number,
    boolean, array via comma or repeated keys), dropping empty values (`?cursor=` is
    absent). If parsing fails keep the raw string so santhosh reports `kind.Type` like any
    other type error. Header keys lowercased, only declared `header:` fields included.
    Missing stays missing (presence semantics).
-5. Read the body under the operation's limit (`api.MaxBody`, `api.MaxBodyBytes`). Decode
-   with `jsonschema.UnmarshalJSON` (`loader.go:255-265`: `UseNumber`, rejects trailing
-   data). A non-JSON content type on an operation with a body returns `EINVALID`, since
-   Echo's binder no longer produces the 415. Multipart operations parse
-   `multipart/form-data` instead (section 12).
-6. Validate the synthetic `{path, query, header, body}` schema compiled at registration.
+6. Read the body through `http.MaxBytesReader` under the operation's limit
+   (`api.MaxBodyBytes`, the nearest of `api.New`, the groups and the operation, else
+   `api.DefaultMaxBody`, 1 MiB); a larger body is a 400 `body exceeds N bytes`, so registered
+   routes do not need `rest.WithBodyLimit`. Decode with `jsonschema.UnmarshalJSON`
+   (`loader.go:255-265`: `UseNumber`, rejects trailing data). A non-JSON content type on an
+   operation with a body returns `EINVALID`, since Echo's binder no longer produces the 415.
+   Multipart operations parse `multipart/form-data` instead ("Multipart uploads", below).
+7. Validate the synthetic `{path, query, header, body}` schema compiled at `Ready`.
    `body` is required only when the body variant has required properties. Add the
    case-collision check: a body key that matches a declared property ignoring case but not
-   exactly is an error (`unknown field "Status", did you mean "status"`). Collect every
-   error. Map `kind.*` to one ez `EINVALID` with `field: reason` lines, never echoing
-   submitted values. Return through `ManageError` (400, same envelope).
-7. Decode once: `json.Unmarshal(bodyBytes, req)` for the body, then set param fields by
-   field index from the coerced values, using `TextUnmarshaler` for named types
-   (`uuid.UUID`, enums). `request.SetBody(req)`.
-8. `Body.Validate()`, once, for cross-field rules.
-9. The operation's `Authenticate` function, unless it is `Public()`.
+   exactly is an error at every depth, because `encoding/json` matches case-insensitively at
+   every depth (`config.Retries is not a known field, did you mean "retries"`,
+   `api/collisions.go`). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
+   joins `<field> <reason>` with `; `, parameters prefixed with their location
+   (`query limit must be <= 1000`), never echoing submitted values (400 under
+   `rest.ErrorHandler`, same envelope).
+8. Decode once: `json.Unmarshal(bodyBytes, req)` for the body, then set param fields by
+   field index from the raw values, using `TextUnmarshaler` for named types (`uuid.UUID`,
+   enums) and HTTP-date for a `time.Time` header. A conversion failure is a 400
+   (`query since is invalid`), not a 500: santhosh's `date-time` accepts inputs that
+   `time.Time` rejects. `request.SetBody(req)`.
+9. `Body.Validate()`, once, for cross-field rules.
 10. The typed handler of the negotiated media type, exactly one: the `Produces` handler
     declared for it, else the primary handler. It receives `request.GetContext()` as it is
-    after `Authenticate`. An error from any step goes through `ManageError`, which records
-    it for `handler.HandledError(c)` before any `ErrorTranslator` runs; a result is written
-    with `c.JSON(200, res)`, or `c.Blob` for an `api.Blob` (and `Content-Disposition` when
-    it has a filename).
-11. On every exit, errors and the not-ready case included, the registry stores
-    `context.WithoutCancel(request.GetContext())` on the Echo request and then cancels its
-    own timer. Middleware after `next(c)` therefore sees what the authenticator added and
-    can still do I/O with `c.Request().Context()`, but that context no longer carries the
-    registry's deadline, nor any cancellation.
+    after `Authenticate`. A result is written with `c.JSON(200, res)`, or `c.Blob` for an
+    `api.Blob` (and `Content-Disposition` when it has a filename).
+11. An error from any step is returned to Echo, and the operation writes nothing for it:
+    the pipeline's own errors are ez errors, the handler's go back as it returned them. The
+    app's `HTTPErrorHandler` answers it, `rest.ErrorHandler` in the envelope with the app's
+    reporter and translator (below); Echo's default handler answers every ez error as a 500
+    `{"message":"Internal Server Error"}`. On every exit the registry cancels its request
+    context. Nothing is copied back onto the Echo request: middleware after `next(c)` reads
+    what the authenticator added from `handler.Request(c).GetContext()`, which is cancelled
+    by then, and does I/O with `c.Request().Context()`.
 
-**`Validate()` runs before `Authenticate`.** Malformed and cross-field-invalid requests never
-reach the authenticator or the handler: no charge made there or in a typed wrapper, no
-database write (emma's authenticator updates `last_active_at`), and the handler never sees
-an invalid body (Echo middleware still sees them, step 1). Neither app's authenticator needs the body, and `Validate()` cannot
-use the requester anyway: it receives neither a context nor the request. Identity-dependent
-checks stay in the handler or module. The cost is that cross-field messages are visible
-before authentication.
+**`Authenticate` runs before anything is parsed.** Until 2026-11-09 it ran after
+`Validate()`; the order is reversed. An unauthenticated caller gets 401 and learns nothing
+about the request's shape, where a 400 would tell it which fields exist, which are required
+and which cross-field rules apply, and the server parses nothing for it: no parameter
+coercion, no body read, no multipart form spilling to temporary files. The cost is one
+credential lookup per malformed request that carries a credential, plus whatever else the
+authenticator does (emma's updates `last_active_at`), and the authenticator never sees the
+body; neither app's needs it. Malformed and cross-field-invalid requests still never reach a
+typed wrapper or the handler, so nothing is charged there for them and the handler never sees
+an invalid body (Echo middleware still sees them, step 1). `Validate()` cannot use the
+requester: it receives neither a context nor the request. Identity-dependent checks stay in
+the handler or module.
+
+**Errors go back to Echo.** `api.New(e, opts...)` takes no `BaseHandler` and the registry
+builds no handler. `rest.ErrorHandler(opts...)` answers an error with an `*ez.Error` in its
+chain with `ez.ErrorToHTTPStatus`, `ez.ErrorCode` and `ez.ErrorMessage` of the error, like
+`ManageError`; ez reads only a direct ez chain, so an ez error wrapped in another kind (a
+recovered panic of one, `fmt.Errorf("...: %w", err)`) is a 500 `EINTERNAL` with ez's generic
+message. Any other error gets Echo's status (500 when it carries none) and the status text or
+an `*echo.HTTPError`'s message, never the error's own text. It takes two options.
+`rest.WithErrorReporter(func(c *echo.Context, err error))` is called once per answered error
+with the original error, before any translation, and the app decides what to report;
+`handler.ReportToSentry` is one (ez `EINTERNAL` at error level, `ETIMEOUT` and `EUNAVAILABLE`
+at warning, non-ez errors without an Echo status such as recovered panics at error level;
+client errors and Echo's sentinels skipped). `rest.WithErrorTranslator(func(c *echo.Context,
+err error) error)` changes the message of ez errors only; code and status stay the
+original's. A translator reads the locale through `handler.Request(c)`, which is nil for an
+unknown route, a 405 or a panic outside an operation. `handler.ManageError` stays for plain routes;
+it sets `handler.Request(c)` too and reports through `handler.ReportToSentry`. The request log
+of `rest.Configure` answers the error before logging it, so its `status` is the one sent and
+its level follows it (error for 5xx, warn for 4xx, info otherwise).
 
 ### Typed handlers and the authentication slot
 
@@ -240,7 +299,7 @@ type AuthenticateFunc func(request requests.Request) error
 The authenticator changes the request in place (`request.SetContext`, `request.SetLocale`)
 instead of returning a context, so an app helper that caches into the request context on its
 failure paths (emma's bearer resolution) cannot lose those additions. An error rejects the
-request through `ManageError`.
+request: it is returned to Echo like every other (step 11).
 
 - **Inheritance**: options of `api.New`, then of each group from the outside in, then of the
   operation; the nearest wins. `Authenticate(fn)` sets the function and marks the operations
@@ -277,30 +336,76 @@ api.POST(auth, "/login", "login", publicHandler(app, app.Auth.Login), api.Public
 func requestLog(next echo.HandlerFunc) echo.HandlerFunc {
     return func(c *echo.Context) error {
         started := time.Now()
-        err := next(c)
-        _, status := echo.ResolveResponseStatus(c.Response(), err) // sent status, else err's (500 if none)
-        ctx := c.Request().Context() // read after next(c): the registry synced it back
+        err := next(c) // a registry error, unanswered unless an inner middleware answered it
+        if err != nil {
+            c.Echo().HTTPErrorHandler(c, err) // answer it now, so status is the one sent
+        }
+        _, status := echo.ResolveResponseStatus(c.Response(), err) // the committed status
         event := log.Info().
-            Str("id", requests.RequestID(ctx)).
+            Str("id", c.Response().Header().Get(echo.HeaderXRequestID)).
             Str("route", c.Path()).
             Int("status", status).
             Dur("latency", time.Since(started)).
-            Err(handler.HandledError(c)) // what ManageError wrote, before translation
-        request := api.Request(c) // nil when no registered operation ran
+            Err(err) // as returned, before any translation
+        request := handler.Request(c) // nil when no registered operation or ManageError ran
         if request != nil {
             event = event.Type("body_type", request.GetBody())
-        }
-        requester := user.FromContext(ctx)
-        if requester != nil {
-            event = event.Interface("user_id", requester.ID)
+            // Cancelled by now: read its values, do I/O with c.Request().Context().
+            requester := user.FromContext(request.GetContext())
+            if requester != nil {
+                event = event.Interface("user_id", requester.ID)
+            }
         }
         event.Msg("Request Handled")
-        return err
+        return err // Echo's second call to the error handler skips the committed response
     }
 }
 ```
 
-Left out of v1 on purpose:
+### Blob responses
+
+`api.GET(g, "/report", "report", app.Report, api.ContentType("application/pdf"))` for a
+handler whose `Res` is `api.Blob`. It returns `api.Blob{ContentType, Body, Filename}` by
+value (section 3). An empty `ContentType` means the negotiated type, `Filename` adds
+`Content-Disposition: attachment`; errors keep the JSON envelope. Registration fails for a
+Blob `Res` without `ContentType`, `ContentType` on any other `Res`, and `ContentType` or
+`Produces` declaring `application/json` (a JSON `Res` produces it). Declared types are
+lowercase and carry no parameters or wildcards (`text/plain`, while the Blob may send
+`text/plain; charset=utf-8`); the Blob's own `ContentType` is written as given.
+
+### Content negotiation
+
+`api.Produces("text/csv", app.ExportCSV)` adds a representation with its own handler,
+`func(ctx, *Req) (api.Blob, error)`, whose `Req` must be the operation's (checked at boot).
+The declared types are the primary one (`application/json` for a JSON `Res`, the
+`ContentType` of a Blob) then the `Produces` types in declaration order, none repeated. The
+pipeline picks the first `Accept` entry, in header order, that matches a declared type
+(`type/*` and `*/*` match the first declared type in the range), else the primary type;
+q-values are ignored and there is no 406. Exactly one handler runs: the negotiated type's
+`Produces` handler, else the primary one, so a handler never returns the wrong kind of value.
+Every registered operation sets the choice on `requests.Request.GetAccept()` and
+`api.Accept(ctx)`. The 200 response lists one content entry per declared type: `Res`'s schema
+for JSON, `{type: string, format: binary}` for the others (huma adds
+`contentMediaType: application/octet-stream`, which the 3.0 downgrade renames
+`x-contentMediaType`). `apitest.Contract.Do` checks a non-JSON 200's content type against the
+declared types.
+
+### Multipart uploads
+
+Request fields of type `*multipart.FileHeader` or `[]*multipart.FileHeader` tagged
+`form:"name"` and `json:"-"` make the operation `multipart/form-data`. The other body fields
+are read from the form values named by their JSON keys (empty values are absent, unknown and
+case-mismatched keys are ignored), coerced like query params and validated against the body
+component; then they decode through `encoding/json`, so named types decode as in JSON bodies.
+File fields are checked for presence (`required:"true"`), and a single-file field rejects
+repeated parts. The body limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills
+to temporary files). Registration fails for file fields without both tags, `form` tags on
+other types, body fields a form value cannot carry (nested objects, maps, `[]byte`) and files
+on GET, HEAD or DELETE. The request body is documented as `multipart/form-data` with the body
+properties inline, files as binary strings (arrays of them for slices) and `required` by
+presence.
+
+### Left out of v1 on purpose
 
 - **`Around`/`Before` hooks.** Additive later as new options. The pipeline keeps the
   boundary invoke → result or error → write (the selected handler returns before anything is
@@ -313,54 +418,81 @@ Left out of v1 on purpose:
 - **A typed requester** (`Registry[U]`, handlers taking `U`). Apps read it from `ctx` with
   their own `user.FromContext(ctx)`; compose does not know the app's user type.
 - **A fallback to `App.HandleRequest`.** Each app migrates its registered routes in one
-  change; plain Echo routes (`handler.NewHandler`, `JSONResponse`) are the boundary.
+  change; plain Echo routes (`handler.NewHandler`, `JSONResponse`) are the boundary. The typed
+  `Legacy[Req, Res]` registration and `x-compose-legacy` were dropped before release: blobs,
+  negotiation and multipart (above) cover what emma-backend's handlers do through
+  `BaseHandler`.
+- **XML request bodies.** No emma-backend or auditor3-api REST handler calls
+  `BindedXMLResponse` (emma's only XML is an outgoing client), so there is no consumer.
+  `BaseHandler.BindedXMLResponse` is unchanged; registered operations accept JSON and
+  multipart bodies only.
 
-## 5. Reflector glue (huma registry as a library)
+## 5. Reflector glue (huma schema code as a library)
 
-The registry only produces component schemas. In library mode it never produces parameters
-(param extraction lives in `huma.Register`, `huma.go:202`), it hardcodes
-`additionalProperties: false` on every struct (`registry.go:216`, applied at
-`schema.go:973, 985`), and it dereferences pointers before the alias lookup
-(`registry.go:94, 102`) so nullability of aliased types is ours to set. The post-pass is
-therefore a real component, about 300 lines plus golden fixtures, done in one walk over the
-Go types that also runs the tag lint:
+huma's schema code only produces component schemas. In library mode it never produces
+parameters (param extraction lives in `huma.Register`, `huma.go:202`), its map registry
+hardcodes `additionalProperties: false` on every struct (`registry.go:216`, applied at
+`schema.go:973, 985`), and it passes itself, not a wrapper, into `SchemaFromType`
+(`registry.go:162`), so a wrapper around it would never see nested fields. The reflector
+therefore implements `huma.Registry` itself (`openapi/reflector.go`), re-implementing huma's
+`mapRegistry`: it matches huma on recursion placeholders, the duplicate-name panic, anonymous
+numbering, `time.Time`, `TextUnmarshaler` and `SchemaProvider`, and every nested field passes
+through it, so compose's hooks apply at every depth. Schema generation stays huma's
+`SchemaFromType` and `SchemaFromField`. The post-pass is a real component: the `openapi`
+package is about 1,550 lines (reflector 486, request variants 415, `encoding/json` key check
+308, lint 151, params 135) plus golden fixtures, in separate walks for parameters, lint, key
+check and variants.
 
-- `reg := huma.NewMapRegistry("#/components/schemas/", namer)` with a package-qualified
-  namer: `project.Run`, `runs.ListResponse`. Handle generic type arguments explicitly
-  (`Page[a.User]` and `Page[b.User]` otherwise collide and panic).
+- Components are named by a package-qualified namer (`openapi.DefaultNamer`):
+  `project.Run`, `runs.ListResponse`. Generic type arguments are qualified too
+  (`Page[a.User]` is `pkg.Page_a.User`), so `Page[a.User]` and `Page[b.User]` do not
+  collide. `api.Namer(openapi.SegmentsNamer(2))` qualifies with two path segments; a
+  remaining collision fails registration and names that fix.
 - **Parameters**: compose walks `reflect.VisibleFields` of the request type (this is what
   picks up embedded `pagination.CursorRequest`), builds `path`/`query`/`header` parameter
   objects, and uses `huma.SchemaFromField` per field for constraints.
-- **Request variants**: for every component reachable from a request type, emit
-  `<pkg>.<Type>Input` with `Required` rewritten to "fields with `required:"true"`" (path
-  params are always required), and pointer fields made nullable (`type: [T, "null"]`) so
-  `"failure_reason": null` keeps meaning absent, as `encoding/json` treats it today. Recurse:
-  a nested type gets its own variant whenever its rewritten schema differs, parents re-point
-  their refs, cycles resolve by fixpoint. Deduplicate against the response component by
-  comparing marshalled JSON. Response components keep huma's default (required unless
-  `omitempty`/`omitzero`, pointers non-null).
+- **Request variants**: for every component reachable from a request type, rewrite
+  `Required` to "fields with `required:"true"`" (path params are always required), and make
+  pointer fields nullable (`type: [T, "null"]`, a `$ref` as `anyOf [{$ref}, {type: null}]`)
+  unless required, so `"failure_reason": null` keeps meaning absent, as `encoding/json`
+  treats it today. A component gets a variant when its rewritten schema differs from huma's
+  (compared as marshalled JSON) or when it references one (fixpoint, which also resolves
+  cycles); parents re-point their refs. The variant is `<pkg>.<Type>Input` when the component
+  is also reachable from a response, else it takes the component's own name. Response
+  components keep huma's default (required unless `omitempty`/`omitzero`, pointers
+  non-null).
 - **Clear `additionalProperties: false`** on every published component. Converted endpoints
   must keep ignoring unknown request keys as today, and progenitor's typify turns `false`
   into `deny_unknown_fields`, which would make adding a response field break deployed Rust
   clients. Contract tests compile a strict copy with `false` re-injected on response
   components so undocumented response fields are still caught in CI.
-- `uuid.UUID` registered through `RegisterTypeAlias` to a `SchemaProvider` emitting
-  `{type:string, format:uuid}` (`TextUnmarshaler` types otherwise become plain `string`).
-- **Enums as named components**: `enums.Set[T]` constructor registers a generic `enumOf[T]`
-  alias whose `Schema(r)` registers a `<pkg>.<T>` component with the values and returns a
-  fresh `&Schema{Ref: ...}` on every call. Two conditions verified in source: the provider
-  must return a fresh pointer because the field-level `enum` tag mutates it
-  (`schema.go:614`), and `$ref` with a sibling `enum` is emitted side by side
+- **Type table** (`builtinSchemas`): `uuid.UUID` is `{type: string, format: uuid}`
+  (`TextUnmarshaler` types otherwise become plain `string`), `types.Email` `format: email`,
+  `types.PhoneNumber` `format: phone`, `types.Locale` and `types.Language` plain strings,
+  `types.UnixSeconds` `{type: integer, format: int64}`. The registry dereferences pointers
+  before the lookup and marks a pointer's schema nullable itself. compose `types/` do not
+  implement `huma.SchemaProvider`: the copy is internal, so `types/` cannot import it, and
+  huma stays confined to `components/rest/api/...`. The copy still honours `SchemaProvider`,
+  but nothing implements it.
+- **Enums as named components**: `enums.Set[T]` records the values by `reflect.Type`
+  (`enums.Values`); repeated `Set` calls for one type record the union in first-seen order,
+  and a field narrows with the `enum:"a,b"` tag. For a recorded type the registry registers a
+  `<pkg>.<T>` component with the values and returns a fresh `&Schema{Ref: ...}` on every call.
+  Two conditions verified in source: the registry must return a fresh pointer because
+  `SchemaFromField` (`schema.go:572`) applies the field-level `enum` tag to it
+  (`schema.go:608-614`), and `$ref` with a sibling `enum` is emitted side by side
   (`schema.go:208, 217`), valid in 2020-12 where santhosh applies both. Field-level
-  `enum:"failed,cancelled"` therefore narrows an aliased named type: `schema.go:572` →
-  `registry.go:94-115` → `schema.go:788-792` → `schema.go:608-614`. Named components mean
+  `enum:"failed,cancelled"` therefore narrows a named enum; the 3.0.3 file moves the `$ref`
+  under `allOf`, since 3.0 ignores `$ref` siblings. Named components mean
   openapi-python-client and progenitor emit one enum type per Go type, not one per field.
-- compose `types/` (Email, PhoneNumber, Locale, UnixSeconds) implement `huma.SchemaProvider`.
 - Build the document on `huma.OpenAPI` types so `Downgrade()` is free for 3.0.3.
-  `OpenAPI.MarshalJSON` prunes components no path references.
+  `OpenAPI.MarshalJSON` prunes components no path references. Both files are re-encoded with
+  sorted keys, and the 3.0.3 one gets what `Downgrade` leaves invalid rewritten:
+  `anyOf [X, {type: null}]` becomes `nullable: true` (beside `allOf [{$ref}]` for a ref)
+  (`api/spec.go`, `canonical`).
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
-  `default` response pointing at `handler.ErrorResponse`. Security scheme `API-KEY` header
-  applied to every operation unless `api.Public()`.
+  `default` response pointing at `handler.ErrorResponse`. The `api.APIKeyHeader` security
+  scheme applies to every operation unless `api.Public()`.
 - huma is not a module dependency. Its `schema.go`, `registry.go` and `openapi.go` from
   v2.39.1 are copied into `components/rest/api/internal/huma` (MIT, `LICENSE` alongside),
   trimmed to what compose uses: no `huma.Validate` message precomputation (only its
@@ -393,17 +525,20 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
 
 ## 6. Validator glue (santhosh v6)
 
-- `compiler.AddResource("spec.json", doc31)` once, then per operation compile a synthetic
-  schema `{properties:{path,query,header,body}}` whose parts `$ref` into the document.
-  Compiled schemas are immutable and goroutine-safe; the `Compiler` is not, so compile at
-  registration in one goroutine.
-- `AssertFormat()` on. Register `uuid` (structural, v7 passes by default), `email`, compose
-  formats. Unknown formats (`int64`, `double`) are ignored, which is fine.
+- `compiler.AddResource("spec.json", ...)` once with a validation document holding every
+  component, including those only hidden operations use (the public document prunes them),
+  then per operation compile a synthetic schema `{properties:{path,query,header,body}}`
+  whose parts `$ref` into it. Compiled schemas are immutable and goroutine-safe; the
+  `Compiler` is not, so compile in `Ready` in one goroutine.
+- `AssertFormat()` on. `uuid` (structural, v7 passes by default) and `date-time` are built
+  in; register `email` and `phone` (compose's `types` checks). Unknown formats (`int64`,
+  `double`) are ignored, which is fine.
 - Error mapping: `kind.Required{Missing}` becomes `field is required`, `kind.Type` becomes
   `field must be <want>`, `kind.Enum` becomes `field must be one of ...`, `kind.Format`
   becomes `field must be a valid <name>`, `kind.Minimum`/`Maximum`/`MinLength`/... become
   `field must be ...`. Instance location from `InstanceLocation` joined with `.`. Build a
-  `[]FieldError{Name, Message}` internally even though the envelope does not expose it yet.
+  `[]FieldError{In, Name, Message}` internally (`validate.Fields`) even though the envelope
+  does not expose it yet.
 - Never pass santhosh messages through; they contain the submitted value.
 
 ## 7. Ideas to steal for the compose REST module (with source)
@@ -419,9 +554,9 @@ Registry and documentation
   schema; we enforce it with `json:"-"` on param fields). Input variants are named by type
   (`<pkg>.<Type>Input`), not by operation, so a request type shared by PATCH and PUT yields
   one component.
-- **Deterministic document output for golden tests** (oaswrap/spec): sorted paths, sorted
-  components, stable property order from struct order. The spec is a committed file; CI
-  diffs it on every PR and regenerates SDKs from it.
+- **Deterministic document output for golden tests** (oaswrap/spec): sorted keys throughout,
+  paths, components and properties alike. The spec is a committed file; CI diffs it on every
+  PR and regenerates SDKs from it.
 - **Declare the default error response once** (ogen `convenient_errors`, swaggest
   `AddRespStructure` with `IsDefault`): every operation references the same
   `handler.ErrorResponse` component under `default`, so every generated SDK gets a typed
@@ -460,9 +595,10 @@ Validation
 Errors
 
 - **One function every error class passes through** (ogen `ErrorHandler`, goa `formatter`,
-  tonic `ErrorHook`): `ManageError` already is it.
-- **`request_id` in every error body** (own): keep. An `X-Request-ID` response header for log
-  correlation is cheap and additive.
+  tonic `ErrorHook`): `rest.ErrorHandler` is it for registered routes and for every error
+  Echo answers, `ManageError` for plain routes; both write the same envelope.
+- **`request_id` in every error body** (own): keep. `rest.Configure` also sends it as the
+  `X-Request-Id` response header for log correlation (v1.29.0).
 - **Optional `fields` list in the envelope** (huma `ErrorDetail`, ogen `FieldError`, goa
   `Field`): `{"error":{"code","message","request_id","fields":[{"name","message"}]}}`.
   Deferred. The mapper builds the list internally now; exposing it is permanent once SDKs
@@ -470,17 +606,17 @@ Errors
 
 Types
 
-- **`SchemaProvider` on compose types** (huma): `types.Email` and friends describe
-  themselves once; every app gets the right format.
-- **Enum values registered by `reflect.Type` as named components** (own, enabled by huma
-  `RegisterTypeAlias`): `enums.Set[T]` stays the runtime truth and the schema reads from it.
+- **Formats for compose types in one place** (huma `SchemaProvider`, done as a table in the
+  reflector, section 5): `types.Email` and friends are described once; every app gets the
+  right format.
+- **Enum values registered by `reflect.Type` as named components** (own):
+  `enums.Set[T]` stays the runtime truth and the schema reads from it (`enums.Values`).
 - **Version-agnostic uuid format** (kin `FormatOfStringForUUIDOfRFC9562`, santhosh
   structural check): both apps use UUIDv7, the common RFC 4122 regex rejects it.
 - **Pointer-to-struct response fields carry `omitempty`** (forced by huma: pointer-to-struct
-  is never nullable and `nullable:"true"` on an object ref panics): Go then omits instead of
-  emitting `null`, which keeps progenitor's Rust `Option<T>` honest. This changes the wire
-  format (`null` becomes absent). Apply in auditor3 first; audit emma-sdk-ts consumers before
-  emma.
+  is never nullable in a response, and a `nullable:"true"` tag on an object ref fails
+  registration): Go then omits instead of emitting `null`, which keeps progenitor's Rust
+  `Option<T>` honest. This changes the wire format (section 11).
 
 SDK pipeline
 
@@ -494,29 +630,33 @@ SDK pipeline
 Cut after review: `RejectUnknownQueryParameters` (not needed yet), serving both spec
 versions at runtime (generate files instead), `readOnly`/`writeOnly`.
 
-Related but separate hardening PR, not part of this design: Echo `BodyLimit(1 << 20)` with
-per-group override (huma defaults to 1 MiB), `ReadHeaderTimeout`/`ReadTimeout` in
-`rest.Start` (currently none; huma uses a 5s body read deadline), and a compose
-`HTTPErrorHandler` so 404, 405, 413 and 415 produce the envelope (emma's router already does
-this locally).
+Related hardening, shipped separately from this design: Echo's `BodyLimit` through
+`rest.WithBodyLimit` (one opt-in limit for the server, in bytes since v1.28.0; registered
+operations also cap their own body, section 4 step 6), server timeouts in `rest.Serve`
+(v1.29.0; always a 10s read-header and a 120s idle timeout, read and write timeouts unlimited
+unless `WithReadTimeout`/`WithWriteTimeout` is passed; huma uses a 5s body read deadline),
+and `rest.ErrorHandler` (v1.29.0), so 404, 405, 413 and 415 produce the envelope.
 
 ## 8. Sharp edges to design around
 
-- huma library mode is a public API but not a documented pattern. We use: `Registry`,
-  `Schema`, `SchemaProvider`, `SchemaFromField`, `RegisterTypeAlias`, `DefaultSchemaNamer`,
-  `OpenAPI` types, `Downgrade`, all from the copy in `internal/huma` (section 5). `Validate`,
-  `PrecomputeMessages`, `Config`, `NewAPI` are not used (the `NewAPI(cfg, nil)` trick to
-  reach `FieldsOptionalByDefault` works today but is one setting for both directions and
-  relies on a nil adapter being tolerated).
+- The copy is huma's library mode, a public API upstream but not a documented pattern.
+  compose uses: `Registry` (implemented by the reflector; its `RegisterTypeAlias` only
+  because the interface requires it, nothing registers an alias), `Schema`, `SchemaFromType`,
+  `SchemaFromField`, `DefaultSchemaNamer` (unnamed types), `NewMapRegistry` (as the
+  document's component map), `OpenAPI` types, `Downgrade`, all from the copy in
+  `internal/huma` (section 5). `Validate`, `PrecomputeMessages`, `Config` and `NewAPI` are
+  not in the copy (the `NewAPI(cfg, nil)` trick to reach `FieldsOptionalByDefault` works
+  upstream but is one setting for both directions and relies on a nil adapter being
+  tolerated).
 - huma's `go.mod` requires gin, fiber v2 and v3, echo v4 and v5, bunrouter and sonic
   (`go.mod:6-21`). As a dependency they joined MVS for compose and both apps; the copy in
   `internal/huma` removes them.
 - `Downgrade` walks maps blindly and renames properties literally named `contentEncoding`
-  or `contentMediaType`. Lint for those names.
+  or `contentMediaType`. The lint rejects those names.
 - `OpenAPI.MarshalJSON` prunes components no path references. Good for output, surprising
   in tests.
-- Generic type arguments lose their package in `DefaultSchemaNamer`. Our namer handles them
-  or we avoid generic response wrappers. Lists stay app-declared:
+- Generic type arguments lose their package in `DefaultSchemaNamer`, so compose's namer
+  qualifies them (section 5). Lists stay app-declared anyway:
 
   ```go
   type ListResponse struct {
@@ -525,184 +665,125 @@ this locally).
   }
   ```
 
-- Converted endpoints change what they accept: `0`, `false`, `""` now pass a presence
-  `required`; stricter uuid and enum checks reject what ozzo let through; case-mismatched
-  keys are rejected instead of bound. Contract tests per converted module.
 - santhosh ignores OpenAPI 3.0 `nullable`. Always validate the 3.1 document.
-- `pagination.CursorRequest` fields need `json:"-"` added. Check emma's POST search bodies
-  first in case any carry `limit`/`cursor` in the body.
-- The pipeline must not carry over compose's existing `if err := c.Bind(body); err != nil`
-  one-liners (`requests.go:40, 57`); AGENTS.md forbids them.
+- The pipeline does not call `c.Bind` (`handler/requests.go:74, 89` still do, for plain
+  routes), and its Go code has no `if err := f(); err != nil` one-liners; AGENTS.md forbids
+  them.
 
-## 9. Order of work
+## 9. Work done and remaining
 
-0. auditor3 prerequisite PR shipped alone: compose v1.8.5 to v1.12.x (ez v1.6.0 signature
-   change `ez.New(code, msg, err)`, scheduler v1.12 migration).
-1. compose: `SchemaProvider` on `types/`, enum alias registration in `enums.Set`, uuid
-   alias, `requests.NoRules`, `json:"-"` on `pagination.CursorRequest`.
-2. compose: reflector glue and post-pass plus golden tests on a fixture package covering
-   every tag, embedded structs, pointers, enums, generics, request variants, recursion,
-   3.0.3 downgrade.
-3. compose: registry, pipeline, santhosh glue, error mapping, `apitest` helper, then blob
-   responses, content negotiation and multipart uploads (section 12). Release as a minor.
-4. auditor3: all 50 routes migrate to the typed registry in one PR (there is no
-   untyped registration to park routes on), hide `PUT /runs/:id`, commit `openapi.json` and
+Done:
+
+0. auditor3 is on compose v1.12.0, up from v1.8.5 (ez v1.6.0 signature change
+   `ez.New(code, msg, err)`, scheduler v1.12 migration).
+1. compose, this branch: the type table for `uuid.UUID` and `types/`, enum values recorded
+   by `enums.Set`, `requests.NoRules`, `json:"-"` on `pagination.CursorRequest`.
+2. compose, this branch: reflector glue and post-pass with golden files
+   (`api/openapi/testdata/components.golden.json`, `api/testdata/openapi-3.{0,1}.golden.json`)
+   and tests for enums, request variants (both directions, recursion), the namer, nullability,
+   sized integers and the 3.0.3 downgrade.
+3. compose, this branch: registry, pipeline, santhosh glue, error mapping, `apitest` helper,
+   blob responses, content negotiation and multipart uploads (section 4).
+4. Hardening, shipped separately (section 7): body limit, server timeouts, envelope for
+   404/405/413/415.
+
+The planned spike (port auditor3 `runs` onto the huma registry and santhosh directly) became
+compose's test fixture: `components/rest/api/internal/fixture` mirrors auditor3's `runs`
+module. Its tests cover the spike's checks that need no real app: the param walker picks up
+the embedded `CursorRequest` and `json:"-"` keeps params out of the body component; field-level
+`enum:"failed,cancelled"` on `*RunStatus` narrows the schema while the enum stays a named
+component; presence `required` works, `null` is accepted on optional pointer fields, and
+case-mismatched keys (`{"Status":"failed"}`) return 400; `?LIMIT=5000` is ignored (unknown
+query parameters are not rejected and never bind), so the handler sees the default limit; the
+published components have no `additionalProperties: false`; error messages never contain the
+submitted value.
+
+Remaining:
+
+1. Release compose v1.30.0.
+2. auditor3: all 50 routes migrate to the typed registry in one PR (there is no untyped
+   registration to park routes on), hide `PUT /runs/:id`, commit `openapi.json` and
    `openapi-3.0.json`, CI spec diff plus hey-api, openapi-python-client and progenitor
-   generation, contract tests.
-5. emma: migrates once the step 3 capabilities are released, with a suggest-only codemod
-   for request structs. The generator is deleted in the change that commits the registry
-   spec; there is no parallel generator lane.
-6. Separate hardening PR: `BodyLimit`, server timeouts, envelope for 404/405/413/415.
+   generation, contract tests. It also runs the spike checks that need the generators and the
+   real server: progenitor's output has no `deny_unknown_fields`; the 3.0.3 file loads in
+   progenitor and the 3.1 file in hey-api and openapi-python-client, each generating a named
+   `RunStatus` enum and a typed error from `default`; every success and error response is
+   byte-identical to the current server for the ten `runs` operations, except the intended
+   stricter validation cases.
+3. emma: migrates once v1.30.0 is released, with a codemod for request structs
+   (section 11). The generator is deleted in the change that commits the registry spec;
+   there is no parallel generator lane.
 
-## 10. Spike (two days, before step 2)
-
-Port auditor3 `runs` on a branch using the huma registry plus santhosh directly, without the
-registry sugar. Check, in order:
-
-1. Compose's param walker picks up the embedded `CursorRequest`, and `json:"-"` keeps params
-   out of the body component.
-2. Field-level `enum:"failed,cancelled"` on `*project.RunStatus` narrows the schema, the
-   provider returns a fresh pointer each call, and the enum is a named component.
-3. Request variant: presence `required` works, `null` is accepted on optional pointer
-   fields, `{"Max_Total_Runs": -1}` returns 400. `?LIMIT=5000` is ignored (unknown query
-   parameters are not rejected and never bind), so `Limit` stays 0 and the app default applies.
-4. The published document has no `additionalProperties: false`, and progenitor's output has
-   no `deny_unknown_fields`.
-5. 3.0.3 downgrade loads in progenitor, 3.1 loads in hey-api and openapi-python-client, each
-   generates a named `RunStatus` enum and a typed error from `default`.
-6. Every success and error response is byte-identical to the current server for the ten
-   `runs` operations, except the intended stricter validation cases.
-7. Error messages never contain the submitted value.
-
-## 11. Decisions from review round 4
+## 10. Decisions from review round 4
 
 - **One registry** plus the recursive variant pass. Two registries would duplicate every
   nested type and the collision handling.
 - **Query coercion is our own code** (about 60 lines). `swaggest/form` decodes into structs,
   which is exactly the step being removed.
-- **`Validate()` stays mandatory** because both apps call `GetBody().Validate()` in
-  `HandleRequest`. `requests.NoRules` is the embeddable no-op. Revisit after emma migrates.
+- **`Validate()` stays mandatory**: the pipeline calls `Body.Validate()` after schema validation
+  and before the handler, so cross-field rules have one home. `requests.NoRules` is the embeddable
+  no-op. Revisit after emma migrates.
 - **`fields` in the envelope: later.** Build the list internally now.
 - **Response validation lives in a compose `apitest` helper**, because it needs compose's
   compiled strict copy of the document.
 
-## 12. Implementation notes (review round 5, 2026-10-11)
+## 11. Adopting in an app
 
-Deviations from the sections above, all accepted in review:
-
-- **The reflector re-implements huma's `mapRegistry`** (`openapi/reflector.go`) instead of
-  wrapping it. huma's registry passes itself, not the wrapper, into `SchemaFromType`
-  (`registry.go:155`), so a wrapper would never see nested fields. The copy matches huma on
-  recursion placeholders, the duplicate-name panic, anonymous numbering, `time.Time`,
-  `TextUnmarshaler`, `SchemaProvider` and `SchemaTransformer` (the latter since dropped
-  from the copy, nothing implements it). compose `types/` do not implement
-  `huma.SchemaProvider`; the reflector has a type table instead, so huma stays confined to
-  `components/rest/api/...`.
-- **huma is copied, not imported**: the rest of huma's code compose uses (schema and tag
-  parser, `mapRegistry`, the OpenAPI document types and `Downgrade`) lives in
-  `components/rest/api/internal/huma`, and `go.mod` has no huma requirement (section 5).
-- **`types.Optional[T]` uses a method hook, not `SchemaProvider`**: the reflector matches
-  `OptionalType() reflect.Type` through an unexported interface and documents `T`'s schema
-  made nullable (section 5, "Optional body fields"). This replaces the earlier idea of
-  compose types implementing `huma.SchemaProvider`, which would have made `types/` import
-  huma, which is now impossible since it is internal.
-- **Enum components come from `enums.Set`**, which records values by `reflect.Type`
-  (`enums.Values`). Repeated `Set` calls for one type record the union in first-seen order;
-  narrow a field with the `enum:"a,b"` tag.
-- **Tag** is the last non-parameter segment of the group prefix (`/runs/:id/issues` gives
-  `issues`).
-- **Validators compile against every component, including those only hidden operations use.**
-  The public document prunes them.
-- **`requests.NoRules` cannot be embedded next to `pagination.CursorRequest`**: the two
-  promoted `Validate` methods are ambiguous and the compiler rejects the registration. A type
-  that embeds `CursorRequest` already satisfies `requests.Body`.
-- **Request body keys are checked recursively for case collisions** (`api/collisions.go`),
-  because `encoding/json` matches case-insensitively at every depth, and registration fails
-  when `encoding/json` would bind a key the schema does not declare (unexported embedded
-  structs, `hidden` fields, embedded non-struct types, shadowed promoted fields).
-- **Param conversion failures are 400**, not 500: santhosh's `date-time` accepts inputs that
-  `time.Time` rejects.
-- **Body size is capped in the pipeline** (`http.MaxBytesReader`, 1 MiB default,
-  `api.MaxBody`), so the hardening PR no longer needs `BodyLimit` for registered routes.
-- **GET, HEAD and DELETE operations must not have body properties**; registration fails and
-  points at the `query:` tag.
-- **`?LIMIT=5000` is ignored**, not rejected (section 10, check 3 updated).
-- **No `Legacy` registration.** The typed `Legacy[Req, Res]` and `x-compose-legacy` were
-  dropped before release: apps migrate every route to the typed registry, and the four
-  capabilities below cover what emma-backend's handlers do through `BaseHandler`.
-- **Blob responses**: `api.GET(g, "/report", "report", app.Report,
-  api.ContentType("application/pdf"))` for a handler whose `Res` is `api.Blob`. It returns
-  `api.Blob{ContentType, Body, Filename}` by value: `*api.Blob` is rejected at registration,
-  since a nil pointer would need a runtime check. An empty `ContentType` means the negotiated
-  type, `Filename` adds `Content-Disposition: attachment`; errors keep the JSON envelope.
-  Registration fails for a Blob `Res` without `ContentType`, `ContentType` on any other
-  `Res`, and `ContentType` or `Produces` declaring `application/json` (a JSON `Res` produces
-  it). Declared types are lowercase and carry no parameters or wildcards (`text/plain`, while
-  the Blob may send `text/plain; charset=utf-8`); the Blob's own `ContentType` is written as
-  given.
-- **Content negotiation**: `api.Produces("text/csv", app.ExportCSV)` adds a representation
-  with its own handler, `func(ctx, *Req) (api.Blob, error)`, whose `Req` must be the
-  operation's (checked at boot). The declared types are the primary one (`application/json`
-  for a JSON `Res`, the `ContentType` of a Blob) then the `Produces` types in declaration
-  order, none repeated. The pipeline picks the first `Accept` entry, in header order, that
-  matches a declared type (`type/*` and `*/*` match the first declared type in the range),
-  else the primary type; q-values are ignored and there is no 406. Exactly one handler runs:
-  the negotiated type's `Produces` handler, else the primary one, so a handler never returns
-  the wrong kind of value. Every registered operation sets the choice on
-  `requests.Request.GetAccept()` and `api.Accept(ctx)`. The 200 response lists one content
-  entry per declared type: `Res`'s schema for JSON, `{type: string, format: binary}` for the
-  others (huma adds `contentMediaType: application/octet-stream`, which the 3.0 downgrade
-  renames `x-contentMediaType`). `apitest.Contract.Do` checks a non-JSON 200's content type
-  against the declared types.
-- **Multipart uploads**: request fields of type `*multipart.FileHeader` or
-  `[]*multipart.FileHeader` tagged `form:"name"` and `json:"-"` make the operation
-  `multipart/form-data`. The other body fields are read from the form values named by their
-  JSON keys (empty values are absent, unknown and case-mismatched keys are ignored), coerced
-  like query params and validated against the body component; then they decode through
-  `encoding/json`, so named types decode as in JSON bodies. File fields are checked for
-  presence (`required:"true"`), and a single-file field rejects repeated parts. The body
-  limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills to temporary files).
-  Registration fails for file fields without both tags, `form` tags on other types, body
-  fields a form value cannot carry (nested objects, maps, `[]byte`) and files on GET, HEAD
-  or DELETE. The request body is documented as `multipart/form-data` with the body
-  properties inline, files as binary strings (arrays of them for slices) and `required` by
-  presence.
-- **XML request bodies were considered and skipped**: no emma-backend or auditor3-api REST
-  handler calls `BindedXMLResponse` (emma's only XML is an outgoing client), so there is no
-  consumer. `BaseHandler.BindedXMLResponse` is unchanged; registered operations accept JSON
-  and multipart bodies only.
-- **Typed handlers, not `App.HandleRequest`** (handler contract review, 2026-11-08):
-  registration takes the handler, `Authenticate`/`Public()` replace the app's own
-  authentication step, and the pipeline calls `Validate()` (section 4). `handler.App`,
+- **Every registered route moves in one change.** There is no fallback to
+  `App.HandleRequest` and no `Legacy` registration (section 4). `handler.App`,
   `HandleRequest`, `NewHandler` and `JSONResponse` stay for plain Echo routes.
-- **Accounting moves when an app migrates**, accepted for both apps. Schema, decode and
-  `Validate()` failures are rejected before any app code runs, so they are never charged:
-  emma's invalid-body quota charge and its 429-for-400 replacement go away for registered
-  routes (a spent bearer device now gets the 400), and every `Validate()` failure becomes
-  uncharged, not only cross-field ones (emma also normalizes there). Admission that has to
-  stay ahead of the app moves to Echo middleware, which runs before schema validation:
-  emma's IP peek (and its verified-bearer exception) and auditor3's API-key/IP charge now
-  also see parse and schema failures, and an exhausted IP gets 429 for input the registry
-  would have answered with 400. Admission that must follow validation (emma's public-route
-  quota, the STP gateway exception) is an app-local typed wrapper (section 4).
-- **`requests.NewWithContext` replaces the `context.Background()` request**: `requests.New`
-  roots the context in `context.Background()`, so a client disconnect never cancelled the
-  app's work and values set by Echo middleware were lost; that bug is latent in every
-  `HandleRequest` route. Registered operations derive the context from the inbound one
-  (section 4, step 2). `requests.New` is unchanged for plain Echo routes, which can switch
-  on their own.
-- **Not implemented**: the `Res`/`*Res` response check (moot: `Res` is the handler's return
-  type), `fields` in the envelope (still deferred).
-- **Known app adoption items**: emma has about 25 duplicated package names
-  (`finance/units` vs `property/units`), so it needs `api.Namer`/`openapi.SegmentsNamer(2)`;
-  auditor3 `runs.GetRequest.RunID` must become `uuid.UUID` with `json:"-" path:"id"`, and
-  `ListRequest` fields need `json:"-" query:"..."` tags. emma's negotiating list handlers
-  split into a JSON handler plus a `Produces` handler per other format instead of filling
-  `Format` from `NegotiateContentType` (so `Validate()` stops requiring `Format`; query-format
-  overrides become route middleware that rewrites `Accept`), reports that return serialized
-  JSON as `[]byte` return a typed `Res` (registering `[]byte` would publish a base64 string),
-  and binary handlers return `api.Blob`; its upload requests tag `File`/`Files` with
+- **Install the error handler.** Operations return every error to Echo (section 4), so
+  adopting the registry includes `e.HTTPErrorHandler = rest.ErrorHandler(opts...)`. It logs
+  nothing itself: in an app that runs neither `rest.Configure` nor `rest.Start` nothing logs a
+  500. emma passes
+  `rest.WithErrorReporter(handler.ReportToSentry)` and a `rest.WithErrorTranslator` that
+  returns nil when `handler.Request(c)` is nil and `app.TranslateError(err,
+  handler.Request(c))` otherwise; its `BaseHandler.ErrorTranslator` stays for its plain
+  routes. auditor3 passes nothing: `rest.ErrorHandler()`.
+- **Two sharp edges.** With Echo's default error handler every ez error the registry returns
+  is a 500, and nothing at boot reports it: `Ready()` does not check the error handler. An ez
+  error wrapped in a non-ez error (`fmt.Errorf("...: %w", err)`) is answered as a 500
+  `EINTERNAL`, so propagate with `ez.Wrap`.
+- **ozzo `Required` does not map to `required:"true"` alone.** ozzo's `validation.Required`
+  rejects the zero value; schema `required` only checks the key is present, so `""`, `0` and
+  `false` pass. Each converted rule needs `required:"true"` plus the constraint that keeps the
+  zero value out where it must stay out (`minLength:"1"`, `minimum:"1"`, `minItems:"1"`, an
+  `enum`). Sizes measured 2026-11-09: emma-backend 530 `validation.Required` uses in 504
+  `Validate()` methods over 246 routes; auditor3-api 50 uses in 56 methods over 50 routes.
+  The codemod for emma must apply this rule, not only suggest tags.
+- **Converted endpoints change what they accept**: `0`, `false`, `""` now pass a presence
+  `required` (above); stricter uuid and enum checks reject what ozzo let through;
+  case-mismatched keys are rejected at every depth instead of bound. Contract tests per
+  converted module (`apitest`).
+- **Param fields get tags.** auditor3 `runs.GetRequest.RunID` must become `uuid.UUID` with
+  `json:"-" path:"id"`, and `ListRequest` fields need `json:"-" query:"..."` tags.
+  `pagination.CursorRequest` fields carry `json:"-"` and are query parameters only: check
+  emma's POST search bodies first in case any carry `limit`/`cursor` in the body. A request
+  that embeds `CursorRequest` does not embed `requests.NoRules` (section 3).
+- **Component names.** emma has about 25 duplicated package names (`finance/units` vs
+  `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
+- **Compare the old spec with the registry's before switching** (emma): paths, methods and
+  operationIds, because emma-sdk-ts method names and the MCP server's function names come
+  from them.
+- **Pointer-to-struct response fields get `omitempty`** (section 7): `null` becomes absent on
+  the wire. Apply in auditor3 first; audit emma-sdk-ts consumers before emma.
+- **emma's handlers change shape.** Its negotiating list handlers split into a JSON handler
+  plus a `Produces` handler per other format instead of filling `Format` from
+  `NegotiateContentType` (so `Validate()` stops requiring `Format`; query-format overrides
+  become route middleware that rewrites `Accept`), reports that return serialized JSON as
+  `[]byte` return a typed `Res` (registering `[]byte` would publish a base64 string), and
+  binary handlers return `api.Blob`; its upload requests tag `File`/`Files` with
   `form:"..."` and `json:"-"`.
+- **Accounting moves**, accepted for both apps. Schema, decode and `Validate()` failures are
+  rejected before any app code but the authenticator runs (section 4), so they are never
+  charged: emma's invalid-body quota charge and its 429-for-400 replacement go away for
+  registered routes (a spent bearer device now gets the 400), and every `Validate()` failure
+  becomes uncharged, not only cross-field ones (emma also normalizes there). Admission that
+  has to stay ahead of the app moves to Echo middleware, which runs before schema validation:
+  emma's IP peek (and its verified-bearer exception) and auditor3's API-key/IP charge now also
+  see parse and schema failures, and an exhausted IP gets 429 for input the registry would
+  have answered with 400. Admission that must follow validation (emma's public-route quota,
+  the STP gateway exception) is an app-local typed wrapper (section 4).
 - **Not expressible in the registry yet** (they stay plain Echo routes, outside the spec):
   emma's signed webhooks (`whatsapp.ReceiveWebhook`, `crm.CalWebhook`) need the exact raw
   body bytes for the signature check, and the system health handler answers non-200
