@@ -2,6 +2,14 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.29.0
+
+### Highlights
+
+- **`rest.Configure` and `rest.Serve`**: `rest.Start` is now `rest.Configure(e, log, opts...)` followed by `rest.Serve(ctx, e, log, port, opts...)`, and both are exported. `Configure` sets `e.Logger` and registers the middleware (request ID, request log, Recover, CORS, the body limit, `RejectNUL`) without a listener, so an app can serve the same stack through `httptest` in its tests or run its own server. `Serve` only serves, with the timeouts and the shutdown `Start` documents. Middleware an app registers with `e.Use` after `Configure` runs inside the stack, after `RejectNUL` and so inside Recover, which is where a Sentry middleware that re-panics belongs; middleware registered before it runs outside. The options are one set: `Configure` uses `WithAllowedOrigins`, `WithCredentialedCORS` and `WithBodyLimit`, `Serve` uses the four timeout options, and each ignores the others, so pass the same options to both. Call `Start`, or `Configure` then `Serve`, never `Configure` and `Start`, which registers everything twice. `Start` keeps its signature, and its behaviour apart from the request id items below: the id it now assigns, the `X-Request-Id` CORS exposes and the id in `RejectNUL`'s answer.
+- **Every response under `rest.Start` and `rest.Configure` carries `X-Request-Id`**: Echo's request ID middleware is registered first, so the response has the `X-Request-Id` the client sent, as sent, or a new UUID, and every request log line has an `id`, where before only a request that came with the header had one. This id is not the one `requests.New` creates for a handler, which `handler.ManageError` logs and answers with: a request that fails in a handler has both.
+- **CORS under `rest.Start` and `rest.Configure` exposes `X-Request-Id`**: `Access-Control-Expose-Headers` names it next to `Session-Token`, so a cross-origin browser client can read the id of a response and quote it.
+
 ## v1.28.0
 
 ### Breaking

@@ -51,7 +51,7 @@ func TestNewConfigOverrides(t *testing.T) {
 
 func newTestEcho(opts ...Option) *echo.Echo {
 	e := echo.New()
-	configure(e, zerolog.Nop(), opts...)
+	Configure(e, zerolog.Nop(), opts...)
 	e.POST("/echo", func(c *echo.Context) error {
 		body, err := io.ReadAll(c.Request().Body)
 		if err != nil {
@@ -122,14 +122,25 @@ func TestSetTimeouts(t *testing.T) {
 	require.Equal(t, 120*time.Second, s.IdleTimeout)
 }
 
+// serveOK answers GET /ok on e through ServeHTTP, with no listener.
+func serveOK(e *echo.Echo) *httptest.ResponseRecorder {
+	e.GET("/ok", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ok", nil))
+	return rec
+}
+
 func TestStartReturnsOnEndedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	var logs bytes.Buffer
+	e := echo.New()
 	done := make(chan struct{})
 	go func() {
-		Start(ctx, echo.New(), zerolog.New(&logs), "0")
+		Start(ctx, e, zerolog.New(&logs), "0")
 		close(done)
 	}()
 	select {
@@ -139,12 +150,34 @@ func TestStartReturnsOnEndedContext(t *testing.T) {
 	}
 	// Nothing was listened on, so Echo logged no start line
 	require.Empty(t, logs.String())
+
+	// Start still configured e, as it did before Serve was split out
+	rec := serveOK(e)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotEmpty(t, rec.Header().Get(echo.HeaderXRequestID))
+	require.Contains(t, logs.String(), `"status":200`)
+}
+
+// Serve registers no middleware, so a route on an echo only served has no
+// request id and is not logged.
+func TestServeRegistersNoMiddleware(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var logs bytes.Buffer
+	e := echo.New()
+	Serve(ctx, e, zerolog.New(&logs), "0", WithBodyLimit(1), WithAllowedOrigins("https://app.example.com"))
+
+	rec := serveOK(e)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, rec.Header().Get(echo.HeaderXRequestID))
+	require.Empty(t, logs.String())
 }
 
 func TestStartConfigServesAndStops(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs))
+	Configure(e, zerolog.New(&logs))
 	e.GET("/ok", func(c *echo.Context) error {
 		return c.String(http.StatusOK, "ok")
 	})
@@ -208,7 +241,7 @@ func TestStartConfigServesAndStops(t *testing.T) {
 func TestStartConfigClosesRequestsPastGracefulTimeout(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs))
+	Configure(e, zerolog.New(&logs))
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	e.GET("/slow", func(c *echo.Context) error {
@@ -279,7 +312,7 @@ func TestStartConfigClosesRequestsPastGracefulTimeout(t *testing.T) {
 func TestConfigureRequestLog(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs))
+	Configure(e, zerolog.New(&logs))
 	e.GET("/items/:id", func(c *echo.Context) error {
 		return c.String(http.StatusOK, "ok")
 	})
@@ -325,7 +358,9 @@ func TestConfigureRequestLog(t *testing.T) {
 	require.Equal(t, "error", line["level"])
 	require.Equal(t, float64(http.StatusTeapot), line["status"])
 	require.Contains(t, line["error"], "no coffee")
-	require.NotContains(t, line, "id")
+	// Without a client id the line has the generated one the response carries
+	require.NotEmpty(t, rec.Header().Get(echo.HeaderXRequestID))
+	require.Equal(t, rec.Header().Get(echo.HeaderXRequestID), line["id"])
 	require.Equal(t, "0", line["bytes_in"])
 
 	// A recovered panic is a 500 with the stack in the error field, where
@@ -371,6 +406,7 @@ func TestConfigureCORSExposesSessionToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "*", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
 	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlExposeHeaders), session.TokenHeader)
+	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlExposeHeaders), echo.HeaderXRequestID)
 	require.Empty(t, rec.Header().Get(echo.HeaderAccessControlAllowCredentials))
 
 	rec = crossOriginGet(newTestEcho(WithAllowedOrigins("https://app.example.com")), "https://app.example.com")
@@ -401,7 +437,7 @@ func TestConfigureCredentialedCORS(t *testing.T) {
 func TestConfigureCredentialedCORSNeedsAllowedOrigins(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs), WithCredentialedCORS())
+	Configure(e, zerolog.New(&logs), WithCredentialedCORS())
 
 	rec := crossOriginGet(e, "https://anywhere.example.com")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -411,7 +447,7 @@ func TestConfigureCredentialedCORSNeedsAllowedOrigins(t *testing.T) {
 
 	logs.Reset()
 	e = echo.New()
-	configure(e, zerolog.New(&logs), WithAllowedOrigins("*"), WithCredentialedCORS())
+	Configure(e, zerolog.New(&logs), WithAllowedOrigins("*"), WithCredentialedCORS())
 
 	rec = crossOriginGet(e, "https://anywhere.example.com")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -432,7 +468,7 @@ func TestConfigureWildcardAmongOriginsSkipsTheOthers(t *testing.T) {
 func TestConfigureLogsRequestsUnderWarnLevel(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs).Level(zerolog.WarnLevel))
+	Configure(e, zerolog.New(&logs).Level(zerolog.WarnLevel))
 	e.GET("/ok", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
@@ -452,7 +488,7 @@ func TestConfigureLogsRequestsUnderWarnLevel(t *testing.T) {
 func TestConfigureEchoLoggerWritesZerolog(t *testing.T) {
 	var logs bytes.Buffer
 	e := echo.New()
-	configure(e, zerolog.New(&logs).With().Timestamp().Logger())
+	Configure(e, zerolog.New(&logs).With().Timestamp().Logger())
 
 	e.Logger.Info("started", "address", ":8080")
 	var line map[string]any
