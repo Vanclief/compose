@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/ez"
@@ -60,14 +60,18 @@ const maxInspectedBody = 32 << 20
 // no check: net/http refuses a header holding a NUL byte before Echo runs.
 //
 // It reads a JSON, urlencoded or multipart body of up to 32 MB into memory
-// (two to three times that while reading and parsing) and puts it back, so handlers can
-// still bind, read or stream it; a larger body passes through uninspected and
-// intact, so it holds at most 32 MB per request whatever the body limit.
+// (two to three times that while reading and parsing) and puts it back, so
+// handlers can still bind, read or stream it; a larger body passes through
+// uninspected and intact, so it holds at most 32 MB per request whatever the
+// body limit.
 // Registered with e.Use it runs on every route, matched or not. Register it
 // after CORS, so a preflight is answered first and its 400 carries the CORS
 // headers; after any request-decompression middleware, since compressed bytes
 // hold NUL bytes; and after a body limit such as middleware.BodyLimit, so a
-// body over the limit gets the limit's 413 without being read first.
+// body over the limit gets the limit's 413 without being read first. A
+// chunked body over the limit is read up to the limit, and the limit's error
+// then goes to Echo's HTTPErrorHandler as Echo's own error, which Echo's
+// default handler answers with its status.
 //
 // A refusal is logged at warn level as "Request Error" with the method and
 // the route path, never the URI, query or body. The middleware writes the
@@ -76,17 +80,19 @@ const maxInspectedBody = 32 << 20
 // ErrorTranslator nor Echo's HTTPErrorHandler sees it.
 func RejectNUL() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			err := findNUL(c)
 			if err == nil {
 				return next(c)
 			}
 
 			// A body read can fail with Echo's own error, such as BodyLimit's
-			// 413 for a chunked body, which Echo's error handler answers.
-			var httpErr *echo.HTTPError
-			if errors.As(err, &httpErr) {
-				return httpErr
+			// 413 for a chunked body. That error itself goes to the error
+			// handler, not the ez wrapper, so an app handler classifying by
+			// ez code does not answer it as a 400.
+			var statusErr statusError
+			if errors.As(err, &statusErr) {
+				return statusErr
 			}
 
 			// c.Path() is the route template, not the client's URI.
@@ -105,14 +111,22 @@ func RejectNUL() echo.MiddlewareFunc {
 	}
 }
 
+// statusError is an error Echo answers with the status it carries, as
+// *echo.HTTPError and Echo's predefined errors do. echo.HTTPStatusCoder is not
+// an error, so it cannot be returned as one.
+type statusError interface {
+	error
+	StatusCode() int
+}
+
 // findNUL returns an ez.EINVALID error naming where the request carries a NUL
 // byte, or nil when it carries none. A body larger than maxInspectedBody is not
 // inspected. A body that cannot be read is an ez.EINVALID error wrapping the
 // read error.
-func findNUL(c echo.Context) error {
-	for _, name := range c.ParamNames() {
-		if strings.IndexByte(c.Param(name), 0) >= 0 {
-			return ez.New(ez.EINVALID, "Path parameter "+name+" contains a NUL byte", nil)
+func findNUL(c *echo.Context) error {
+	for _, param := range c.PathValues() {
+		if strings.IndexByte(param.Value, 0) >= 0 {
+			return ez.New(ez.EINVALID, "Path parameter "+param.Name+" contains a NUL byte", nil)
 		}
 	}
 

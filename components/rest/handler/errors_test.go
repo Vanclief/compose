@@ -2,13 +2,14 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
@@ -19,9 +20,11 @@ import (
 // recordingTransport keeps every event Sentry would have sent.
 type recordingTransport struct{ events []*sentry.Event }
 
-func (t *recordingTransport) Configure(sentry.ClientOptions) {}
-func (t *recordingTransport) SendEvent(e *sentry.Event)      { t.events = append(t.events, e) }
-func (t *recordingTransport) Flush(time.Duration) bool       { return true }
+func (t *recordingTransport) Configure(sentry.ClientOptions)        {}
+func (t *recordingTransport) SendEvent(e *sentry.Event)             { t.events = append(t.events, e) }
+func (t *recordingTransport) Flush(time.Duration) bool              { return true }
+func (t *recordingTransport) FlushWithContext(context.Context) bool { return true }
+func (t *recordingTransport) Close()                                {}
 
 func TestManageErrorSentryGate(t *testing.T) {
 	tests := []struct {

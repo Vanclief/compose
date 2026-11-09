@@ -161,8 +161,8 @@ func (c *BaseController) CloseLogs(ctx context.Context) error {
 // io.MultiWriter it is an io.Closer, which zerolog's Fatal relies on: it closes
 // the logger's writer before os.Exit, and the zerolog.ConsoleWriter set by
 // WithZerolog forwards that Close to its Out. Without it the lines still
-// buffered in the client would be lost on log.Fatal or rest.Start's
-// e.Logger.Fatal.
+// buffered in the client would be lost on log.Fatal, which rest.Start also
+// uses when the server fails.
 type promtailWriter struct {
 	stdout io.Writer
 	client *promtail.Client

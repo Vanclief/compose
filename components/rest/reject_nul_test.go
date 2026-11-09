@@ -15,17 +15,26 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/ez"
 )
 
-func newNULEcho() *echo.Echo {
+// newExposingEcho is an Echo whose error handler writes the wrapped cause of
+// an error into the response, so a test can see which error a bind raised.
+func newExposingEcho() *echo.Echo {
 	e := echo.New()
+	e.HTTPErrorHandler = echo.DefaultHTTPErrorHandler(true)
+	return e
+}
+
+func newNULEcho() *echo.Echo {
+	e := newExposingEcho()
 	e.Use(RejectNUL())
 
-	e.POST("/json", func(c echo.Context) error {
+	e.POST("/json", func(c *echo.Context) error {
 		var body struct {
 			Name string `json:"name"`
 		}
@@ -35,21 +44,21 @@ func newNULEcho() *echo.Echo {
 		}
 		return c.JSON(http.StatusOK, map[string]string{"name": body.Name})
 	})
-	e.POST("/raw", func(c echo.Context) error {
+	e.POST("/raw", func(c *echo.Context) error {
 		body, err := io.ReadAll(c.Request().Body)
 		if err != nil {
 			return err
 		}
 		return c.JSON(http.StatusOK, map[string][]byte{"body": body})
 	})
-	e.GET("/items/:id", func(c echo.Context) error {
+	e.GET("/items/:id", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id"), "q": c.QueryParam("q")})
 	})
-	e.POST("/form", func(c echo.Context) error {
+	e.POST("/form", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"f": c.FormValue("f")})
 	})
 	e.POST("/form/bind", bindForm)
-	e.POST("/stream", func(c echo.Context) error {
+	e.POST("/stream", func(c *echo.Context) error {
 		reader, err := c.Request().MultipartReader()
 		if err != nil {
 			return err
@@ -71,7 +80,7 @@ func newNULEcho() *echo.Echo {
 		}
 		return c.JSON(http.StatusOK, parts)
 	})
-	e.POST("/upload", func(c echo.Context) error {
+	e.POST("/upload", func(c *echo.Context) error {
 		header, err := c.FormFile("file")
 		if err != nil {
 			return err
@@ -95,7 +104,7 @@ func newNULEcho() *echo.Echo {
 	return e
 }
 
-func bindForm(c echo.Context) error {
+func bindForm(c *echo.Context) error {
 	var body struct {
 		F string `form:"f"`
 	}
@@ -508,7 +517,7 @@ func TestRejectNUL(t *testing.T) {
 // middleware.
 func TestRejectNULLeavesMalformedFormToHandler(t *testing.T) {
 	withNUL := newNULEcho()
-	without := echo.New()
+	without := newExposingEcho()
 	without.POST("/form/bind", bindForm)
 
 	_, body := multipartBody(t, "ok", `form-data; name="file"; filename="a.txt"`, []byte("x"))
@@ -571,7 +580,7 @@ func fieldsThenNUL(t *testing.T, n int) (string, string) {
 // the middleware, while one in part 1000 is refused.
 func TestRejectNULStopsAtMultipartPartLimit(t *testing.T) {
 	t.Run("NUL byte in part 1001", func(t *testing.T) {
-		without := echo.New()
+		without := newExposingEcho()
 		without.POST("/form/bind", bindForm)
 
 		contentType, body := fieldsThenNUL(t, 1000)
@@ -614,8 +623,8 @@ func TestRejectNULRefusesPartHeaderNextPartCannotRead(t *testing.T) {
 		"a\x00b\r\n" +
 		"--b--\r\n"
 
-	without := echo.New()
-	without.POST("/form", func(c echo.Context) error {
+	without := newExposingEcho()
+	without.POST("/form", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"f": c.FormValue("f")})
 	})
 
@@ -637,8 +646,8 @@ func TestRejectNULRefusesPartHeaderNextPartCannotRead(t *testing.T) {
 // An empty multipart body passes to the handler, which answers as it would
 // without the middleware: Echo's Bind skips it and FormValue reads no values.
 func TestRejectNULPassesEmptyMultipartBody(t *testing.T) {
-	without := echo.New()
-	without.POST("/form", func(c echo.Context) error {
+	without := newExposingEcho()
+	without.POST("/form", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"f": c.FormValue("f")})
 	})
 	without.POST("/form/bind", bindForm)
@@ -695,9 +704,9 @@ func TestRejectNULPassesBodyOverInspectionCap(t *testing.T) {
 			counter := &countingReader{r: bytes.NewReader(body)}
 			readBefore := -1
 
-			e := echo.New()
+			e := newExposingEcho()
 			e.Use(RejectNUL())
-			e.POST("/hash", func(c echo.Context) error {
+			e.POST("/hash", func(c *echo.Context) error {
 				readBefore = counter.n
 				received, err := io.ReadAll(c.Request().Body)
 				if err != nil {
@@ -800,7 +809,7 @@ func TestRejectNULLogsRefusal(t *testing.T) {
 
 func TestConfigureRejectsNUL(t *testing.T) {
 	e := newTestEcho()
-	e.GET("/get", func(c echo.Context) error {
+	e.GET("/get", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 
@@ -817,10 +826,21 @@ func TestConfigureRejectsNUL(t *testing.T) {
 // would read the whole body and refuse that NUL byte with 400. The handler
 // does not read the body, so the 413 can only come from RejectNUL's read.
 func TestConfigureRejectNULKeepsBodyLimit(t *testing.T) {
-	e := newTestEcho(WithBodyLimit("1K"))
-	e.POST("/ignore", func(c echo.Context) error {
+	e := newTestEcho(WithBodyLimit(1024))
+	e.POST("/ignore", func(c *echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	})
+	// An app handler classifying by ez code must get Echo's own error, not
+	// the ez wrapper RejectNUL read the body with
+	e.HTTPErrorHandler = func(c *echo.Context, err error) {
+		var appErr *ez.Error
+		if errors.As(err, &appErr) {
+			_ = c.NoContent(http.StatusBadRequest)
+			return
+		}
+		_, status := echo.ResolveResponseStatus(c.Response(), err)
+		_ = c.NoContent(status)
+	}
 
 	formType, formBody := multipartBody(t, strings.Repeat("a", 2048), `form-data; name="file"; filename="a.txt"`, []byte("x"))
 

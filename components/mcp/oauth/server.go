@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/vanclief/compose/components/auth/token"
 	"github.com/vanclief/ez"

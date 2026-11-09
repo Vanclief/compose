@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
@@ -47,10 +47,10 @@ type dispatchEcho struct {
 // dispatchApp echoes every request, except /report which answers CSV.
 func dispatchApp() http.Handler {
 	e := echo.New()
-	e.GET("/report", func(c echo.Context) error {
+	e.GET("/report", func(c *echo.Context) error {
 		return c.Blob(http.StatusOK, "text/csv", []byte("a,b\n1,2\n"))
 	})
-	e.Any("/*", func(c echo.Context) error {
+	e.Any("/*", func(c *echo.Context) error {
 		r := c.Request()
 		data, err := io.ReadAll(r.Body)
 		if err != nil {

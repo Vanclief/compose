@@ -146,7 +146,7 @@ func TestDeprecatedFieldsAreFlaggedNeverDropped(t *testing.T) {
 
 func TestFunctionQueryParameterSchemasFromHandlerBody(t *testing.T) {
 	src := "package handlers\n" +
-		"func (h *Handler) List(c echo.Context) error {\n" +
+		"func (h *Handler) List(c *echo.Context) error {\n" +
 		"\tsearch := c.QueryParam(\"search\")\n" +
 		"\tif c.QueryParam(\"unit_id\") != \"\" {\n" +
 		"\t\t_, _ = h.GetQueryParamInt64(c, \"unit_id\")\n" +
@@ -257,7 +257,7 @@ func TestFunctionQueryParameterSchemasDeriveEnumArrays(t *testing.T) {
 		"\t\"example.com/app/application/interfaces/rest/handler\"\n" +
 		"\t\"example.com/app/application/models/user\"\n" +
 		")\n" +
-		"func (h *Handler) ListNotifications(c echo.Context) error {\n" +
+		"func (h *Handler) ListNotifications(c *echo.Context) error {\n" +
 		"\ttypes, _ := handler.ParseEnumQueryParams(c, \"types\", user.NotificationTypeFromString)\n" +
 		"\tstatuses, _ := handler.ParseEnumQueryParams(c, \"statuses\", user.NotificationStatusFromString)\n" +
 		"\t_, _ = handler.ParseEnumQueryParams(c, dynamicKey, user.NotificationTypeFromString)\n" +
@@ -385,9 +385,9 @@ func TestRequestTypeFromHandlerResolvesHelperResult(t *testing.T) {
 
 import "example.com/mod/leads"
 
-func parseBody(c echo.Context) (*leads.WebhookRequest, error) { return nil, nil }
+func parseBody(c *echo.Context) (*leads.WebhookRequest, error) { return nil, nil }
 
-func (h *Handler) Webhook(c echo.Context) error {
+func (h *Handler) Webhook(c *echo.Context) error {
 	body, err := parseBody(c)
 	if err != nil {
 		return err
@@ -539,14 +539,14 @@ func addRoutes(e *echo.Echo, h *Handler) {
 		"api/handler.go": `package api
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/things"
 )
 
 type Handler struct{}
 
-func (h *Handler) GetThing(c echo.Context) error {
+func (h *Handler) GetThing(c *echo.Context) error {
 	return h.JSONResponse(c, "GetThing", nil, &things.GetRequest{})
 }
 `,

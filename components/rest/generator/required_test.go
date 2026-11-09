@@ -20,18 +20,18 @@ func addRoutes(e *echo.Echo, h *Handler) {
 	"api/handler.go": `package api
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/modules/invoices"
 )
 
 type Handler struct{}
 
-func (h *Handler) CreateInvoice(c echo.Context) error {
+func (h *Handler) CreateInvoice(c *echo.Context) error {
 	return h.BindedJSONResponse(c, "CreateInvoice", nil, &invoices.CreateRequest{})
 }
 
-func (h *Handler) GetInvoice(c echo.Context) error {
+func (h *Handler) GetInvoice(c *echo.Context) error {
 	return h.JSONResponse(c, "GetInvoice", nil, &invoices.GetRequest{})
 }
 `,

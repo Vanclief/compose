@@ -3,13 +3,13 @@ package handler
 import (
 	"github.com/getsentry/sentry-go"
 	sentryecho "github.com/getsentry/sentry-go/echo"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/ez"
 )
 
 // reportErrorToSentry reports an error to Sentry along with relevant request and user information.
-func (h *BaseHandler) reportErrorToSentry(c echo.Context, request requests.Request, managedError error) {
+func (h *BaseHandler) reportErrorToSentry(c *echo.Context, request requests.Request, managedError error) {
 	hub := sentryecho.GetHubFromContext(c)
 	if hub == nil {
 		// Sentry is not configured, nothing to do

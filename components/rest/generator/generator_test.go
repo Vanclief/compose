@@ -99,7 +99,7 @@ func addWidgetRoutes(e *echo.Echo, h *Handlers) {
 	"api/handler/widgets/widgets.go": `package widgets
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
 
 	"example.com/app/api/handler"
@@ -108,7 +108,7 @@ import (
 
 type Handler struct{ *handler.Base }
 
-func (h *Handler) ListWidgets(c echo.Context) error {
+func (h *Handler) ListWidgets(c *echo.Context) error {
 	body := &catalog.ListRequest{
 		CursorRequest: pagination.CursorRequest{
 			Limit:  h.GetListLimit(c, 50),
@@ -119,7 +119,7 @@ func (h *Handler) ListWidgets(c echo.Context) error {
 	return h.JSONResponse(c, "Widgets.ListWidgets", nil, body)
 }
 
-func (h *Handler) GetWidget(c echo.Context) error {
+func (h *Handler) GetWidget(c *echo.Context) error {
 	id, err := h.GetParameterInt64(c, "id")
 	if err != nil {
 		return err
@@ -127,12 +127,12 @@ func (h *Handler) GetWidget(c echo.Context) error {
 	return h.JSONResponse(c, "Widgets.GetWidget", nil, &catalog.GetRequest{ID: id})
 }
 
-func (h *Handler) CreateWidget(c echo.Context) error {
+func (h *Handler) CreateWidget(c *echo.Context) error {
 	body := &catalog.CreateRequest{}
 	return h.BindedJSONResponse(c, "Widgets.CreateWidget", nil, body)
 }
 
-func (h *Handler) DeleteWidget(c echo.Context) error {
+func (h *Handler) DeleteWidget(c *echo.Context) error {
 	id, err := h.GetParameterInt64(c, "id")
 	if err != nil {
 		return err
@@ -140,7 +140,7 @@ func (h *Handler) DeleteWidget(c echo.Context) error {
 	return h.JSONResponse(c, "Widgets.DeleteWidget", nil, &catalog.DeleteRequest{ID: id})
 }
 
-func (h *Handler) ExportWidget(c echo.Context) error {
+func (h *Handler) ExportWidget(c *echo.Context) error {
 	contentType := h.NegotiateContentType(c)
 	id, err := h.GetParameterInt64(c, "id")
 	if err != nil {
@@ -149,11 +149,11 @@ func (h *Handler) ExportWidget(c echo.Context) error {
 	return h.BlobResponse(c, "Widgets.ExportWidget", nil, contentType, &catalog.ExportRequest{ID: id})
 }
 
-func (h *Handler) WidgetDetails(c echo.Context) error {
+func (h *Handler) WidgetDetails(c *echo.Context) error {
 	return h.GetWidget(c)
 }
 
-func (h *Handler) Stats(c echo.Context) error {
+func (h *Handler) Stats(c *echo.Context) error {
 	return h.JSONResponse(c, "Widgets.Stats", nil, &catalog.StatsRequest{})
 }
 `,
@@ -713,7 +713,7 @@ func addRoutes(e *echo.Echo, h *Handler) {
 		"api/handler.go": `package api
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/media"
 	"example.com/app/things"
@@ -723,19 +723,19 @@ const textPlain = "text/plain; charset=utf-8"
 
 type Handler struct{}
 
-func (h *Handler) UploadFile(c echo.Context) error {
+func (h *Handler) UploadFile(c *echo.Context) error {
 	return h.BindedJSONResponse(c, "UploadFile", nil, &things.UploadRequest{})
 }
 
-func (h *Handler) VerifyWebhook(c echo.Context) error {
+func (h *Handler) VerifyWebhook(c *echo.Context) error {
 	return h.BlobResponse(c, "VerifyWebhook", nil, textPlain, &things.VerifyRequest{})
 }
 
-func (h *Handler) ReceiptPDF(c echo.Context) error {
+func (h *Handler) ReceiptPDF(c *echo.Context) error {
 	return h.BlobResponse(c, "ReceiptPDF", nil, media.TypePDF, &things.ReceiptRequest{})
 }
 
-func (h *Handler) Report(c echo.Context) error {
+func (h *Handler) Report(c *echo.Context) error {
 	contentType := h.NegotiateContentType(c)
 	if contentType == media.TypeJSON {
 		return h.JSONResponse(c, "Report", nil, &things.ReportRequest{})
@@ -743,7 +743,7 @@ func (h *Handler) Report(c echo.Context) error {
 	return h.BlobResponse(c, "Report", nil, contentType, &things.ReportRequest{})
 }
 
-func (h *Handler) Legacy(c echo.Context) error {
+func (h *Handler) Legacy(c *echo.Context) error {
 	return c.JSON(200, nil)
 }
 `,
@@ -950,7 +950,7 @@ func (s *Server) Start() error {
 	"api/rest/handler.go": `package rest
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/compose/components/rest/handler"
 
 	"example.com/flat/projects"
@@ -959,7 +959,7 @@ import (
 
 type Handler struct{ *handler.BaseHandler }
 
-func (h *Handler) ListProjects(c echo.Context) error {
+func (h *Handler) ListProjects(c *echo.Context) error {
 	request := &projects.ListRequest{
 		Limit:  h.GetListLimit(c, 50),
 		Search: c.QueryParam("q"),
@@ -972,26 +972,26 @@ func (h *Handler) ListProjects(c echo.Context) error {
 	return h.JSONResponse(c, "ListProjects", nil, request)
 }
 
-func (h *Handler) GetProject(c echo.Context) error {
+func (h *Handler) GetProject(c *echo.Context) error {
 	return h.JSONResponse(c, "GetProject", nil, &projects.GetRequest{ID: c.Param("id")})
 }
 
-func (h *Handler) UpdateProject(c echo.Context) error {
+func (h *Handler) UpdateProject(c *echo.Context) error {
 	request := &projects.UpdateRequest{ID: c.Param("id")}
 	return h.BindedJSONResponse(c, "UpdateProject", nil, request)
 }
 
-func (h *Handler) RefreshSnapshot(c echo.Context) error {
+func (h *Handler) RefreshSnapshot(c *echo.Context) error {
 	return h.JSONResponse(c, "RefreshSnapshot", nil, &snapshots.RefreshRequest{ID: c.Param("id")})
 }
 
-func (h *Handler) RenameSnapshot(c echo.Context) error {
+func (h *Handler) RenameSnapshot(c *echo.Context) error {
 	id := c.Param("id")
 	request := &snapshots.RenameRequest{ID: id}
 	return h.BindedJSONResponse(c, "RenameSnapshot", nil, request)
 }
 
-func (h *Handler) MoveSnapshot(c echo.Context) error {
+func (h *Handler) MoveSnapshot(c *echo.Context) error {
 	request := &snapshots.MoveRequest{}
 	projectID, err := h.GetParameterInt64(c, "project_id")
 	if err != nil {
@@ -1217,14 +1217,14 @@ func addRoutes(e *echo.Echo, h *Handler) {
 		"api/handler.go": `package api
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"example.com/app/files"
 )
 
 type Handler struct{}
 
-func (h *Handler) UploadFile(c echo.Context) error {
+func (h *Handler) UploadFile(c *echo.Context) error {
 	complexID, err := h.GetParameterInt64(c, "complex_id")
 	if err != nil {
 		return err
@@ -1233,7 +1233,7 @@ func (h *Handler) UploadFile(c echo.Context) error {
 	return h.BindedJSONResponse(c, "UploadFile", nil, request)
 }
 
-func (h *Handler) Import(c echo.Context) error {
+func (h *Handler) Import(c *echo.Context) error {
 	return h.BindedJSONResponse(c, "Import", nil, &files.ImportRequest{})
 }
 `,
@@ -1380,13 +1380,13 @@ func TestSharedPaginationParameters(t *testing.T) {
 	files["api/handler/widgets/all.go"] = `package widgets
 
 import (
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
 
 	"example.com/app/modules/catalog"
 )
 
-func (h *Handler) ListAllWidgets(c echo.Context) error {
+func (h *Handler) ListAllWidgets(c *echo.Context) error {
 	body := &catalog.ListRequest{
 		CursorRequest: pagination.CursorRequest{
 			Limit:  h.GetListLimit(c, 100),
