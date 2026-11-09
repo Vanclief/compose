@@ -36,8 +36,11 @@ func Accept(ctx context.Context) string {
 }
 
 // Request returns the request the registry built for the Echo request, or
-// nil when the request did not reach a registered operation. Middleware reads
-// it after next(c), for example to log what the authenticator set.
+// nil when the request did not reach a registered operation. It is how Echo
+// middleware gets, after next(c), the context the authenticator produced
+// (request.GetContext()), for example to log what the authenticator set:
+// the Echo request's own context does not carry it. By then the registry has
+// cancelled that context: use it for its values.
 func Request(c *echo.Context) requests.Request {
 	request, _ := c.Get(requestKey).(requests.Request)
 	return request
@@ -47,8 +50,7 @@ func Request(c *echo.Context) requests.Request {
 // against the compiled schema, decode it once, run Validate and the
 // authenticator, and pass it to the handler of the negotiated media type.
 // Multipart operations validate their form values against the body schema
-// the same way. On every exit the request context, with whatever the
-// authenticator added, replaces the Echo request's context.
+// the same way.
 func (op *operation) serve(c *echo.Context) error {
 	h := op.reg.handler
 
@@ -58,9 +60,6 @@ func (op *operation) serve(c *echo.Context) error {
 	}
 	request := requests.NewWithContext(c.Request().Context(), c.Request().Header, c.RealIP(), reqOpts...)
 	defer func() {
-		// Middleware after next(c) sees what the authenticator added, but not
-		// the registry's deadline: Cancel releases its timer right after.
-		c.SetRequest(c.Request().WithContext(context.WithoutCancel(request.GetContext())))
 		if request.Cancel != nil {
 			request.Cancel()
 		}

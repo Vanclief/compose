@@ -144,7 +144,7 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 		reqType: reqType,
 		resType: resType,
 		invoke:  invoke,
-		maxBody: r.maxBody,
+		maxBody: DefaultMaxBody,
 	}
 	op.id = name
 	if op.tag != "" {

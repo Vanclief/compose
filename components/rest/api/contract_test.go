@@ -76,7 +76,7 @@ func whoAmI(t *testing.T, s *server, target string) whoResponse {
 func TestAuthenticateRuns(t *testing.T) {
 	e := echo.New()
 	calls := 0
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(authAs("alice", &calls)))
+	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	api.GET(reg.Group("/me"), "", "get", who)
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -90,7 +90,7 @@ func TestAuthenticateRejects(t *testing.T) {
 	e := echo.New()
 	app := &fixture.App{}
 	calls := 0
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(reject(&calls)))
+	reg := api.New(e, api.Authenticate(reject(&calls)))
 	api.GET(reg.Group("/runs"), "/:id", "get", app.Get)
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -105,7 +105,7 @@ func TestAuthenticateRejects(t *testing.T) {
 func TestPublicSkipsAuthenticate(t *testing.T) {
 	e := echo.New()
 	calls := 0
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(authAs("alice", &calls)))
+	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	g := reg.Group("/me")
 	api.GET(g, "", "get", who)
 	api.GET(g, "/public", "public", who, api.Public())
@@ -126,7 +126,7 @@ func TestAuthenticateInheritance(t *testing.T) {
 	e := echo.New()
 	callsA := 0
 	callsB := 0
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(authAs("A", &callsA)))
+	reg := api.New(e, api.Authenticate(authAs("A", &callsA)))
 	open := reg.Group("/open", api.Public())
 	api.GET(open, "/locked", "locked", who, api.Authenticate(authAs("B", &callsB)))
 	api.GET(open, "/free", "free", who)
@@ -161,7 +161,7 @@ func TestAuthenticateInheritance(t *testing.T) {
 
 func TestReadyRequiresAuthenticate(t *testing.T) {
 	build := func(opts ...api.Option) *api.Registry {
-		reg := api.New(echo.New(), &handler.BaseHandler{})
+		reg := api.New(echo.New())
 		api.GET(reg.Group("/me"), "", "get", who, opts...)
 		return reg
 	}
@@ -181,7 +181,7 @@ func TestPublicAndAuthenticateConflict(t *testing.T) {
 	calls := 0
 	auth := authAs("alice", &calls)
 	newGroup := func() *api.Group {
-		return api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate(auth)).Group("/me")
+		return api.New(echo.New(), api.Authenticate(auth)).Group("/me")
 	}
 
 	tests := []struct {
@@ -190,8 +190,8 @@ func TestPublicAndAuthenticateConflict(t *testing.T) {
 	}{
 		{func() { api.GET(newGroup(), "", "get", who, api.Public(), api.Authenticate(auth)) }, "api: GET /me (me.get): api.Public and api.Authenticate cannot both be passed to an operation"},
 		{func() { api.GET(newGroup(), "", "get", who, api.Authenticate(auth), api.Public()) }, "api.Public and api.Authenticate cannot both be passed to an operation"},
-		{func() { api.New(echo.New(), &handler.BaseHandler{}, api.Public(), api.Authenticate(auth)) }, "api: New: api.Public and api.Authenticate cannot both be passed to api.New"},
-		{func() { api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate(auth), api.Public()) }, "api.Public and api.Authenticate cannot both be passed to api.New"},
+		{func() { api.New(echo.New(), api.Public(), api.Authenticate(auth)) }, "api: New: api.Public and api.Authenticate cannot both be passed to api.New"},
+		{func() { api.New(echo.New(), api.Authenticate(auth), api.Public()) }, "api.Public and api.Authenticate cannot both be passed to api.New"},
 	}
 	for _, tt := range tests {
 		msg := panicMessage(t, tt.fn)
@@ -203,7 +203,7 @@ func TestValidateBeforeAuthenticate(t *testing.T) {
 	e := echo.New()
 	app := &fixture.App{}
 	calls := 0
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(reject(&calls)))
+	reg := api.New(e, api.Authenticate(reject(&calls)))
 	api.PATCH(reg.Group("/runs"), "/:id", "update", app.Update)
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -244,7 +244,7 @@ func TestContractHandlerNotInvokedOnFailure(t *testing.T) {
 		}
 		return nil
 	}
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(auth))
+	reg := api.New(e, api.Authenticate(auth))
 	api.PATCH(reg.Group("/runs"), "/:id", "update", app.Update)
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -286,7 +286,7 @@ func withTenant(tenant string) echo.MiddlewareFunc {
 
 func TestHandlerSeesInboundContext(t *testing.T) {
 	e := echo.New()
-	reg := api.New(e, &handler.BaseHandler{}, api.Public())
+	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/route"), "", "get", who, api.Middleware(withTenant("route")))
 	g := reg.Group("/group")
 	g.Use(withTenant("group"))
@@ -303,17 +303,17 @@ func TestHandlerSeesInboundContext(t *testing.T) {
 	require.NotEmpty(t, resp.RequestID)
 }
 
-func TestContextSyncedBackOnError(t *testing.T) {
+func TestRequestCarriesAuthenticatorContextOnError(t *testing.T) {
 	e := echo.New()
 	calls := 0
 
-	var after context.Context
+	var echoContext context.Context
 	var handled error
 	var request requests.Request
 	observe := func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
 			err := next(c)
-			after = c.Request().Context()
+			echoContext = c.Request().Context()
 			handled = handler.HandledError(c)
 			request = api.Request(c)
 			return err
@@ -323,7 +323,7 @@ func TestContextSyncedBackOnError(t *testing.T) {
 	failing := func(ctx context.Context, body *fixture.CreateRequest) (fixture.Run, error) {
 		return fixture.Run{}, ez.New(ez.ECONFLICT, "busy", nil)
 	}
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(authAs("alice", &calls)))
+	reg := api.New(e, api.Authenticate(authAs("alice", &calls)))
 	api.POST(reg.Group("/runs"), "", "create", failing, api.Timeout(time.Minute), api.Middleware(observe))
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -331,14 +331,18 @@ func TestContextSyncedBackOnError(t *testing.T) {
 	rec := s.do(http.MethodPost, "/runs", `{"name":"nightly"}`)
 	resp := requireError(t, rec, http.StatusConflict, "busy")
 
-	require.NotNil(t, after)
+	// The authenticator's values reach middleware through api.Request only:
+	// the Echo request's context is not replaced.
+	require.NotNil(t, request)
+	after := request.GetContext()
 	require.Equal(t, "alice", after.Value(userKey{}))
 	require.Equal(t, resp.Error.RequestID, requests.RequestID(after))
-	// The synced context keeps the values but drops the registry's deadline
-	// and cancellation.
-	require.NoError(t, after.Err())
-	_, ok := after.Deadline()
-	require.False(t, ok)
+	// The registry cancels the request context when the operation returns.
+	require.ErrorIs(t, after.Err(), context.Canceled)
+
+	require.NotNil(t, echoContext)
+	require.Nil(t, echoContext.Value(userKey{}))
+	require.Empty(t, requests.RequestID(echoContext))
 
 	require.Error(t, handled)
 	require.Equal(t, ez.ECONFLICT, ez.ErrorCode(handled))
@@ -351,9 +355,53 @@ func TestContextSyncedBackOnError(t *testing.T) {
 	require.Equal(t, "nightly", body.Name)
 }
 
+func TestErrorTranslator(t *testing.T) {
+	e := echo.New()
+	calls := 0
+
+	var translatedID string
+	translate := func(err error, request requests.Request) error {
+		translatedID = request.GetID()
+		return ez.New(ez.ENOTFOUND, "ocupado: "+ez.ErrorMessage(err), err)
+	}
+
+	var handled error
+	observe := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			err := next(c)
+			handled = handler.HandledError(c)
+			return err
+		}
+	}
+
+	failing := func(ctx context.Context, body *fixture.CreateRequest) (fixture.Run, error) {
+		return fixture.Run{}, ez.New(ez.ECONFLICT, "busy", nil)
+	}
+	reg := api.New(e, api.ErrorTranslator(translate), api.Authenticate(authAs("alice", &calls)))
+	api.POST(reg.Group("/runs"), "", "create", failing, api.Middleware(observe))
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	// The translated message is written; the code and status stay the
+	// original error's.
+	rec := s.do(http.MethodPost, "/runs", `{"name":"nightly"}`)
+	resp := requireError(t, rec, http.StatusConflict, "ocupado: busy")
+	require.Equal(t, ez.ECONFLICT, resp.Error.Code)
+	require.Equal(t, resp.Error.RequestID, translatedID)
+
+	// handler.HandledError reports the original error.
+	require.Error(t, handled)
+	require.Equal(t, ez.ECONFLICT, ez.ErrorCode(handled))
+	require.Equal(t, "busy", ez.ErrorMessage(handled))
+
+	// Pipeline errors are translated too.
+	rec = s.do(http.MethodPost, "/runs", `{"name":""}`)
+	requireError(t, rec, http.StatusBadRequest, "ocupado: ")
+}
+
 func TestContextRequestNilOutsideRegistry(t *testing.T) {
 	e := echo.New()
-	reg := api.New(e, &handler.BaseHandler{}, api.Public())
+	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/me"), "", "get", who)
 	reg.Ready()
 
@@ -395,7 +443,7 @@ func TestContextInboundCancellation(t *testing.T) {
 		seen = ctx.Err()
 		return whoResponse{}, ez.Wrap(ctx.Err())
 	}
-	reg := api.New(e, &handler.BaseHandler{}, api.Public())
+	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/wait"), "", "get", wait)
 	reg.Ready()
 
@@ -436,7 +484,7 @@ func TestContextRouteTimeoutWins(t *testing.T) {
 	}
 
 	e := echo.New()
-	reg := api.New(e, &handler.BaseHandler{}, api.Public())
+	reg := api.New(e, api.Public())
 	api.GET(reg.Group("/short"), "", "get", wait, api.Timeout(50*time.Millisecond))
 	api.GET(reg.Group("/long"), "", "get", wait, api.Timeout(time.Minute))
 	reg.Ready()
@@ -481,7 +529,7 @@ func TestProducesSelectsHandler(t *testing.T) {
 		csvCalls++
 		return app.ExportCSV(ctx, body)
 	}
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(app.Authenticate))
+	reg := api.New(e, api.Authenticate(app.Authenticate))
 	api.GET(reg.Group("/runs"), "/export", "export", export, api.Produces("text/csv", exportCSV))
 	reg.Ready()
 	s := &server{e: e, reg: reg}
@@ -525,7 +573,7 @@ func TestContentTypePrimaryBlob(t *testing.T) {
 func TestRegistrationRejectsMedia(t *testing.T) {
 	app := &fixture.App{}
 	newRegistry := func() *api.Registry {
-		return api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate(app.Authenticate))
+		return api.New(echo.New(), api.Authenticate(app.Authenticate))
 	}
 	newGroup := func() *api.Group {
 		return newRegistry().Group("/runs")
@@ -560,7 +608,7 @@ func TestRegistrationRejectsMedia(t *testing.T) {
 		{"nil authenticator", func() { api.Authenticate(nil) }, "api: Authenticate needs a function"},
 		{"registry option on group", func() { newRegistry().Group("/runs", api.Info("x", "1")) }, "api: group /runs: api.Info is a registry option: pass it to api.New, not to a group"},
 		{"registry option on route", func() { exportJSON(api.Info("x", "1")) }, "api.Info is a registry option: pass it to api.New, not to an operation"},
-		{"route option on New", func() { api.New(echo.New(), &handler.BaseHandler{}, api.ContentType("text/csv")) }, "api: New: api.ContentType is an operation option: pass it to the operation, not to api.New"},
+		{"route option on New", func() { api.New(echo.New(), api.ContentType("text/csv")) }, "api: New: api.ContentType is an operation option: pass it to the operation, not to api.New"},
 	}
 	for _, tt := range tests {
 		msg := panicMessage(t, tt.fn)

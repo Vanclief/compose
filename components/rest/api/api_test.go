@@ -36,7 +36,7 @@ func newServer(t *testing.T) *server {
 
 	e := echo.New()
 	app := &fixture.App{}
-	reg := api.New(e, &handler.BaseHandler{},
+	reg := api.New(e,
 		api.Info("auditor3", "1.0.0"),
 		api.Description("fixture API"),
 		api.APIKeyHeader("API-KEY"),
@@ -315,7 +315,7 @@ func TestPublic(t *testing.T) {
 func TestNotReady(t *testing.T) {
 	e := echo.New()
 	app := &fixture.App{}
-	reg := api.New(e, &handler.BaseHandler{}, api.Authenticate(app.Authenticate))
+	reg := api.New(e, api.Authenticate(app.Authenticate))
 	g := reg.Group("/health")
 	api.GET(g, "", "check", app.Health)
 
@@ -392,12 +392,13 @@ func TestMaxBody(t *testing.T) {
 	rec = s.do(http.MethodPost, "/runs", huge)
 	requireError(t, rec, http.StatusBadRequest, "body exceeds 1048576 bytes")
 
-	// Registry default, overridden per group.
+	// MaxBodyBytes on New is the default, overridden per group or operation.
 	e := echo.New()
 	app := &fixture.App{}
-	reg := api.New(e, &handler.BaseHandler{}, api.MaxBody(64), api.Authenticate(app.Authenticate))
+	reg := api.New(e, api.MaxBodyBytes(64), api.Authenticate(app.Authenticate))
 	api.POST(reg.Group("/small"), "", "archive", app.Archive)
 	api.POST(reg.Group("/big", api.MaxBodyBytes(1024)), "", "archive", app.Archive)
+	api.POST(reg.Group("/route"), "", "archive", app.Archive, api.MaxBodyBytes(1024))
 	reg.Ready()
 	small := &server{e: e, reg: reg}
 
@@ -406,6 +407,9 @@ func TestMaxBody(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "body exceeds 64 bytes")
 
 	rec = small.do(http.MethodPost, "/big", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = small.do(http.MethodPost, "/route", body)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 

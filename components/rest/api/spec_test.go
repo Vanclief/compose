@@ -17,7 +17,6 @@ import (
 
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
-	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/types"
 )
@@ -205,7 +204,7 @@ func TestOperations(t *testing.T) {
 
 func TestTags(t *testing.T) {
 	e := echo.New()
-	reg := api.New(e, &handler.BaseHandler{})
+	reg := api.New(e)
 	v1 := reg.Group("/v1")
 	runs := v1.Group("/runs/:id")
 	issues := runs.Group("/issues")
@@ -331,7 +330,7 @@ func panicMessage(t *testing.T, fn func()) (msg string) {
 
 func TestRegistrationFailures(t *testing.T) {
 	newGroup := func() (*api.Registry, *api.Group) {
-		reg := api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate((&fixture.App{}).Authenticate))
+		reg := api.New(echo.New(), api.Authenticate((&fixture.App{}).Authenticate))
 		return reg, reg.Group("/runs")
 	}
 
@@ -429,7 +428,7 @@ func TestRegistrationFailures(t *testing.T) {
 	// registered outside the registry (echo.New overwrites, as in v4).
 	e := echo.NewWithConfig(echo.Config{Router: echo.NewRouter(echo.RouterConfig{})})
 	e.POST("/runs/x", func(c *echo.Context) error { return nil })
-	g = api.New(e, &handler.BaseHandler{}, api.Authenticate((&fixture.App{}).Authenticate)).Group("/runs")
+	g = api.New(e, api.Authenticate((&fixture.App{}).Authenticate)).Group("/runs")
 	msg = panicMessage(t, func() {
 		api.POST[fixture.ArchiveRequest, fixture.Run](g, "/x", "archive", stub)
 	})
@@ -498,8 +497,11 @@ func TestRegistrationFailures(t *testing.T) {
 
 func TestOptionFailures(t *testing.T) {
 	app := &fixture.App{}
+	translate := func(err error, request requests.Request) error {
+		return err
+	}
 	newGroup := func() *api.Group {
-		return api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate(app.Authenticate)).Group("/runs")
+		return api.New(echo.New(), api.Authenticate(app.Authenticate)).Group("/runs")
 	}
 
 	tests := []struct {
@@ -515,12 +517,15 @@ func TestOptionFailures(t *testing.T) {
 		{func() { api.GET[fixture.ReportRequest, *api.Blob](newGroup(), "/:id", "report", stub) }, "the handler must return api.Blob, not *api.Blob"},
 		{func() { api.Authenticate(nil) }, "api: Authenticate needs a function"},
 		{func() { api.Produces[fixture.ExportRequest]("text/csv", nil) }, "api: Produces needs a function"},
-		{func() { api.New(echo.New(), &handler.BaseHandler{}, api.Public(), api.Authenticate(app.Authenticate)) }, "api: New: api.Public and api.Authenticate cannot both be passed to api.New"},
+		{func() { api.New(echo.New(), api.Public(), api.Authenticate(app.Authenticate)) }, "api: New: api.Public and api.Authenticate cannot both be passed to api.New"},
 		{func() { newGroup().Group("/:id", api.Authenticate(app.Authenticate), api.Public()) }, "api: group /runs/:id: api.Public and api.Authenticate cannot both be passed to a group"},
 		{func() { api.GET(newGroup(), "", "check", app.Health, api.Public(), api.Authenticate(app.Authenticate)) }, "api: GET /runs (runs.check): api.Public and api.Authenticate cannot both be passed to an operation"},
 		{func() { newGroup().Group("/x", api.Info("x", "1")) }, "api.Info is a registry option: pass it to api.New, not to a group"},
-		{func() { api.GET(newGroup(), "", "check", app.Health, api.MaxBody(1)) }, "api.MaxBody is a registry option: pass it to api.New, not to an operation"},
-		{func() { api.New(echo.New(), &handler.BaseHandler{}, api.ContentType("text/csv")) }, "api.ContentType is an operation option: pass it to the operation, not to api.New"},
+		{func() { api.GET(newGroup(), "", "check", app.Health, api.Description("x")) }, "api.Description is a registry option: pass it to api.New, not to an operation"},
+		{func() { newGroup().Group("/x", api.ErrorTranslator(translate)) }, "api.ErrorTranslator is a registry option: pass it to api.New, not to a group"},
+		{func() { api.GET(newGroup(), "", "check", app.Health, api.ErrorTranslator(translate)) }, "api.ErrorTranslator is a registry option: pass it to api.New, not to an operation"},
+		{func() { api.ErrorTranslator(nil) }, "api: ErrorTranslator needs a function"},
+		{func() { api.New(echo.New(), api.ContentType("text/csv")) }, "api.ContentType is an operation option: pass it to the operation, not to api.New"},
 		{func() { newGroup().Group("/x", api.Produces("text/csv", app.ExportCSV)) }, "api.Produces is an operation option: pass it to the operation, not to a group"},
 		{func() { newGroup().Group("/x", api.Option{}) }, "zero api.Option"},
 	}
@@ -531,7 +536,7 @@ func TestOptionFailures(t *testing.T) {
 
 	// Ready lists every protected operation without an authenticator,
 	// hidden ones included.
-	reg := api.New(echo.New(), &handler.BaseHandler{})
+	reg := api.New(echo.New())
 	g := reg.Group("/runs")
 	api.GET(g, "", "list", app.List)
 	api.POST(g, "/archive", "archive", app.Archive, api.Hidden())
@@ -555,7 +560,7 @@ type pairRequestInput struct {
 }
 
 func TestReadyPanics(t *testing.T) {
-	reg := api.New(echo.New(), &handler.BaseHandler{}, api.Authenticate((&fixture.App{}).Authenticate))
+	reg := api.New(echo.New(), api.Authenticate((&fixture.App{}).Authenticate))
 	g := reg.Group("/pairs")
 	api.POST[pairRequest, pairRequest](g, "", "create", stub)
 	api.GET[fixture.HealthRequest, pairRequestInput](g, "", "input", stub)

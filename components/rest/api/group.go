@@ -24,11 +24,11 @@ type Group struct {
 
 // Option configures the registry (api.New), a group or an operation. Each
 // option supports some of these scopes; using it at another one panics at
-// boot. Registry options (Info, Description, APIKeyHeader, Server, MaxBody,
-// Namer) are only accepted by New. ContentType and Produces are only accepted
-// by an operation. Every other option is accepted at every scope and applies
-// to every operation below it: options of New first, then the group's, then
-// the operation's, so the nearest one wins.
+// boot. Registry options (Info, Description, APIKeyHeader, Server, Namer,
+// ErrorTranslator) are only accepted by New. ContentType and Produces are
+// only accepted by an operation. Every other option is accepted at every
+// scope and applies to every operation below it: options of New first, then
+// the group's, then the operation's, so the nearest one wins.
 type Option struct {
 	name      string
 	registry  func(*Registry)
@@ -114,8 +114,10 @@ func Timeout(d time.Duration) Option {
 	}}
 }
 
-// MaxBodyBytes sets the request body limit in bytes, overriding the
-// registry's MaxBody. Panics when n is not positive.
+// MaxBodyBytes sets the request body limit in bytes (DefaultMaxBody when no
+// MaxBodyBytes applies). Passed to New it sets the default of every
+// operation, which a group's or the operation's own overrides. Panics when n
+// is not positive.
 func MaxBodyBytes(n int64) Option {
 	if n <= 0 {
 		panic(ez.New(ez.EINVALID, "api: MaxBodyBytes must be positive", nil))

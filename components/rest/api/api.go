@@ -16,10 +16,10 @@
 // operation's own. Authenticate sets the authenticator for api.New, a group
 // or an operation, the nearest one winning, and marks those operations
 // protected; Public skips authentication and drops the security requirement
-// from the spec. The request context derives from the Echo request's and is
-// stored back on it on every exit, without the registry's deadline, so
-// middleware after next(c) sees what the authenticator added (see Request,
-// Accept and handler.HandledError).
+// from the spec. The request context derives from the Echo request's; Echo
+// middleware after next(c) reads the request the registry built, and the
+// context the authenticator produced, through Request (see also Accept and
+// handler.HandledError).
 //
 // Tags: an operation's tag is the last non-parameter segment of its group's
 // full prefix (/runs -> runs, /runs/:id/issues -> issues, /v1/runs -> runs).
@@ -39,13 +39,14 @@ import (
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/components/rest/api/openapi"
 	"github.com/vanclief/compose/components/rest/handler"
+	"github.com/vanclief/compose/components/rest/requests"
 )
 
 // securitySchemeName is the name of the API key security scheme.
 const securitySchemeName = "apiKey"
 
-// DefaultMaxBody is the request body limit in bytes when neither MaxBody
-// nor MaxBodyBytes sets one.
+// DefaultMaxBody is the request body limit in bytes of an operation that no
+// MaxBodyBytes applies to.
 const DefaultMaxBody = 1 << 20
 
 var errorResponseType = reflect.TypeFor[handler.ErrorResponse]()
@@ -62,7 +63,6 @@ type Registry struct {
 	info         huma.Info
 	servers      []*huma.Server
 	apiKeyHeader string
-	maxBody      int64
 	namer        func(reflect.Type) string
 	opts         []Option // operation options of New, applied before the group's
 
@@ -112,15 +112,15 @@ func Server(url string) Option {
 	}}
 }
 
-// MaxBody sets the default request body limit in bytes for every operation
-// (DefaultMaxBody when unset). MaxBodyBytes overrides it per group or
-// operation. Registry option. Panics when n is not positive.
-func MaxBody(n int64) Option {
-	if n <= 0 {
-		panic(ez.New(ez.EINVALID, "api: MaxBody must be positive", nil))
+// ErrorTranslator sets the function applied to every error right before it is
+// written, so applications can localize error messages; see
+// handler.BaseHandler.ErrorTranslator. Registry option. Panics when fn is nil.
+func ErrorTranslator(fn func(err error, request requests.Request) error) Option {
+	if fn == nil {
+		panic(ez.New(ez.EINVALID, "api: ErrorTranslator needs a function", nil))
 	}
-	return Option{name: "api.MaxBody", registry: func(r *Registry) {
-		r.maxBody = n
+	return Option{name: "api.ErrorTranslator", registry: func(r *Registry) {
+		r.handler.ErrorTranslator = fn
 	}}
 }
 
@@ -133,12 +133,13 @@ func Namer(namer func(reflect.Type) string) Option {
 	}}
 }
 
-// New creates a registry bound to an Echo instance and a compose handler,
-// whose ManageError writes the errors (h.App is not used). Operation options
-// such as Authenticate or Timeout apply to every operation, before the
-// options of its groups and its own. Panics when an option is an operation
-// option (ContentType, Produces).
-func New(e *echo.Echo, h *handler.BaseHandler, opts ...Option) *Registry {
+// New creates a registry bound to an Echo instance. Errors are written by
+// handler.BaseHandler.ManageError, as the handler.ErrorResponse envelope and
+// visible to handler.HandledError; ErrorTranslator localizes them. Operation
+// options such as Authenticate, Timeout or MaxBodyBytes apply to every
+// operation, before the options of its groups and its own. Panics when an
+// option is an operation option (ContentType, Produces).
+func New(e *echo.Echo, opts ...Option) *Registry {
 	err := checkOptions(opts, registryScope)
 	if err != nil {
 		panic(ez.New(ez.EINVALID, "api: New: "+ez.ErrorMessage(err), err))
@@ -146,11 +147,10 @@ func New(e *echo.Echo, h *handler.BaseHandler, opts ...Option) *Registry {
 
 	r := &Registry{
 		echo:    e,
-		handler: h,
+		handler: &handler.BaseHandler{},
 		info:    huma.Info{Title: "API", Version: "0.0.0"},
 		ids:     map[string]bool{},
 		routes:  map[string]string{},
-		maxBody: DefaultMaxBody,
 	}
 	for _, opt := range opts {
 		if opt.registry == nil {

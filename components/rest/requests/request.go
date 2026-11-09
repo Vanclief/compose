@@ -43,10 +43,9 @@ type StandardRequest struct {
 	// Accept is the response media type the operation chose, set by SetAccept.
 	Accept string
 
-	// base is the context NewWithContext derives the request context from:
-	// the parent with the request ID value and no deadline. It is nil for
-	// requests built by New.
-	base context.Context
+	// timeoutSet records that WithTimeout ran, so newRequest does not add
+	// DEFAULT_TIMEOUT after the options.
+	timeoutSet bool
 }
 
 // requestIDHeader is the header key SetRequestID stores the request ID under
@@ -83,25 +82,30 @@ func RequestID(ctx context.Context) string {
 // Option is a function that modifies the Request.
 type Option func(*StandardRequest)
 
-// WithTimeout returns an Option that sets the timeout for the request context.
-// It replaces the previous deadline and releases the timer of the context it
-// replaces. On a request built by New it keeps the values of the current
-// context but detaches it from its cancellation (context.WithoutCancel). On a
-// request built by NewWithContext it derives the new context from the parent
-// instead, so the request keeps the parent's values and cancellation and its
-// deadline is the earlier of the parent's and timeout.
+// WithTimeout returns an Option that sets a timeout on the request context. It
+// derives the new context from the current one, so the request keeps its
+// values and cancellation, and its deadline is the earlier of the current
+// deadline and timeout. As an option of New or NewWithContext it replaces
+// DEFAULT_TIMEOUT: the deadline is timeout with New, and the earlier of the
+// parent's deadline and timeout with NewWithContext. Applied again later it
+// can only shorten the deadline, never extend it. Cancel releases every timer
+// the request holds.
 func WithTimeout(timeout time.Duration) Option {
 	return func(req *StandardRequest) {
+		ctx, cancel := context.WithTimeout(req.Context, timeout)
 		previousCancel := req.Cancel
-		if req.base != nil {
-			req.Context, req.Cancel = context.WithTimeout(req.base, timeout)
-		} else {
-			req.Context, req.Cancel = context.WithTimeout(context.WithoutCancel(req.Context), timeout)
-		}
 
+		req.Context = ctx
+		req.Cancel = cancel
 		if previousCancel != nil {
-			previousCancel()
+			// The new context derives from the previous one, so the previous
+			// cancel can only run when the request is cancelled.
+			req.Cancel = func() {
+				cancel()
+				previousCancel()
+			}
 		}
+		req.timeoutSet = true
 	}
 }
 
@@ -117,8 +121,9 @@ func WithMethod(method string) Option {
 
 // New returns the request of one handler call. Its context derives from
 // context.Background, carries the request ID and times out after
-// DEFAULT_TIMEOUT; WithTimeout replaces that deadline, detaching the context
-// from the default one. Use NewWithContext to tie the request to a parent
+// DEFAULT_TIMEOUT. A WithTimeout option replaces that default, so the deadline
+// is exactly its timeout; applied to the request later, WithTimeout can only
+// shorten the deadline. Use NewWithContext to tie the request to a parent
 // context. Its ID is the one SetRequestID stored in header, which under
 // rest.Configure is the id the response carries as X-Request-Id and the
 // request log line as id, and a new UUID when none was stored. No header a
@@ -130,13 +135,16 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 // NewWithContext is New with the request context derived from parent: the
 // request sees parent's values and is cancelled when parent is, and its
 // deadline is the earlier of parent's deadline and the request timeout
-// (DEFAULT_TIMEOUT, or WithTimeout's).
+// (DEFAULT_TIMEOUT, or the timeout of a WithTimeout option, which replaces
+// the default). Applied to the request later, WithTimeout can only shorten
+// the deadline.
 func NewWithContext(parent context.Context, header http.Header, ip string, opts ...Option) *StandardRequest {
 	return newRequest(parent, header, ip, opts)
 }
 
-// newRequest builds a request on parent, or on context.Background without a
-// base when parent is nil, which keeps New's WithTimeout behaviour.
+// newRequest builds a request on parent, or on context.Background when
+// parent is nil, runs the options and then applies DEFAULT_TIMEOUT unless a
+// WithTimeout option ran.
 func newRequest(parent context.Context, header http.Header, ip string, opts []Option) *StandardRequest {
 	id := ""
 	//lint:ignore SA1008 the key is not canonical on purpose, see requestIDHeader
@@ -148,13 +156,10 @@ func newRequest(parent context.Context, header http.Header, ip string, opts []Op
 		id = uuid.New().String()
 	}
 
-	var base context.Context
-	ctx := context.WithValue(context.Background(), requestIDKey{}, id)
-	if parent != nil {
-		base = context.WithValue(parent, requestIDKey{}, id)
-		ctx = base
+	if parent == nil {
+		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
+	ctx := context.WithValue(parent, requestIDKey{}, id)
 
 	locale, _ := types.NewLocaleString(header.Get("Accept-Language"))
 
@@ -165,14 +170,16 @@ func newRequest(parent context.Context, header http.Header, ip string, opts []Op
 		Header:    header,
 		Context:   ctx,
 		CreatedAt: time.Now(),
-		Cancel:    cancel,
 		Locale:    locale.String(),
-		base:      base,
 	}
 
 	// Apply each Option to the new request
 	for _, opt := range opts {
 		opt(request)
+	}
+
+	if !request.timeoutSet {
+		WithTimeout(DEFAULT_TIMEOUT)(request)
 	}
 
 	return request
