@@ -24,6 +24,7 @@ require (
 	github.com/mitchellh/mapstructure v1.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/rs/zerolog v1.35.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/viper v1.10.1
 	github.com/stretchr/testify v1.11.1
 	github.com/tetratelabs/wazero v1.12.0

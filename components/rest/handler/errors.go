@@ -9,8 +9,25 @@ import (
 	"github.com/vanclief/ez"
 )
 
+// handledErrorKey is the Echo context key ManageError stores the handled error
+// under. It is namespaced so applications do not collide with it by accident.
+const handledErrorKey = "compose/rest/handler:error"
+
+// HandledError returns the error ManageError wrote for this request, before
+// any ErrorTranslator ran, or nil when no error was handled. Middleware
+// reads it after next(c) to log the outcome of a request.
+func HandledError(c *echo.Context) error {
+	err, ok := c.Get(handledErrorKey).(error)
+	if !ok {
+		return nil
+	}
+	return err
+}
+
 // ManageError translates an error into the appropriate HTTP error code
 func (h *BaseHandler) ManageError(c *echo.Context, op string, request requests.Request, err error) error {
+	c.Set(handledErrorKey, err)
+
 	code := ez.ErrorCode(err)
 
 	log.Error().

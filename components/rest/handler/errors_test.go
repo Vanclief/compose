@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -90,4 +91,61 @@ func TestManageErrorDoesNotLogBody(t *testing.T) {
 	require.NotContains(t, output, "s3cr3t-password")
 	require.NotContains(t, output, "user@example.com")
 	require.NotContains(t, output, "request_json")
+}
+
+func TestHandledErrorNilOnFreshContext(t *testing.T) {
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
+
+	require.NoError(t, HandledError(c))
+}
+
+func TestHandledErrorReturnsOriginalError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+
+	h := NewHandler(nil)
+	h.ErrorTranslator = func(err error, request requests.Request) error {
+		return ez.New(ez.ENOTFOUND, "translated", err)
+	}
+
+	request := requests.New(http.Header{}, "127.0.0.1")
+	err := h.ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "x", nil))
+	require.NoError(t, err)
+
+	handled := HandledError(c)
+	require.Error(t, handled)
+	require.Equal(t, ez.ENOTFOUND, ez.ErrorCode(handled))
+	require.Equal(t, "x", ez.ErrorMessage(handled))
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	var body ErrorResponse
+	err = json.Unmarshal(rec.Body.Bytes(), &body)
+	require.NoError(t, err)
+	require.Equal(t, "translated", body.Error.Message)
+}
+
+func TestHandledErrorVisibleToMiddleware(t *testing.T) {
+	e := echo.New()
+	h := NewHandler(nil)
+
+	var seen error
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			err := next(c)
+			seen = HandledError(c)
+			return err
+		}
+	})
+	e.GET("/", func(c *echo.Context) error {
+		request := requests.New(http.Header{}, "127.0.0.1")
+		return h.ManageError(c, "test", request, ez.New(ez.ENOTFOUND, "x", nil))
+	})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Error(t, seen)
+	require.Equal(t, ez.ENOTFOUND, ez.ErrorCode(seen))
+	require.Equal(t, "x", ez.ErrorMessage(seen))
 }

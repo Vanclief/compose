@@ -23,6 +23,8 @@ type Request interface {
 	SetContext(context.Context)
 	GetLocale() string
 	SetLocale(string)
+	GetAccept() string
+	SetAccept(string)
 }
 
 type StandardRequest struct {
@@ -38,6 +40,13 @@ type StandardRequest struct {
 	// Method is the HTTP method, set by WithMethod. Authenticate needs it to
 	// apply the CSRF rule of WithCookie; empty counts as unsafe.
 	Method string
+	// Accept is the response media type the operation chose, set by SetAccept.
+	Accept string
+
+	// base is the context NewWithContext derives the request context from:
+	// the parent with the request ID value and no deadline. It is nil for
+	// requests built by New.
+	base context.Context
 }
 
 // requestIDHeader is the header key SetRequestID stores the request ID under
@@ -76,11 +85,19 @@ type Option func(*StandardRequest)
 
 // WithTimeout returns an Option that sets the timeout for the request context.
 // It replaces the previous deadline and releases the timer of the context it
-// replaces, keeping the context values.
+// replaces. On a request built by New it keeps the values of the current
+// context but detaches it from its cancellation (context.WithoutCancel). On a
+// request built by NewWithContext it derives the new context from the parent
+// instead, so the request keeps the parent's values and cancellation and its
+// deadline is the earlier of the parent's and timeout.
 func WithTimeout(timeout time.Duration) Option {
 	return func(req *StandardRequest) {
 		previousCancel := req.Cancel
-		req.Context, req.Cancel = context.WithTimeout(context.WithoutCancel(req.Context), timeout)
+		if req.base != nil {
+			req.Context, req.Cancel = context.WithTimeout(req.base, timeout)
+		} else {
+			req.Context, req.Cancel = context.WithTimeout(context.WithoutCancel(req.Context), timeout)
+		}
 
 		if previousCancel != nil {
 			previousCancel()
@@ -98,12 +115,29 @@ func WithMethod(method string) Option {
 	}
 }
 
-// New returns the request of one handler call. Its ID is the one
-// SetRequestID stored in header, which under rest.Configure is the id the
-// response carries as X-Request-Id and the request log line as id, and a new
-// UUID when none was stored. No header a client sends sets it, X-Request-Id
-// included.
+// New returns the request of one handler call. Its context derives from
+// context.Background, carries the request ID and times out after
+// DEFAULT_TIMEOUT; WithTimeout replaces that deadline, detaching the context
+// from the default one. Use NewWithContext to tie the request to a parent
+// context. Its ID is the one SetRequestID stored in header, which under
+// rest.Configure is the id the response carries as X-Request-Id and the
+// request log line as id, and a new UUID when none was stored. No header a
+// client sends sets it, X-Request-Id included.
 func New(header http.Header, ip string, opts ...Option) *StandardRequest {
+	return newRequest(nil, header, ip, opts)
+}
+
+// NewWithContext is New with the request context derived from parent: the
+// request sees parent's values and is cancelled when parent is, and its
+// deadline is the earlier of parent's deadline and the request timeout
+// (DEFAULT_TIMEOUT, or WithTimeout's).
+func NewWithContext(parent context.Context, header http.Header, ip string, opts ...Option) *StandardRequest {
+	return newRequest(parent, header, ip, opts)
+}
+
+// newRequest builds a request on parent, or on context.Background without a
+// base when parent is nil, which keeps New's WithTimeout behaviour.
+func newRequest(parent context.Context, header http.Header, ip string, opts []Option) *StandardRequest {
 	id := ""
 	//lint:ignore SA1008 the key is not canonical on purpose, see requestIDHeader
 	stored := header[requestIDHeader]
@@ -114,7 +148,12 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 		id = uuid.New().String()
 	}
 
+	var base context.Context
 	ctx := context.WithValue(context.Background(), requestIDKey{}, id)
+	if parent != nil {
+		base = context.WithValue(parent, requestIDKey{}, id)
+		ctx = base
+	}
 	ctx, cancel := context.WithTimeout(ctx, DEFAULT_TIMEOUT)
 
 	locale, _ := types.NewLocaleString(header.Get("Accept-Language"))
@@ -128,6 +167,7 @@ func New(header http.Header, ip string, opts ...Option) *StandardRequest {
 		CreatedAt: time.Now(),
 		Cancel:    cancel,
 		Locale:    locale.String(),
+		base:      base,
 	}
 
 	// Apply each Option to the new request
@@ -184,6 +224,19 @@ func (r *StandardRequest) GetLocale() string {
 // user's saved preference.
 func (r *StandardRequest) SetLocale(locale string) {
 	r.Locale = locale
+}
+
+// GetAccept returns the response media type chosen for the request, e.g.
+// "text/csv". The api registry sets it from the Accept header and the
+// operation's declared media types (application/json when none are
+// declared); it is empty for requests built outside the registry.
+func (r *StandardRequest) GetAccept() string {
+	return r.Accept
+}
+
+// SetAccept sets the response media type chosen for the request.
+func (r *StandardRequest) SetAccept(mediaType string) {
+	r.Accept = mediaType
 }
 
 type Body interface {
