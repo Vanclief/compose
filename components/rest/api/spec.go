@@ -3,7 +3,10 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 
@@ -20,9 +23,17 @@ var paramLocations = []string{"path", "query", "header"}
 // and builds the documents. Like every other invalid registration, a
 // failure here panics with the ez error, as does a protected operation
 // (hidden ones included) without an authenticator: every operation needs
-// Authenticate or Public, from api.New, a group or itself. Registering
-// after Ready panics; requests that arrive before Ready fail with
-// EINTERNAL. Idempotent: later calls are no-ops.
+// Authenticate or Public, from api.New, a group or itself. Before any of
+// that it calls the Echo instance's HTTPErrorHandler once with an ez
+// EINVALID error on a made-up request and panics unless the handler answers
+// it with a 4xx, since operations return every error to Echo: Echo's default
+// handler (a 500), a nil one, or one that writes nothing fails, so the app
+// sets e.HTTPErrorHandler = rest.ErrorHandler() (or its own) first. That call
+// reaches the handler's reporter and translator like any error, with
+// handler.Request nil. Registering after Ready panics; requests that arrive
+// before Ready fail with EINTERNAL. Idempotent once it succeeds: later calls
+// are no-ops, while a call that panicked leaves the registry not ready and
+// the next one checks everything again.
 func (r *Registry) Ready() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -31,12 +42,42 @@ func (r *Registry) Ready() {
 		return
 	}
 
-	err := r.finalize()
+	err := r.checkErrorHandler()
+	if err != nil {
+		panic(err)
+	}
+
+	err = r.finalize()
 	if err != nil {
 		panic(err)
 	}
 
 	r.ready.Store(true)
+}
+
+// probeMessage is the message of the error checkErrorHandler hands the
+// app's error handler.
+const probeMessage = "api: Ready checks that the Echo error handler answers an ez error with its status"
+
+// checkErrorHandler calls the Echo instance's HTTPErrorHandler once with an
+// ez EINVALID error on a made-up request and fails unless it answers with a
+// 4xx. A panic in the handler propagates as it is.
+func (r *Registry) checkErrorHandler() error {
+	const fix = "set e.HTTPErrorHandler = rest.ErrorHandler() (or the app's own handler, answering an ez error with its status) before Ready"
+	if r.echo.HTTPErrorHandler == nil {
+		return ez.New(ez.EINVALID, "api: the Echo error handler is nil, so no error an operation returns is answered: "+fix, nil)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	c := r.echo.NewContext(req, rec)
+	r.echo.HTTPErrorHandler(c, ez.New(ez.EINVALID, probeMessage, nil))
+
+	if rec.Code < http.StatusBadRequest || rec.Code >= http.StatusInternalServerError {
+		msg := fmt.Sprintf("api: the Echo error handler answered an ez EINVALID error with %d, not a 4xx (Echo's default handler answers every error an operation returns as a 500): %s", rec.Code, fix)
+		return ez.New(ez.EINVALID, msg, nil)
+	}
+	return nil
 }
 
 // Spec returns the OpenAPI document (hidden operations excluded) as indented

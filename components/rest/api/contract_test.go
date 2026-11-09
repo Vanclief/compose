@@ -164,7 +164,7 @@ func TestAuthenticateInheritance(t *testing.T) {
 
 func TestReadyRequiresAuthenticate(t *testing.T) {
 	build := func(opts ...api.Option) *api.Registry {
-		reg := api.New(echo.New())
+		reg := api.New(newEcho())
 		api.GET(reg.Group("/me"), "", "get", who, opts...)
 		return reg
 	}
@@ -387,9 +387,14 @@ func TestErrorTranslator(t *testing.T) {
 	e := newEcho()
 	calls := 0
 
+	// Ready's check of the error handler reaches the translator with no
+	// request, as an unknown route does.
 	var translatedID string
 	translate := func(c *echo.Context, err error) error {
-		translatedID = handler.Request(c).GetID()
+		request := handler.Request(c)
+		if request != nil {
+			translatedID = request.GetID()
+		}
 		return ez.New(ez.ENOTFOUND, "ocupado: "+ez.ErrorMessage(err), err)
 	}
 	e.HTTPErrorHandler = rest.ErrorHandler(rest.WithErrorTranslator(translate))
@@ -447,6 +452,10 @@ func TestErrorReporter(t *testing.T) {
 	api.POST(reg.Group("/runs"), "", "create", failing)
 	reg.Ready()
 	s := &server{e: e, reg: reg}
+
+	// Ready's check of the error handler was the first error reported.
+	require.Len(t, reported, 1)
+	reported = nil
 
 	rec := s.do(http.MethodPost, "/runs", `{"name":"nightly"}`)
 	resp := requireError(t, rec, http.StatusInternalServerError, "database down")

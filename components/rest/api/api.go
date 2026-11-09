@@ -6,9 +6,11 @@
 //
 // Registration is boot-time: invalid registrations (lint errors, path
 // placeholders without a path:"x" field, duplicate operationIds, ...) panic,
-// as do Handle after Ready and a Ready that cannot build the documents or
-// finds a protected operation, hidden or not, without an authenticator.
-// Call Ready once every route is registered, before serving traffic.
+// as do Handle after Ready and a Ready that cannot build the documents,
+// finds a protected operation, hidden or not, without an authenticator, or
+// finds an Echo error handler that does not answer an ez error with a 4xx
+// (see below). Call Ready once every route is registered, before serving
+// traffic.
 //
 // Each request is authenticated, then validated against the schema, decoded
 // once and checked with Body.Validate, in that order, before exactly one
@@ -26,8 +28,11 @@
 // by the app's HTTPErrorHandler, which middleware after next(c) sees first:
 // rest.ErrorHandler answers them in the handler.ErrorResponse envelope the
 // spec documents, and its WithErrorTranslator and WithErrorReporter options
-// localize and report them. An app that keeps Echo's default handler answers
-// every registry error as a 500 {"message":"Internal Server Error"}.
+// localize and report them. Echo's default handler would answer every
+// registry error as a 500 {"message":"Internal Server Error"}, so Ready calls
+// the installed handler once with an ez EINVALID error and panics unless it
+// answers with a 4xx; that call reaches the handler's reporter and
+// translator, with handler.Request nil.
 //
 // Tags: an operation's tag is the last non-parameter segment of its group's
 // full prefix (/runs -> runs, /runs/:id/issues -> issues, /v1/runs -> runs).
@@ -130,12 +135,13 @@ func Namer(namer func(reflect.Type) string) Option {
 // New creates a registry bound to an Echo instance. Its operations return
 // their errors to Echo, so the app sets e.HTTPErrorHandler to
 // rest.ErrorHandler for the handler.ErrorResponse envelope the spec
-// documents; with Echo's default handler every registry error is a 500
-// {"message":"Internal Server Error"}. Authentication runs before the body is
-// read, and handler.Request returns the request an operation built. Operation
-// options such as Authenticate, Timeout or MaxBodyBytes apply to every
-// operation, before the options of its groups and its own. Panics when an
-// option is an operation option (ContentType, Produces).
+// documents; with Echo's default handler every registry error would be a 500
+// {"message":"Internal Server Error"}, so Ready panics while it is installed.
+// Authentication runs before the body is read, and handler.Request returns
+// the request an operation built. Operation options such as Authenticate,
+// Timeout or MaxBodyBytes apply to every operation, before the options of its
+// groups and its own. Panics when an option is an operation option
+// (ContentType, Produces).
 func New(e *echo.Echo, opts ...Option) *Registry {
 	err := checkOptions(opts, registryScope)
 	if err != nil {

@@ -330,7 +330,7 @@ func panicMessage(t *testing.T, fn func()) (msg string) {
 
 func TestRegistrationFailures(t *testing.T) {
 	newGroup := func() (*api.Registry, *api.Group) {
-		reg := api.New(echo.New(), api.Authenticate((&fixture.App{}).Authenticate))
+		reg := api.New(newEcho(), api.Authenticate((&fixture.App{}).Authenticate))
 		return reg, reg.Group("/runs")
 	}
 
@@ -530,7 +530,7 @@ func TestOptionFailures(t *testing.T) {
 
 	// Ready lists every protected operation without an authenticator,
 	// hidden ones included.
-	reg := api.New(echo.New())
+	reg := api.New(newEcho())
 	g := reg.Group("/runs")
 	api.GET(g, "", "list", app.List)
 	api.POST(g, "/archive", "archive", app.Archive, api.Hidden())
@@ -554,7 +554,7 @@ type pairRequestInput struct {
 }
 
 func TestReadyPanics(t *testing.T) {
-	reg := api.New(echo.New(), api.Authenticate((&fixture.App{}).Authenticate))
+	reg := api.New(newEcho(), api.Authenticate((&fixture.App{}).Authenticate))
 	g := reg.Group("/pairs")
 	api.POST[pairRequest, pairRequest](g, "", "create", stub)
 	api.GET[fixture.HealthRequest, pairRequestInput](g, "", "input", stub)

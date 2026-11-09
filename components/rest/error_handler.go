@@ -12,7 +12,10 @@ import (
 // WithErrorReporter has ErrorHandler call fn with every error it answers,
 // ez or not, client or server error, before the answer is written; fn
 // decides what to report. handler.ReportToSentry is one, for an app that
-// reports to Sentry. ErrorHandler option. Panics when fn is nil.
+// reports to Sentry. The api registry's Ready also calls it once at boot,
+// with an ez EINVALID error and handler.Request(c) nil, which
+// handler.ReportToSentry skips as a client error. ErrorHandler option.
+// Panics when fn is nil.
 func WithErrorReporter(fn func(c *echo.Context, err error)) Option {
 	if fn == nil {
 		panic(ez.New(ez.EINVALID, "rest: WithErrorReporter needs a function", nil))
@@ -30,7 +33,8 @@ func WithErrorReporter(fn func(c *echo.Context, err error)) Option {
 // the errors ErrorHandler answers. An app that localizes by the request's
 // locale reads handler.Request(c), which is nil for an error raised outside
 // a registry operation or handler.ManageError (an unknown route, 405, a panic
-// before the handler). ErrorHandler option. Panics when fn is nil.
+// before the handler, the ez EINVALID error the api registry's Ready answers
+// once at boot). ErrorHandler option. Panics when fn is nil.
 func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 	if fn == nil {
 		panic(ez.New(ez.EINVALID, "rest: WithErrorTranslator needs a function", nil))
@@ -46,7 +50,8 @@ func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 // errors that never reach handler.ManageError (unknown routes, 405,
 // recovered panics, errors a handler or middleware returns straight to Echo).
 // An app installs it with e.HTTPErrorHandler = rest.ErrorHandler(opts...);
-// Configure and Start do not. It uses WithErrorReporter and
+// Configure and Start do not, and the api registry's Ready panics while
+// Echo's default handler is installed. It uses WithErrorReporter and
 // WithErrorTranslator and ignores the other options, so an app passes it the
 // same options as Configure and Serve.
 //
