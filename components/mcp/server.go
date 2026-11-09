@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -118,10 +119,46 @@ func New(cfg Config) (*Server, error) {
 
 // Handler serves the MCP streamable HTTP transport. It is stateless and
 // answers with plain JSON, so it runs behind any load balancer.
+//
+// Handler completes X-Forwarded-For as a proxy would, before the transport
+// sees the request: the transport gets a copy carrying one X-Forwarded-For
+// line, every received line in order joined with ", ", followed by the host
+// of RemoteAddr, the peer that connected to the MCP endpoint (RemoteAddr
+// whole when it does not split into host and port). Tool calls copy that
+// line onto the REST requests they dispatch in-process, whose peer stays
+// 192.0.2.1:1234, so without it the REST API could not tell who connected:
+// it would see only the dispatch peer and whatever the client wrote. An app
+// whose IP extractor should resolve the client's address on tool calls
+// trusts 192.0.2.1/32, for example with echo.TrustIPRange; the extractor then
+// walks the same chain as on a direct request. An app that wrapped Handler to
+// append the peer itself should remove that wrapper: a doubled peer entry is
+// harmless to a right-to-left walk but is noise.
 func (s *Server) Handler() http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s.srv
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		transport.ServeHTTP(w, withForwardedFor(r))
+	})
+}
+
+// withForwardedFor returns a copy of r whose X-Forwarded-For is one line:
+// the received lines joined in order, then the peer of r. A RemoteAddr that
+// does not split into host and port is appended whole, so a client-written
+// entry never ends up last.
+func withForwardedFor(r *http.Request) *http.Request {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peer = r.RemoteAddr
+	}
+	chain := peer
+	received := r.Header.Values("X-Forwarded-For")
+	if len(received) > 0 {
+		chain = strings.Join(received, ", ") + ", " + peer
+	}
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Forwarded-For", chain)
+	return r
 }
 
 // Catalog returns the catalog the tools serve.
@@ -133,10 +170,13 @@ func (s *Server) Catalog() *Catalog {
 // call_function would for an MCP request carrying them. The headers are the
 // credentials the REST API authenticates with (for example Authorization),
 // set after the arguments, so an argument never overrides them. There is no
-// MCP request to copy X-Forwarded-For or X-Request-Id from; set them in
-// header if the REST API should see them. Unlike a tool call, Call does not
-// recover a panic in a composite nor cut the result to MaxOutputBytes; use
-// CallTool for that.
+// MCP request to copy X-Forwarded-For or X-Request-Id from. header may carry
+// X-Request-Id along, but X-Forwarded-For only with a client address the host
+// resolved itself, for example its own c.RealIP(), never a copy of an
+// incoming header, which would let a client name its own address. Without
+// one the REST API sees the dispatch peer 192.0.2.1 for every call the host
+// starts. Unlike a tool call, Call does not recover a panic in a composite
+// nor cut the result to MaxOutputBytes; use CallTool for that.
 func (s *Server) Call(ctx context.Context, header http.Header, name string, args map[string]any) (json.RawMessage, error) {
 	call := &caller{s: s, header: header}
 	raw, err := call.Call(ctx, name, args)
@@ -209,8 +249,11 @@ func (s *Server) Tools() []Tool {
 // given: Config.Auth does not run, and there is no bearer token, so whoami
 // without Config.WhoAmI reports none and run_script keys its one-at-a-time
 // limit by the WhoAmI response. There is no MCP request to copy
-// X-Forwarded-For or X-Request-Id from; set them in header if the REST API
-// should see them.
+// X-Forwarded-For or X-Request-Id from. header may carry X-Request-Id along,
+// but X-Forwarded-For only with a client address the host resolved itself,
+// for example its own c.RealIP(), never a copy of an incoming header, which
+// would let a client name its own address. Without one the REST API sees the
+// dispatch peer 192.0.2.1 for every call the host starts.
 //
 // The error is ez.ENOTFOUND for a name that is not a registered tool, and
 // ez.EINVALID when args cannot be encoded as JSON.

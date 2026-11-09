@@ -276,11 +276,13 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 	return b.addFunction(f)
 }
 
-// dispatchHeader reports header parameters that dispatch sets itself, so
-// they are not offered as arguments.
+// dispatchHeader reports header parameters that are not offered as
+// arguments: Accept, Content-Type and Authorization, which dispatch sets
+// itself, and X-Forwarded-For and X-Real-IP, which would let a caller name
+// its own client address.
 func dispatchHeader(name string) bool {
 	switch strings.ToLower(name) {
-	case "accept", "content-type", "authorization":
+	case "accept", "content-type", "authorization", "x-forwarded-for", "x-real-ip":
 		return true
 	}
 	return false
