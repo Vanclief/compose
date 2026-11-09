@@ -300,6 +300,38 @@ func (s *Server) fetchClientDocument(ctx context.Context, clientID string) (Clie
 	return Client{ID: clientID, Name: doc.ClientName, RedirectURIs: doc.RedirectURIs}, nil
 }
 
+// limitRegistrations charges each request to the address clientIP returns
+// before next reads the body, and answers 429 once that address has spent
+// Config.RegistrationLimit in the current minute.
+func (s *Server) limitRegistrations(clientIP func(*http.Request) string, next http.HandlerFunc) http.HandlerFunc {
+	if s.registrations == nil {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.registrations.Allow(registrationKey(clientIP(r))) {
+			w.Header().Set("Retry-After", "60")
+			writeOAuthError(w, http.StatusTooManyRequests, "temporarily_unavailable", "too many client registrations from this address, retry later")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// registrationKey is what a registration from address is counted against: an
+// IPv6 address as its /64, since one host usually has a whole /64 to rotate
+// through, and anything else, an IPv4 address included, as it is.
+func registrationKey(address string) string {
+	ip, err := netip.ParseAddr(address)
+	if err != nil || !ip.Is6() || ip.Is4In6() {
+		return address
+	}
+	prefix, err := ip.Prefix(64)
+	if err != nil {
+		return address
+	}
+	return prefix.String()
+}
+
 // serveRegister is RFC 7591 dynamic client registration.
 func (s *Server) serveRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

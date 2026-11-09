@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
@@ -595,4 +596,207 @@ func TestTokenRequestsDoNotStoreOtherClients(t *testing.T) {
 	res = refreshWith(documentID, res.json(t)["refresh_token"].(string))
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	assert.False(t, stored(documentID), "the refresh does not store a document client")
+}
+
+// validRegistration is a registration body the server accepts.
+const validRegistration = `{"redirect_uris": ["` + testRedirect + `"]}`
+
+// newLimitServer builds a server for the registration limit tests on store,
+// with mutate adjusting the config.
+func newLimitServer(t *testing.T, store Store, mutate func(*Config)) *Server {
+	t.Helper()
+	cfg := Config{Issuer: "https://api.acme.com", Resource: "https://api.acme.com/mcp", TokenPrefix: "acme", Store: store, LoginURL: "https://app.acme.com/login"}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	s, err := New(cfg)
+	require.NoError(t, err)
+	return s
+}
+
+// mountLimitServer mounts s on a new Echo app and returns the app.
+func mountLimitServer(s *Server) *echo.Echo {
+	e := echo.New()
+	s.Mount(e, http.NotFoundHandler())
+	return e
+}
+
+// sendRegistration sends a method request with body to the registration
+// endpoint of h from remoteAddr, with header X-Client set to client when it
+// is not empty.
+func sendRegistration(h http.Handler, method, remoteAddr, client, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "/oauth/register", strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	if client != "" {
+		req.Header.Set("X-Client", client)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// register posts validRegistration to h from remoteAddr and returns the
+// status.
+func register(h http.Handler, remoteAddr, client string) int {
+	return sendRegistration(h, http.MethodPost, remoteAddr, client, validRegistration).Code
+}
+
+// clientHeader is an IP extractor that reads the X-Client header.
+func clientHeader(r *http.Request) string {
+	return r.Header.Get("X-Client")
+}
+
+// TestRegistrationLimit: under the default limit the 21st registration from
+// one address within the minute is refused with 429, Retry-After and the
+// OAuth error body, and stores no client, while another address still
+// registers.
+func TestRegistrationLimit(t *testing.T) {
+	store := newHookStore(NewMemoryStore())
+	s := newLimitServer(t, store, nil)
+	e := mountLimitServer(s)
+
+	for i := 0; i < defaultRegistrationLimit; i++ {
+		require.Equal(t, http.StatusCreated, register(e, "192.0.2.1:1000", ""), i)
+	}
+	stored := false
+	store.before("Put client", func() error {
+		stored = true
+		return nil
+	})
+	rec := sendRegistration(e, http.MethodPost, "192.0.2.1:1000", "", validRegistration)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, "60", rec.Header().Get("Retry-After"))
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var body oauthError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), rec.Body.String())
+	assert.Equal(t, "temporarily_unavailable", body.Error)
+	assert.NotEmpty(t, body.Description)
+	assert.False(t, stored, "a refused registration stored a client")
+
+	assert.Equal(t, http.StatusCreated, register(e, "198.51.100.7:1000", ""))
+	assert.True(t, stored)
+}
+
+// TestRegistrationLimitIPv6Prefix: IPv6 addresses in one /64 share a count,
+// another /64 and an IPv4-mapped address do not.
+func TestRegistrationLimitIPv6Prefix(t *testing.T) {
+	s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 2 })
+	h := s.Handler()
+	require.Equal(t, http.StatusCreated, register(h, "[2001:db8:1:2::1]:1000", ""))
+	require.Equal(t, http.StatusCreated, register(h, "[2001:db8:1:2:ffff::9]:1000", ""))
+	assert.Equal(t, http.StatusTooManyRequests, register(h, "[2001:db8:1:2:1234::1]:1000", ""))
+	assert.Equal(t, http.StatusCreated, register(h, "[2001:db8:1:3::1]:1000", ""))
+	assert.Equal(t, http.StatusCreated, register(h, "[::ffff:192.0.2.1]:1000", ""))
+}
+
+func TestRegistrationKey(t *testing.T) {
+	tests := map[string]string{
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1:2::/64",
+		"2001:db8::1":          "2001:db8::/64",
+		"::ffff:192.0.2.1":     "::ffff:192.0.2.1",
+		"192.0.2.1":            "192.0.2.1",
+		"not an address":       "not an address",
+		"":                     "",
+	}
+	for address, want := range tests {
+		assert.Equal(t, want, registrationKey(address), address)
+	}
+}
+
+// TestRegistrationLimitChargesMalformed: a registration with a malformed body
+// counts against the limit.
+func TestRegistrationLimitChargesMalformed(t *testing.T) {
+	s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 2 })
+	h := s.Handler()
+	for i := 0; i < 2; i++ {
+		rec := sendRegistration(h, http.MethodPost, "192.0.2.1:1000", "", "not json")
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	}
+	assert.Equal(t, http.StatusTooManyRequests, register(h, "192.0.2.1:1000", ""))
+}
+
+// TestRegistrationLimitSkipsPreflight: the CORS preflight of the registration
+// endpoint does not count against the limit.
+func TestRegistrationLimitSkipsPreflight(t *testing.T) {
+	s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 2 })
+	h := s.Handler()
+	for i := 0; i < 5; i++ {
+		rec := sendRegistration(h, http.MethodOptions, "192.0.2.1:1000", "", "")
+		require.Equal(t, http.StatusNoContent, rec.Code)
+	}
+	assert.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", ""))
+	assert.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", ""))
+	assert.Equal(t, http.StatusTooManyRequests, register(h, "192.0.2.1:1000", ""))
+}
+
+// TestRegistrationLimitOff: a negative RegistrationLimit lets every
+// registration through.
+func TestRegistrationLimitOff(t *testing.T) {
+	s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = -1 })
+	h := s.Handler()
+	for i := 0; i < 2*defaultRegistrationLimit; i++ {
+		require.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", ""), i)
+	}
+}
+
+// TestRegistrationLimitClientIP: Config.ClientIP decides the address a
+// registration is counted against, under Handler and under Mount, where it
+// takes precedence over the Echo IPExtractor.
+func TestRegistrationLimitClientIP(t *testing.T) {
+	builds := map[string]func(*Server) http.Handler{
+		"Handler": func(s *Server) http.Handler { return s.Handler() },
+		"Mount": func(s *Server) http.Handler {
+			e := mountLimitServer(s)
+			e.IPExtractor = echo.ExtractIPDirect()
+			return e
+		},
+	}
+	for name, build := range builds {
+		t.Run(name, func(t *testing.T) {
+			s := newLimitServer(t, NewMemoryStore(), func(c *Config) {
+				c.RegistrationLimit = 1
+				c.ClientIP = clientHeader
+			})
+			h := build(s)
+			assert.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", "a"))
+			assert.Equal(t, http.StatusTooManyRequests, register(h, "198.51.100.7:1000", "a"))
+			assert.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", "b"))
+		})
+	}
+}
+
+// TestRegistrationLimitMountKey: under Mount without Config.ClientIP the Echo
+// IPExtractor decides the address, also when it is set after Mount, and
+// without one the host of RemoteAddr does.
+func TestRegistrationLimitMountKey(t *testing.T) {
+	t.Run("IPExtractor", func(t *testing.T) {
+		s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 1 })
+		e := mountLimitServer(s)
+		e.IPExtractor = clientHeader
+		assert.Equal(t, http.StatusCreated, register(e, "192.0.2.1:1000", "a"))
+		assert.Equal(t, http.StatusTooManyRequests, register(e, "198.51.100.7:1000", "a"))
+		assert.Equal(t, http.StatusCreated, register(e, "192.0.2.1:1000", "b"))
+	})
+	t.Run("RemoteAddr", func(t *testing.T) {
+		s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 1 })
+		e := mountLimitServer(s)
+		assert.Equal(t, http.StatusCreated, register(e, "192.0.2.1:1000", "a"))
+		assert.Equal(t, http.StatusTooManyRequests, register(e, "192.0.2.1:2000", "b"))
+		assert.Equal(t, http.StatusCreated, register(e, "198.51.100.7:1000", "a"))
+	})
+}
+
+// TestRegistrationLimitHandlerKey: through Handler without Config.ClientIP
+// the host of RemoteAddr decides the address, whatever the port, and a
+// RemoteAddr without a port counts whole.
+func TestRegistrationLimitHandlerKey(t *testing.T) {
+	s := newLimitServer(t, NewMemoryStore(), func(c *Config) { c.RegistrationLimit = 1 })
+	h := s.Handler()
+	assert.Equal(t, http.StatusCreated, register(h, "192.0.2.1:1000", "a"))
+	assert.Equal(t, http.StatusTooManyRequests, register(h, "192.0.2.1:2000", "b"))
+	assert.Equal(t, http.StatusCreated, register(h, "198.51.100.7:1000", ""))
+	assert.Equal(t, http.StatusCreated, register(h, "203.0.113.5", ""))
+	assert.Equal(t, http.StatusTooManyRequests, register(h, "203.0.113.5", ""))
 }
