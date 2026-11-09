@@ -31,22 +31,26 @@ func TestSnake(t *testing.T) {
 
 func TestTruncate(t *testing.T) {
 	short := "one\ntwo"
-	assert.Equal(t, short, truncate(short, 100))
+	assert.Equal(t, short, truncate(short, 100, "Ask for less."))
 
 	long := strings.Repeat("line\n", 100)
-	out := truncate(long, 52)
+	out := truncate(long, 52, "Ask for less.")
 	assert.True(t, strings.HasPrefix(out, "line\nline\n"))
-	assert.Contains(t, out, "[output cut at 49 bytes of 500")
-	assert.Equal(t, long, truncate(long, 0))
+	assert.True(t, strings.HasSuffix(out, "\n\n[incomplete: output cut at 49 bytes of 500. Ask for less.]"), out)
+	assert.Equal(t, long, truncate(long, 0, "Ask for less."))
+
+	// Without a hint the note only says the output is incomplete.
+	out = truncate(long, 52, "")
+	assert.True(t, strings.HasSuffix(out, "\n\n[incomplete: output cut at 49 bytes of 500]"), out)
 
 	// A newline far from the limit is not used: the long line is kept.
 	log := "log: x\n" + strings.Repeat("a", 2000)
-	out = truncate(log, 1000)
-	assert.True(t, strings.HasPrefix(out, log[:1000]+"\n\n[output cut at 1000 bytes of 2007"), out[:40])
+	out = truncate(log, 1000, "")
+	assert.True(t, strings.HasPrefix(out, log[:1000]+"\n\n[incomplete: output cut at 1000 bytes of 2007"), out[:40])
 
 	// Without a nearby newline the cut steps back to a rune start.
 	runes := strings.Repeat("é", 100)
-	out = truncate(runes, 51)
-	assert.True(t, strings.HasPrefix(out, strings.Repeat("é", 25)+"\n\n[output cut at 50 bytes of 200"))
+	out = truncate(runes, 51, "")
+	assert.True(t, strings.HasPrefix(out, strings.Repeat("é", 25)+"\n\n[incomplete: output cut at 50 bytes of 200"))
 	assert.True(t, utf8.ValidString(out))
 }

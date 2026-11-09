@@ -430,8 +430,30 @@ func TestServerTruncatesOutput(t *testing.T) {
 
 	text, failed := callTool(t, session, "call_function", map[string]any{"name": "items.list_items", "args": map[string]any{"limit": 500}})
 	assert.False(t, failed)
-	assert.Contains(t, text, "\n\n[output cut at 24000 bytes of ")
+	require.Contains(t, text, "\n\n[incomplete: output cut at 24000 bytes of ")
+	assert.True(t, strings.HasSuffix(text, ". Narrow the request: a module, a query or fewer names or terms for a catalog tool, filters or a smaller page size for a read-only function. Do not repeat a write.]"), text[24000:])
+	assert.NotContains(t, text[24000:], "run_script")
 	assert.Less(t, len(text), 24300)
+
+	// A failed result is cut without the hint: its error line comes first
+	// and there is no response to get the rest of.
+	text, failed = s.runTool(context.Background(), "test", func() (string, bool) {
+		return strings.Repeat("x", 30000), true
+	})
+	assert.True(t, failed)
+	assert.True(t, strings.HasSuffix(text, "\n\n[incomplete: output cut at 24000 bytes of 30000]"), text[24000:])
+
+	// With scripts the note also points at run_script for one large value.
+	cfg := shopConfig(t)
+	cfg.Script.Enabled = true
+	server := newShopServer(t, cfg)
+	scripted := connect(t, server, "key:secret")
+	text, failed = callTool(t, scripted, "call_function", map[string]any{"name": "items.list_items", "args": map[string]any{"limit": 500}})
+	assert.False(t, failed)
+	require.Contains(t, text, "\n\n[incomplete: output cut at 24000 bytes of ")
+	assert.True(t, strings.HasSuffix(text, " For one large response of a read-only function, use run_script (where allowed): the script receives the whole response (up to 4 MiB, memory permitting) and returns only the field or slice you need. Do not repeat a write.]"), text[24000:])
+	assert.Contains(t, text[24000:], "for a read-only function. For one large response")
+	assert.Less(t, len(text), 24000+len(server.cutHint)+64)
 }
 
 func TestServerComposite(t *testing.T) {

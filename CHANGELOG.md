@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.29.1
+
+### Highlights
+
+- **MCP output cut**: a tool result over `mcp.Config.MaxOutputBytes` (default 24000) now ends with `[incomplete: output cut at N bytes of M. ...]`, so cut JSON is not taken for whole. The note tells the agent to narrow the request and, with `Config.Script.Enabled`, to take one large response of a read-only function through `run_script`, whose script receives every response whole (up to 4 MiB, memory permitting) and can return a field or a slice of it. The `call_function` and `run_script` descriptions state the cut; `run_script` no longer advertises 1024 KiB of result JSON, which the default cut never let through whole, and says that a result over 1 MiB fails. A failed result is cut with the note alone: its error line comes first and there is no response to get the rest of. A host that matched the old `[output cut at` prefix updates the match.
+
 ## v1.29.0
 
 ### Highlights

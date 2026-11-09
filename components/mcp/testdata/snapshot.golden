@@ -93,7 +93,7 @@
     },
     {
       "name": "call_function",
-      "description": "Call one function by its full name, module.function. args is one flat object merging the path, query and body arguments listed by search_functions or describe_function; omit it when there are none. Returns the JSON response. Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. Some functions write data: read their description first.",
+      "description": "Call one function by its full name, module.function. args is one flat object merging the path, query and body arguments listed by search_functions or describe_function; omit it when there are none. Returns the JSON response. A response longer than 24000 bytes is cut and ends with an [incomplete: ...] note; for a read-only function, narrow the arguments (a filter or a smaller page size) or use run_script to return only the part you need; do not repeat a write. Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. Some functions write data: read their description first.",
       "annotations": {
         "destructiveHint": true,
         "idempotentHint": false,
@@ -121,7 +121,7 @@
     },
     {
       "name": "run_script",
-      "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: 5s timeout, 200 function calls, read-only functions only, 1024 KiB of result JSON, no network, filesystem, timers or modules. Use search_functions and describe_function to learn which functions exist and their arguments.",
+      "description": "Run a short JavaScript program that chains several function calls in one round trip. The program is the body of a function: use return to send back the result, encoded as JSON. Call api.<module>.<function>({...}) with the same flat arguments as call_function; the call is synchronous and returns the parsed response, or throws an Error whose message carries the REST error code (also in e.code), so try/catch works. console.log(...) lines are returned after the result. Limits: 5s timeout, 200 function calls, read-only functions only, no network, filesystem, timers or modules. A function response the script receives is whole up to 4 MiB, memory permitting (a larger one throws); a result over 1 MiB fails, and the tool's text (the result, then the console.log lines) is cut past 24000 bytes, so return only what you need. Use search_functions and describe_function to learn which functions exist and their arguments.",
       "annotations": {
         "idempotentHint": false,
         "openWorldHint": false,

@@ -104,8 +104,14 @@ type Config struct {
 	// ^[a-zA-Z0-9_.-]{1,64}$ (the Claude API's rule for property names), one
 	// whose input schema has more than 1000 nodes, or a name given twice.
 	Tools []string
-	// MaxOutputBytes caps the text of one tool result. Longer results are cut
-	// with a hint to narrow the request. Defaults to 24000 (about 6k tokens).
+	// MaxOutputBytes caps the text of one tool result. A longer result is cut
+	// and ends with an "[incomplete: output cut at N bytes of M ...]" note,
+	// which comes after the cap. On a result that succeeded the note tells
+	// the agent to narrow the request or, with Script.Enabled, to take one
+	// large response of a read-only function through run_script, and never
+	// to repeat a write; a failed result gets the note alone. The
+	// call_function and run_script descriptions state the limit. Defaults to
+	// 24000 (about 6k tokens).
 	MaxOutputBytes int
 	// OnError, when set, receives failures the agent sees only as generic
 	// text: a panic in a tool handler or in a function a script calls, with
@@ -179,7 +185,8 @@ type Concept struct {
 // panic in a function call reaches the script as a generic error and
 // Config.OnError with its stack. The tool result puts the script's result,
 // or its error, first and the console.log lines after it, so the output cap
-// of the tool cuts logs, not the result.
+// of the tool cuts the logs first and reaches the result only when the
+// result alone is over the cap.
 //
 // Concurrency: MaxConcurrent bounds the scripts running at once across all
 // callers, and each caller runs one script at a time. Both refusals are

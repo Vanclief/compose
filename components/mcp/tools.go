@@ -54,11 +54,22 @@ const (
 	explainDescription = "Explain domain terms: the fields of a data type and the functions that accept or return it, " +
 		"or a concept of the application. Accepts names and aliases, case-insensitively. " +
 		"Use it for any unfamiliar word in a summary, field or module name."
-	callDescription = "Call one function by its full name, module.function. args is one flat object merging the path, query " +
+)
+
+// callDescription is the call_function tool description with the output
+// limit of the server. It names run_script only when scripts are enabled,
+// so the agent is never sent to a tool the server does not have.
+func callDescription(maxOutput int, scripts bool) string {
+	around := "for a read-only function, narrow the arguments (a filter or a smaller page size)"
+	if scripts {
+		around += " or use run_script to return only the part you need"
+	}
+	return "Call one function by its full name, module.function. args is one flat object merging the path, query " +
 		"and body arguments listed by search_functions or describe_function; omit it when there are none. Returns the JSON response. " +
+		fmt.Sprintf("A response longer than %d bytes is cut and ends with an [incomplete: ...] note; %s; do not repeat a write. ", maxOutput, around) +
 		"Errors come back as one line, error <code>: <message>; invalid arguments also show the argument list. " +
 		"Some functions write data: read their description first."
-)
+}
 
 // boolPtr returns a pointer to b for the optional annotation hints.
 func boolPtr(b bool) *bool {
@@ -130,14 +141,14 @@ func (s *Server) registerTools() error {
 	}
 
 	callAnnotations := &mcp.ToolAnnotations{DestructiveHint: boolPtr(true), OpenWorldHint: boolPtr(false)}
-	err = addTool(s, &mcp.Tool{Name: "call_function", Description: callDescription, Annotations: callAnnotations}, s.callFunction)
+	err = addTool(s, &mcp.Tool{Name: "call_function", Description: callDescription(s.maxOutput, s.cfg.Script.Enabled), Annotations: callAnnotations}, s.callFunction)
 	if err != nil {
 		return ez.Wrap(err)
 	}
 
 	if s.cfg.Script.Enabled {
 		scriptAnnotations := &mcp.ToolAnnotations{ReadOnlyHint: !s.cfg.Script.AllowWrites, OpenWorldHint: boolPtr(false)}
-		err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script), Annotations: scriptAnnotations}, s.runScript)
+		err = addTool(s, &mcp.Tool{Name: "run_script", Description: scriptDescription(s.cfg.Script, s.maxOutput), Annotations: scriptAnnotations}, s.runScript)
 		if err != nil {
 			return ez.Wrap(err)
 		}
@@ -353,9 +364,11 @@ func (s *Server) serveTool(ctx context.Context, req *mcp.CallToolRequest, name s
 }
 
 // runTool runs one tool call and returns the text handle reports, cut to the
-// output limit, and whether the call failed. A panic in handle becomes an
-// internal error instead of killing the process, and goes to Config.OnError
-// with its stack. The transport and Server.CallTool both run through it.
+// output limit, and whether the call failed. The cut of a result that
+// succeeded ends with the hint of the server; the cut of a failed one has
+// the note alone. A panic in handle becomes an internal error instead of
+// killing the process, and goes to Config.OnError with its stack. The
+// transport and Server.CallTool both run through it.
 func (s *Server) runTool(ctx context.Context, name string, handle func() (string, bool)) (text string, failed bool) {
 	defer func() {
 		value := recover()
@@ -364,12 +377,17 @@ func (s *Server) runTool(ctx context.Context, name string, handle func() (string
 			if s.cfg.OnError != nil {
 				s.cfg.OnError(ctx, ez.New(ez.EINTERNAL, fmt.Sprintf("mcp: %s panicked: %v\n%s", name, value, debug.Stack()), nil))
 			}
-			text = truncate(errorText(panicked), s.maxOutput)
+			text = truncate(errorText(panicked), s.maxOutput, "")
 			failed = true
 		}
 	}()
 	text, failed = handle()
-	return truncate(text, s.maxOutput), failed
+	if failed {
+		// The error line comes first; the hint is about getting the rest of
+		// a response, which a failed call has none of.
+		return truncate(text, s.maxOutput, ""), failed
+	}
+	return truncate(text, s.maxOutput, s.cutHint), failed
 }
 
 // bearerToken returns the bearer token of the HTTP request behind req, or ""
@@ -442,14 +460,15 @@ func (s *Server) callErrorText(name string, err error) string {
 
 // runScript runs the agent's program. The result, or on error the error
 // line, comes first and the log lines collected follow it, so the output cap
-// cuts logs. Scripts are only for callers whose credentials pass the WhoAmI
-// call, and each caller, keyed by its bearer token or else the WhoAmI
-// response, runs one at a time. Every caller is claimed before it takes a
-// slot: by its bearer token before the WhoAmI call, or by the WhoAmI
-// response after it, so it is refused at once while its own script still
-// runs. The slot is taken only after the WhoAmI call and the Allow check, so
-// a caller without credentials the API accepts never takes one. Other WhoAmI
-// failures, such as an outage, are reported as what they are.
+// cuts the logs first and reaches the result only when the result alone is
+// over the cap. Scripts are only for callers whose credentials pass the
+// WhoAmI call, and each caller, keyed by its bearer token or else the
+// WhoAmI response, runs one at a time. Every caller is claimed before it
+// takes a slot: by its bearer token before the WhoAmI call, or by the
+// WhoAmI response after it, so it is refused at once while its own script
+// still runs. The slot is taken only after the WhoAmI call and the Allow
+// check, so a caller without credentials the API accepts never takes one.
+// Other WhoAmI failures, such as an outage, are reported as what they are.
 // Internal failures of the runtime also go to Config.OnError.
 func (s *Server) runScript(ctx context.Context, req *mcp.CallToolRequest, call *caller, in scriptInput) (string, bool) {
 	token := bearerToken(req)

@@ -388,16 +388,19 @@ return 1`,
 }
 
 func TestScriptDescription(t *testing.T) {
-	text := scriptDescription(ScriptConfig{Enabled: true})
+	text := scriptDescription(ScriptConfig{Enabled: true}, 24000)
 	assert.Contains(t, text, "5s timeout, 200 function calls, read-only functions only")
+	assert.Contains(t, text, "read-only functions only, no network, filesystem, timers or modules. A function response the script receives is whole up to 4 MiB, memory permitting (a larger one throws); a result over 1 MiB fails, and the tool's text (the result, then the console.log lines) is cut past 24000 bytes, so return only what you need.")
+	assert.NotContains(t, text, "KiB")
 	assert.Contains(t, text, "api.<module>.<function>({...})")
 	assert.Contains(t, text, "search_functions")
 	assert.Contains(t, text, "describe_function")
 	assert.NotContains(t, text, "%")
-	assert.Less(t, len(strings.Fields(text)), 120)
+	assert.Less(t, len(strings.Fields(text)), 160)
 
-	text = scriptDescription(ScriptConfig{Enabled: true, AllowWrites: true, Timeout: 2 * time.Second, MaxCalls: 10})
-	assert.Contains(t, text, "2s timeout, 10 function calls, functions that write are allowed")
+	text = scriptDescription(ScriptConfig{Enabled: true, AllowWrites: true, Timeout: 2 * time.Second, MaxCalls: 10}, 8000)
+	assert.Contains(t, text, "2s timeout, 10 function calls, functions that write are allowed, no network")
+	assert.Contains(t, text, "is cut past 8000 bytes")
 }
 
 func TestScriptCodeTooLarge(t *testing.T) {

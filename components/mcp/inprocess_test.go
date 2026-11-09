@@ -167,7 +167,7 @@ func TestServerCallTool(t *testing.T) {
 	text, failed, err = s.CallTool(ctx, header, "call_function", map[string]any{"name": "items.list_items", "args": map[string]any{"limit": 500}})
 	require.NoError(t, err)
 	assert.False(t, failed)
-	assert.Contains(t, text, "\n\n[output cut at 24000 bytes of ")
+	assert.Contains(t, text, "\n\n[incomplete: output cut at 24000 bytes of ")
 	assert.Less(t, len(text), 24300)
 }
 
