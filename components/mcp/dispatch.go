@@ -61,6 +61,8 @@ type caller struct {
 	header http.Header
 	// forward, when set, holds the headers of the MCP request whose
 	// X-Forwarded-For and X-Request-Id are copied onto every REST request.
+	// Server.Handler has already folded X-Forwarded-For into one line ending
+	// in the MCP peer, so copying the first line copies the whole chain.
 	forward http.Header
 }
 

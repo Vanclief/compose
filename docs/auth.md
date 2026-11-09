@@ -306,6 +306,14 @@ func (a *Auth) CreateAPIKey(ctx context.Context, id, accountID string) (string, 
 }
 ```
 
+Handlers pass `c.RealIP()` to `requests.New` as the client address. It returns the connection peer
+unless the app sets `Echo#IPExtractor`. Behind a proxy or load balancer every client would then
+share the proxy's address, so set an extractor that trusts only the app's own proxies:
+`echo.ExtractIPFromXFFHeader` with `echo.TrustIPRange` for them, and `echo.TrustLoopback(false)`,
+`echo.TrustLinkLocal(false)` and `echo.TrustPrivateNet(false)` unless those ranges hold the app's
+proxies. An app that serves MCP also trusts `192.0.2.1/32`, the peer of the REST requests that
+tool calls dispatch; `mcp.Server.Handler` explains why.
+
 `SetRotated(w, cookieName, rotated, fromCookie)` does nothing when `rotated` is empty. When the
 request came with the cookie it sets a fresh cookie. Otherwise it writes the new token to the
 `Session-Token` response header (`session.TokenHeader`). Clients that keep the token themselves
