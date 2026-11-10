@@ -60,12 +60,16 @@ func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 // handler.ManageError does; an ez error wrapped in another kind of error,
 // such as a recovered panic of one, is therefore a 500 EINTERNAL with ez's
 // generic message, as handler.ReportToSentry classifies it too. Any other
-// error gets the non-zero StatusCode of an echo.HTTPStatusCoder in the error
-// chain, else 500, as Echo's default handler has it; the code is
+// error with the non-zero StatusCode of an echo.HTTPStatusCoder in the error
+// chain gets that status, as Echo's default handler has it; the code is
 // ez.HTTPStatusToError of that status; the message is the non-empty Message
-// of an *echo.HTTPError in the chain, else http.StatusText of the status. It
-// is never such an error's own text or its wrapped cause, so no internal
-// error or panic stack reaches the client. An
+// of an *echo.HTTPError in the chain, else http.StatusText of the status. An
+// error with neither is classified with ez.ErrorCode, as handler.ManageError
+// does: context.Canceled in its chain is a 499 ECANCELED and
+// context.DeadlineExceeded a 504 ETIMEOUT, both with ez.ErrorMessage's fixed
+// text, and anything else a 500 EINTERNAL with http.StatusText(500). The
+// message is never such an error's own text or its wrapped cause, so no
+// internal error or panic stack reaches the client. An
 // *echo.BindingError embeds the HTTPError without being one, so a typed
 // binder's error returned straight to Echo gets the status text, the way
 // handler.BindedJSONResponse keeps binding detail out of its answer too. The
@@ -110,13 +114,22 @@ func ErrorHandler(opts ...Option) echo.HTTPErrorHandler {
 			message = ez.ErrorMessage(err)
 		} else {
 			status = echo.StatusCode(err)
-			if status == 0 {
-				status = http.StatusInternalServerError
+			if status != 0 {
+				code = ez.HTTPStatusToError(status)
+				message = http.StatusText(status)
+			} else {
+				// Classified as handler.ManageError does: a cancelled or
+				// timed-out context is a 499 or 504 with ez's fixed text,
+				// anything else a 500.
+				status = ez.ErrorToHTTPStatus(err)
+				code = ez.ErrorCode(err)
+				message = http.StatusText(status)
+				if code != ez.EINTERNAL {
+					message = ez.ErrorMessage(err)
+				}
 			}
-			code = ez.HTTPStatusToError(status)
 
 			// The binder's 415 is an *echo.HTTPError with an empty Message.
-			message = http.StatusText(status)
 			var httpErr *echo.HTTPError
 			if errors.As(err, &httpErr) && httpErr.Message != "" {
 				message = httpErr.Message

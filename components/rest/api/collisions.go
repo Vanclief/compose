@@ -21,14 +21,18 @@ const mapKeySegment = "*"
 // `retries` without the validator ever seeing it.
 func bodyCollisions(body any, schema *huma.Schema, components map[string]*huma.Schema) []validate.FieldError {
 	var fields []validate.FieldError
-	walkCollisions(body, schema, components, "", &fields, 0)
+	walkCollisions(body, schema, components, "", &fields)
 	return fields
 }
 
-const maxCollisionDepth = 64
+// maxRefHops bounds the $ref and nullable wrapper hops resolveSchema follows.
+const maxRefHops = 64
 
-func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.Schema, path string, fields *[]validate.FieldError, depth int) {
-	if schema == nil || value == nil || depth > maxCollisionDepth {
+// walkCollisions has no depth limit of its own: it descends the decoded
+// value, whose nesting encoding/json already caps, as the schema validator
+// does.
+func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.Schema, path string, fields *[]validate.FieldError) {
+	if schema == nil || value == nil {
 		return
 	}
 
@@ -45,7 +49,7 @@ func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.
 			extra, ok := schema.AdditionalProperties.(*huma.Schema)
 			if ok {
 				for _, item := range v {
-					walkCollisions(item, extra, components, join(path, mapKeySegment), fields, depth+1)
+					walkCollisions(item, extra, components, join(path, mapKeySegment), fields)
 				}
 			}
 			return
@@ -54,7 +58,7 @@ func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.
 		for key, item := range v {
 			prop, ok := schema.Properties[key]
 			if ok {
-				walkCollisions(item, prop, components, join(path, key), fields, depth+1)
+				walkCollisions(item, prop, components, join(path, key), fields)
 				continue
 			}
 			for name := range schema.Properties {
@@ -70,7 +74,7 @@ func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.
 		}
 	case []any:
 		for i, item := range v {
-			walkCollisions(item, schema.Items, components, join(path, strconv.Itoa(i)), fields, depth+1)
+			walkCollisions(item, schema.Items, components, join(path, strconv.Itoa(i)), fields)
 		}
 	}
 }
@@ -78,7 +82,7 @@ func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.
 // resolveSchema follows $ref and picks the non-null branch of a nullable
 // anyOf/oneOf wrapper, returning the schema that describes the value.
 func resolveSchema(schema *huma.Schema, components map[string]*huma.Schema) *huma.Schema {
-	for i := 0; i < maxCollisionDepth && schema != nil; i++ {
+	for i := 0; i < maxRefHops && schema != nil; i++ {
 		if schema.Ref != "" {
 			schema = components[strings.TrimPrefix(schema.Ref, openapi.RefPrefix)]
 			continue

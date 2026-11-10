@@ -13,13 +13,15 @@ import (
 // on c, and does nothing without one. It has the signature
 // rest.WithErrorReporter takes, so an app that reports to Sentry passes it
 // there; ManageError calls it for plain routes. Only errors worth a person's
-// attention are reported: an ez EINTERNAL at error level, an ez ETIMEOUT or
-// EUNAVAILABLE (usually a vendor outage) at warning level, and an error that
-// is neither an ez error nor carries an Echo status (a plain error, a
-// recovered panic) at error level. Client errors and Echo's own errors (404,
-// 405, 413, 415, *echo.HTTPError) are skipped. The event carries the
-// X-Request-Id of the response, the server's id under rest.Configure, and the
-// user the request's context holds (see Request).
+// attention are reported, classified with ez.ErrorCode as ManageError does:
+// EINTERNAL (also a plain error or a recovered panic) at error level,
+// ETIMEOUT or EUNAVAILABLE (usually a vendor outage; also a raw
+// context.DeadlineExceeded) at warning level. Everything else is skipped:
+// client errors, ECANCELED (also a raw context.Canceled, the client gave
+// up), and an error that is not an ez error but carries an Echo status (404,
+// 405, 413, 415, *echo.HTTPError). The event carries the X-Request-Id of the
+// response, the server's id under rest.Configure, and the user the request's
+// context holds (see Request).
 func ReportToSentry(c *echo.Context, err error) {
 	hub := sentryecho.GetHubFromContext(c)
 	if hub == nil {
@@ -27,20 +29,20 @@ func ReportToSentry(c *echo.Context, err error) {
 		return
 	}
 
-	level := sentry.LevelError
 	var ezErr *ez.Error
-	if errors.As(err, &ezErr) {
-		switch ez.ErrorCode(err) {
-		case ez.EINTERNAL:
-			// A bug, at error level.
-		case ez.ETIMEOUT, ez.EUNAVAILABLE:
-			// A vendor outage rather than a bug: a warning lets alert rules
-			// tell the two apart.
-			level = sentry.LevelWarning
-		default:
-			return
-		}
-	} else if echo.StatusCode(err) != 0 {
+	if !errors.As(err, &ezErr) && echo.StatusCode(err) != 0 {
+		return
+	}
+
+	level := sentry.LevelError
+	switch ez.ErrorCode(err) {
+	case ez.EINTERNAL:
+		// A bug, at error level.
+	case ez.ETIMEOUT, ez.EUNAVAILABLE:
+		// A vendor outage rather than a bug: a warning lets alert rules
+		// tell the two apart.
+		level = sentry.LevelWarning
+	default:
 		return
 	}
 

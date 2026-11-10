@@ -2,10 +2,13 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -629,4 +632,111 @@ func TestMultipart(t *testing.T) {
 	body, contentType := form(t, part{name: "category", value: "log"}, manifest)
 	rec = s.do(http.MethodPost, "/runs/not-a-uuid/artifacts", body, echo.HeaderContentType, contentType)
 	requireError(t, rec, http.StatusBadRequest, "path id must be a valid uuid")
+}
+
+func TestNegotiationVary(t *testing.T) {
+	s := newServer(t)
+
+	// An operation with Produces varies by Accept, errors included.
+	rec := s.do(http.MethodGet, "/runs/export?status=running", "", echo.HeaderAccept, "text/csv")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []string{echo.HeaderAccept}, rec.Header().Values(echo.HeaderVary))
+
+	rec = s.do(http.MethodGet, "/runs/export?status=running", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []string{echo.HeaderAccept}, rec.Header().Values(echo.HeaderVary))
+
+	rec = s.do(http.MethodGet, "/runs/export?status=bogus", "", echo.HeaderAccept, "text/csv")
+	requireError(t, rec, http.StatusBadRequest, "query status must be one of")
+	require.Equal(t, []string{echo.HeaderAccept}, rec.Header().Values(echo.HeaderVary))
+
+	// Operations with one media type do not.
+	rec = s.do(http.MethodGet, "/runs", "", echo.HeaderAccept, "text/csv")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Empty(t, rec.Header().Values(echo.HeaderVary))
+
+	rec = s.do(http.MethodGet, "/runs/"+fixture.KnownID.String()+"/report", "", echo.HeaderAccept, "application/pdf")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Empty(t, rec.Header().Values(echo.HeaderVary))
+}
+
+// Node is a recursive request body.
+type Node struct {
+	Retries  int    `json:"retries" maximum:"3"`
+	Children []Node `json:"children,omitempty"`
+}
+
+func (n *Node) Validate() error {
+	return nil
+}
+
+// nodeResponse is the response of the recursive body operation.
+type nodeResponse struct {
+	OK bool `json:"ok"`
+}
+
+func TestCollisionsAtAnyDepth(t *testing.T) {
+	e := newEcho()
+	calls := 0
+	create := func(ctx context.Context, body *Node) (nodeResponse, error) {
+		calls++
+		return nodeResponse{OK: true}, nil
+	}
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/nodes"), "", "create", create)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	const levels = 40
+	body := strings.Repeat(`{"children":[`, levels) + `{"Retries":999}` + strings.Repeat(`]}`, levels)
+	rec := s.do(http.MethodPost, "/nodes", body)
+	path := strings.Repeat("children.0.", levels) + "Retries"
+	requireError(t, rec, http.StatusBadRequest, path+` is not a known field, did you mean "retries"`)
+	require.Zero(t, calls)
+}
+
+func TestMultipartRemovesSpilledFiles(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	spilled := func() []string {
+		matches, err := filepath.Glob(filepath.Join(tmp, "multipart-*"))
+		require.NoError(t, err)
+		return matches
+	}
+
+	e := newEcho()
+	// Middleware that replaces the request, as sentryecho does, so net/http
+	// does not clean up the form parsed on the copy.
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), tenantKey{}, "t")))
+			return next(c)
+		}
+	})
+	var seen []string
+	var size int64
+	upload := func(ctx context.Context, body *fixture.UploadRequest) (nodeResponse, error) {
+		seen = spilled()
+		size = body.Manifest.Size
+		return nodeResponse{OK: true}, nil
+	}
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/runs"), "/:id/artifacts", "upload", upload, api.MaxBodyBytes(64<<20))
+	reg.Ready()
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	const fileSize = 33 << 20
+	body, contentType := form(t, part{name: "category", value: "log"}, part{name: "manifest", value: strings.Repeat("a", fileSize), filename: "big.yaml"})
+	res, err := http.Post(srv.URL+"/runs/"+fixture.KnownID.String()+"/artifacts", contentType, strings.NewReader(body))
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, res.Body)
+	require.NoError(t, err)
+	err = res.Body.Close()
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, int64(fileSize), size)
+	require.NotEmpty(t, seen, "the file did not spill to disk")
+	require.Empty(t, spilled())
 }

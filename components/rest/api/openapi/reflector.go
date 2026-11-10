@@ -124,7 +124,7 @@ func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 		return nil
 	}
 
-	err = lintType(t)
+	err = lintType(t, false)
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -155,7 +155,7 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 		return nil, ez.New(ez.EINVALID, fmt.Sprintf("openapi: request type %s must be a plain struct", t), nil)
 	}
 
-	err = lintType(t)
+	err = lintType(t, true)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}

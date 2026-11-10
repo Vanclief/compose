@@ -63,8 +63,9 @@ func TestCursorRequestBindsQueryParameters(t *testing.T) {
 	}
 }
 
-func TestCursorRequestXMLIgnoresServerSideFields(t *testing.T) {
-	// echo binds an XML body with encoding/xml, which does not honour json:"-".
+func TestCursorRequestXMLIgnoresEveryField(t *testing.T) {
+	// echo binds an XML body with encoding/xml, which does not honour
+	// json:"-", so every field carries xml:"-" too.
 	body := []byte(`<CursorRequest>
 		<Limit>10</Limit>
 		<Filter><Field>password_hash</Field><Comparison>; drop</Comparison></Filter>
@@ -76,12 +77,8 @@ func TestCursorRequestXMLIgnoresServerSideFields(t *testing.T) {
 		t.Fatalf("unmarshal cursor request: %v", err)
 	}
 
-	if len(request.Filter) != 0 {
-		t.Fatalf("expected the server-side filter to be ignored, got %+v", request)
-	}
-
-	if request.Limit != 10 {
-		t.Fatalf("expected the client fields to be read, got %+v", request)
+	if !reflect.DeepEqual(request, CursorRequest{}) {
+		t.Fatalf("expected the body to be ignored, got %+v", request)
 	}
 }
 

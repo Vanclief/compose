@@ -2,6 +2,7 @@ package rest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,15 @@ func TestErrorHandler(t *testing.T) {
 	})
 	e.GET("/plain", func(c *echo.Context) error {
 		return errors.New("secret database detail")
+	})
+	e.GET("/canceled", func(c *echo.Context) error {
+		return context.Canceled
+	})
+	e.GET("/canceled-wrapped", func(c *echo.Context) error {
+		return fmt.Errorf("secret query: %w", context.Canceled)
+	})
+	e.GET("/deadline", func(c *echo.Context) error {
+		return context.DeadlineExceeded
 	})
 	e.GET("/ez", func(c *echo.Context) error {
 		return ez.New(ez.ECONFLICT, "already running", errors.New("secret cause"))
@@ -113,6 +123,24 @@ func TestErrorHandler(t *testing.T) {
 			method: http.MethodGet, path: "/plain",
 			status: http.StatusInternalServerError,
 			want:   handler.StandardError{Code: ez.EINTERNAL, Message: "Internal Server Error"},
+		},
+		{
+			name:   "canceled context",
+			method: http.MethodGet, path: "/canceled",
+			status: ez.StatusClientClosedRequest,
+			want:   handler.StandardError{Code: ez.ECANCELED, Message: "The operation was canceled."},
+		},
+		{
+			name:   "wrapped canceled context",
+			method: http.MethodGet, path: "/canceled-wrapped",
+			status: ez.StatusClientClosedRequest,
+			want:   handler.StandardError{Code: ez.ECANCELED, Message: "The operation was canceled."},
+		},
+		{
+			name:   "deadline exceeded",
+			method: http.MethodGet, path: "/deadline",
+			status: http.StatusGatewayTimeout,
+			want:   handler.StandardError{Code: ez.ETIMEOUT, Message: "The operation timed out."},
 		},
 		{
 			name:   "ez error",

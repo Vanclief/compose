@@ -3,6 +3,7 @@ package openapi
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,21 +23,23 @@ var allowedTags = map[string]bool{
 }
 
 // lintType checks every struct reachable from t for unknown tags, Echo's
-// param tag and property names that huma's Downgrade would rename.
-func lintType(t reflect.Type) error {
+// param tag and property names that huma's Downgrade would rename. A request
+// type is also refused a default tag: the registry applies no default, so
+// the document would promise a value the handler never gets.
+func lintType(t reflect.Type, request bool) error {
 	var problems []string
-	lintWalk(t, map[reflect.Type]bool{}, &problems)
+	lintWalk(t, request, map[reflect.Type]bool{}, &problems)
 	if len(problems) == 0 {
 		return nil
 	}
 	return ez.New(ez.EINVALID, "openapi: "+strings.Join(problems, "; "), nil)
 }
 
-func lintWalk(t reflect.Type, seen map[reflect.Type]bool, problems *[]string) {
+func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems *[]string) {
 	t = deref(t)
 	elem, ok := optionalElem(t)
 	if ok {
-		lintWalk(elem, seen, problems)
+		lintWalk(elem, request, seen, problems)
 		return
 	}
 	if seen[t] || isOpaque(t) {
@@ -46,7 +49,7 @@ func lintWalk(t reflect.Type, seen map[reflect.Type]bool, problems *[]string) {
 
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array, reflect.Map:
-		lintWalk(t.Elem(), seen, problems)
+		lintWalk(t.Elem(), request, seen, problems)
 		return
 	case reflect.Struct:
 	default:
@@ -64,6 +67,10 @@ func lintWalk(t reflect.Type, seen map[reflect.Type]bool, problems *[]string) {
 				*problems = append(*problems, fmt.Sprintf("%s.%s: param is Echo's binder tag, use path", t, f.Name))
 				continue
 			}
+			if key == "default" && request {
+				*problems = append(*problems, fmt.Sprintf("%s.%s: the default tag is not supported on a request type, the registry does not apply it; set the default in the handler and describe it with doc", t, f.Name))
+				continue
+			}
 			if !allowedTags[key] {
 				*problems = append(*problems, fmt.Sprintf("%s.%s: unknown struct tag %q", t, f.Name, key))
 			}
@@ -79,7 +86,7 @@ func lintWalk(t reflect.Type, seen map[reflect.Type]bool, problems *[]string) {
 			*problems = append(*problems, fmt.Sprintf("%s.%s: property name %q is renamed by the 3.0 downgrade", t, f.Name, name))
 		}
 
-		lintWalk(f.Type, seen, problems)
+		lintWalk(f.Type, request, seen, problems)
 	}
 }
 
@@ -108,12 +115,18 @@ func tagKeys(tag reflect.StructTag) []string {
 	}
 }
 
-// lintField rejects a nullable tag on a struct reference (huma cannot
-// express it; use a pointer) and minimum/maximum tags that exceed the range
-// of a sized integer field (the value would pass the schema and fail Go
-// conversion).
+// lintField rejects the json string option (the schema would describe the
+// value unquoted while encoding/json reads and writes it as a string), a
+// nullable tag on a struct reference (huma cannot express it; use a pointer)
+// and minimum/maximum tags that exceed the range of a sized integer field
+// (the value would pass the schema and fail Go conversion).
 func lintField(t reflect.Type, f reflect.StructField) []string {
 	var problems []string
+	_, options, _ := strings.Cut(f.Tag.Get("json"), ",")
+	if slices.Contains(strings.Split(options, ","), "string") {
+		problems = append(problems, fmt.Sprintf("%s.%s: the json string option is not supported; the schema and encoding/json would disagree on the value's type", t, f.Name))
+	}
+
 	// Parameters and form fields report their own Optional problem.
 	if f.Type.Kind() == reflect.Pointer && IsOptional(f.Type) && jsonName(f) != "-" {
 		problems = append(problems, fmt.Sprintf("%s.%s: %s is a pointer to types.Optional, which already records an absent key; use it by value", t, f.Name, f.Type))

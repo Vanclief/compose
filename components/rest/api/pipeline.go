@@ -55,6 +55,9 @@ func (op *operation) serve(c *echo.Context) error {
 	handler.SetRequest(c, request)
 
 	mediaType := negotiate(strings.Join(c.Request().Header.Values(echo.HeaderAccept), ","), op.produces)
+	if len(op.produces) > 1 {
+		c.Response().Header().Add(echo.HeaderVary, echo.HeaderAccept)
+	}
 	request.SetAccept(mediaType)
 	request.SetContext(context.WithValue(request.GetContext(), acceptKey{}, mediaType))
 
@@ -95,6 +98,9 @@ func (op *operation) serve(c *echo.Context) error {
 		if err != nil {
 			return err
 		}
+		// net/http removes spilled files only for its own request, not for
+		// one middleware replaced with c.SetRequest.
+		defer form.RemoveAll()
 		formValues, collisions = op.formBody(form)
 		if op.hasBody {
 			instance["body"] = formValues

@@ -31,7 +31,8 @@ var (
 // fileField is a request field tagged form:"name" that receives uploaded
 // files. Any file field makes the operation multipart/form-data: the other
 // body fields are read from form values, coerced and validated like query
-// parameters.
+// parameters. An uploaded file is readable only during the handler call:
+// the files spilled to disk are removed after it returns.
 type fileField struct {
 	name     string
 	index    []int

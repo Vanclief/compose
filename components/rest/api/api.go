@@ -89,9 +89,6 @@ type Registry struct {
 	strict []byte
 }
 
-// RegistryOption is the former name of Option, kept for existing callers.
-type RegistryOption = Option
-
 // Info sets the document title and version. Registry option.
 func Info(title, version string) Option {
 	return Option{name: "api.Info", registry: func(r *Registry) {

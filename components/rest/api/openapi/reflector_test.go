@@ -291,6 +291,10 @@ func TestErrors(t *testing.T) {
 		{"non-struct request", reflect.TypeFor[[]fixture.Run](), true, "must be a plain struct"},
 		{"nullable struct ref", reflect.TypeFor[fixture.NullableStruct](), false, "fixture.NullableStruct.Meta: nullable tag is not supported on object references; use a pointer"},
 		{"bound beyond int8", reflect.TypeFor[fixture.WideBound](), false, "fixture.WideBound.N: maximum 1000 is above the int8 range"},
+		{"json string option in a request", reflect.TypeFor[fixture.StringOption](), true, "fixture.StringOption.N: the json string option is not supported"},
+		{"json string option in a response", reflect.TypeFor[fixture.StringOption](), false, "fixture.StringOption.N: the json string option is not supported"},
+		{"default tag in a request body", reflect.TypeFor[fixture.DefaultTag](), true, "fixture.DefaultTag.Limit: the default tag is not supported on a request type"},
+		{"default tag on a parameter", reflect.TypeFor[fixture.DefaultParam](), true, "fixture.DefaultParam.Limit: the default tag is not supported on a request type"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

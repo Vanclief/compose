@@ -76,6 +76,21 @@ type WideBound struct {
 	N int8 `json:"n" maximum:"1000"`
 }
 
+// StringOption encodes an integer as a JSON string.
+type StringOption struct {
+	N int `json:"n,omitempty,string"`
+}
+
+// DefaultTag documents a default, which only a response may.
+type DefaultTag struct {
+	Limit int `json:"limit,omitempty" default:"20"`
+}
+
+// DefaultParam documents a default on a query parameter.
+type DefaultParam struct {
+	Limit int `json:"-" query:"limit" default:"20"`
+}
+
 // HiddenResponse hides fields in a response, which stays allowed.
 type HiddenResponse struct {
 	Name   string `json:"name"`

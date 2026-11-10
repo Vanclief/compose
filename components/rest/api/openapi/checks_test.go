@@ -190,6 +190,19 @@ func TestHiddenResponseAllowed(t *testing.T) {
 	require.Equal(t, []any{"name"}, s["required"])
 }
 
+// A response documents a default; only a request type is refused the tag.
+func TestDefaultResponseAllowed(t *testing.T) {
+	r := NewReflector()
+	err := r.AddResponse(reflect.TypeFor[fixture.DefaultTag]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	s := component(t, res, "fixture.DefaultTag")
+	limit := s["properties"].(map[string]any)["limit"].(map[string]any)
+	require.EqualValues(t, 20, limit["default"])
+}
+
 func nullOf(name string) map[string]any {
 	return map[string]any{"anyOf": []any{map[string]any{"$ref": ref(name)}, map[string]any{"type": "null"}}}
 }

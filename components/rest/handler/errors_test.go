@@ -126,6 +126,8 @@ var reportErrors = []struct {
 	{"invalid", ez.New(ez.EINVALID, "bad", nil), false, ""},
 	{"not found", ez.New(ez.ENOTFOUND, "gone", nil), false, ""},
 	{"plain", errors.New("boom"), true, sentry.LevelError},
+	{"raw canceled", context.Canceled, false, ""},
+	{"raw deadline", context.DeadlineExceeded, true, sentry.LevelWarning},
 	{"echo sentinel", echo.ErrNotFound, false, ""},
 	{"echo HTTPError", echo.NewHTTPError(http.StatusTeapot, "no coffee"), false, ""},
 }

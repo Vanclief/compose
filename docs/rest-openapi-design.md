@@ -157,7 +157,10 @@ Rules enforced at registration (fail boot):
   `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`, `enum`,
   `format`, `doc`, `example`, `deprecated`, `hidden`, `nullable`, plus `bun`, `db`, `yaml`,
   `xml`, `mapstructure` and `validate`, which the same structs carry for other libraries);
-  Echo's `param` is rejected with a pointer to `path`. The lint also rejects property names
+  Echo's `param` is rejected with a pointer to `path`, and `default` on a request type,
+  because the registry applies no default: the handler sets it and `doc` describes it. The
+  lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
+  on the value's type), property names
   `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
   reference, `minimum`/`maximum` outside a sized integer's range, and a pointer to
   `types.Optional`
@@ -273,13 +276,17 @@ builds no handler. `rest.ErrorHandler(opts...)` answers an error with an `*ez.Er
 chain with `ez.ErrorToHTTPStatus`, `ez.ErrorCode` and `ez.ErrorMessage` of the error, like
 `ManageError`; ez reads only a direct ez chain, so an ez error wrapped in another kind (a
 recovered panic of one, `fmt.Errorf("...: %w", err)`) is a 500 `EINTERNAL` with ez's generic
-message. Any other error gets Echo's status (500 when it carries none) and the status text or
-an `*echo.HTTPError`'s message, never the error's own text. It takes two options.
+message. Any other error gets Echo's status and the status text or an `*echo.HTTPError`'s
+message; one without an Echo status is classified with `ez.ErrorCode` like `ManageError`
+(`context.Canceled` a 499 `ECANCELED`, `context.DeadlineExceeded` a 504 `ETIMEOUT`, with ez's
+fixed text, anything else a 500 with the status text), never the error's own text. It takes
+two options.
 `rest.WithErrorReporter(func(c *echo.Context, err error))` is called once per answered error
 with the original error, before any translation, and the app decides what to report;
-`handler.ReportToSentry` is one (ez `EINTERNAL` at error level, `ETIMEOUT` and `EUNAVAILABLE`
-at warning, non-ez errors without an Echo status such as recovered panics at error level;
-client errors and Echo's sentinels skipped). `rest.WithErrorTranslator(func(c *echo.Context,
+`handler.ReportToSentry` is one (classified with `ez.ErrorCode`: `EINTERNAL`, which includes
+non-ez errors without an Echo status such as recovered panics, at error level, `ETIMEOUT` and
+`EUNAVAILABLE` at warning; client errors, `ECANCELED` and Echo's sentinels skipped).
+`rest.WithErrorTranslator(func(c *echo.Context,
 err error) error)` changes the message of ez errors only; code and status stay the
 original's. A translator reads the locale through `handler.Request(c)`, which is nil for an
 unknown route, a 405 or a panic outside an operation. `handler.ManageError` stays for plain routes;

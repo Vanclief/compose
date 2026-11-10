@@ -15,10 +15,10 @@ import (
 // CursorRequest represents a cursor paginated request.
 //
 // Limit, Cursor, Sort and IncludeCount come from the client as query
-// parameters, never body fields, so they carry json:"-" and the OpenAPI
-// registry documents them as parameters. Filter is server-side only and never
-// read from client input: it is hidden from the JSON and XML decoders echo
-// binds bodies with.
+// parameters, never body fields, so they carry json:"-" and xml:"-" and the
+// OpenAPI registry documents them as parameters. Filter is server-side only
+// and never read from client input. All five are hidden from the JSON and XML
+// decoders echo binds bodies with.
 //
 // Sort is one of the Options.SortFields keys, prefixed with "-" for descending
 // ("-name"); see Options.SortFields. An empty Sort orders by the model's
@@ -28,10 +28,10 @@ import (
 // sets Options.AllowCount; see Options.AllowCount. The endpoint passes its
 // Options to Paginate.
 type CursorRequest struct {
-	Limit        int    `json:"-" query:"limit" minimum:"0" maximum:"1000" doc:"Page size, defaults to 50"`
-	Cursor       string `json:"-" query:"cursor" doc:"Opaque cursor from the previous page"`
-	Sort         string `json:"-" query:"sort" doc:"Sort field, prefixed with - for descending"`
-	IncludeCount bool   `json:"-" query:"include_count" doc:"Also return the total count when the endpoint allows it"`
+	Limit        int    `json:"-" xml:"-" query:"limit" minimum:"0" maximum:"1000" doc:"Page size, defaults to 50"`
+	Cursor       string `json:"-" xml:"-" query:"cursor" doc:"Opaque cursor from the previous page"`
+	Sort         string `json:"-" xml:"-" query:"sort" doc:"Sort field, prefixed with - for descending"`
+	IncludeCount bool   `json:"-" xml:"-" query:"include_count" doc:"Also return the total count when the endpoint allows it"`
 
 	// Filter is server-side only: Field and Comparison are interpolated into SQL and must never come from client input.
 	Filter []query.Filter `json:"-" xml:"-"`
