@@ -223,6 +223,9 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: operation %s %s has no usable name", ref.Method, ref.Path), nil)
 	}
 
+	// x-destructive is meant for write operations: a GET or HEAD stays
+	// read-only whether or not it carries the mark.
+	readOnly := ref.Method == "GET" || ref.Method == "HEAD"
 	f := &Function{
 		Name:        module + "." + function,
 		Module:      module,
@@ -231,8 +234,8 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 		Method:      ref.Method,
 		Path:        ref.Path,
 		Deprecated:  op.Deprecated,
-		ReadOnly:    ref.Method == "GET" || ref.Method == "HEAD",
-		Destructive: ref.Method == "DELETE",
+		ReadOnly:    readOnly,
+		Destructive: ref.Method == "DELETE" || (op.Destructive && !readOnly),
 		doc:         b.doc,
 	}
 

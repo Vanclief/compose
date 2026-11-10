@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.34.0
+
+### Highlights
+
+- **`x-destructive` marks a write operation destructive.** A write operation with `x-destructive: true` in the spec, read into the new `reference.Operation.Destructive`, is `mcp.Function.Destructive` like a DELETE, for an operation such as a PUT that sets a policy which deletes data. The MCP catalog then treats it as a DELETE throughout: a promoted tool for it sets `destructiveHint: true` in its annotations, where it was left unset (which an MCP client also reads as true), the reference page gives it the `destructive` badge, and its function in `Server.Snapshot` has `destructive: true`, and a promoted tool for it has `destructiveHint: true` there, so a project's committed snapshot golden changes when it marks an operation. A GET or HEAD that carries the mark stays read-only and is not `Destructive`: it gets no badge, no `destructiveHint` and `destructive: false` in the snapshot. Without the extension nothing changes. An app that builds its spec with `components/rest/generator` sets it in `Config.Operation`, e.g. `op["x-destructive"] = true` for the routes it names.
+
 ## v1.33.1
 
 ### Highlights

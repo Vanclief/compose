@@ -150,6 +150,11 @@ func TestBuildCatalogSummaryAndFlags(t *testing.T) {
 	update := mustFunction(t, c, "packages.update_package")
 	assert.True(t, update.Deprecated)
 	assert.False(t, update.ReadOnly)
+
+	notes := mustFunction(t, c, "units.set_notes")
+	assert.True(t, notes.Destructive, "x-destructive marks a non-DELETE operation destructive")
+	assert.False(t, notes.ReadOnly)
+	assert.Equal(t, "PUT", notes.Method)
 }
 
 func TestBuildCatalogArgs(t *testing.T) {
@@ -476,6 +481,19 @@ func TestBuildCatalogWithoutOperationIDs(t *testing.T) {
 		"default.get_users_by_id",
 		"default.get_users_by_id_posts_by_post_id",
 	}, functionNames(c))
+}
+
+func TestBuildCatalogDestructiveMarkOnReadOnlyMethod(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/users": {"get": {"x-destructive": true, "responses": {}}, "head": {"x-destructive": true, "responses": {}}}
+	}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+	for _, name := range []string{"default.get_users", "default.head_users"} {
+		f := mustFunction(t, c, name)
+		assert.True(t, f.ReadOnly, name)
+		assert.False(t, f.Destructive, "%s: x-destructive is ignored on a read-only method", name)
+	}
 }
 
 func TestBuildCatalogTermsDifferingInCase(t *testing.T) {
