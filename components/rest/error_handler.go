@@ -55,11 +55,15 @@ func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 // WithErrorTranslator and ignores the other options, so an app passes it the
 // same options as Configure and Serve.
 //
-// An *ez.Error in the error chain makes it an ez error, answered with
-// ez.ErrorToHTTPStatus, ez.ErrorCode and ez.ErrorMessage of the error, as
-// handler.ManageError does; an ez error wrapped in another kind of error,
-// such as a recovered panic of one, is therefore a 500 EINTERNAL with ez's
-// generic message, as handler.ReportToSentry classifies it too. Any other
+// The error is an ez error when it is an *ez.Error itself, or when an
+// *ez.Error is in its chain and the chain carries no Echo status
+// (echo.StatusCode is 0), the rule handler.ReportToSentry classifies by too.
+// An ez error is answered with ez.ErrorToHTTPStatus, ez.ErrorCode and
+// ez.ErrorMessage of the error, as handler.ManageError does; an ez error
+// wrapped in another kind of error, such as a recovered panic of one, is
+// therefore a 500 EINTERNAL with ez's generic message. An Echo error wrapping
+// an ez error, as c.Bind makes when a field's UnmarshalJSON returns one and
+// middleware.KeyAuth when its validator does, is not an ez error. Any other
 // error with the non-zero StatusCode of an echo.HTTPStatusCoder in the error
 // chain gets that status, as Echo's default handler has it; the code is
 // ez.HTTPStatusToError of that status; the message is the non-empty Message
@@ -107,7 +111,10 @@ func ErrorHandler(opts ...Option) echo.HTTPErrorHandler {
 		var code string
 		var message string
 		var ezErr *ez.Error
-		isEZ := errors.As(err, &ezErr)
+		_, isEZ := err.(*ez.Error)
+		if !isEZ {
+			isEZ = errors.As(err, &ezErr) && echo.StatusCode(err) == 0
+		}
 		if isEZ {
 			status = ez.ErrorToHTTPStatus(err)
 			code = ez.ErrorCode(err)

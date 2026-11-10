@@ -58,8 +58,9 @@ func ContentType(mediaType string) Option {
 // The pipeline picks the first Accept entry, in header order, that matches a
 // declared type (type/* and */* match the first declared type in that
 // range), defaulting to the primary one; q-values are ignored. Exactly one
-// handler runs. Every answer of the operation, errors included, carries
-// Vary: Accept. Operation option. Panics when fn is nil.
+// handler runs. Every answer of the operation's pipeline, its errors
+// included, carries Vary: Accept; an error raised by middleware in front of
+// it does not. Operation option. Panics when fn is nil.
 func Produces[Req any, P interface {
 	*Req
 	requests.Body

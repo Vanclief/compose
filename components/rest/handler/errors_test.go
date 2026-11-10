@@ -130,6 +130,8 @@ var reportErrors = []struct {
 	{"raw deadline", context.DeadlineExceeded, true, sentry.LevelWarning},
 	{"echo sentinel", echo.ErrNotFound, false, ""},
 	{"echo HTTPError", echo.NewHTTPError(http.StatusTeapot, "no coffee"), false, ""},
+	{"echo wrapping internal", echo.ErrBadRequest.Wrap(ez.New(ez.EINTERNAL, "boom", nil)), false, ""},
+	{"internal wrapping echo", ez.New(ez.EINTERNAL, "boom", echo.ErrBadRequest), true, sentry.LevelError},
 }
 
 func TestReportToSentry(t *testing.T) {
@@ -158,6 +160,43 @@ func TestReportToSentry(t *testing.T) {
 			require.Equal(t, tt.level, transport.events[0].Level)
 			require.Equal(t, "request-1", transport.events[0].Tags["Request ID"])
 			require.Equal(t, "user-1", transport.events[0].User.ID)
+		})
+	}
+}
+
+// The event's request id is the response's X-Request-Id, or without it the
+// id of the stored request.
+func TestReportToSentryRequestID(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "from the request"},
+		{name: "from the header", header: "request-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &recordingTransport{}
+			client, err := sentry.NewClient(sentry.ClientOptions{Transport: transport})
+			require.NoError(t, err)
+			hub := sentry.NewHub(client, sentry.NewScope())
+
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
+			c.Set("sentry", hub) // same key sentryecho middleware uses
+			if tt.header != "" {
+				c.Response().Header().Set(echo.HeaderXRequestID, tt.header)
+			}
+			request := requests.New(http.Header{}, "127.0.0.1")
+			err = NewHandler(nil).ManageError(c, "test", request, ez.New(ez.EINTERNAL, "boom", nil))
+			require.NoError(t, err)
+
+			want := tt.header
+			if want == "" {
+				want = request.GetID()
+			}
+			require.NotEmpty(t, want)
+			require.Len(t, transport.events, 1)
+			require.Equal(t, want, transport.events[0].Tags["Request ID"])
 		})
 	}
 }

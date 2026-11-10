@@ -24,11 +24,12 @@
 // next(c) reads the request the registry built, and the context the
 // authenticator produced, through handler.Request (see also Accept).
 //
-// Errors, the pipeline's and the handler's, are returned to Echo and answered
-// by the app's HTTPErrorHandler, which middleware after next(c) sees first:
-// rest.ErrorHandler answers them in the handler.ErrorResponse envelope the
-// spec documents, and its WithErrorTranslator and WithErrorReporter options
-// localize and report them. Echo's default handler would answer every
+// Errors, the pipeline's and the handler's, are returned to Echo, so
+// middleware after next(c) gets them from next(c), and are answered by the
+// app's HTTPErrorHandler: rest.ErrorHandler answers them in the
+// handler.ErrorResponse envelope the spec documents, and its
+// WithErrorTranslator and WithErrorReporter options localize and report
+// them. Echo's default handler would answer every
 // registry error as a 500 {"message":"Internal Server Error"}, so Ready calls
 // the installed handler once with an ez EINVALID error and panics unless it
 // answers with a 4xx; that call reaches the handler's reporter and

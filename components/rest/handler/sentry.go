@@ -19,9 +19,14 @@ import (
 // context.DeadlineExceeded) at warning level. Everything else is skipped:
 // client errors, ECANCELED (also a raw context.Canceled, the client gave
 // up), and an error that is not an ez error but carries an Echo status (404,
-// 405, 413, 415, *echo.HTTPError). The event carries the X-Request-Id of the
-// response, the server's id under rest.Configure, and the user the request's
-// context holds (see Request).
+// 405, 413, 415, *echo.HTTPError). The error is an ez error when it is an
+// *ez.Error itself, or when an *ez.Error is in its chain and the chain
+// carries no Echo status, as rest.ErrorHandler has it; so an Echo error
+// wrapping an ez error, as c.Bind or middleware.KeyAuth make, is skipped. The
+// event carries the X-Request-Id of the response, the server's id under
+// rest.Configure, or without that header the id of the request Request
+// returns, the one ManageError writes in its answer; and the user the
+// request's context holds (see Request).
 func ReportToSentry(c *echo.Context, err error) {
 	hub := sentryecho.GetHubFromContext(c)
 	if hub == nil {
@@ -30,7 +35,11 @@ func ReportToSentry(c *echo.Context, err error) {
 	}
 
 	var ezErr *ez.Error
-	if !errors.As(err, &ezErr) && echo.StatusCode(err) != 0 {
+	_, isEZ := err.(*ez.Error)
+	if !isEZ {
+		isEZ = errors.As(err, &ezErr) && echo.StatusCode(err) == 0
+	}
+	if !isEZ && echo.StatusCode(err) != 0 {
 		return
 	}
 
@@ -47,7 +56,12 @@ func ReportToSentry(c *echo.Context, err error) {
 	}
 
 	hub.WithScope(func(scope *sentry.Scope) {
-		scope.SetTag("Request ID", c.Response().Header().Get(echo.HeaderXRequestID))
+		request := Request(c)
+		requestID := c.Response().Header().Get(echo.HeaderXRequestID)
+		if requestID == "" && request != nil {
+			requestID = request.GetID()
+		}
+		scope.SetTag("Request ID", requestID)
 		scope.SetLevel(level)
 
 		// Add breadcrumbs
@@ -55,7 +69,6 @@ func ReportToSentry(c *echo.Context, err error) {
 
 		// Add user context
 		user := map[string]interface{}{}
-		request := Request(c)
 		if request != nil {
 			value, ok := request.GetContext().Value("user").(map[string]interface{})
 			if ok {

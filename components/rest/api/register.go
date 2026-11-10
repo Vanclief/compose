@@ -193,6 +193,11 @@ func (r *Registry) check(op *operation) error {
 	if !slices.Contains(allowedMethods, op.method) {
 		return ez.New(ez.EINVALID, "unsupported method", nil)
 	}
+	// Echo reads a * in the group prefix or the path as a wildcard, which an
+	// OpenAPI path cannot describe.
+	if strings.Contains(op.path, "*") {
+		return ez.New(ez.EINVALID, "wildcard paths are not supported: the document cannot describe them", nil)
+	}
 	if !namePattern.MatchString(op.name) {
 		return ez.New(ez.EINVALID, fmt.Sprintf("operation name %q must match %s", op.name, namePattern), nil)
 	}

@@ -2,7 +2,6 @@ package validate
 
 import (
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 
@@ -108,7 +107,7 @@ func compile(t *testing.T, name, body string, required ...string) *Schema {
 
 func instance(t *testing.T, raw string) any {
 	t.Helper()
-	v, err := DecodeBody(strings.NewReader(raw))
+	v, err := DecodeBytes([]byte(raw))
 	require.NoError(t, err)
 	return v
 }

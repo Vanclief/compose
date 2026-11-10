@@ -68,6 +68,12 @@ func TestErrorHandler(t *testing.T) {
 	e.GET("/ez-in-other", func(c *echo.Context) error {
 		return fmt.Errorf("save: %w", ez.New(ez.EINVALID, "secret detail", nil))
 	})
+	e.GET("/echo-wraps-ez", func(c *echo.Context) error {
+		return echo.ErrBadRequest.Wrap(ez.New(ez.EINVALID, "secret detail", nil))
+	})
+	e.GET("/ez-wraps-echo", func(c *echo.Context) error {
+		return ez.New(ez.ENOTFOUND, "gone", echo.ErrBadRequest)
+	})
 	e.GET("/response-id", func(c *echo.Context) error {
 		c.Response().Header().Set(echo.HeaderXRequestID, "response-id")
 		return echo.ErrForbidden
@@ -159,6 +165,18 @@ func TestErrorHandler(t *testing.T) {
 			method: http.MethodGet, path: "/ez-in-other",
 			status: http.StatusInternalServerError,
 			want:   handler.StandardError{Code: ez.EINTERNAL, Message: "An internal error has occurred. Please contact technical support."},
+		},
+		{
+			name:   "Echo error wrapping an ez error",
+			method: http.MethodGet, path: "/echo-wraps-ez",
+			status: http.StatusBadRequest,
+			want:   handler.StandardError{Code: ez.EINVALID, Message: "Bad Request"},
+		},
+		{
+			name:   "ez error wrapping an Echo error",
+			method: http.MethodGet, path: "/ez-wraps-echo",
+			status: http.StatusNotFound,
+			want:   handler.StandardError{Code: ez.ENOTFOUND, Message: "gone"},
 		},
 		{
 			name:   "request id of the client is not used",

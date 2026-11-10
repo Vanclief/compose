@@ -147,7 +147,8 @@ Rules enforced at registration (fail boot):
 
 - every `path:`/`query:`/`header:` field carries `json:"-"`, so a body key can never fill a
   param field and params never leak into the body component (huma skips `-`, `schema.go:915`)
-- every path placeholder has a `path:` field and vice versa
+- every path placeholder has a `path:` field and vice versa; a wildcard path (`/files/*`) is
+  refused, because the document cannot describe it
 - operationId `<tag>.<name>` is unique, and so is method plus path (placeholder names do not
   count: `/runs/:id` and `/runs/:run_id` are one route); names and tags match
   `[A-Za-z0-9_-]+`. The tag is the last non-parameter segment of the group's full prefix
@@ -226,8 +227,8 @@ as unknown keys, then bind). Decode once instead.
    (`api.MaxBodyBytes`, the nearest of `api.New`, the groups and the operation, else
    `api.DefaultMaxBody`, 1 MiB); a larger body is a 400 `body exceeds N bytes`, so registered
    routes do not need `rest.WithBodyLimit`. Decode with `jsonschema.UnmarshalJSON`
-   (`loader.go:255-265`: `UseNumber`, rejects trailing data). A non-JSON content type on an
-   operation with a body returns `EINVALID`, since Echo's binder no longer produces the 415.
+   (`loader.go:255-265`: `UseNumber`, rejects trailing data). A non-JSON content type on a
+   non-empty body returns `EINVALID`, since Echo's binder no longer produces the 415.
    Multipart operations parse `multipart/form-data` instead ("Multipart uploads", below).
 7. Validate the synthetic `{path, query, header, body}` schema compiled at `Ready`.
    `body` is required only when the body variant has required properties. Add the
@@ -272,11 +273,13 @@ requester: it receives neither a context nor the request. Identity-dependent che
 the handler or module.
 
 **Errors go back to Echo.** `api.New(e, opts...)` takes no `BaseHandler` and the registry
-builds no handler. `rest.ErrorHandler(opts...)` answers an error with an `*ez.Error` in its
-chain with `ez.ErrorToHTTPStatus`, `ez.ErrorCode` and `ez.ErrorMessage` of the error, like
-`ManageError`; ez reads only a direct ez chain, so an ez error wrapped in another kind (a
-recovered panic of one, `fmt.Errorf("...: %w", err)`) is a 500 `EINTERNAL` with ez's generic
-message. Any other error gets Echo's status and the status text or an `*echo.HTTPError`'s
+builds no handler. `rest.ErrorHandler(opts...)` answers an ez error, which is an `*ez.Error`
+itself or an error with one in its chain and no Echo status, with `ez.ErrorToHTTPStatus`,
+`ez.ErrorCode` and `ez.ErrorMessage` of the error, like `ManageError`; ez reads only a direct
+ez chain, so an ez error wrapped in another kind (a recovered panic of one,
+`fmt.Errorf("...: %w", err)`) is a 500 `EINTERNAL` with ez's generic message. An Echo error
+that wraps an ez error, as `c.Bind` returns when a field's `UnmarshalJSON` failed with one,
+keeps Echo's status. Any other error gets Echo's status and the status text or an `*echo.HTTPError`'s
 message; one without an Echo status is classified with `ez.ErrorCode` like `ManageError`
 (`context.Canceled` a 499 `ECANCELED`, `context.DeadlineExceeded` a 504 `ETIMEOUT`, with ez's
 fixed text, anything else a 500 with the status text), never the error's own text. It takes
@@ -414,7 +417,7 @@ component; then they decode through `encoding/json`, so named types decode as in
 File fields are checked for presence (`required:"true"`), and a single-file field rejects
 repeated parts. The body limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills
 to temporary files). Registration fails for file fields without both tags, `form` tags on
-other types, body fields a form value cannot carry (nested objects, maps, `[]byte`) and files
+the request type's other fields, body fields a form value cannot carry (nested objects, maps, `[]byte`) and files
 on GET, HEAD or DELETE. The request body is documented as `multipart/form-data` with the body
 properties inline, files as binary strings (arrays of them for slices) and `required` by
 presence.
@@ -454,7 +457,7 @@ numbering, `time.Time`, `TextUnmarshaler` and `SchemaProvider`, and every nested
 through it, so compose's hooks apply at every depth. Schema generation stays huma's
 `SchemaFromType` and `SchemaFromField`. The post-pass is a real component: the `openapi`
 package is about 1,550 lines (reflector 486, request variants 415, `encoding/json` key check
-308, lint 151, params 135) plus golden fixtures, in separate walks for parameters, lint, key
+308, lint 164, params 135) plus golden fixtures, in separate walks for parameters, lint, key
 check and variants.
 
 - Components are named by a package-qualified namer (`openapi.DefaultNamer`):

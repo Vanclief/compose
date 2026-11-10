@@ -604,6 +604,16 @@ func TestMultipart(t *testing.T) {
 	require.Nil(t, got.Attempt)
 	require.Nil(t, got.Files)
 
+	// An integer is read as query and path parameters read it: leading
+	// zeros and a plus sign are accepted.
+	for value, want := range map[string]int{"007": 7, "+5": 5} {
+		rec = upload(part{name: "category", value: "log"}, part{name: "attempt", value: value}, manifest)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		got = s.app.Last().(*fixture.UploadRequest)
+		require.NotNil(t, got.Attempt)
+		require.Equal(t, want, *got.Attempt)
+	}
+
 	// Required values and files are reported together; case-mismatched keys
 	// are ignored, never bound.
 	rec = upload(part{name: "Category", value: "log"})

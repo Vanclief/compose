@@ -372,6 +372,18 @@ func TestRegistrationFailures(t *testing.T) {
 	})
 	require.Contains(t, msg, "operation name")
 
+	// A wildcard in the operation path or the group prefix.
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "/w/*", "tail", stub)
+	})
+	require.Contains(t, msg, "wildcard paths are not supported")
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](g.Group("/*/files"), "", "tail", stub)
+	})
+	require.Contains(t, msg, "wildcard paths are not supported")
+
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
 		_, g = newGroup()
 		msg = panicMessage(t, func() {
