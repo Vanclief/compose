@@ -146,8 +146,13 @@ type Operation struct {
 	Deprecated  bool               `json:"deprecated" yaml:"deprecated"`
 	// Internal is the x-internal extension: the operation is documented for
 	// the team, not for API consumers.
-	Internal bool     `json:"x-internal" yaml:"x-internal"`
-	Servers  []Server `json:"servers" yaml:"servers"`
+	Internal bool `json:"x-internal" yaml:"x-internal"`
+	// Destructive is the x-destructive extension: a non-DELETE operation
+	// whose effect destroys data irreversibly, such as configuring a policy
+	// that triggers deletion. It is meant for write operations: a GET or
+	// HEAD operation stays read-only whether or not it carries the mark.
+	Destructive bool     `json:"x-destructive" yaml:"x-destructive"`
+	Servers     []Server `json:"servers" yaml:"servers"`
 	// Security is nil when the operation inherits the document security, and
 	// an empty slice when the operation is explicitly public.
 	Security *[]map[string][]string `json:"security" yaml:"security"`
