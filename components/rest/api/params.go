@@ -14,11 +14,13 @@ import (
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/components/rest/api/openapi"
 	"github.com/vanclief/compose/components/rest/api/validate"
+	"github.com/vanclief/compose/types"
 )
 
 var (
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 	timeType            = reflect.TypeFor[time.Time]()
+	localeType          = reflect.TypeFor[types.Locale]()
 )
 
 // kindOf derives the coercion kind of a parameter schema, resolving $refs
@@ -183,6 +185,17 @@ func setValue(v reflect.Value, values []string) error {
 		return v.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(values[0]))
 	}
 
+	// Normalised as in a JSON body (Locale.UnmarshalJSON): Locale has no
+	// UnmarshalText, which would also change how its map keys decode.
+	if v.Type() == localeType {
+		locale, err := types.NewLocaleString(values[0])
+		if err != nil {
+			return err
+		}
+		v.Set(reflect.ValueOf(locale))
+		return nil
+	}
+
 	if v.Kind() == reflect.Slice {
 		items := splitValues(values)
 		slice := reflect.MakeSlice(v.Type(), len(items), len(items))
@@ -216,7 +229,9 @@ func setScalar(v reflect.Value, s string) error {
 		}
 		v.SetInt(n)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		n, err := strconv.ParseUint(s, 10, v.Type().Bits())
+		// ParseUint refuses the one leading + that ParseInt and
+		// validate.Coerce accept.
+		n, err := strconv.ParseUint(strings.TrimPrefix(s, "+"), 10, v.Type().Bits())
 		if err != nil {
 			return err
 		}

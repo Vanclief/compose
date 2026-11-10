@@ -9,10 +9,12 @@
 // as do Handle after Ready and a Ready that cannot build the documents,
 // finds a protected operation, hidden or not, without an authenticator, or
 // finds an Echo error handler that does not answer an ez error with a 4xx
-// (see below). Call Ready once every route is registered, before serving
-// traffic.
+// (see below), or finds an operation whose route a later Echo route on the
+// same method and path replaced. Call Ready once every route is registered,
+// before serving traffic.
 //
-// Each request is authenticated, then validated against the schema, decoded
+// Each request is authenticated, then validated against the schema (a JSON
+// body nested deeper than 64 levels is refused before that), decoded
 // once and checked with Body.Validate, in that order, before exactly one
 // handler runs: the Produces handler of the negotiated media type, else the
 // operation's own. Authentication runs before any body byte is read, so an

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -153,4 +154,118 @@ func TestSpecRejectsEchoDefaultErrorHandler(t *testing.T) {
 		reg.StrictSpec()
 	})
 	require.Contains(t, msg, "rest.ErrorHandler()")
+}
+
+type runRequest struct {
+	requests.NoRules
+	ID string `json:"-" path:"id"`
+}
+
+// runsRegistry registers the public operation runs.get, GET /runs/:id, on e,
+// answering {"user":"registry"}.
+func runsRegistry(e *echo.Echo) *api.Registry {
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/runs"), "/:id", "get", func(ctx context.Context, req *runRequest) (whoResponse, error) {
+		return whoResponse{User: "registry"}, nil
+	})
+	return reg
+}
+
+// plain is an Echo handler outside the registry, answering {"user":"plain"}.
+func plain(c *echo.Context) error {
+	return c.JSON(http.StatusOK, whoResponse{User: "plain"})
+}
+
+// Ready panics, naming the operation, when a plain Echo route registered
+// after it on its method and path, with any placeholder name, replaced it;
+// the registry stays not ready, so a second Ready panics too.
+func TestReadyRejectsReplacedRoute(t *testing.T) {
+	for _, path := range []string{"/runs/:id", "/runs/:other"} {
+		e := newEcho()
+		reg := runsRegistry(e)
+		e.GET(path, plain)
+
+		// The plain route is what Echo serves.
+		resp := whoAmI(t, &server{e: e, reg: reg}, "/runs/1")
+		require.Equal(t, "plain", resp.User, path)
+
+		for range 2 {
+			msg := panicMessage(t, func() {
+				reg.Ready()
+			})
+			require.Contains(t, msg, "api: GET /runs/:id (runs.get): another route was registered on its method and path after the registry's", path)
+		}
+	}
+}
+
+// A plain route on another method or path, or one the registry's replaced
+// because it was registered first, leaves the operation its route.
+func TestReadyAcceptsOtherRoutes(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(e *echo.Echo) *api.Registry
+	}{
+		{"other method", func(e *echo.Echo) *api.Registry {
+			reg := runsRegistry(e)
+			e.POST("/runs/:id", plain)
+			return reg
+		}},
+		{"other path", func(e *echo.Echo) *api.Registry {
+			reg := runsRegistry(e)
+			e.GET("/runs/:id/logs", plain)
+			e.GET("/runs", plain)
+			return reg
+		}},
+		{"same path before", func(e *echo.Echo) *api.Registry {
+			e.GET("/runs/:id", plain)
+			return runsRegistry(e)
+		}},
+		{"other placeholder before", func(e *echo.Echo) *api.Registry {
+			e.GET("/runs/:other", plain)
+			return runsRegistry(e)
+		}},
+		// Echo's route list reads as after the "/runs/:other" replacement
+		// (the registry's route, then GET /runs/:other), yet the registry's
+		// route was registered last and serves.
+		{"same path and other placeholder before", func(e *echo.Echo) *api.Registry {
+			e.GET("/runs/:id", plain)
+			e.GET("/runs/:other", plain)
+			return runsRegistry(e)
+		}},
+	}
+	for _, tt := range tests {
+		e := newEcho()
+		reg := tt.setup(e)
+
+		require.NotPanics(t, func() {
+			reg.Ready()
+		}, tt.name)
+		resp := whoAmI(t, &server{e: e, reg: reg}, "/runs/1")
+		require.Equal(t, "registry", resp.User, tt.name)
+	}
+}
+
+// silentRouter routes every request to plain without reporting which route
+// it took.
+type silentRouter struct {
+	echo.Router
+}
+
+func (silentRouter) Route(c *echo.Context) echo.HandlerFunc {
+	return plain
+}
+
+// A router that reports no route for a request cannot tell whether an
+// operation still owns its route, so Ready does not fail on it.
+func TestReadyAcceptsSilentRouter(t *testing.T) {
+	e := echo.NewWithConfig(echo.Config{
+		Router:           silentRouter{Router: echo.NewRouter(echo.RouterConfig{AllowOverwritingRoute: true})},
+		HTTPErrorHandler: rest.ErrorHandler(),
+	})
+	reg := runsRegistry(e)
+	e.GET("/runs/:id", plain)
+
+	require.NotPanics(t, func() {
+		reg.Ready()
+	})
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
+	"github.com/vanclief/compose/types"
 )
 
 const sentinel = "ZZZ_SENTINEL"
@@ -434,6 +435,16 @@ func TestBigIntParams(t *testing.T) {
 	rec = s.do(http.MethodGet, "/big?i=9223372036854775808", "")
 	requireError(t, rec, http.StatusBadRequest, "query i is invalid")
 
+	// An unsigned parameter takes one leading plus sign, as a signed one does.
+	rec = s.do(http.MethodGet, "/big?u=%2B5", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NotNil(t, got.U)
+	require.Equal(t, uint64(5), *got.U)
+	for _, u := range []string{"-5", "%2B%2B5"} {
+		rec = s.do(http.MethodGet, "/big?u="+u, "")
+		requireError(t, rec, http.StatusBadRequest, "query u")
+	}
+
 	// A multipart integer above int64 decodes into an int field as a 400.
 	body, contentType := form(t,
 		part{name: "category", value: "log"},
@@ -482,6 +493,46 @@ func TestTextParamErrors(t *testing.T) {
 	rec = s.do(http.MethodGet, "/text?p=internal", "")
 	resp := requireError(t, rec, http.StatusInternalServerError, "")
 	require.Equal(t, ez.EINTERNAL, resp.Error.Code)
+}
+
+type localeRequest struct {
+	requests.NoRules
+	Locale  types.Locale   `json:"-" query:"locale"`
+	Pointer *types.Locale  `json:"-" query:"pointer"`
+	List    []types.Locale `json:"-" query:"list"`
+}
+
+// TestLocaleParams: a types.Locale parameter is normalised as in a JSON
+// body, an unsupported value becoming the default locale.
+func TestLocaleParams(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *localeRequest
+	api.GET(reg.Group("/locale"), "", "get", func(ctx context.Context, req *localeRequest) (fixture.HealthResponse, error) {
+		got = req
+		return fixture.HealthResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/locale?locale=es&pointer=es&list=es,"+sentinel, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, types.Locale("es-MX"), got.Locale)
+	require.NotNil(t, got.Pointer)
+	require.Equal(t, types.Locale("es-MX"), *got.Pointer)
+	require.Equal(t, []types.Locale{"es-MX", "en-US"}, got.List)
+
+	rec = s.do(http.MethodGet, "/locale?locale="+sentinel+"&pointer="+sentinel, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, types.Locale("en-US"), got.Locale)
+	require.NotNil(t, got.Pointer)
+	require.Equal(t, types.Locale("en-US"), *got.Pointer)
+
+	rec = s.do(http.MethodGet, "/locale", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, types.Locale(""), got.Locale)
+	require.Nil(t, got.Pointer)
+	require.Nil(t, got.List)
 }
 
 func TestMaxBody(t *testing.T) {
@@ -722,6 +773,72 @@ func TestMultipart(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "path id must be a valid uuid")
 }
 
+// optionalUploadRequest is a multipart request whose values and file are all
+// optional.
+type optionalUploadRequest struct {
+	requests.NoRules
+	Note *string               `json:"note"`
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestMultipartAllOptional: the document requires a multipart body even
+// when every part is optional, as the server does.
+func TestMultipartAllOptional(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST[optionalUploadRequest, nodeResponse](reg.Group("/notes"), "", "upload", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	require.Equal(t, true, dig(t, decode(t, raw), "paths", "/notes", "post", "requestBody", "required"))
+
+	rec := s.do(http.MethodPost, "/notes", "")
+	requireError(t, rec, http.StatusBadRequest, "content type must be multipart/form-data")
+
+	body, contentType := form(t)
+	rec = s.do(http.MethodPost, "/notes", body, echo.HeaderContentType, contentType)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+type tagsHeaderRequest struct {
+	requests.NoRules
+	Tags []string `json:"-" header:"x-tags" enum:"a,b"`
+}
+
+// TestHeaderList: an array header is a comma-separated list on one or more
+// lines, with optional spaces around its items.
+func TestHeaderList(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *tagsHeaderRequest
+	api.GET(reg.Group("/tags"), "", "list", func(ctx context.Context, req *tagsHeaderRequest) (fixture.HealthResponse, error) {
+		got = req
+		return fixture.HealthResponse{}, nil
+	})
+	reg.Ready()
+	send := func(lines ...string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/tags", nil)
+		for _, line := range lines {
+			req.Header.Add("X-Tags", line)
+		}
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, lines := range [][]string{{"a, b"}, {"a,b"}, {"a", "b"}, {" a ,\tb "}} {
+		got = nil
+		rec := send(lines...)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, []string{"a", "b"}, got.Tags, lines)
+	}
+
+	rec := send("a, c")
+	requireError(t, rec, http.StatusBadRequest, "header x-tags.1 must be one of")
+}
+
 func TestNegotiationVary(t *testing.T) {
 	s := newServer(t)
 
@@ -763,7 +880,8 @@ type nodeResponse struct {
 	OK bool `json:"ok"`
 }
 
-func TestCollisionsAtAnyDepth(t *testing.T) {
+// nodeServer registers POST /nodes, taking a Node, and counts its calls.
+func nodeServer() (*server, *int) {
 	e := newEcho()
 	calls := 0
 	create := func(ctx context.Context, body *Node) (nodeResponse, error) {
@@ -773,14 +891,70 @@ func TestCollisionsAtAnyDepth(t *testing.T) {
 	reg := api.New(e, api.Public())
 	api.POST(reg.Group("/nodes"), "", "create", create)
 	reg.Ready()
-	s := &server{e: e, reg: reg}
+	return &server{e: e, reg: reg}, &calls
+}
 
-	const levels = 40
-	body := strings.Repeat(`{"children":[`, levels) + `{"Retries":999}` + strings.Repeat(`]}`, levels)
-	rec := s.do(http.MethodPost, "/nodes", body)
-	path := strings.Repeat("children.0.", levels) + "Retries"
-	requireError(t, rec, http.StatusBadRequest, path+` is not a known field, did you mean "retries"`)
-	require.Zero(t, calls)
+// nested returns a Node body whose arrays and objects nest depth levels (an
+// odd depth): depth/2 levels of {"children":[ around innermost.
+func nested(depth int, innermost string) string {
+	levels := depth / 2
+	return strings.Repeat(`{"children":[`, levels) + innermost + strings.Repeat(`]}`, levels)
+}
+
+// A case-mismatched key is reported at the deepest nesting the body limit
+// allows: its value is the 64th level.
+func TestCollisionsAtMaxDepth(t *testing.T) {
+	s, calls := nodeServer()
+
+	rec := s.do(http.MethodPost, "/nodes", nested(63, `{"Children":[]}`))
+	path := strings.Repeat("children.0.", 31) + "Children"
+	requireError(t, rec, http.StatusBadRequest, path+` is not a known field, did you mean "children"`)
+	require.Zero(t, *calls)
+}
+
+// freeForm is a request body with a field of any JSON value.
+type freeForm struct {
+	requests.NoRules
+	Data any `json:"data"`
+}
+
+// A JSON body may nest 64 levels, on a recursive type and in a free-form
+// field alike; at 65 it is refused before validation and the handler does
+// not run.
+func TestBodyDepthLimit(t *testing.T) {
+	s, calls := nodeServer()
+
+	rec := s.do(http.MethodPost, "/nodes", nested(63, `{"children":[]}`))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, *calls)
+
+	// Past the limit the invalid value inside is never reached.
+	rec = s.do(http.MethodPost, "/nodes", nested(63, `{"children":[{"retries":999}]}`))
+	requireError(t, rec, http.StatusBadRequest, "body is nested deeper than 64 levels")
+	require.Equal(t, 1, *calls)
+
+	e := newEcho()
+	freeCalls := 0
+	create := func(ctx context.Context, body *freeForm) (nodeResponse, error) {
+		freeCalls++
+		return nodeResponse{OK: true}, nil
+	}
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/free"), "", "create", create)
+	reg.Ready()
+	free := &server{e: e, reg: reg}
+
+	// The body object is the first level, the arrays the rest.
+	arrays := func(n int) string {
+		return `{"data":` + strings.Repeat("[", n) + strings.Repeat("]", n) + `}`
+	}
+	rec = free.do(http.MethodPost, "/free", arrays(63))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, freeCalls)
+
+	rec = free.do(http.MethodPost, "/free", arrays(64))
+	requireError(t, rec, http.StatusBadRequest, "body is nested deeper than 64 levels")
+	require.Equal(t, 1, freeCalls)
 }
 
 func TestMultipartRemovesSpilledFiles(t *testing.T) {

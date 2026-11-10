@@ -408,6 +408,20 @@ func TestRegistrationFailures(t *testing.T) {
 	require.Contains(t, msg, "duplicate operationId")
 	require.Contains(t, msg, "runs.list")
 
+	// The full path starts with /: Echo would serve "runs" as /runs, but the
+	// document cannot publish it and the duplicate-route check would miss it.
+	reg, g := newGroup()
+	api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "", "list", stub)
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](reg.Group("runs"), "", "again", stub)
+	})
+	require.Contains(t, msg, "api: GET runs (runs.again): path must start with /")
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](reg.Group(""), "", "root", stub)
+	})
+	require.Contains(t, msg, "path must start with /")
+	api.GET[fixture.HealthRequest, fixture.HealthResponse](reg.Group(""), "/", "root", stub)
+
 	_, g = newGroup()
 	msg = panicMessage(t, func() {
 		api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "/:id", "get", stub)
@@ -580,7 +594,7 @@ func TestRegistrationFailures(t *testing.T) {
 		require.Contains(t, msg, tt.want)
 	}
 
-	reg, g := newGroup()
+	reg, g = newGroup()
 	api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "", "list", stub)
 	reg.Ready()
 	msg = panicMessage(t, func() {

@@ -76,6 +76,9 @@ func (op *operation) serve(c *echo.Context) error {
 	values := make([][]string, len(op.params))
 	for i, p := range op.params {
 		values[i] = paramValues(c, p.In, p.Name)
+		if p.In == "header" && op.kinds[i].Type == "array" {
+			values[i] = headerListItems(values[i])
+		}
 
 		loc, ok := instance[p.In].(map[string]any)
 		if !ok {
@@ -195,10 +198,26 @@ func paramValues(c *echo.Context, in, name string) []string {
 	return out
 }
 
+// headerListItems splits the lines of an array header into its items: each
+// line is a comma-separated list whose items may carry spaces around them
+// (a, b), and empty items are ignored (RFC 9110 section 5.6.1).
+func headerListItems(lines []string) []string {
+	var items []string
+	for _, line := range lines {
+		for _, item := range strings.Split(line, ",") {
+			item = strings.Trim(item, " \t")
+			if item != "" {
+				items = append(items, item)
+			}
+		}
+	}
+	return items
+}
+
 // readBody reads (up to the operation's body limit) and decodes the JSON
 // body. It returns nil for an empty (or null) body and rejects non-JSON
-// content types; a missing Content-Type is treated as JSON. It also returns
-// the raw bytes for decoding.
+// content types (a missing Content-Type is treated as JSON) and bodies nested
+// deeper than maxBodyDepth. It also returns the raw bytes for decoding.
 func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, op.maxBody))
 	var tooLarge *http.MaxBytesError
@@ -224,8 +243,44 @@ func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	if body == nil {
 		return nil, nil, nil
 	}
+	if nestedDeeper(body, maxBodyDepth) {
+		return nil, nil, ez.New(ez.EINVALID, fmt.Sprintf("body is nested deeper than %d levels", maxBodyDepth), nil)
+	}
 
 	return body, raw, nil
+}
+
+// maxBodyDepth bounds how deep the arrays and objects of a JSON body nest.
+// Every validation error and key-case collision carries its full path, so on
+// a recursive type a small, deeply nested body would make answers and
+// allocations grow with its depth (with its square in the collision walk).
+const maxBodyDepth = 64
+
+// nestedDeeper reports whether the arrays and objects of a decoded JSON
+// value nest deeper than limit levels, each array and object counting as
+// one. It stops at the first one past the limit without looking inside it.
+func nestedDeeper(value any, limit int) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		if limit == 0 {
+			return true
+		}
+		for _, item := range v {
+			if nestedDeeper(item, limit-1) {
+				return true
+			}
+		}
+	case []any:
+		if limit == 0 {
+			return true
+		}
+		for _, item := range v {
+			if nestedDeeper(item, limit-1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isJSON(contentType string) bool {

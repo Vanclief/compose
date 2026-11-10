@@ -168,8 +168,9 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 
 	// Echo refuses a route when an OnAddRoute hook fails, or when its router
 	// does not overwrite routes and the app registered the same method and
-	// path outside the registry.
-	_, err = g.echo.AddRoute(echo.Route{Method: op.method, Path: path, Handler: op.serve, Middlewares: op.middleware})
+	// path outside the registry. The name lets Ready tell the route is still
+	// the registry's.
+	_, err = g.echo.AddRoute(echo.Route{Method: op.method, Path: path, Name: op.routeName(), Handler: op.serve, Middlewares: op.middleware})
 	if err != nil {
 		panic(op.registrationError(ez.New(ez.EINVALID, "echo refused the route: "+err.Error(), err)))
 	}
@@ -177,6 +178,11 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 	r.ops = append(r.ops, op)
 	r.ids[op.id] = true
 	r.routes[routeKey(op.method, op.path)] = op.id
+}
+
+// routeName is the name of the operation's Echo route.
+func (op *operation) routeName() string {
+	return "api:" + op.id
 }
 
 // registrationError wraps a registration problem with the operation it is about.
@@ -192,6 +198,11 @@ func (r *Registry) check(op *operation) error {
 	}
 	if !slices.Contains(allowedMethods, op.method) {
 		return ez.New(ez.EINVALID, "unsupported method", nil)
+	}
+	// Echo serves "runs" as /runs, but an OpenAPI path key must start with /
+	// and the duplicate-route check compares the path as written.
+	if !strings.HasPrefix(op.path, "/") {
+		return ez.New(ez.EINVALID, `path must start with /: begin the group prefix or the operation path with / (Group("/runs"), or "/" for the root)`, nil)
 	}
 	// Echo reads a * in the group prefix or the path as a wildcard, which an
 	// OpenAPI path cannot describe.

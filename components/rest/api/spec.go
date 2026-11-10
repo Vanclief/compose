@@ -30,7 +30,10 @@ var paramLocations = []string{"path", "query", "header"}
 // handler (a 500), a nil one, or one that writes nothing fails, so the app
 // sets e.HTTPErrorHandler = rest.ErrorHandler() (or its own) first. That call
 // reaches the handler's reporter and translator like any error, with
-// handler.Request nil. Registering after Ready panics; requests that arrive
+// handler.Request nil. It also panics, naming the operation, when a route
+// registered on Echo after an operation, on its method and path, replaced it
+// (Echo's default router allows that); a replacement made after Ready goes
+// unnoticed. Registering after Ready panics; requests that arrive
 // before Ready fail with EINTERNAL. Idempotent once it succeeds: later calls
 // are no-ops, while a call that panicked leaves the registry not ready and
 // the next one checks everything again.
@@ -43,6 +46,11 @@ func (r *Registry) Ready() {
 	}
 
 	err := r.checkErrorHandler()
+	if err != nil {
+		panic(err)
+	}
+
+	err = r.checkRoutes()
 	if err != nil {
 		panic(err)
 	}
@@ -76,6 +84,33 @@ func (r *Registry) checkErrorHandler() error {
 	if rec.Code < http.StatusBadRequest || rec.Code >= http.StatusInternalServerError {
 		msg := fmt.Sprintf("api: the Echo error handler answered an ez EINVALID error with %d, not a 4xx (Echo's default handler answers every error an operation returns as a 500): %s", rec.Code, fix)
 		return ez.New(ez.EINVALID, msg, nil)
+	}
+	return nil
+}
+
+// checkRoutes fails when an operation no longer owns its route. Echo's
+// default router lets a route registered later on the same method and path,
+// whatever its placeholder names, replace the registry's, whose
+// authentication and validation then never run. It asks the router which
+// route a request to the operation's own path reaches (/runs/:id, its
+// placeholders read as values, which no static route matches): the router's
+// route list cannot tell, as it keeps a replaced route beside a replacement
+// that names its placeholders differently. A router that reports no route at
+// all cannot answer and passes.
+func (r *Registry) checkRoutes() error {
+	for _, op := range r.ops {
+		req := httptest.NewRequest(op.method, "/", nil)
+		req.URL.Path = op.path
+		c := r.echo.NewContext(req, httptest.NewRecorder())
+		r.echo.Router().Route(c)
+		route := c.RouteInfo()
+		if route.Name == op.routeName() {
+			continue
+		}
+		if route.Name == "" && route.Path == "" {
+			continue
+		}
+		return op.registrationError(ez.New(ez.EINVALID, "another route was registered on its method and path after the registry's and replaced it, so its authentication and validation do not run: remove that route or move it to another path", nil))
 	}
 	return nil
 }

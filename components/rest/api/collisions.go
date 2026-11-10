@@ -29,8 +29,8 @@ func bodyCollisions(body any, schema *huma.Schema, components map[string]*huma.S
 const maxRefHops = 64
 
 // walkCollisions has no depth limit of its own: it descends the decoded
-// value, whose nesting encoding/json already caps, as the schema validator
-// does.
+// body, which readBody has already refused when nested deeper than
+// maxBodyDepth, as the schema validator does.
 func walkCollisions(value any, schema *huma.Schema, components map[string]*huma.Schema, path string, fields *[]validate.FieldError) {
 	if schema == nil || value == nil {
 		return

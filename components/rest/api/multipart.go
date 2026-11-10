@@ -241,8 +241,10 @@ func (op *operation) multipartBody(res *openapi.Result) *huma.RequestBody {
 		}
 	}
 
+	// Required even when every part is optional: readForm refuses a request
+	// without a multipart/form-data body.
 	return &huma.RequestBody{
-		Required: len(schema.Required) > 0,
+		Required: true,
 		Content:  map[string]*huma.MediaType{echo.MIMEMultipartForm: {Schema: schema}},
 	}
 }
