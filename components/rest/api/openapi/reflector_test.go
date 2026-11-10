@@ -295,6 +295,11 @@ func TestErrors(t *testing.T) {
 		{"json string option in a response", reflect.TypeFor[fixture.StringOption](), false, "fixture.StringOption.N: the json string option is not supported"},
 		{"default tag in a request body", reflect.TypeFor[fixture.DefaultTag](), true, "fixture.DefaultTag.Limit: the default tag is not supported on a request type"},
 		{"default tag on a parameter", reflect.TypeFor[fixture.DefaultParam](), true, "fixture.DefaultParam.Limit: the default tag is not supported on a request type"},
+		{"query tag in a named field", reflect.TypeFor[fixture.NestedParam](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct; parameters and files are read only from the request type and the structs it embeds"},
+		{"query tag in a slice element", reflect.TypeFor[fixture.NestedParamSlice](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct"},
+		{"query tag in an Optional", reflect.TypeFor[fixture.NestedParamOptional](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct"},
+		{"query tag embedded and nested", reflect.TypeFor[fixture.EmbeddedAndNested](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct"},
+		{"form tag in a named field", reflect.TypeFor[fixture.NestedFile](), true, "fixture.NestedFileHolder.File: the form tag is ignored on a nested struct"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -310,6 +315,20 @@ func TestErrors(t *testing.T) {
 			require.Contains(t, err.Error(), tt.want)
 		})
 	}
+}
+
+// Parameters of an embedded struct are read; a response type may nest
+// parameter tags, which mean nothing there.
+func TestParamTagsDepth(t *testing.T) {
+	r := NewReflector()
+	params, err := r.AddRequest(reflect.TypeFor[struct{ fixture.NestedQuery }]())
+	require.NoError(t, err)
+	require.Len(t, params, 1)
+	require.Equal(t, "q", params[0].Name)
+	require.Equal(t, "query", params[0].In)
+
+	err = r.AddResponse(reflect.TypeFor[fixture.NestedParam]())
+	require.NoError(t, err)
 }
 
 func TestVariantNameCollision(t *testing.T) {

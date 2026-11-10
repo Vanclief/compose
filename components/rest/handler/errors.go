@@ -3,6 +3,7 @@ package handler
 import (
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/labstack/echo/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/vanclief/compose/components/rest/requests"
@@ -47,10 +48,17 @@ func (h *BaseHandler) ManageError(c *echo.Context, op string, request requests.R
 		Msg("Request Error")
 
 	// Internal errors are bugs. Timeouts and unavailability are usually a vendor
-	// outage, but still worth a Sentry event so someone notices.
+	// outage, but still worth a Sentry event so someone notices, at warning
+	// level. Every error here is answered with its ez status, so an Echo
+	// error, which ReportToSentry skips for its Echo status, is a 500 and
+	// reported too.
 	if code == ez.EINTERNAL || code == ez.ETIMEOUT || code == ez.EUNAVAILABLE {
 		LogErrorStacktrace(err)
-		ReportToSentry(c, err)
+		level := sentry.LevelWarning
+		if code == ez.EINTERNAL {
+			level = sentry.LevelError
+		}
+		captureToSentry(c, err, level)
 	}
 
 	status := ez.ErrorToHTTPStatus(err)

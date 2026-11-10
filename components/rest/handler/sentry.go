@@ -12,8 +12,8 @@ import (
 // ReportToSentry reports err to the Sentry hub the sentryecho middleware put
 // on c, and does nothing without one. It has the signature
 // rest.WithErrorReporter takes, so an app that reports to Sentry passes it
-// there; ManageError calls it for plain routes. Only errors worth a person's
-// attention are reported, classified with ez.ErrorCode as ManageError does:
+// there. Only errors worth a person's attention are reported, classified
+// with ez.ErrorCode as ManageError does:
 // EINTERNAL (also a plain error or a recovered panic) at error level,
 // ETIMEOUT or EUNAVAILABLE (usually a vendor outage; also a raw
 // context.DeadlineExceeded) at warning level. Everything else is skipped:
@@ -28,12 +28,6 @@ import (
 // returns, the one ManageError writes in its answer; and the user the
 // request's context holds (see Request).
 func ReportToSentry(c *echo.Context, err error) {
-	hub := sentryecho.GetHubFromContext(c)
-	if hub == nil {
-		// Sentry is not configured, nothing to do
-		return
-	}
-
 	var ezErr *ez.Error
 	_, isEZ := err.(*ez.Error)
 	if !isEZ {
@@ -52,6 +46,19 @@ func ReportToSentry(c *echo.Context, err error) {
 		// tell the two apart.
 		level = sentry.LevelWarning
 	default:
+		return
+	}
+
+	captureToSentry(c, err, level)
+}
+
+// captureToSentry sends err at level to the Sentry hub the sentryecho
+// middleware put on c, with the request id and user ReportToSentry
+// describes, and does nothing without a hub.
+func captureToSentry(c *echo.Context, err error, level sentry.Level) {
+	hub := sentryecho.GetHubFromContext(c)
+	if hub == nil {
+		// Sentry is not configured, nothing to do
 		return
 	}
 

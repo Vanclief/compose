@@ -211,6 +211,13 @@ func (r *Registry) check(op *operation) error {
 	if ok {
 		return ez.New(ez.EINVALID, fmt.Sprintf("duplicate route, already registered as %s", other), nil)
 	}
+	// OpenAPI forbids two templated paths that differ only by placeholder
+	// names, so every method of one path spells its placeholders alike.
+	for _, prev := range r.ops {
+		if prev.path != op.path && pathShape(prev.path) == pathShape(op.path) {
+			return ez.New(ez.EINVALID, fmt.Sprintf("path %s names its placeholders differently from %s %s (%s): use the same names for every method of a path", op.path, prev.method, prev.path, prev.id), nil)
+		}
+	}
 	if op.invoke == nil {
 		return ez.New(ez.EINVALID, "nil handler", nil)
 	}
@@ -270,13 +277,18 @@ func (r *Registry) check(op *operation) error {
 // routeKey identifies a route the way Echo's router does: placeholder names
 // do not matter (/runs/:id and /runs/:run_id are the same route).
 func routeKey(method, path string) string {
+	return method + " " + pathShape(path)
+}
+
+// pathShape is path with its placeholder names dropped (/runs/:).
+func pathShape(path string) string {
 	segments := strings.Split(path, "/")
 	for i, s := range segments {
 		if strings.HasPrefix(s, ":") {
 			segments[i] = ":"
 		}
 	}
-	return method + " " + strings.Join(segments, "/")
+	return strings.Join(segments, "/")
 }
 
 // checkNoBody rejects body properties on GET, HEAD and DELETE: a request
@@ -313,7 +325,8 @@ func bodyFieldNames(t reflect.Type) []string {
 	return names
 }
 
-// checkPathParams requires a path param for every placeholder and vice versa.
+// checkPathParams requires a path param for every placeholder and vice
+// versa, and each placeholder name once.
 func checkPathParams(path string, params []openapi.Param) error {
 	placeholders := placeholdersOf(path)
 
@@ -325,6 +338,11 @@ func checkPathParams(path string, params []openapi.Param) error {
 	}
 
 	var problems []string
+	for i, name := range placeholders {
+		if slices.Contains(placeholders[:i], name) {
+			problems = append(problems, fmt.Sprintf("placeholder :%s appears more than once", name))
+		}
+	}
 	for _, name := range placeholders {
 		if !slices.Contains(declared, name) {
 			problems = append(problems, fmt.Sprintf("placeholder :%s has no path:%q field", name, name))

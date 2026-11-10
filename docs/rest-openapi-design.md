@@ -147,10 +147,13 @@ Rules enforced at registration (fail boot):
 
 - every `path:`/`query:`/`header:` field carries `json:"-"`, so a body key can never fill a
   param field and params never leak into the body component (huma skips `-`, `schema.go:915`)
-- every path placeholder has a `path:` field and vice versa; a wildcard path (`/files/*`) is
-  refused, because the document cannot describe it
+- every path placeholder has a `path:` field and vice versa, and a placeholder name appears
+  once in a path; a wildcard path (`/files/*`) is refused, because the document cannot
+  describe it
 - operationId `<tag>.<name>` is unique, and so is method plus path (placeholder names do not
-  count: `/runs/:id` and `/runs/:run_id` are one route); names and tags match
+  count: `/runs/:id` and `/runs/:run_id` are one route, and every method of one path must
+  spell its placeholders alike, since OpenAPI forbids two templated paths that differ only by
+  those names); names and tags match
   `[A-Za-z0-9_-]+`. The tag is the last non-parameter segment of the group's full prefix
   (`/runs/:id/issues` gives `issues`); with none, the operationId is `<name>`
 - tag names come from an allowlist (`json`, `path`, `query`, `header`, `form`, `required`,
@@ -163,8 +166,10 @@ Rules enforced at registration (fail boot):
   lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
   on the value's type), property names
   `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
-  reference, `minimum`/`maximum` outside a sized integer's range, and a pointer to
-  `types.Optional`
+  reference, `minimum`/`maximum` outside a sized integer's range, a pointer to
+  `types.Optional`, and on a request type a `path`, `query`, `header` or `form` tag in a
+  struct the request type does not embed (a named field, a slice or map element), where the
+  registry never reads it
 - the keys `encoding/json` binds are exactly the schema's properties, at every depth of the
   request type: registration fails for unexported embedded structs, `hidden` fields, embedded
   non-struct types and shadowed promoted fields, any of which would let a value the validator
@@ -220,8 +225,8 @@ as unknown keys, then bind). Decode once instead.
    coerced and no body byte read yet: `request.GetBody()` is nil inside it.
 5. Coerce declared path, query and header params to the schema's type (integer, number,
    boolean, array via comma or repeated keys), dropping empty values (`?cursor=` is
-   absent). If parsing fails keep the raw string so santhosh reports `kind.Type` like any
-   other type error. Header keys lowercased, only declared `header:` fields included.
+   absent). An integer is read as an int64, else as a uint64. If parsing fails keep the raw string so
+   santhosh reports `kind.Type` like any other type error. Header keys lowercased, only declared `header:` fields included.
    Missing stays missing (presence semantics).
 6. Read the body through `http.MaxBytesReader` under the operation's limit
    (`api.MaxBodyBytes`, the nearest of `api.New`, the groups and the operation, else
@@ -240,10 +245,11 @@ as unknown keys, then bind). Decode once instead.
    (`query limit must be <= 1000`), never echoing submitted values (400 under
    `rest.ErrorHandler`, same envelope).
 8. Decode once: `json.Unmarshal(bodyBytes, req)` for the body, then set param fields by
-   field index from the raw values, using `TextUnmarshaler` for named types (`uuid.UUID`,
-   enums) and HTTP-date for a `time.Time` header. A conversion failure is a 400
-   (`query since is invalid`), not a 500: santhosh's `date-time` accepts inputs that
-   `time.Time` rejects. `request.SetBody(req)`.
+   field index from the raw values, using `TextUnmarshaler` for the types that implement it
+   (`uuid.UUID`), the string kind for compose enums and HTTP-date for a `time.Time` header.
+   A conversion failure is a 400 (`query since is invalid`), not a 500: santhosh's
+   `date-time` accepts inputs that `time.Time` rejects. Only an ez `EINTERNAL` from a
+   `TextUnmarshaler`, its own failure rather than the client's, is a 500. `request.SetBody(req)`.
 9. `Body.Validate()`, once, for cross-field rules.
 10. The typed handler of the negotiated media type, exactly one: the `Produces` handler
     declared for it, else the primary handler. It receives `request.GetContext()` as it is
@@ -293,7 +299,8 @@ non-ez errors without an Echo status such as recovered panics, at error level, `
 err error) error)` changes the message of ez errors only; code and status stay the
 original's. A translator reads the locale through `handler.Request(c)`, which is nil for an
 unknown route, a 405 or a panic outside an operation. `handler.ManageError` stays for plain routes;
-it sets `handler.Request(c)` too and reports through `handler.ReportToSentry`. The request log
+it sets `handler.Request(c)` too and still reports every `EINTERNAL`, `ETIMEOUT` and
+`EUNAVAILABLE` it answers to Sentry, an Echo error it answers as a 500 included. The request log
 of `rest.Configure` answers the error before logging it, so its `status` is the one sent and
 its level follows it (error for 5xx, warn for 4xx, info otherwise).
 
@@ -417,7 +424,7 @@ component; then they decode through `encoding/json`, so named types decode as in
 File fields are checked for presence (`required:"true"`), and a single-file field rejects
 repeated parts. The body limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills
 to temporary files). Registration fails for file fields without both tags, `form` tags on
-the request type's other fields, body fields a form value cannot carry (nested objects, maps, `[]byte`) and files
+the request type's other fields or in a struct it does not embed, body fields a form value cannot carry (nested objects, maps, `[]byte`) and files
 on GET, HEAD or DELETE. The request body is documented as `multipart/form-data` with the body
 properties inline, files as binary strings (arrays of them for slices) and `required` by
 presence.
@@ -508,7 +515,8 @@ check and variants.
   `anyOf [X, {type: null}]` becomes `nullable: true` (beside `allOf [{$ref}]` for a ref)
   (`api/spec.go`, `canonical`).
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
-  `default` response pointing at `handler.ErrorResponse`. The `api.APIKeyHeader` security
+  `default` response pointing at the `handler.ErrorResponse` component, under the name the
+  namer gives it. The `api.APIKeyHeader` security
   scheme applies to every operation unless `api.Public()`.
 - huma is not a module dependency. Its `schema.go`, `registry.go` and `openapi.go` from
   v2.39.1 are copied into `components/rest/api/internal/huma` (MIT, `LICENSE` alongside),
@@ -542,7 +550,7 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
 
 ## 6. Validator glue (santhosh v6)
 
-- `compiler.AddResource("spec.json", ...)` once with a validation document holding every
+- `compiler.AddResource("mem:///spec.json", ...)` once with a validation document holding every
   component, including those only hidden operations use (the public document prunes them),
   then per operation compile a synthetic schema `{properties:{path,query,header,body}}`
   whose parts `$ref` into it. Compiled schemas are immutable and goroutine-safe; the
@@ -576,7 +584,7 @@ Registry and documentation
   PR and regenerates SDKs from it.
 - **Declare the default error response once** (ogen `convenient_errors`, swaggest
   `AddRespStructure` with `IsDefault`): every operation references the same
-  `handler.ErrorResponse` component under `default`, so every generated SDK gets a typed
+  `handler.ErrorResponse` component (named by the namer) under `default`, so every generated SDK gets a typed
   error.
 - **Security scheme declared once, opted out per operation** (huma `Security`,
   oapi-codegen): SDKs need it to send the header; `api.Public()` for Bootstrap-style
@@ -724,7 +732,10 @@ Remaining:
    generation, contract tests. It also runs the spike checks that need the generators and the
    real server: progenitor's output has no `deny_unknown_fields`; the 3.0.3 file loads in
    progenitor and the 3.1 file in hey-api and openapi-python-client, each generating a named
-   `RunStatus` enum and a typed error from `default`; every success and error response is
+   `RunStatus` enum and a typed error from `default`; progenitor reads a nullable field that
+   narrows an enum, `{nullable: true, allOf: [{$ref}], enum: [...]}` in the 3.0.3 file, as
+   optional (the sibling `enum` carries no `null`, which a strict 3.0.3 reader takes as
+   forbidding it while the server accepts it; add `null` there if progenitor needs it); every success and error response is
    byte-identical to the current server for the ten `runs` operations, except the intended
    stricter validation cases.
 3. emma: migrates once v1.30.0 is released, with a codemod for request structs

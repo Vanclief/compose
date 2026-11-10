@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding"
-	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -51,14 +50,13 @@ func splitValues(values []string) []string {
 	return values
 }
 
-// errUnsupportedParam marks a Go type that checkParamType should have
-// rejected at registration: a bug, never client input.
-var errUnsupportedParam = errors.New("unsupported parameter type")
-
-// setParams stores the raw parameter values into req. A conversion failure
-// comes from client input the schema could not rule out (a date-time the
-// schema accepts but time.Time rejects, an integer out of the field's range)
-// and becomes one EINVALID naming each parameter, never echoing the value.
+// setParams stores the raw parameter values into req. An ez EINTERNAL error
+// (a Go type checkParamTypes should have rejected at registration, or a
+// TextUnmarshaler reporting its own failure) is the server's and returned
+// as EINTERNAL. Any other conversion failure comes from client input the
+// schema could not rule out (a date-time the schema accepts but time.Time
+// rejects, an integer out of the field's range) and becomes one EINVALID
+// naming each parameter, never echoing the value.
 func setParams(req reflect.Value, params []openapi.Param, values [][]string) error {
 	var fields []validate.FieldError
 	for i, p := range params {
@@ -73,7 +71,8 @@ func setParams(req reflect.Value, params []openapi.Param, values [][]string) err
 		} else {
 			err = setValue(field, values[i])
 		}
-		if errors.Is(err, errUnsupportedParam) {
+		_, isEZ := err.(*ez.Error)
+		if isEZ && ez.ErrorCode(err) == ez.EINTERNAL {
 			return ez.New(ez.EINTERNAL, fmt.Sprintf("could not set %s parameter %s", p.In, p.Name), err)
 		}
 		if err != nil {
@@ -229,7 +228,9 @@ func setScalar(v reflect.Value, s string) error {
 		}
 		v.SetFloat(f)
 	default:
-		return fmt.Errorf("%w %s", errUnsupportedParam, v.Type())
+		// checkParamTypes rejects the type at registration: a bug, never
+		// client input.
+		return ez.New(ez.EINTERNAL, "unsupported parameter type "+v.Type().String(), nil)
 	}
 	return nil
 }

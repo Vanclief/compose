@@ -64,6 +64,48 @@ func TestManageErrorSentryGate(t *testing.T) {
 	}
 }
 
+// ManageError reports every error it answers as a 500, 503 or 504, even an
+// Echo error that ReportToSentry skips for its Echo status.
+func TestManageErrorSentryRawErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		level  sentry.Level
+	}{
+		{"echo sentinel", echo.ErrNotFound, http.StatusInternalServerError, sentry.LevelError},
+		{"echo wrapping internal", echo.ErrBadRequest.Wrap(ez.New(ez.EINTERNAL, "boom", nil)), http.StatusInternalServerError, sentry.LevelError},
+		{"raw deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, sentry.LevelWarning},
+		{"invalid", ez.New(ez.EINVALID, "bad", nil), http.StatusBadRequest, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &recordingTransport{}
+			client, err := sentry.NewClient(sentry.ClientOptions{Transport: transport})
+			require.NoError(t, err)
+			hub := sentry.NewHub(client, sentry.NewScope())
+
+			rec := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+			c.Set("sentry", hub) // same key sentryecho middleware uses
+
+			request := requests.New(http.Header{}, "127.0.0.1")
+			err = NewHandler(nil).ManageError(c, "test", request, tt.err)
+			require.NoError(t, err)
+			require.Equal(t, tt.status, rec.Code)
+
+			if tt.level == "" {
+				require.Empty(t, transport.events)
+				return
+			}
+			require.Len(t, transport.events, 1)
+			require.Equal(t, tt.level, transport.events[0].Level)
+			require.Equal(t, request.GetID(), transport.events[0].Tags["Request ID"])
+		})
+	}
+}
+
 type loginBody struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`

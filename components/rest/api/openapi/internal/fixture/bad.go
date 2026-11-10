@@ -1,6 +1,12 @@
 package fixture
 
-import "github.com/google/uuid"
+import (
+	"mime/multipart"
+
+	"github.com/google/uuid"
+
+	"github.com/vanclief/compose/types"
+)
 
 // BadTag has a typo in a constraint tag.
 type BadTag struct {
@@ -31,6 +37,46 @@ type StructParam struct {
 type DuplicateParam struct {
 	A string `json:"-" header:"X-Trace"`
 	B string `json:"-" header:"x-trace"`
+}
+
+// NestedQuery holds a query parameter: read only when a request type embeds
+// it.
+type NestedQuery struct {
+	Q string `json:"-" query:"q"`
+	B int    `json:"b"`
+}
+
+// NestedParam reaches NestedQuery through a named field.
+type NestedParam struct {
+	N NestedQuery `json:"n"`
+}
+
+// NestedParamSlice reaches NestedQuery through a slice element.
+type NestedParamSlice struct {
+	Items []NestedQuery `json:"items"`
+}
+
+// NestedParamOptional reaches NestedQuery through an Optional's element.
+type NestedParamOptional struct {
+	N types.Optional[NestedQuery] `json:"n"`
+}
+
+// EmbeddedAndNested embeds NestedQuery, so its q is a parameter, and also
+// reaches it through a named field, where q is ignored.
+type EmbeddedAndNested struct {
+	NestedQuery
+	Again NestedQuery `json:"again"`
+}
+
+// NestedFileHolder holds a file field: read only when a request type
+// embeds it.
+type NestedFileHolder struct {
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// NestedFile reaches NestedFileHolder through a named field.
+type NestedFile struct {
+	Upload NestedFileHolder `json:"upload"`
 }
 
 // BadValue has a constraint huma cannot parse (huma panics, we return an error).

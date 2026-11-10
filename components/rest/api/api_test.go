@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -404,6 +405,83 @@ func TestTimeParams(t *testing.T) {
 
 	rec = s.do(http.MethodGet, "/runs?at="+sentinel+"&limit=1", "", "X-Since", sentinel)
 	requireError(t, rec, http.StatusBadRequest, "query at must be a valid date-time")
+}
+
+type bigIntRequest struct {
+	requests.NoRules
+	U *uint64 `json:"-" query:"u"`
+	I *int64  `json:"-" query:"i"`
+}
+
+// TestBigIntParams: a uint64 parameter takes values at or above 2^63, and a
+// signed one answers them with a 400.
+func TestBigIntParams(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *bigIntRequest
+	api.GET(reg.Group("/big"), "", "get", func(ctx context.Context, req *bigIntRequest) (fixture.HealthResponse, error) {
+		got = req
+		return fixture.HealthResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/big?u=18446744073709551615", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NotNil(t, got.U)
+	require.Equal(t, uint64(18446744073709551615), *got.U)
+
+	rec = s.do(http.MethodGet, "/big?i=9223372036854775808", "")
+	requireError(t, rec, http.StatusBadRequest, "query i is invalid")
+
+	// A multipart integer above int64 decodes into an int field as a 400.
+	body, contentType := form(t,
+		part{name: "category", value: "log"},
+		part{name: "attempt", value: "9223372036854775808"},
+		part{name: "manifest", value: "steps: 3", filename: "manifest.yaml"},
+	)
+	rec = newServer(t).do(http.MethodPost, "/runs/"+fixture.KnownID.String()+"/artifacts", body, echo.HeaderContentType, contentType)
+	requireError(t, rec, http.StatusBadRequest, "form values could not be decoded")
+}
+
+// textParam fails on "internal" with the server's own error and on anything
+// but "ok" with a plain error.
+type textParam string
+
+func (p *textParam) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "ok":
+		*p = textParam(text)
+		return nil
+	case "internal":
+		return ez.New(ez.EINTERNAL, "lookup table missing", nil)
+	}
+	return errors.New("unknown value")
+}
+
+type textParamRequest struct {
+	requests.NoRules
+	P textParam `json:"-" query:"p"`
+}
+
+// TestTextParamErrors: a TextUnmarshaler's ez EINTERNAL error is a 500, any
+// other error is client input.
+func TestTextParamErrors(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.GET[textParamRequest, fixture.HealthResponse](reg.Group("/text"), "", "get", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/text?p=ok", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = s.do(http.MethodGet, "/text?p=bad", "")
+	requireError(t, rec, http.StatusBadRequest, "query p is invalid")
+
+	rec = s.do(http.MethodGet, "/text?p=internal", "")
+	resp := requireError(t, rec, http.StatusInternalServerError, "")
+	require.Equal(t, ez.EINTERNAL, resp.Error.Code)
 }
 
 func TestMaxBody(t *testing.T) {

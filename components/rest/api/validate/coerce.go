@@ -26,12 +26,17 @@ func Coerce(values []string, kind Kind) any {
 	switch kind.Type {
 	case "integer":
 		n, err := strconv.ParseInt(values[0], 10, 64)
+		if err == nil {
+			// The canonical text: ParseInt accepts 007 and +5, which are not
+			// JSON numbers.
+			return json.Number(strconv.FormatInt(n, 10))
+		}
+		// A uint64 value at or above 2^63.
+		u, err := strconv.ParseUint(values[0], 10, 64)
 		if err != nil {
 			return values[0]
 		}
-		// The canonical text: ParseInt accepts 007 and +5, which are not
-		// JSON numbers.
-		return json.Number(strconv.FormatInt(n, 10))
+		return json.Number(strconv.FormatUint(u, 10))
 	case "number":
 		_, err := strconv.ParseFloat(values[0], 64)
 		if err != nil || !json.Valid([]byte(values[0])) {

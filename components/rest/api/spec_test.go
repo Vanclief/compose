@@ -6,6 +6,7 @@ import (
 	"flag"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
+	"github.com/vanclief/compose/components/rest/api/openapi"
+	"github.com/vanclief/compose/components/rest/apitest"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/types"
 )
@@ -160,6 +163,69 @@ func TestSpec30(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, raw, again)
 	require.Equal(t, raw, specOf(t, api.V30), "output differs across registries")
+}
+
+// refs collects every $ref value in a decoded document.
+func refs(v any, out []string) []string {
+	switch node := v.(type) {
+	case []any:
+		for _, item := range node {
+			out = refs(item, out)
+		}
+	case map[string]any:
+		for key, child := range node {
+			ref, ok := child.(string)
+			if key == "$ref" && ok {
+				out = append(out, ref)
+				continue
+			}
+			out = refs(child, out)
+		}
+	}
+	return out
+}
+
+// requireRefsResolve asserts every $ref of doc names a component of doc.
+func requireRefsResolve(t *testing.T, doc map[string]any) {
+	t.Helper()
+	components := dig(t, doc, "components", "schemas").(map[string]any)
+	all := refs(doc, nil)
+	require.NotEmpty(t, all)
+	for _, ref := range all {
+		name, ok := strings.CutPrefix(ref, "#/components/schemas/")
+		require.True(t, ok, "unexpected $ref %q", ref)
+		require.Contains(t, components, name, "dangling $ref %q", ref)
+	}
+}
+
+// TestSpecNamer: with a namer, the error response still points at the
+// component the namer named, in both documents and the contract.
+func TestSpecNamer(t *testing.T) {
+	e := newEcho()
+	app := &fixture.App{}
+	reg := api.New(e, api.Public(), api.Namer(openapi.SegmentsNamer(2)))
+	g := reg.Group("/runs")
+	api.GET(g, "/:id", "get", app.Get)
+	reg.Ready()
+
+	for _, v := range []api.Version{api.V31, api.V30} {
+		raw, err := reg.Spec(v)
+		require.NoError(t, err)
+		doc := decode(t, raw)
+		requireRefsResolve(t, doc)
+		require.Equal(t, "#/components/schemas/rest.handler.ErrorResponse",
+			dig(t, doc, "paths", "/runs/{id}", "get", "responses", "default", "content", "application/json", "schema", "$ref"))
+	}
+
+	contract := apitest.New(t, reg)
+	rec := contract.Do(t, e, "runs.get", httptest.NewRequest(http.MethodGet, "/runs/"+fixture.KnownID.String(), nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = contract.Do(t, e, "runs.get", httptest.NewRequest(http.MethodGet, "/runs/"+fixture.MissingID.String(), nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	fake := &fakeTB{TB: t}
+	contract.AssertResponse(fake, "runs.get", http.StatusNotFound, []byte(`{"error":{"code":"not_found"}}`))
+	require.Len(t, fake.errors, 1)
 }
 
 func specOf(t *testing.T, v api.Version) []byte {
@@ -435,6 +501,22 @@ func TestRegistrationFailures(t *testing.T) {
 		api.POST[runIDRequest, fixture.Run](g, "/:run_id", "poke", stub)
 	})
 	require.Contains(t, msg, "duplicate route, already registered as runs.touch")
+
+	// Under another method the names must still match: OpenAPI forbids
+	// /runs/{id} next to /runs/{run_id}.
+	_, g = newGroup()
+	api.GET[fixture.GetRequest, fixture.Run](g, "/:id", "get", stub)
+	msg = panicMessage(t, func() {
+		api.DELETE[runIDRequest, fixture.Run](g, "/:run_id", "delete", stub)
+	})
+	require.Contains(t, msg, "api: DELETE /runs/:run_id (runs.delete): path /runs/:run_id names its placeholders differently from GET /runs/:id (runs.get)")
+
+	// One placeholder name twice, across the group prefix and the path.
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.GetRequest, fixture.Run](g.Group("/:id/steps"), "/:id", "get", stub)
+	})
+	require.Contains(t, msg, "placeholder :id appears more than once")
 
 	// A router that does not overwrite routes refuses a method and path
 	// registered outside the registry (echo.New overwrites, as in v4).

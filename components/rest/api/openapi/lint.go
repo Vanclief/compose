@@ -25,10 +25,15 @@ var allowedTags = map[string]bool{
 // lintType checks every struct reachable from t for unknown tags, Echo's
 // param tag and property names that huma's Downgrade would rename. A request
 // type is also refused a default tag: the registry applies no default, so
-// the document would promise a value the handler never gets.
+// the document would promise a value the handler never gets; and a path,
+// query, header or form tag outside the request type and the structs it
+// embeds, where the registry never reads it.
 func lintType(t reflect.Type, request bool) error {
 	var problems []string
 	lintWalk(t, request, map[reflect.Type]bool{}, &problems)
+	if request {
+		lintParamTags(t, true, map[paramVisit]bool{}, &problems)
+	}
 	if len(problems) == 0 {
 		return nil
 	}
@@ -87,6 +92,70 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 		}
 
 		lintWalk(f.Type, request, seen, problems)
+	}
+}
+
+// paramTags are the tags the registry reads only on the request type and the
+// structs it embeds (buildParams and the registry's file fields read its
+// visible fields).
+var paramTags = []string{"path", "query", "header", "form"}
+
+// paramVisit is a struct lintParamTags walked, and whether it was reached
+// from the request type through embedding only. A struct both embedded and
+// reached through a named field is walked both ways.
+type paramVisit struct {
+	t        reflect.Type
+	embedded bool
+}
+
+// lintParamTags reports a field tagged path, query, header or form in a
+// struct reached from the request type other than through embedding: a
+// named field, a slice, array or map element, or an Optional's element.
+func lintParamTags(t reflect.Type, embedded bool, seen map[paramVisit]bool, problems *[]string) {
+	t = deref(t)
+	elem, ok := optionalElem(t)
+	if ok {
+		lintParamTags(elem, false, seen, problems)
+		return
+	}
+	visit := paramVisit{t: t, embedded: embedded}
+	if seen[visit] || isOpaque(t) {
+		return
+	}
+	seen[visit] = true
+
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		lintParamTags(t.Elem(), false, seen, problems)
+		return
+	case reflect.Struct:
+	default:
+		return
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
+		if !embedded {
+			for _, key := range paramTags {
+				_, tagged := f.Tag.Lookup(key)
+				if tagged {
+					*problems = append(*problems, fmt.Sprintf("%s.%s: the %s tag is ignored on a nested struct; parameters and files are read only from the request type and the structs it embeds", t, f.Name, key))
+				}
+			}
+		}
+
+		if f.Anonymous && embedded {
+			lintParamTags(f.Type, true, seen, problems)
+			continue
+		}
+		if jsonName(f) == "-" {
+			continue
+		}
+		lintParamTags(f.Type, false, seen, problems)
 	}
 }
 

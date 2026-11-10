@@ -184,9 +184,15 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 // into an error.
 func recoverPanic(err *error) {
 	rec := recover()
-	if rec != nil {
-		*err = ez.New(ez.EINVALID, fmt.Sprintf("openapi: %v", rec), nil)
+	if rec == nil {
+		return
 	}
+	msg := fmt.Sprint(rec)
+	ezErr, ok := rec.(*ez.Error)
+	if ok {
+		msg = ez.ErrorMessage(ezErr)
+	}
+	*err = ez.New(ez.EINVALID, "openapi: "+msg, nil)
 }
 
 // registry implements huma.Registry. It mirrors huma's map registry, but
@@ -252,7 +258,7 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 			}
 
 			if t.Name() != "" {
-				panic(fmt.Errorf("duplicate component name %s for %s and %s%s", name, t, r.types[name], collisionHint))
+				panic(ez.New(ez.EINVALID, fmt.Sprintf("duplicate component name %s for %s and %s%s", name, t, r.types[name], collisionHint), nil))
 			}
 
 			name = r.freeName(name)
@@ -318,7 +324,7 @@ func (r *registry) registerEnum(t reflect.Type, values []string) string {
 	existing, ok := r.types[name]
 	if ok {
 		if existing != t {
-			panic(fmt.Errorf("duplicate component name %s for %s and %s%s", name, t, existing, collisionHint))
+			panic(ez.New(ez.EINVALID, fmt.Sprintf("duplicate component name %s for %s and %s%s", name, t, existing, collisionHint), nil))
 		}
 		return name
 	}

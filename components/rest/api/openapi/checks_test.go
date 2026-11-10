@@ -302,7 +302,8 @@ func TestNamer(t *testing.T) {
 	require.NoError(t, err)
 	_, err = r.AddRequest(reflect.TypeFor[bunits.ListRequest]())
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "duplicate component name units.ListRequest")
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.True(t, strings.HasPrefix(ez.ErrorMessage(err), "openapi: duplicate component name units.ListRequest"), ez.ErrorMessage(err))
 	require.Contains(t, err.Error(), "openapi.WithNamer")
 
 	r = NewReflector(WithNamer(SegmentsNamer(2)))

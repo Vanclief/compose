@@ -20,14 +20,11 @@ import (
 	"github.com/vanclief/compose/components/rest/api/validate"
 )
 
-// errorResponseRef is the component every operation's default response uses.
-const errorResponseRef = "spec.json#/components/schemas/handler.ErrorResponse"
-
 // Contract validates responses of a registry's operations.
 type Contract struct {
 	responses map[string]*validate.Schema // operations that produce JSON
 	produces  map[string][]string
-	errors    *validate.Schema
+	errors    *validate.Schema // the default response every operation shares
 }
 
 // New compiles one validator per operation's application/json 200 response
@@ -44,21 +41,22 @@ func New(t testing.TB, reg *api.Registry) *Contract {
 
 	c := &Contract{responses: map[string]*validate.Schema{}, produces: map[string][]string{}}
 
-	c.errors, err = compiler.Compile("contract:error", wrap(errorResponseRef))
-	if err != nil {
-		t.Fatalf("apitest: compile error response: %s", ez.ErrorMessage(err))
-	}
-
 	for _, op := range reg.Operations() {
+		responses := "spec.json#/paths/" + pointerEscape(op.SpecPath) + "/" + strings.ToLower(op.Method) + "/responses/"
+
+		if c.errors == nil {
+			c.errors, err = compiler.Compile("contract:error", wrap(responses+"default/content/application~1json/schema"))
+			if err != nil {
+				t.Fatalf("apitest: compile error response: %s", ez.ErrorMessage(err))
+			}
+		}
+
 		c.produces[op.OperationID] = op.Produces
 		if !slices.Contains(op.Produces, echo.MIMEApplicationJSON) {
 			continue
 		}
 
-		ref := "spec.json#/paths/" + pointerEscape(op.SpecPath) + "/" + strings.ToLower(op.Method) +
-			"/responses/200/content/application~1json/schema"
-
-		c.responses[op.OperationID], err = compiler.Compile("contract:"+op.OperationID, wrap(ref))
+		c.responses[op.OperationID], err = compiler.Compile("contract:"+op.OperationID, wrap(responses+"200/content/application~1json/schema"))
 		if err != nil {
 			t.Fatalf("apitest: compile %s response: %s", op.OperationID, ez.ErrorMessage(err))
 		}
@@ -73,13 +71,14 @@ func New(t testing.TB, reg *api.Registry) *Contract {
 func (c *Contract) AssertResponse(t testing.TB, operationID string, status int, body []byte) {
 	t.Helper()
 
+	_, known := c.produces[operationID]
+	if !known {
+		t.Errorf("apitest: unknown operation %q", operationID)
+		return
+	}
+
 	schema := c.errors
 	if status == http.StatusOK {
-		_, known := c.produces[operationID]
-		if !known {
-			t.Errorf("apitest: unknown operation %q", operationID)
-			return
-		}
 		var ok bool
 		schema, ok = c.responses[operationID]
 		if !ok {

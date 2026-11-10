@@ -92,10 +92,10 @@ func (r *Registry) Spec(v Version) ([]byte, error) {
 	return bytes.Clone(spec), nil
 }
 
-// StrictSpec returns the 3.1 document including hidden operations, with
-// additionalProperties:false on every response object component and no
-// component pruning. It is meant for contract tests (see apitest). It calls
-// Ready.
+// StrictSpec returns the 3.1 document including hidden operations, so with
+// the components only they use, and with additionalProperties:false on every
+// response object component. It is meant for contract tests (see apitest).
+// It calls Ready.
 func (r *Registry) StrictSpec() []byte {
 	r.Ready()
 	return bytes.Clone(r.strict)
@@ -304,7 +304,7 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 			},
 			"default": {
 				Description: "Error",
-				Content:     jsonContent(&huma.Schema{Ref: openapi.RefPrefix + "handler.ErrorResponse"}),
+				Content:     jsonContent(res.ResponseSchema(errorResponseType)),
 			},
 		},
 	}
