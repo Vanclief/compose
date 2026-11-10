@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
@@ -314,6 +315,31 @@ type unexportedPointerRequest struct {
 	*pageParams
 }
 
+// Slices of pointers: the items would be nullable, which a query string or
+// a header cannot carry.
+type pointerSliceQueryRequest struct {
+	requests.NoRules
+	S []*fixture.RunStatus `json:"-" query:"s"`
+}
+
+type pointerSliceHeaderRequest struct {
+	requests.NoRules
+	S *[]*string `json:"-" header:"x-s"`
+}
+
+type pointerSliceUUIDRequest struct {
+	requests.NoRules
+	IDs []*uuid.UUID `json:"-" query:"ids"`
+}
+
+// valueSliceRequest carries slices of values, which stay supported.
+type valueSliceRequest struct {
+	requests.NoRules
+	Names    []string            `json:"-" query:"names"`
+	IDs      []uuid.UUID         `json:"-" query:"ids"`
+	Statuses []fixture.RunStatus `json:"-" header:"x-statuses"`
+}
+
 type mapParamRequest struct {
 	requests.NoRules
 	Filter map[string]string `json:"-" query:"filter"`
@@ -515,6 +541,25 @@ func TestRegistrationFailures(t *testing.T) {
 		api.GET[mapParamRequest, fixture.Run](g, "", "get", stub)
 	})
 	require.Contains(t, msg, "query parameter filter: type map[string]string is not supported")
+
+	pointerSlices := []struct {
+		register func(g *api.Group)
+		want     string
+	}{
+		{func(g *api.Group) { api.GET[pointerSliceQueryRequest, fixture.Run](g, "", "list", stub) }, "query parameter s: type []*fixture.RunStatus is a slice of pointers, which is not supported: a parameter item cannot be null (use a slice of values)"},
+		{func(g *api.Group) { api.GET[pointerSliceHeaderRequest, fixture.Run](g, "", "list", stub) }, "header parameter x-s: type *[]*string is a slice of pointers"},
+		{func(g *api.Group) { api.GET[pointerSliceUUIDRequest, fixture.Run](g, "", "list", stub) }, "query parameter ids: type []*uuid.UUID is a slice of pointers"},
+	}
+	for _, tt := range pointerSlices {
+		_, g = newGroup()
+		msg = panicMessage(t, func() {
+			tt.register(g)
+		})
+		require.Contains(t, msg, tt.want)
+	}
+	reg, g = newGroup()
+	api.GET[valueSliceRequest, fixture.Run](g, "", "list", stub)
+	reg.Ready()
 
 	_, g = newGroup()
 	msg = panicMessage(t, func() {

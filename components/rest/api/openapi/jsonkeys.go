@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -15,10 +16,14 @@ import (
 	"github.com/vanclief/compose/primitives/enums"
 )
 
-var jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+var (
+	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+	jsonMarshalerType   = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType   = reflect.TypeFor[encoding.TextMarshaler]()
+)
 
-// jsonField is a struct field encoding/json decodes into, possibly promoted
-// from an embedded struct.
+// jsonField is a struct field encoding/json decodes into and encodes from,
+// possibly promoted from an embedded struct.
 type jsonField struct {
 	name   string       // JSON key
 	tagged bool         // name came from the json tag
@@ -170,11 +175,15 @@ func validJSONTag(s string) bool {
 	return true
 }
 
-// checkRequestKeys verifies, for every struct reachable from the request
-// root t, that the keys encoding/json binds are exactly the properties of
-// the schema huma produced, and that no field carries hidden:"true". Any
-// difference would let a value the validator never saw reach the handler.
-func (r *registry) checkRequestKeys(t reflect.Type) error {
+// checkKeys verifies, for every struct reachable from the root t, that the
+// keys encoding/json binds (request) or sends (response) are exactly the
+// properties of the schema huma produced. A request field may not carry
+// hidden:"true"; a response field may, its key sent but deliberately
+// undocumented. Any other difference would let a value the validator never
+// saw reach the handler, or send a key the document does not list. Types
+// encoding/json hands to their own decoder (request) or encoder (response)
+// are not looked into.
+func (r *registry) checkKeys(t reflect.Type, request bool) error {
 	schemas := map[reflect.Type]string{}
 	for name, typ := range r.types {
 		schemas[typ] = name
@@ -207,13 +216,16 @@ func (r *registry) checkRequestKeys(t reflect.Type) error {
 		}
 		_, aliased := r.aliases[t]
 		_, isEnum := enums.Values(t)
-		if aliased || isEnum || isOpaque(t) || t.Implements(jsonUnmarshalerType) || reflect.PointerTo(t).Implements(jsonUnmarshalerType) {
+		if aliased || isEnum || isOpaque(t) || codesOwnJSON(t, request) {
 			return
 		}
 
 		hidden := map[string]bool{}
 		hiddenFields(t, "", map[reflect.Type]bool{}, func(path string, f reflect.StructField) {
 			hidden[path] = true
+			if !request {
+				return
+			}
 			isParam := slices.ContainsFunc(paramLocations, func(loc string) bool {
 				_, ok := f.Tag.Lookup(loc)
 				return ok
@@ -228,7 +240,7 @@ func (r *registry) checkRequestKeys(t reflect.Type) error {
 		fields, candidates := jsonFields(t)
 		name, ok := schemas[t]
 		if ok && r.schemas[name].Type == "object" {
-			problems = append(problems, compareKeys(t, fields, candidates, r.schemas[name], hidden)...)
+			problems = append(problems, compareKeys(t, fields, candidates, r.schemas[name], hidden, request)...)
 		}
 
 		for _, f := range fields {
@@ -243,10 +255,33 @@ func (r *registry) checkRequestKeys(t reflect.Type) error {
 	return ez.New(ez.EINVALID, "openapi: "+strings.Join(problems, "; "), nil)
 }
 
-// compareKeys reports keys bound by encoding/json but missing from schema,
-// schema properties encoding/json would not bind, and JSON names declared by
-// several fields where huma and encoding/json may pick different ones.
-func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jsonField, schema *huma.Schema, hidden map[string]bool) []string {
+// codesOwnJSON reports whether encoding/json hands t, or a pointer to it, to
+// the type's own decoder (request: json.Unmarshaler; isOpaque covers
+// encoding.TextUnmarshaler) or encoder (response: json.Marshaler or
+// encoding.TextMarshaler) instead of reading or writing its fields.
+func codesOwnJSON(t reflect.Type, request bool) bool {
+	coders := []reflect.Type{jsonMarshalerType, textMarshalerType}
+	if request {
+		coders = []reflect.Type{jsonUnmarshalerType}
+	}
+	ptr := reflect.PointerTo(t)
+	return slices.ContainsFunc(coders, func(coder reflect.Type) bool {
+		return t.Implements(coder) || ptr.Implements(coder)
+	})
+}
+
+// compareKeys reports keys bound (request) or sent (response) by
+// encoding/json but missing from schema, schema properties encoding/json
+// would not bind or send, and JSON names declared by several fields where
+// huma and encoding/json may pick different ones.
+func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jsonField, schema *huma.Schema, hidden map[string]bool, request bool) []string {
+	missing := "is bound by encoding/json but missing from the schema"
+	unused := "is not bound by encoding/json"
+	if !request {
+		missing = "is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type"
+		unused = "is not sent by encoding/json"
+	}
+
 	var problems []string
 	props := map[string]bool{}
 	for _, name := range propertyNames(schema) {
@@ -260,7 +295,7 @@ func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jso
 			continue
 		}
 		if !props[f.name] {
-			problems = append(problems, fmt.Sprintf("%s: field %s (json %q) is bound by encoding/json but missing from the schema", t, f.path, f.name))
+			problems = append(problems, fmt.Sprintf("%s: field %s (json %q) %s", t, f.path, f.name, missing))
 			continue
 		}
 
@@ -285,7 +320,7 @@ func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jso
 
 	for _, name := range sortedKeys(props) {
 		if !bound[name] {
-			problems = append(problems, fmt.Sprintf("%s: schema property %q is not bound by encoding/json (conflicting fields at the same depth)", t, name))
+			problems = append(problems, fmt.Sprintf("%s: schema property %q %s (conflicting fields at the same depth)", t, name, unused))
 		}
 	}
 	return problems

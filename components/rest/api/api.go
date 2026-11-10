@@ -68,9 +68,9 @@ var errorResponseType = reflect.TypeFor[handler.ErrorResponse]()
 
 // Registry holds every registered operation of an Echo instance.
 //
-// A body sent without a Content-Type header is decoded as JSON; both apps
-// authenticate with a header, so this is not a CSRF vector for them. Apps
-// that authenticate with cookies must add a CSRF middleware.
+// A body sent without a Content-Type header is decoded as JSON. That is not
+// a CSRF vector for an app that authenticates with a header; an app that
+// authenticates with cookies must add a CSRF middleware.
 type Registry struct {
 	echo *echo.Echo
 

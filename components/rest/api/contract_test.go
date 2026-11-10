@@ -246,6 +246,40 @@ func TestAuthenticateBeforeBody(t *testing.T) {
 	require.Nil(t, app.Last(), "handler invoked despite the authenticator rejecting")
 }
 
+// The authenticator runs before a multipart body is parsed too.
+func TestAuthenticateBeforeMultipartBody(t *testing.T) {
+	e := newEcho()
+	app := &fixture.App{}
+	calls := 0
+	reg := api.New(e, api.Authenticate(reject(&calls)))
+	api.POST(reg.Group("/runs"), "/:id/artifacts", "upload", app.Upload)
+	reg.Ready()
+	target := "/runs/" + fixture.KnownID.String() + "/artifacts"
+
+	// A body that is not a multipart form, and a form that breaks the
+	// schema and misses the required file: the authenticator rejects both
+	// before a byte of the body is read.
+	valid, contentType := form(t, part{name: "category", value: sentinel})
+	bodies := map[string]string{
+		"--x\r\nbroken": "multipart/form-data; boundary=x",
+		valid:           contentType,
+	}
+	for body, contentType := range bodies {
+		counter := &readCounter{r: strings.NewReader(body)}
+		req := httptest.NewRequest(http.MethodPost, target, counter)
+		req.Header.Set(echo.HeaderContentType, contentType)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		resp := requireError(t, rec, http.StatusUnauthorized, "no")
+		require.Equal(t, ez.ENOTAUTHENTICATED, resp.Error.Code, body)
+		require.Zero(t, counter.reads, body)
+		require.Nil(t, req.MultipartForm, body)
+	}
+	require.Equal(t, 2, calls)
+	require.Nil(t, app.Last(), "handler invoked despite the authenticator rejecting")
+}
+
 func TestSchemaBeforeValidate(t *testing.T) {
 	s := newServer(t)
 	target := "/runs/" + fixture.KnownID.String()
@@ -541,7 +575,8 @@ func TestContextInboundCancellation(t *testing.T) {
 		t.Fatal("handler did not unblock when the inbound context was cancelled")
 	}
 	require.ErrorIs(t, seen, context.Canceled)
-	require.NotEqual(t, http.StatusOK, rec.Code)
+	resp := requireError(t, rec, 499, "")
+	require.Equal(t, ez.ECANCELED, resp.Error.Code)
 }
 
 func TestContextRouteTimeoutWins(t *testing.T) {

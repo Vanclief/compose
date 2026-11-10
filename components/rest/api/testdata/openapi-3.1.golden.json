@@ -27,7 +27,10 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/fixture.Config"
             },
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "name": {
             "minLength": 1,

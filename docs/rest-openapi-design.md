@@ -167,22 +167,32 @@ Rules enforced at registration (fail boot):
   Echo's `param` is rejected with a pointer to `path`, and `default` on a request type,
   because the registry applies no default: the handler sets it and `doc` describes it. The
   lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
-  on the value's type), property names
+  on the value's type), the `format` tag on anything but a plain string or a slice of them
+  (on a `time.Time`, a number, a `uuid.UUID` or any type that sets its own format or reads
+  its own text, the schema and the decoder would disagree on the value's text), property names
   `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
   reference, `minimum`/`maximum` outside a sized integer's range, a pointer to
   `types.Optional`, and on a request type a `path`, `query`, `header` or `form` tag in a
   struct the request type does not embed (a named field, a slice or map element), where the
-  registry never reads it
+  registry never reads it, and a map keyed by an enum type (the schema has no rule for
+  keys, so any string would reach the handler as a key; use a `string` key and check it in
+  `Validate()`)
 - the keys `encoding/json` binds are exactly the schema's properties, at every depth of the
   request type: registration fails for unexported embedded structs, `hidden` body fields,
   embedded non-struct types and shadowed promoted fields, any of which would let a value the
   validator never saw reach the handler (`openapi/jsonkeys.go`); a `hidden` parameter fails
   too, since the document would hide a parameter the server still reads
+- the keys `encoding/json` writes are exactly the schema's properties, at every depth of a
+  response type: registration fails for the same shapes (an unexported embedded struct's
+  fields are sent but huma does not list them), so the document cannot miss a field the
+  server sends. `hidden` fields stay allowed there: sent, and left out on purpose. Types
+  that encode themselves (`json.Marshaler`, `encoding.TextMarshaler`) are not looked into
 - GET, HEAD and DELETE request types have no body properties (and no files); registration
   fails and points at the `query:` tag
 - param fields are string, bool or number kinds, `encoding.TextUnmarshaler`s or slices of
-  those: no structs, maps, `[]byte` or `types.Optional`, and none reached through an
-  unexported embedded pointer, which reflection cannot allocate
+  those: no structs, maps, `[]byte`, `types.Optional` or slices of pointers (an item cannot
+  be null), and none reached through an unexported embedded pointer, which reflection
+  cannot allocate
 - `Res` is the handler's return type, so the documented response cannot drift from what is
   written; it must not be an interface type, and `*api.Blob` is rejected (a nil pointer would
   need a runtime check; handlers return `api.Blob` by value). Any other pointer `Res` is
@@ -213,8 +223,8 @@ as unknown keys, then bind). Decode once instead.
 2. `requests.NewWithContext(c.Request().Context(), ...)`: the request context derives from
    the inbound one, so it keeps the values Echo middleware set and is cancelled when the
    client goes away. Its deadline is the earlier of the inbound deadline and the route or
-   group timeout (`api.Timeout`, passed as `requests.WithTimeout`, which replaces the 15s
-   default and panics on a duration that is not positive; auditor3 uses 60s). ID, `c.RealIP()`, `Client` header, locale and method as
+   group timeout (`api.Timeout`, which panics on a duration that is not positive and is
+   passed as `requests.WithTimeout`, replacing the 15s default; auditor3 uses 60s). ID, `c.RealIP()`, `Client` header, locale and method as
    before. `API-KEY` is a security scheme the authenticator reads, not a header param. The
    request is stored with `handler.SetRequest` before anything can fail, so
    `handler.Request(c)` returns it to middleware and to the error handler's reporter and
@@ -240,8 +250,9 @@ as unknown keys, then bind). Decode once instead.
    Missing stays missing (presence semantics).
 6. Read the body through `http.MaxBytesReader` under the operation's limit
    (`api.MaxBodyBytes`, the nearest of `api.New`, the groups and the operation, else
-   `api.DefaultMaxBody`, 1 MiB); a larger body is a 400 `body exceeds N bytes`, so registered
-   routes do not need `rest.WithBodyLimit`. Decode with `jsonschema.UnmarshalJSON`
+   `api.DefaultMaxBody`, 1 MiB); a larger body is a 400 `body exceeds N bytes`. An app
+   under `rest.Configure` keeps `rest.WithBodyLimit` all the same: `rest.RejectNUL` runs in
+   front of the registry and reads up to 32 MiB of a body before this limit applies. Decode with `jsonschema.UnmarshalJSON`
    (`loader.go:255-265`: `UseNumber`, rejects trailing data). One walk of the decoded
    body then bounds what validation costs. A body whose arrays and objects nest deeper than
    64 levels is a 400: every error carries its full path, so on a recursive type a small,
@@ -491,7 +502,7 @@ therefore implements `huma.Registry` itself (`openapi/reflector.go`), re-impleme
 numbering, `time.Time`, `TextUnmarshaler` and `SchemaProvider`, and every nested field passes
 through it, so compose's hooks apply at every depth. Schema generation stays huma's
 `SchemaFromType` and `SchemaFromField`. The post-pass is a real component: the `openapi`
-package is about 1,650 lines (the reflector, the request variants, the `encoding/json` key
+package is under 2,000 lines (the reflector, the request variants, the `encoding/json` key
 check, the lint and the parameters) plus golden fixtures, in separate walks for parameters,
 lint, key check and variants.
 
@@ -512,7 +523,9 @@ lint, key check and variants.
   cycles); parents re-point their refs. The variant is `<pkg>.<Type>Input` when the component
   is also reachable from a response, else it takes the component's own name. Response
   components keep huma's default: required unless `omitempty`/`omitzero`, a pointer to a
-  struct non-null, and a pointer to a scalar nullable unless it carries `omitempty`.
+  struct non-null, and a pointer to a scalar nullable unless it carries `omitempty`. A map
+  is nullable under the rules of a slice, which huma leaves non-null: Go sends a nil map as
+  `null`, and a strict client would fail on it.
 - **Clear `additionalProperties: false`** on every published component. Converted endpoints
   must keep ignoring unknown request keys as today, and progenitor's typify turns `false`
   into `deny_unknown_fields`, which would make adding a response field break deployed Rust
@@ -550,7 +563,8 @@ lint, key check and variants.
   v2.39.1 are copied into `components/rest/api/internal/huma` (MIT, `LICENSE` alongside),
   trimmed to what compose uses: no `huma.Validate` message precomputation (only its
   `pattern` compile check stays), no YAML output, no framework-only `Operation` fields, no
-  registry config, no `SchemaTransformer`. `file:line` references to huma in this document
+  registry config, no `SchemaTransformer`. One behaviour differs: a map is nullable by
+  default, as a slice is (`DefaultArrayNullable`). `file:line` references to huma in this document
   point at upstream v2.39.1. Golden tests guard the copy like they guarded a version pin.
 
 ### Optional body fields (`types.Optional[T]`)

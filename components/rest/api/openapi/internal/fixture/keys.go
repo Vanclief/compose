@@ -1,9 +1,15 @@
 package fixture
 
-import "github.com/vanclief/compose/primitives/enums"
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/vanclief/compose/primitives/enums"
+)
 
 // Body shapes whose encoding/json key set differs from huma's schema. Each
-// must be rejected when reachable from a request root.
+// must be rejected when reachable from a request root, and those that send
+// an undocumented key when reachable from a response root.
 
 type base struct {
 	Level int `json:"level" maximum:"5"`
@@ -59,6 +65,51 @@ type ConflictB struct {
 // NestedBad reaches UnexportedEmbed through a slice.
 type NestedBad struct {
 	Items []UnexportedEmbed `json:"items"`
+}
+
+type stamps struct {
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// StampedRun embeds an unexported struct: huma skips it, encoding/json
+// sends created_at.
+type StampedRun struct {
+	stamps
+	Name string `json:"name"`
+}
+
+// StampedRuns reaches StampedRun through a map field.
+type StampedRuns struct {
+	Runs map[string]StampedRun `json:"runs"`
+}
+
+// Extras is a non-struct type used embedded.
+type Extras map[string]string
+
+// EmbeddedMap embeds a non-struct type: encoding/json sends key "Extras".
+type EmbeddedMap struct {
+	Extras
+	Name string `json:"name"`
+}
+
+// JSONStampedRun is StampedRun writing itself with MarshalJSON.
+type JSONStampedRun struct {
+	stamps
+	Name string `json:"name"`
+}
+
+func (r JSONStampedRun) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.Name)
+}
+
+// TextStampedRun is StampedRun writing itself with MarshalText.
+type TextStampedRun struct {
+	stamps
+	Name string `json:"name"`
+}
+
+func (r TextStampedRun) MarshalText() ([]byte, error) {
+	return []byte(r.Name), nil
 }
 
 // HiddenParam hides a query parameter.

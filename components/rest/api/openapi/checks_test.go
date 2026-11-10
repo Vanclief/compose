@@ -141,27 +141,40 @@ func TestJSONFields(t *testing.T) {
 	}
 }
 
+// TestRequestKeyErrors: each type fails as a request. As a response, a type
+// fails on the same comparison with the keys encoding/json sends (response
+// is the expected message), except hidden fields, which a response may
+// carry, and a hidden parameter, whose json:"-" field is never sent.
 func TestRequestKeyErrors(t *testing.T) {
 	tests := []struct {
-		name string
-		typ  reflect.Type
-		want string
+		name     string
+		typ      reflect.Type
+		want     string
+		response string // "" when the type is fine as a response
 	}{
-		{"unexported embedded struct", reflect.TypeFor[fixture.UnexportedEmbed](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`},
-		{"hidden field", reflect.TypeFor[fixture.HiddenField](), `openapi: fixture.HiddenField: field Secret has hidden:"true", which is not allowed on request types (encoding/json still binds it)`},
-		{"hidden param", reflect.TypeFor[fixture.HiddenParam](), `openapi: fixture.HiddenParam: field Q has hidden:"true", which is not supported on a parameter (the document would hide a parameter the server still reads)`},
-		{"embedded non-struct", reflect.TypeFor[fixture.EmbeddedSlice](), `openapi: fixture.EmbeddedSlice: field Tags (json "Tags") is bound by encoding/json but missing from the schema`},
-		{"shadowed Go name", reflect.TypeFor[fixture.ShadowedGoName](), `openapi: fixture.ShadowedGoName: field Inner.ID (json "a_id") is bound by encoding/json but missing from the schema`},
-		// Built at runtime: vet's structtag check rejects the literals.
+		{"unexported embedded struct", reflect.TypeFor[fixture.UnexportedEmbed](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`,
+			`openapi: fixture.UnexportedEmbed: field base.Level (json "level") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		{"hidden field", reflect.TypeFor[fixture.HiddenField](), `openapi: fixture.HiddenField: field Secret has hidden:"true", which is not allowed on request types (encoding/json still binds it)`, ""},
+		{"hidden param", reflect.TypeFor[fixture.HiddenParam](), `openapi: fixture.HiddenParam: field Q has hidden:"true", which is not supported on a parameter (the document would hide a parameter the server still reads)`, ""},
+		{"embedded non-struct", reflect.TypeFor[fixture.EmbeddedSlice](), `openapi: fixture.EmbeddedSlice: field Tags (json "Tags") is bound by encoding/json but missing from the schema`,
+			`openapi: fixture.EmbeddedSlice: field Tags (json "Tags") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		{"shadowed Go name", reflect.TypeFor[fixture.ShadowedGoName](), `openapi: fixture.ShadowedGoName: field Inner.ID (json "a_id") is bound by encoding/json but missing from the schema`,
+			`openapi: fixture.ShadowedGoName: field Inner.ID (json "a_id") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		// Built at runtime: vet's structtag check rejects the literals. As a
+		// response, the first documents a key never sent and the second
+		// describes ConflictB.Y where Count is sent.
 		{"same depth conflict", reflect.StructOf([]reflect.StructField{
 			{Name: "ConflictA", Type: reflect.TypeFor[fixture.ConflictA](), Anonymous: true},
 			{Name: "ConflictB", Type: reflect.TypeFor[fixture.ConflictB](), Anonymous: true},
-		}), `openapi: struct { fixture.ConflictA; fixture.ConflictB }: schema property "x" is not bound by encoding/json (conflicting fields at the same depth)`},
+		}), `openapi: struct { fixture.ConflictA; fixture.ConflictB }: schema property "x" is not bound by encoding/json (conflicting fields at the same depth)`,
+			`openapi: struct { fixture.ConflictA; fixture.ConflictB }: schema property "x" is not sent by encoding/json (conflicting fields at the same depth)`},
 		{"shadow with different Go name", reflect.StructOf([]reflect.StructField{
 			{Name: "Count", Type: reflect.TypeFor[int](), Tag: `json:"x"`},
 			{Name: "ConflictB", Type: reflect.TypeFor[fixture.ConflictB](), Anonymous: true},
-		}), `openapi: struct { Count int "json:\"x\""; fixture.ConflictB }: json "x" is declared by Count and ConflictB.Y; rename one (only a direct field may shadow embedded fields of the same Go name)`},
-		{"nested through slice", reflect.TypeFor[fixture.NestedBad](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`},
+		}), `openapi: struct { Count int "json:\"x\""; fixture.ConflictB }: json "x" is declared by Count and ConflictB.Y; rename one (only a direct field may shadow embedded fields of the same Go name)`,
+			`openapi: struct { Count int "json:\"x\""; fixture.ConflictB }: json "x" is declared by Count and ConflictB.Y; rename one (only a direct field may shadow embedded fields of the same Go name)`},
+		{"nested through slice", reflect.TypeFor[fixture.NestedBad](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`,
+			`openapi: fixture.UnexportedEmbed: field base.Level (json "level") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,10 +183,43 @@ func TestRequestKeyErrors(t *testing.T) {
 			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 			require.Equal(t, tt.want, ez.ErrorMessage(err))
 
-			// The same types are fine as responses.
 			err = NewReflector().AddResponse(tt.typ)
-			require.NoError(t, err)
+			if tt.response == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+			require.Equal(t, tt.response, ez.ErrorMessage(err))
 		})
+	}
+}
+
+// TestResponseKeyErrors: a response type that sends a key its schema does
+// not list fails at any depth; one that encodes itself is not looked into.
+func TestResponseKeyErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{"unexported embedded struct", reflect.TypeFor[fixture.StampedRun](), `openapi: fixture.StampedRun: field stamps.CreatedAt (json "created_at") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		{"embedded map", reflect.TypeFor[fixture.EmbeddedMap](), `openapi: fixture.EmbeddedMap: field Extras (json "Extras") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		{"slice root", reflect.TypeFor[[]fixture.StampedRun](), `openapi: fixture.StampedRun: field stamps.CreatedAt (json "created_at") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+		{"map value of a field", reflect.TypeFor[fixture.StampedRuns](), `openapi: fixture.StampedRun: field stamps.CreatedAt (json "created_at") is sent by encoding/json but missing from the schema; export the embedded struct, or declare the field on the type`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := NewReflector().AddResponse(tt.typ)
+			require.Error(t, err)
+			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+			require.Equal(t, tt.want, ez.ErrorMessage(err))
+		})
+	}
+
+	for _, typ := range []reflect.Type{reflect.TypeFor[fixture.JSONStampedRun](), reflect.TypeFor[fixture.TextStampedRun]()} {
+		err := NewReflector().AddResponse(typ)
+		require.NoError(t, err, typ.String())
 	}
 }
 
@@ -237,6 +283,42 @@ func TestNullability(t *testing.T) {
 		"type":  []any{"array", "null"},
 		"items": map[string]any{"type": "integer", "format": "int32", "minimum": -32768.0, "maximum": 32767.0},
 	}, prop(t, req, "levels"))
+}
+
+// TestMapNullability: a nil map is sent as null like a nil slice, so each
+// map field is exactly as nullable as the slice field declared under the
+// same rule, in a response and in a request.
+func TestMapNullability(t *testing.T) {
+	r := NewReflector()
+	err := r.AddResponse(reflect.TypeFor[fixture.Collections]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+	response := component(t, res, "fixture.Collections")
+
+	r = NewReflector()
+	_, err = r.AddRequest(reflect.TypeFor[fixture.Collections]())
+	require.NoError(t, err)
+	res, err = r.Finalize()
+	require.NoError(t, err)
+	request := component(t, res, "fixture.Collections")
+
+	pairs := [][2]string{{"m", "s"}, {"om", "os"}, {"zm", "zs"}, {"pm", "ps"}, {"pom", "pos"}, {"nm", "ns"}, {"rm", "rs"}, {"xm", "xs"}}
+	for _, s := range []map[string]any{response, request} {
+		for _, pair := range pairs {
+			slice, err := json.Marshal(prop(t, s, pair[1])["type"])
+			require.NoError(t, err)
+			got, err := json.Marshal(prop(t, s, pair[0])["type"])
+			require.NoError(t, err)
+			require.Equal(t, strings.Replace(string(slice), `"array"`, `"object"`, 1), string(got), pair[0])
+		}
+	}
+
+	require.Equal(t, []any{"object", "null"}, prop(t, response, "m")["type"])
+	require.Equal(t, []any{"object", "null"}, prop(t, response, "om")["type"])
+	require.Equal(t, "object", prop(t, response, "pom")["type"])
+	require.Equal(t, "object", prop(t, response, "nm")["type"])
+	require.Equal(t, "object", prop(t, request, "rm")["type"])
 }
 
 func TestSizedInts(t *testing.T) {

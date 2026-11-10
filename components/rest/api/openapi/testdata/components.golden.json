@@ -187,7 +187,10 @@
         "additionalProperties": {
           "type": "string"
         },
-        "type": "object"
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "source": {
         "type": "string"

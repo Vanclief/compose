@@ -109,7 +109,9 @@ func NewReflector(opts ...Option) *Reflector {
 }
 
 // AddResponse registers t (struct, pointer to struct, or slice/map thereof)
-// as a response type. Idempotent. Returns lint errors.
+// as a response type. Idempotent. Returns lint errors, and an error when a
+// struct it reaches sends a JSON key its schema does not list (see
+// checkKeys).
 func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 	if t == nil {
 		return ez.New(ez.EINVALID, "openapi: nil response type", nil)
@@ -130,7 +132,13 @@ func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 	}
 
 	defer recoverPanic(&err)
-	r.responses[t] = r.reg.Schema(t, true, "Response")
+	s := r.reg.Schema(t, true, "Response")
+	err = r.reg.checkKeys(t, false)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	r.responses[t] = s
 	r.respOrder = append(r.respOrder, t)
 
 	return nil
@@ -168,7 +176,7 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 	}
 
 	s := r.reg.Schema(t, true, "Request")
-	err = r.reg.checkRequestKeys(t)
+	err = r.reg.checkKeys(t, true)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}

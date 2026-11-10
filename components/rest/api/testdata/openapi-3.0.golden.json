@@ -25,6 +25,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/fixture.Config"
             },
+            "nullable": true,
             "type": "object"
           },
           "name": {

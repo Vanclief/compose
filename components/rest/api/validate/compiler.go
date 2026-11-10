@@ -52,7 +52,7 @@ func NewCompiler(doc json.RawMessage) (*Compiler, error) {
 }
 
 // Compile compiles a synthetic operation schema. name must be unique per call
-// (for example "op:<operationId>.json") and must not be "spec.json".
+// (for example "op:<operationId>") and must not be "spec.json".
 func (c *Compiler) Compile(name string, schema map[string]any) (*Schema, error) {
 	// Round-trip through JSON so Go-typed values ([]string, int) become the
 	// plain JSON values santhosh expects.

@@ -38,3 +38,26 @@ type OptionalBadKeys struct {
 type OptionalWideBound struct {
 	N types.Optional[int8] `json:"n" maximum:"1000"`
 }
+
+// Collections pairs each map field with a slice field under the same
+// nullability rule (plain, omitempty, omitzero, pointer, pointer with
+// omitempty, nullable:"false", required pointer, types.Optional): the map
+// must be as nullable as the slice.
+type Collections struct {
+	M   map[string]int                 `json:"m"`
+	S   []int                          `json:"s"`
+	OM  map[string]int                 `json:"om,omitempty"`
+	OS  []int                          `json:"os,omitempty"`
+	ZM  map[string]int                 `json:"zm,omitzero"`
+	ZS  []int                          `json:"zs,omitzero"`
+	PM  *map[string]int                `json:"pm"`
+	PS  *[]int                         `json:"ps"`
+	POM *map[string]int                `json:"pom,omitempty"`
+	POS *[]int                         `json:"pos,omitempty"`
+	NM  map[string]int                 `json:"nm" nullable:"false"`
+	NS  []int                          `json:"ns" nullable:"false"`
+	RM  *map[string]int                `json:"rm" required:"true"`
+	RS  *[]int                         `json:"rs" required:"true"`
+	XM  types.Optional[map[string]int] `json:"xm"`
+	XS  types.Optional[[]int]          `json:"xs"`
+}

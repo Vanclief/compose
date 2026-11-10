@@ -206,9 +206,9 @@ func TestReportToSentry(t *testing.T) {
 	}
 }
 
-// The event's request id is the response's X-Request-Id, or without it the
-// id of the stored request.
-func TestReportToSentryRequestID(t *testing.T) {
+// The Sentry event of an error ManageError answers carries the response's
+// X-Request-Id, or without it the id of the request ManageError stored.
+func TestManageErrorSentryRequestID(t *testing.T) {
 	tests := []struct {
 		name   string
 		header string

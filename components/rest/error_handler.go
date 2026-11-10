@@ -73,9 +73,11 @@ func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 // ez.HTTPStatusToError of that status; the message is the non-empty Message
 // of an *echo.HTTPError in the chain, else http.StatusText of the status. An
 // error with neither is classified with ez.ErrorCode, as handler.ManageError
-// does: context.Canceled in its chain is a 499 ECANCELED and
-// context.DeadlineExceeded a 504 ETIMEOUT, both with ez.ErrorMessage's fixed
-// text, and anything else a 500 EINTERNAL with http.StatusText(500). The
+// does: context.Canceled in its chain is a 499 ECANCELED and a timeout
+// (context.DeadlineExceeded or os.ErrDeadlineExceeded in its chain, or an
+// error whose own Timeout method reports true, such as an HTTP client's) a
+// 504 ETIMEOUT, both with ez.ErrorMessage's fixed text, and anything else a
+// 500 EINTERNAL with http.StatusText(500). The
 // message is never such an error's own text or its wrapped cause, so no
 // internal error or panic stack reaches the client. An
 // *echo.BindingError embeds the HTTPError without being one, so a typed

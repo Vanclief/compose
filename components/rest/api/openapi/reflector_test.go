@@ -300,6 +300,11 @@ func TestErrors(t *testing.T) {
 		{"query tag in an Optional", reflect.TypeFor[fixture.NestedParamOptional](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct"},
 		{"query tag embedded and nested", reflect.TypeFor[fixture.EmbeddedAndNested](), true, "fixture.NestedQuery.Q: the query tag is ignored on a nested struct"},
 		{"form tag in a named field", reflect.TypeFor[fixture.NestedFile](), true, "fixture.NestedFileHolder.File: the form tag is ignored on a nested struct"},
+		{"format tag on a time in a request", reflect.TypeFor[fixture.FormatOnTime](), true, "fixture.FormatOnTime.Day: the format tag is not supported on time.Time, whose format is set by the type; the schema and the decoder would disagree on the value's text"},
+		{"format tag on a time in a response", reflect.TypeFor[fixture.FormatOnTime](), false, "fixture.FormatOnTime.Day: the format tag is not supported on time.Time"},
+		{"format tag on an integer", reflect.TypeFor[fixture.FormatOnInt](), false, "fixture.FormatOnInt.N: the format tag is not supported on int"},
+		{"format tag on a uuid parameter", reflect.TypeFor[fixture.FormatOnUUID](), true, "fixture.FormatOnUUID.ID: the format tag is not supported on uuid.UUID"},
+		{"format tag on types.Email", reflect.TypeFor[fixture.FormatOnEmail](), true, "fixture.FormatOnEmail.Email: the format tag is not supported on *types.Email"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -315,6 +320,56 @@ func TestErrors(t *testing.T) {
 			require.Contains(t, err.Error(), tt.want)
 		})
 	}
+}
+
+// A request map keyed by an enum type fails at any depth; a response may
+// carry one, and a request may use an enum as the map value, which the
+// schema validates.
+func TestEnumMapKey(t *testing.T) {
+	_, err := NewReflector().AddRequest(reflect.TypeFor[fixture.EnumKey]())
+	require.Error(t, err)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Equal(t, "openapi: fixture.EnumKey.Counts: map keys are not validated, so a key of the enum type fixture.RunStatus could hold any string; use a string key and check it in Validate()", ez.ErrorMessage(err))
+
+	_, err = NewReflector().AddRequest(reflect.TypeFor[fixture.NestedEnumKey]())
+	require.Error(t, err)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Equal(t, "openapi: "+
+		"fixture.NestedEnumKey.Counts: map keys are not validated, so a key of the enum type fixture.RunStatus could hold any string; use a string key and check it in Validate(); "+
+		"fixture.NestedEnumKey.ByName: map keys are not validated, so a key of the enum type fixture.Mode could hold any string; use a string key and check it in Validate(); "+
+		"fixture.EnumKey.Counts: map keys are not validated, so a key of the enum type fixture.RunStatus could hold any string; use a string key and check it in Validate()",
+		ez.ErrorMessage(err))
+
+	for _, typ := range []reflect.Type{reflect.TypeFor[fixture.EnumKey](), reflect.TypeFor[fixture.NestedEnumKey]()} {
+		err = NewReflector().AddResponse(typ)
+		require.NoError(t, err, typ.String())
+	}
+
+	_, err = NewReflector().AddRequest(reflect.TypeFor[fixture.EnumValue]())
+	require.NoError(t, err)
+}
+
+// A format tag on a string, a named string, a slice of strings (on its
+// items) or an Optional string describes text decoded as it is, in a
+// request and a response.
+func TestFormatTagOnStrings(t *testing.T) {
+	r := NewReflector()
+	params, err := r.AddRequest(reflect.TypeFor[fixture.FormatOnString]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[fixture.FormatOnString]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	require.Len(t, params, 1)
+	require.Equal(t, "date", params[0].Schema.Format)
+
+	s := component(t, res, "fixture.FormatOnString")
+	require.Equal(t, "date", prop(t, s, "day")["format"])
+	require.Equal(t, "email", prop(t, s, "email")["format"])
+	require.Equal(t, "hostname", prop(t, s, "slug")["format"])
+	require.Equal(t, "hostname", prop(t, s, "hosts")["items"].(map[string]any)["format"])
+	require.Equal(t, "date", prop(t, s, "since")["format"])
 }
 
 // Parameters of an embedded struct are read; a response type may nest

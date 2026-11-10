@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/apitest"
 )
@@ -92,4 +94,35 @@ func TestContract(t *testing.T) {
 	fake = &fakeTB{TB: t}
 	contract.AssertResponse(fake, "nope", http.StatusOK, []byte(`{}`))
 	require.Len(t, fake.errors, 1)
+}
+
+type labelsResponse struct {
+	Labels map[string]string `json:"labels"`
+}
+
+// TestContractNilMap: a nil map is sent as null, which the strict contract
+// and both documents allow, as for a nil slice.
+func TestContractNilMap(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.GET[fixture.HealthRequest, labelsResponse](reg.Group("/labels"), "", "get", stub)
+	reg.Ready()
+
+	contract := apitest.New(t, reg)
+	rec := contract.Do(t, e, "labels.get", httptest.NewRequest(http.MethodGet, "/labels", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"labels":null}`, rec.Body.String())
+
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	doc := decode(t, raw)
+	ref := dig(t, doc, "paths", "/labels", "get", "responses", "200", "content", "application/json", "schema", "$ref").(string)
+	name := strings.TrimPrefix(ref, "#/components/schemas/")
+	require.Equal(t, []any{"object", "null"}, dig(t, doc, "components", "schemas", name, "properties", "labels", "type"))
+
+	raw, err = reg.Spec(api.V30)
+	require.NoError(t, err)
+	doc = decode(t, raw)
+	require.Equal(t, "object", dig(t, doc, "components", "schemas", name, "properties", "labels", "type"))
+	require.Equal(t, true, dig(t, doc, "components", "schemas", name, "properties", "labels", "nullable"))
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/vanclief/ez"
+
+	"github.com/vanclief/compose/primitives/enums"
 )
 
 // allowedTags are the struct tag keys accepted on registered types. Anything
@@ -25,9 +27,10 @@ var allowedTags = map[string]bool{
 // lintType checks every struct reachable from t for unknown tags, Echo's
 // param tag and property names that huma's Downgrade would rename. A request
 // type is also refused a default tag: the registry applies no default, so
-// the document would promise a value the handler never gets; and a path,
+// the document would promise a value the handler never gets; a path,
 // query, header or form tag outside the request type and the structs it
-// embeds, where the registry never reads it.
+// embeds, where the registry never reads it; and a map keyed by an enum
+// type, whose keys nothing validates (see enumMapKey).
 func lintType(t reflect.Type, request bool) error {
 	var problems []string
 	lintWalk(t, request, map[reflect.Type]bool{}, &problems)
@@ -90,9 +93,43 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 		if name == "contentEncoding" || name == "contentMediaType" {
 			*problems = append(*problems, fmt.Sprintf("%s.%s: property name %q is renamed by the 3.0 downgrade", t, f.Name, name))
 		}
+		if request {
+			key := enumMapKey(f.Type)
+			if key != nil {
+				*problems = append(*problems, fmt.Sprintf("%s.%s: map keys are not validated, so a key of the enum type %s could hold any string; use a string key and check it in Validate()", t, f.Name, key))
+			}
+		}
 
 		lintWalk(f.Type, request, seen, problems)
 	}
+}
+
+// enumMapKey returns the key type of a map keyed by an enum type that t is,
+// or holds through pointers, a types.Optional, slices, arrays and map
+// values; nil when there is none. encoding/json assigns a string-kind key
+// as it is, and the schema has no rule for keys. A type that decodes itself
+// is not looked into.
+func enumMapKey(t reflect.Type) reflect.Type {
+	t = deref(t)
+	elem, ok := optionalElem(t)
+	if ok {
+		return enumMapKey(elem)
+	}
+	if isOpaque(t) || decodesOwnText(t) {
+		return nil
+	}
+
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		return enumMapKey(t.Elem())
+	case reflect.Map:
+		_, isEnum := enums.Values(t.Key())
+		if isEnum {
+			return t.Key()
+		}
+		return enumMapKey(t.Elem())
+	}
+	return nil
 }
 
 // paramTags are the tags the registry reads only on the request type and the
@@ -186,14 +223,19 @@ func tagKeys(tag reflect.StructTag) []string {
 
 // lintField rejects the json string option (the schema would describe the
 // value unquoted while encoding/json reads and writes it as a string), a
-// nullable tag on a struct reference (huma cannot express it; use a pointer)
-// and minimum/maximum tags that exceed the range of a sized integer field
-// (the value would pass the schema and fail Go conversion).
+// format tag on a type that sets its own format or reads its own text (see
+// formatTagApplies), a nullable tag on a struct reference (huma cannot
+// express it; use a pointer) and minimum/maximum tags that exceed the range
+// of a sized integer field (the value would pass the schema and fail Go
+// conversion).
 func lintField(t reflect.Type, f reflect.StructField) []string {
 	var problems []string
 	_, options, _ := strings.Cut(f.Tag.Get("json"), ",")
 	if slices.Contains(strings.Split(options, ","), "string") {
 		problems = append(problems, fmt.Sprintf("%s.%s: the json string option is not supported; the schema and encoding/json would disagree on the value's type", t, f.Name))
+	}
+	if f.Tag.Get("format") != "" && !formatTagApplies(f.Type) {
+		problems = append(problems, fmt.Sprintf("%s.%s: the format tag is not supported on %s, whose format is set by the type; the schema and the decoder would disagree on the value's text", t, f.Name, f.Type))
 	}
 
 	// Parameters and form fields report their own Optional problem.
@@ -230,4 +272,29 @@ func lintField(t reflect.Type, f reflect.StructField) []string {
 		problems = append(problems, fmt.Sprintf("%s.%s: maximum %v is above the %s range", t, f.Name, value, ft.Kind()))
 	}
 	return problems
+}
+
+// formatTagApplies reports whether a format tag on a field of type t (after
+// a pointer and a types.Optional) describes text the registry decodes as it
+// is: a string kind, or a slice of them (huma puts the tag on the items),
+// that has no format in builtinSchemas and does not decode its own text.
+// Elsewhere the decoder reads the type's own text (RFC 3339 for a
+// time.Time), which the tag would contradict.
+func formatTagApplies(t reflect.Type) bool {
+	t = deref(t)
+	elem, ok := optionalElem(t)
+	if ok {
+		t = deref(elem)
+	}
+	if t.Kind() == reflect.Slice && !decodesOwnText(t) {
+		t = deref(t.Elem())
+	}
+	return t.Kind() == reflect.String && builtinSchemas[t].Format == "" && !decodesOwnText(t)
+}
+
+// decodesOwnText reports whether t, or a pointer to it, implements
+// encoding.TextUnmarshaler or json.Unmarshaler.
+func decodesOwnText(t reflect.Type) bool {
+	ptr := reflect.PointerTo(t)
+	return ptr.Implements(textUnmarshalerType) || ptr.Implements(jsonUnmarshalerType)
 }

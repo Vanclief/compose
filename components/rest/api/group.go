@@ -28,7 +28,9 @@ type Group struct {
 // are only accepted by New. ContentType and Produces are
 // only accepted by an operation. Every other option is accepted at every
 // scope and applies to every operation below it: options of New first, then
-// the group's, then the operation's, so the nearest one wins.
+// the group's, then the operation's, so the nearest one wins. Middleware
+// adds up instead: the middleware of New, of the groups and of the
+// operation all run, in that order.
 type Option struct {
 	name      string
 	registry  func(*Registry)

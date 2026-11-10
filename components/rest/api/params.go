@@ -119,7 +119,9 @@ func fieldOf(v reflect.Value, index []int) reflect.Value {
 // checkParamTypes rejects parameter fields setValue cannot fill from text:
 // []byte, maps, arrays, nested slices and structs that do not implement
 // encoding.TextUnmarshaler; and parameters reached through an unexported
-// embedded pointer, which setParams cannot allocate.
+// embedded pointer, which setParams cannot allocate. It also rejects a slice
+// of pointers: the document would publish its items as nullable, which no
+// parameter can carry.
 func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 	var problems []string
 	for _, p := range params {
@@ -131,6 +133,13 @@ func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 			continue
 		}
 		t := reqType.FieldByIndex(p.Index).Type
+		slice := derefType(t)
+		if slice.Kind() == reflect.Slice && !isTextUnmarshaler(slice) && slice.Elem().Kind() == reflect.Pointer {
+			problems = append(problems, fmt.Sprintf(
+				"%s parameter %s: type %s is a slice of pointers, which is not supported: a parameter item cannot be null (use a slice of values)",
+				p.In, p.Name, t))
+			continue
+		}
 		if !paramTypeSupported(t) {
 			problems = append(problems, fmt.Sprintf(
 				"%s parameter %s: type %s is not supported (use a string, bool or number kind, an encoding.TextUnmarshaler, or a slice of those)",

@@ -583,6 +583,18 @@ func TestMapKeysNotEchoed(t *testing.T) {
 	require.Equal(t, 1, s.app.Last().(*fixture.CreateRequest).Labels["ok"].Retries)
 }
 
+// TestNullMap: a map field accepts null, as a slice field does, and the
+// handler receives a nil map.
+func TestNullMap(t *testing.T) {
+	s := newServer(t)
+
+	rec := s.do(http.MethodPost, "/runs", `{"name":"x","labels":null,"steps":null}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	got := s.app.Last().(*fixture.CreateRequest)
+	require.Nil(t, got.Labels)
+	require.Nil(t, got.Steps)
+}
+
 func requireNoKey(t *testing.T, msg string) {
 	t.Helper()
 	require.NotContains(t, msg, "<script>")
