@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/vanclief/compose/components/rest"
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
+	"github.com/vanclief/compose/components/rest/apitest"
 	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
@@ -455,8 +457,9 @@ func TestBigIntParams(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "form values could not be decoded")
 }
 
-// textParam fails on "internal" with the server's own error and on anything
-// but "ok" with a plain error.
+// textParam accepts "ok" and refuses anything else with the error its text
+// names: "wrapped" an ez.Wrap of a plain error, as the repo convention
+// writes it, "internal" an ez EINTERNAL, anything else a plain error.
 type textParam string
 
 func (p *textParam) UnmarshalText(text []byte) error {
@@ -464,6 +467,8 @@ func (p *textParam) UnmarshalText(text []byte) error {
 	case "ok":
 		*p = textParam(text)
 		return nil
+	case "wrapped":
+		return ez.Wrap(errors.New("unknown value"))
 	case "internal":
 		return ez.New(ez.EINTERNAL, "lookup table missing", nil)
 	}
@@ -475,8 +480,8 @@ type textParamRequest struct {
 	P textParam `json:"-" query:"p"`
 }
 
-// TestTextParamErrors: a TextUnmarshaler's ez EINTERNAL error is a 500, any
-// other error is client input.
+// TestTextParamErrors: a TextUnmarshaler's error refuses client input, so it
+// is a 400 whatever its ez code.
 func TestTextParamErrors(t *testing.T) {
 	e := newEcho()
 	reg := api.New(e, api.Public())
@@ -487,12 +492,11 @@ func TestTextParamErrors(t *testing.T) {
 	rec := s.do(http.MethodGet, "/text?p=ok", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
-	rec = s.do(http.MethodGet, "/text?p=bad", "")
-	requireError(t, rec, http.StatusBadRequest, "query p is invalid")
-
-	rec = s.do(http.MethodGet, "/text?p=internal", "")
-	resp := requireError(t, rec, http.StatusInternalServerError, "")
-	require.Equal(t, ez.EINTERNAL, resp.Error.Code)
+	for _, value := range []string{"bad", "wrapped", "internal"} {
+		rec = s.do(http.MethodGet, "/text?p="+value, "")
+		resp := requireError(t, rec, http.StatusBadRequest, "query p is invalid")
+		require.Equal(t, "query p is invalid", resp.Error.Message, value)
+	}
 }
 
 type localeRequest struct {
@@ -812,6 +816,44 @@ func TestMultipartAllOptional(t *testing.T) {
 	body, contentType := form(t)
 	rec = s.do(http.MethodPost, "/notes", body, echo.HeaderContentType, contentType)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// FormMeta is embedded in formEmbedRequest through a json tag with no name.
+type FormMeta struct {
+	Note    string `json:"note"`
+	Attempt *int   `json:"attempt"`
+}
+
+type formEmbedRequest struct {
+	requests.NoRules
+	FormMeta `json:",omitempty"`
+	File     *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestMultipartEmbeddedNamelessTag: an embedded struct whose json tag has no
+// name has its fields promoted, as encoding/json does, so each is a form
+// value of its own.
+func TestMultipartEmbeddedNamelessTag(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *formEmbedRequest
+	api.POST(reg.Group("/notes"), "", "upload", func(ctx context.Context, req *formEmbedRequest) (fixture.HealthResponse, error) {
+		got = req
+		return fixture.HealthResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	body, contentType := form(t, part{name: "note", value: "hello"}, part{name: "attempt", value: "3"})
+	rec := s.do(http.MethodPost, "/notes", body, echo.HeaderContentType, contentType)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "hello", got.Note)
+	require.NotNil(t, got.Attempt)
+	require.Equal(t, 3, *got.Attempt)
+
+	body, contentType = form(t, part{name: "attempt", value: "x"})
+	rec = s.do(http.MethodPost, "/notes", body, echo.HeaderContentType, contentType)
+	requireError(t, rec, http.StatusBadRequest, "attempt must be integer")
 }
 
 type tagsHeaderRequest struct {
@@ -1162,5 +1204,72 @@ func TestOutOfRangeNumbers(t *testing.T) {
 	require.Equal(t, `{"x":[1e999999,-1e400]}`, got)
 
 	rec = s.do(http.MethodPost, "/any", `{"data":1e999999}`)
+	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
+}
+
+// amountRequest carries a json.Number, as a webhook amount does.
+type amountRequest struct {
+	requests.NoRules
+	Amount json.Number `json:"amount" required:"true"`
+}
+
+type amountResponse struct {
+	Amount json.Number `json:"amount"`
+}
+
+// TestJSONNumber: a json.Number is a JSON number both ways: the handler gets
+// the client's digits exactly, the response passes the contract, and a
+// string is refused.
+func TestJSONNumber(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got json.Number
+	api.POST(reg.Group("/amounts"), "", "create", func(ctx context.Context, req *amountRequest) (amountResponse, error) {
+		got = req.Amount
+		return amountResponse{Amount: req.Amount}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/amounts", `{"amount":12345678901234567890.10}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number("12345678901234567890.10"), got)
+
+	contract := apitest.New(t, reg)
+	req := httptest.NewRequest(http.MethodPost, "/amounts", strings.NewReader(`{"amount":12.50}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = contract.Do(t, e, "amounts.create", req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{"amount":12.50}`, rec.Body.String())
+
+	rec = s.do(http.MethodPost, "/amounts", `{"amount":"`+sentinel+`"}`)
+	requireError(t, rec, http.StatusBadRequest, "amount must be number")
+}
+
+type addressRequest struct {
+	requests.NoRules
+	IP net.IP `json:"ip"`
+}
+
+// TestNetIP: a net.IP takes both address families; its decoder refuses a
+// bad address.
+func TestNetIP(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got net.IP
+	api.POST(reg.Group("/addresses"), "", "create", func(ctx context.Context, req *addressRequest) (nodeResponse, error) {
+		got = req.IP
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	for _, ip := range []string{"192.0.2.1", "2001:db8::1", "::1"} {
+		rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+ip+`"}`)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.True(t, net.ParseIP(ip).Equal(got), ip)
+	}
+
+	rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+sentinel+`"}`)
 	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
 }

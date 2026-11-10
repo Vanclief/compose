@@ -200,8 +200,9 @@ func mustGroupOptions(prefix string, opts []Option) {
 }
 
 // Use adds Echo middleware to the group. It applies to the operations
-// registered after the call: Echo copies a group's middleware into a route
-// when the route is added.
+// registered and the groups created with Group after the call: Echo copies
+// a group's middleware into a route when the route is added, and into a
+// sub-group when the sub-group is created.
 func (g *Group) Use(m ...echo.MiddlewareFunc) {
 	g.echo.Use(m...)
 }

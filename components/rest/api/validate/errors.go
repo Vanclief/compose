@@ -270,9 +270,11 @@ func displayPath(root *jsonschema.Schema, loc []string) []string {
 }
 
 // step returns the schemas describing the child segment of a value
-// described by schemas, and whether segment may be shown verbatim.
+// described by schemas, and whether segment may be shown verbatim: a
+// declared property name, or an index that only an array schema matched. A
+// map key that looks like a number is still the client's text.
 func step(schemas []*jsonschema.Schema, segment string) ([]*jsonschema.Schema, bool) {
-	var props, rest []*jsonschema.Schema
+	var props, items, keys []*jsonschema.Schema
 	n, err := strconv.Atoi(segment)
 	index := err == nil && n >= 0 && strconv.Itoa(n) == segment
 
@@ -282,21 +284,21 @@ func step(schemas []*jsonschema.Schema, segment string) ([]*jsonschema.Schema, b
 			props = append(props, prop)
 		}
 		if index {
-			rest = append(rest, itemSchema(s, n)...)
+			items = append(items, itemSchema(s, n)...)
 		}
 		extra, ok := s.AdditionalProperties.(*jsonschema.Schema)
 		if ok {
-			rest = append(rest, extra)
+			keys = append(keys, extra)
 		}
 		for _, pattern := range s.PatternProperties {
-			rest = append(rest, pattern)
+			keys = append(keys, pattern)
 		}
 	}
 
 	if len(props) > 0 {
 		return props, true
 	}
-	return rest, index
+	return append(items, keys...), len(items) > 0 && len(keys) == 0
 }
 
 func itemSchema(s *jsonschema.Schema, n int) []*jsonschema.Schema {

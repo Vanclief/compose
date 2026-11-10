@@ -9,8 +9,8 @@
 //
 // whose $refs point into the document with the "spec.json#/..." prefix.
 //
-// The Compiler is not safe for concurrent use: compile every operation at
-// registration from a single goroutine. A compiled Schema is immutable and safe
+// The Compiler is not safe for concurrent use: compile every operation from
+// a single goroutine, as the api registry does in Ready. A compiled Schema is immutable and safe
 // to use from any number of goroutines.
 //
 // Validation errors become a single ez.EINVALID error whose message lists every

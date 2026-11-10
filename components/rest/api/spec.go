@@ -128,9 +128,10 @@ func (r *Registry) Spec(v Version) ([]byte, error) {
 }
 
 // StrictSpec returns the 3.1 document including hidden operations, so with
-// the components only they use, and with additionalProperties:false on every
-// response object component. It is meant for contract tests (see apitest).
-// It calls Ready.
+// the components only they use, with additionalProperties:false on every
+// response object component and with the properties of hidden:"true" fields
+// listed (optional), since a response still sends them. It is meant for
+// contract tests (see apitest). It calls Ready.
 func (r *Registry) StrictSpec() []byte {
 	r.Ready()
 	return bytes.Clone(r.strict)
@@ -173,7 +174,7 @@ func (r *Registry) finalize() error {
 	for _, op := range r.ops {
 		err = op.compile(compiler, res)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 	}
 
@@ -197,15 +198,15 @@ func (r *Registry) finalize() error {
 	r.specs = map[Version][]byte{}
 	r.specs[V31], err = canonical(v31, false)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	r.specs[V30], err = canonical(v30, true)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	r.strict, err = canonical(strict, false)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 
 	r.result = res

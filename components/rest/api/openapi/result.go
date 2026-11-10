@@ -40,11 +40,14 @@ func (res *Result) ResponseSchema(t reflect.Type) *huma.Schema {
 
 // StrictComponents returns a deep copy of Components with
 // additionalProperties:false re-injected on every object component reachable
-// from a response root (for contract tests).
+// from a response root, and with hidden properties listed, so a hidden field
+// a response sends is a known field checked against its schema (for
+// contract tests). Hidden properties stay optional.
 func (res *Result) StrictComponents() map[string]*huma.Schema {
 	out := make(map[string]*huma.Schema, len(res.Components))
 	for name, s := range res.Components {
 		out[name] = copySchema(s)
+		walkSchema(out[name], (*huma.Schema).Unhide)
 	}
 	for _, name := range res.strict {
 		out[name].AdditionalProperties = false

@@ -255,7 +255,7 @@ func (r *Registry) check(op *operation) error {
 	op.blob = op.resType == blobType
 	err = checkProduces(op)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 
 	if !op.blob {
@@ -267,12 +267,12 @@ func (r *Registry) check(op *operation) error {
 
 	err = checkNoBody(op.method, op.reqType)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 
 	op.files, err = fileFields(op.reqType)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	if len(op.files) > 0 {
 		if slices.Contains(noBodyMethods, op.method) {
@@ -280,7 +280,7 @@ func (r *Registry) check(op *operation) error {
 		}
 		err = checkFormFields(op.reqType)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 	}
 
@@ -288,7 +288,7 @@ func (r *Registry) check(op *operation) error {
 
 	err = checkParamTypes(op.reqType, params)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 	return checkPathParams(op.path, params)
 }

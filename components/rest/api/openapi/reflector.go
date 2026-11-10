@@ -2,8 +2,12 @@ package openapi
 
 import (
 	"encoding"
+	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
+	"net"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -25,6 +29,7 @@ var (
 	schemaProviderType  = reflect.TypeFor[huma.SchemaProvider]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 	optionalTypeType    = reflect.TypeFor[optionalType]()
+	urlType             = reflect.TypeFor[url.URL]()
 )
 
 // optionalType is implemented by types.Optional[T], a body field that records
@@ -49,7 +54,9 @@ func IsOptional(t reflect.Type) bool {
 	return ok
 }
 
-// builtinSchemas maps types whose schema we know better than huma's default.
+// builtinSchemas maps types whose schema we know better than huma's default:
+// the shape encoding/json reads and writes. A pointer to one is nullable, and
+// so is one marked Nullable here, which encoding/json writes as null.
 var builtinSchemas = map[reflect.Type]huma.Schema{
 	reflect.TypeFor[uuid.UUID]():         {Type: huma.TypeString, Format: "uuid"},
 	reflect.TypeFor[types.Email]():       {Type: huma.TypeString, Format: "email"},
@@ -57,6 +64,14 @@ var builtinSchemas = map[reflect.Type]huma.Schema{
 	reflect.TypeFor[types.Locale]():      {Type: huma.TypeString},
 	reflect.TypeFor[types.Language]():    {Type: huma.TypeString},
 	reflect.TypeFor[types.UnixSeconds](): {Type: huma.TypeInteger, Format: "int64"},
+	// A string kind, written as a bare number.
+	reflect.TypeFor[json.Number](): {Type: huma.TypeNumber},
+	// Its text decoder takes both families and rejects a bad address.
+	reflect.TypeFor[net.IP](): {Type: huma.TypeString},
+	// A text unmarshaler, but read and written as a JSON number.
+	reflect.TypeFor[big.Int](): {Type: huma.TypeInteger},
+	// null when not Valid.
+	reflect.TypeFor[uuid.NullUUID](): {Type: huma.TypeString, Format: "uuid", Nullable: true},
 }
 
 // Reflector collects request and response types and produces components.
@@ -235,7 +250,7 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 
 	builtin, ok := builtinSchemas[t]
 	if ok {
-		builtin.Nullable = origType.Kind() == reflect.Pointer
+		builtin.Nullable = builtin.Nullable || origType.Kind() == reflect.Pointer
 		return &builtin
 	}
 

@@ -176,7 +176,10 @@ Rules enforced at registration (fail boot):
   struct the request type does not embed (a named field, a slice or map element), where the
   registry never reads it, and a map keyed by an enum type (the schema has no rule for
   keys, so any string would reach the handler as a key; use a `string` key and check it in
-  `Validate()`)
+  `Validate()`). Two kinds of type are refused because no schema matches what
+  `encoding/json` does with them: `url.URL` anywhere (it has no text form, so it is read and
+  written as an object of its fields; use a string and parse it) and, in a request, an
+  interface type with methods such as `error`, into which only `null` decodes
 - the keys `encoding/json` binds are exactly the schema's properties, at every depth of the
   request type: registration fails for unexported embedded structs, `hidden` body fields,
   embedded non-struct types and shadowed promoted fields, any of which would let a value the
@@ -278,8 +281,9 @@ as unknown keys, then bind). Decode once instead.
    header. Embedded pointer structs on a parameter's path are allocated whether or not the
    parameter was sent, so a `Validate` promoted from one never meets nil.
    A conversion failure is a 400 (`query at is invalid`), not a 500: santhosh's
-   `date-time` accepts inputs that `time.Time` rejects. Only an ez `EINTERNAL` from a
-   `TextUnmarshaler`, its own failure rather than the client's, is a 500. `request.SetBody(req)`.
+   `date-time` accepts inputs that `time.Time` rejects. An error from a type's own
+   `UnmarshalText` is a 400 too, whatever its ez code, as its `UnmarshalJSON` error is in a
+   body. `request.SetBody(req)`.
 9. `Body.Validate()`, once, for cross-field rules.
 10. The typed handler of the negotiated media type, exactly one: the `Produces` handler
     declared for it, else the primary handler. It receives `request.GetContext()` as it is
@@ -525,16 +529,23 @@ lint, key check and variants.
   components keep huma's default: required unless `omitempty`/`omitzero`, a pointer to a
   struct non-null, and a pointer to a scalar nullable unless it carries `omitempty`. A map
   is nullable under the rules of a slice, which huma leaves non-null: Go sends a nil map as
-  `null`, and a strict client would fail on it.
+  `null`, and a strict client would fail on it. The same holds for `[]byte`, a base64
+  string or `null`; a `[N]byte` array is an array of N integers, not base64.
 - **Clear `additionalProperties: false`** on every published component. Converted endpoints
   must keep ignoring unknown request keys as today, and progenitor's typify turns `false`
   into `deny_unknown_fields`, which would make adding a response field break deployed Rust
   clients. Contract tests compile a strict copy with `false` re-injected on response
-  components so undocumented response fields are still caught in CI.
+  components so undocumented response fields are still caught in CI. The strict copy also
+  lists `hidden` properties, as optional ones, so a hidden field a response sends is known
+  to the contract and checked against its schema.
 - **Type table** (`builtinSchemas`): `uuid.UUID` is `{type: string, format: uuid}`
   (`TextUnmarshaler` types otherwise become plain `string`), `types.Email` `format: email`,
   `types.PhoneNumber` `format: phone`, `types.Locale` and `types.Language` plain strings,
-  `types.UnixSeconds` `{type: integer, format: int64}`. The registry dereferences pointers
+  `types.UnixSeconds` `{type: integer, format: int64}`. Four standard types get the shape
+  `encoding/json` gives them, which huma's defaults miss: `json.Number` is a `number` (its
+  kind is string), `big.Int` an `integer` (it has a text decoder but is written as a
+  number), `net.IP` a plain string (huma says `ipv4`, which refuses IPv6) and
+  `uuid.NullUUID` a nullable uuid. The registry dereferences pointers
   before the lookup and marks a pointer's schema nullable itself. compose `types/` do not
   implement `huma.SchemaProvider`: the copy is internal, so `types/` cannot import it, and
   huma stays confined to `components/rest/api/...`. The copy still honours `SchemaProvider`,
@@ -563,8 +574,10 @@ lint, key check and variants.
   v2.39.1 are copied into `components/rest/api/internal/huma` (MIT, `LICENSE` alongside),
   trimmed to what compose uses: no `huma.Validate` message precomputation (only its
   `pattern` compile check stays), no YAML output, no framework-only `Operation` fields, no
-  registry config, no `SchemaTransformer`. One behaviour differs: a map is nullable by
-  default, as a slice is (`DefaultArrayNullable`). `file:line` references to huma in this document
+  registry config, no `SchemaTransformer`. Three behaviours differ: a map and a `[]byte` are nullable by
+  default, as a slice is (`DefaultArrayNullable`); a `[N]byte` array is an array of
+  integers; and the special cases for `url.URL` and `net.IP` are gone (the first is refused
+  at registration, the second is in the type table). `file:line` references to huma in this document
   point at upstream v2.39.1. Golden tests guard the copy like they guarded a version pin.
 
 ### Optional body fields (`types.Optional[T]`)

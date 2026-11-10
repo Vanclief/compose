@@ -66,6 +66,9 @@ func (op *operation) serve(c *echo.Context) error {
 		return ez.New(ez.EINTERNAL, "api registry not ready", nil)
 	}
 
+	// The authenticator's, Validate's and the handler's errors are the app's
+	// and reach Echo as returned: ez.Wrap would turn an Echo error among them
+	// into a 500.
 	if !op.public {
 		err := op.authenticate(request)
 		if err != nil {
@@ -100,7 +103,7 @@ func (op *operation) serve(c *echo.Context) error {
 		var err error
 		form, err = op.readForm(c)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 		// net/http removes spilled files only for its own request, not for
 		// one middleware replaced with c.SetRequest.
@@ -112,7 +115,7 @@ func (op *operation) serve(c *echo.Context) error {
 	} else if op.hasBody {
 		body, bodyRaw, err := op.readBody(c)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 		if body != nil {
 			instance["body"] = body
@@ -125,18 +128,18 @@ func (op *operation) serve(c *echo.Context) error {
 	err := op.schema.Validate(instance)
 	fields := validate.Fields(err)
 	if err != nil && fields == nil {
-		return err
+		return ez.Wrap(err)
 	}
 	err = validate.NewFieldsError(append(fields, collisions...))
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 
 	req := reflect.New(op.reqType)
 	if form != nil {
 		err = op.decodeForm(req, formValues, form)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 	}
 	if raw != nil {
@@ -147,18 +150,20 @@ func (op *operation) serve(c *echo.Context) error {
 	}
 	err = setParams(req.Elem(), op.params, values)
 	if err != nil {
-		return err
+		return ez.Wrap(err)
 	}
 
 	body := req.Interface().(requests.Body)
 	request.SetBody(body)
 
+	// The app's error, as returned (see Authenticate above).
 	err = body.Validate()
 	if err != nil {
 		return err
 	}
 
-	// Read the context after Authenticate, which may have replaced it.
+	// Read the context after Authenticate, which may have replaced it. The
+	// handler's error is the app's, as returned.
 	response, err := op.call(request.GetContext(), mediaType, body)
 	if err != nil {
 		return err

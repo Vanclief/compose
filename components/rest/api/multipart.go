@@ -91,10 +91,13 @@ func fileFields(t reflect.Type) ([]fileField, error) {
 func checkFormFields(t reflect.Type) error {
 	var problems []string
 	for _, f := range reflect.VisibleFields(derefType(t)) {
-		name := jsonTagName(f)
-		if !f.IsExported() || name == "-" || (f.Anonymous && f.Tag.Get("json") == "") {
+		// An embedded struct whose json tag has no name has its fields
+		// promoted, as encoding/json does; they are checked one by one.
+		tagName, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if !f.IsExported() || tagName == "-" || (f.Anonymous && tagName == "") {
 			continue
 		}
+		name := jsonTagName(f)
 		if openapi.IsOptional(f.Type) {
 			problems = append(problems, fmt.Sprintf(
 				"multipart body field %s (%s): types.Optional is a JSON body field; use a pointer for an optional form value",

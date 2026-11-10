@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"math"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -274,6 +275,22 @@ func TestIdempotent(t *testing.T) {
 	require.Error(t, err)
 }
 
+type urlField struct {
+	Callback *url.URL `json:"callback"`
+}
+
+type urlList struct {
+	Links []url.URL `json:"links"`
+}
+
+type errorField struct {
+	Err error `json:"err"`
+}
+
+type wideByteArray struct {
+	B [2]byte `json:"b" maximum:"300"`
+}
+
 func TestErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -305,6 +322,11 @@ func TestErrors(t *testing.T) {
 		{"format tag on an integer", reflect.TypeFor[fixture.FormatOnInt](), false, "fixture.FormatOnInt.N: the format tag is not supported on int"},
 		{"format tag on a uuid parameter", reflect.TypeFor[fixture.FormatOnUUID](), true, "fixture.FormatOnUUID.ID: the format tag is not supported on uuid.UUID"},
 		{"format tag on types.Email", reflect.TypeFor[fixture.FormatOnEmail](), true, "fixture.FormatOnEmail.Email: the format tag is not supported on *types.Email"},
+		{"url.URL in a request", reflect.TypeFor[urlField](), true, "openapi.urlField.Callback: url.URL is not supported: encoding/json reads and writes it as an object, not as a URL string; use a string and parse it with url.Parse"},
+		{"url.URL in a response", reflect.TypeFor[urlField](), false, "openapi.urlField.Callback: url.URL is not supported"},
+		{"url.URL in a slice", reflect.TypeFor[urlList](), false, "openapi.urlList.Links: url.URL is not supported"},
+		{"error in a request", reflect.TypeFor[errorField](), true, "openapi.errorField.Err: the interface type error is not supported in a request: encoding/json cannot decode a value into it; use a concrete type"},
+		{"bound beyond a byte array item", reflect.TypeFor[wideByteArray](), false, "openapi.wideByteArray.B: maximum 300 is above the uint8 range"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

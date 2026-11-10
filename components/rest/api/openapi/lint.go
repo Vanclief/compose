@@ -30,7 +30,9 @@ var allowedTags = map[string]bool{
 // the document would promise a value the handler never gets; a path,
 // query, header or form tag outside the request type and the structs it
 // embeds, where the registry never reads it; and a map keyed by an enum
-// type, whose keys nothing validates (see enumMapKey).
+// type, whose keys nothing validates (see enumMapKey). A field that holds a
+// url.URL is refused, as is one that holds an interface type with methods
+// in a request (see unsupportedType).
 func lintType(t reflect.Type, request bool) error {
 	var problems []string
 	lintWalk(t, request, map[reflect.Type]bool{}, &problems)
@@ -99,6 +101,10 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 				*problems = append(*problems, fmt.Sprintf("%s.%s: map keys are not validated, so a key of the enum type %s could hold any string; use a string key and check it in Validate()", t, f.Name, key))
 			}
 		}
+		problem := unsupportedType(heldType(f.Type), request)
+		if problem != "" {
+			*problems = append(*problems, fmt.Sprintf("%s.%s: %s", t, f.Name, problem))
+		}
 
 		lintWalk(f.Type, request, seen, problems)
 	}
@@ -130,6 +136,43 @@ func enumMapKey(t reflect.Type) reflect.Type {
 		return enumMapKey(t.Elem())
 	}
 	return nil
+}
+
+// unsupportedType explains why a field holding t cannot be described by a
+// schema the decoder agrees with, or returns "". encoding/json reads and
+// writes a url.URL as an object of its fields, not as a URL string, and
+// decodes nothing but null into an interface type with methods.
+func unsupportedType(t reflect.Type, request bool) string {
+	if t == urlType {
+		return "url.URL is not supported: encoding/json reads and writes it as an object, not as a URL string; use a string and parse it with url.Parse"
+	}
+	if request && t.Kind() == reflect.Interface && t.NumMethod() > 0 {
+		return fmt.Sprintf("the interface type %s is not supported in a request: encoding/json cannot decode a value into it; use a concrete type", t)
+	}
+	return ""
+}
+
+// heldType returns the type t holds through pointers, a types.Optional,
+// slices, arrays and map values, stopping at a type with a schema of its
+// own.
+func heldType(t reflect.Type) reflect.Type {
+	for {
+		t = deref(t)
+		elem, ok := optionalElem(t)
+		if ok {
+			t = elem
+			continue
+		}
+		if isOpaque(t) {
+			return t
+		}
+		switch t.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			t = t.Elem()
+			continue
+		}
+		return t
+	}
 }
 
 // paramTags are the tags the registry reads only on the request type and the
@@ -252,7 +295,9 @@ func lintField(t reflect.Type, f reflect.StructField) []string {
 	if ok {
 		ft = deref(elem)
 	}
-	if (ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array) && ft.Elem().Kind() != reflect.Uint8 {
+	// huma puts bounds on the items of an array, but on the base64 string
+	// of a []byte and on the text of a type with its own schema (uuid.UUID).
+	if !isOpaque(ft) && (ft.Kind() == reflect.Array || (ft.Kind() == reflect.Slice && ft.Elem().Kind() != reflect.Uint8)) {
 		ft = deref(ft.Elem())
 	}
 	if isOpaque(ft) {

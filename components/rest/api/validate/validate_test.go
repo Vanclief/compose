@@ -159,6 +159,10 @@ func TestValidateMessages(t *testing.T) {
 		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{"evil\nkey<script>":{"count":-1}}}}`, "labels.*.count must be >= 0"},
 		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{"count":{"count":-1}}}}`, "labels.*.count must be >= 0"},
 		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{"k":{"steps":[{"count":-1}]}}}}`, "labels.*.steps.0.count must be >= 0"},
+		// A map key that looks like an index is still a map key; an array
+		// index under it stays.
+		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{"1234567890123456789":{"count":-1}}}}`, "labels.*.count must be >= 0"},
+		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{"7":{"steps":[{"count":0},{"count":-1}]}}}}`, "labels.*.steps.1.count must be >= 0"},
 		{create, `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"meta":{"x-<b>":"s"}}}`, "meta.* must be integer"},
 	}
 	for _, c := range cases {

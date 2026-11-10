@@ -52,15 +52,16 @@ func splitValues(values []string) []string {
 	return values
 }
 
-// setParams stores the raw parameter values into req. An ez EINTERNAL error
-// (a Go type checkParamTypes should have rejected at registration, or a
-// TextUnmarshaler reporting its own failure) is the server's and returned
-// as EINTERNAL. Any other conversion failure comes from client input the
+// setParams stores the raw parameter values into req. Every conversion error
+// is an ez error classified by its code. EINTERNAL (a Go type
+// checkParamTypes should have rejected at registration) is the server's and
+// returned as EINTERNAL. Any other failure comes from client input the
 // schema could not rule out (a date-time the schema accepts but time.Time
-// rejects, an integer out of the field's range) and becomes one EINVALID
-// naming each parameter, never echoing the value. The embedded pointers on
-// every parameter's path are allocated whether or not it was sent, so a
-// method promoted from one (Validate) never meets nil.
+// rejects, an integer out of the field's range, text a TextUnmarshaler
+// refuses, whatever error it returns) and becomes one EINVALID naming each
+// parameter, never echoing the value. The embedded pointers on every
+// parameter's path are allocated whether or not it was sent, so a method
+// promoted from one (Validate) never meets nil.
 func setParams(req reflect.Value, params []openapi.Param, values [][]string) error {
 	var fields []validate.FieldError
 	for i, p := range params {
@@ -75,8 +76,7 @@ func setParams(req reflect.Value, params []openapi.Param, values [][]string) err
 		} else {
 			err = setValue(field, values[i])
 		}
-		_, isEZ := err.(*ez.Error)
-		if isEZ && ez.ErrorCode(err) == ez.EINTERNAL {
+		if ez.ErrorCode(err) == ez.EINTERNAL {
 			return ez.New(ez.EINTERNAL, fmt.Sprintf("could not set %s parameter %s", p.In, p.Name), err)
 		}
 		if err != nil {
@@ -91,7 +91,7 @@ func setParams(req reflect.Value, params []openapi.Param, values [][]string) err
 func setHTTPTime(v reflect.Value, s string) error {
 	t, err := http.ParseTime(s)
 	if err != nil {
-		return err
+		return ez.New(ez.EINVALID, "not an HTTP-date", err)
 	}
 	if v.Kind() == reflect.Pointer {
 		v.Set(reflect.ValueOf(&t))
@@ -208,14 +208,19 @@ func setValue(v reflect.Value, values []string) error {
 		elem := reflect.New(v.Type().Elem())
 		err := setValue(elem.Elem(), values)
 		if err != nil {
-			return err
+			return ez.Wrap(err)
 		}
 		v.Set(elem)
 		return nil
 	}
 
+	// The app's decoder refuses client input, whatever error it returns.
 	if isTextUnmarshaler(v.Type()) {
-		return v.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(values[0]))
+		err := v.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(values[0]))
+		if err != nil {
+			return ez.New(ez.EINVALID, "refused by its text decoder", err)
+		}
+		return nil
 	}
 
 	// Normalised as in a JSON body (Locale.UnmarshalJSON): Locale has no
@@ -223,7 +228,7 @@ func setValue(v reflect.Value, values []string) error {
 	if v.Type() == localeType {
 		locale, err := types.NewLocaleString(values[0])
 		if err != nil {
-			return err
+			return ez.New(ez.EINVALID, "not a locale", err)
 		}
 		v.Set(reflect.ValueOf(locale))
 		return nil
@@ -235,7 +240,7 @@ func setValue(v reflect.Value, values []string) error {
 		for i, item := range items {
 			err := setValue(slice.Index(i), []string{item})
 			if err != nil {
-				return err
+				return ez.Wrap(err)
 			}
 		}
 		v.Set(slice)
@@ -252,13 +257,13 @@ func setScalar(v reflect.Value, s string) error {
 	case reflect.Bool:
 		b, err := strconv.ParseBool(s)
 		if err != nil {
-			return err
+			return ez.New(ez.EINVALID, "not a boolean", err)
 		}
 		v.SetBool(b)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(s, 10, v.Type().Bits())
 		if err != nil {
-			return err
+			return ez.New(ez.EINVALID, "not an integer in range", err)
 		}
 		v.SetInt(n)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -266,13 +271,13 @@ func setScalar(v reflect.Value, s string) error {
 		// validate.Coerce accept.
 		n, err := strconv.ParseUint(strings.TrimPrefix(s, "+"), 10, v.Type().Bits())
 		if err != nil {
-			return err
+			return ez.New(ez.EINVALID, "not an unsigned integer in range", err)
 		}
 		v.SetUint(n)
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(s, v.Type().Bits())
 		if err != nil {
-			return err
+			return ez.New(ez.EINVALID, "not a number in range", err)
 		}
 		v.SetFloat(f)
 	default:

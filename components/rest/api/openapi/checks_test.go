@@ -2,10 +2,13 @@ package openapi
 
 import (
 	"encoding/json"
+	"math/big"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
@@ -234,6 +237,46 @@ func TestHiddenResponseAllowed(t *testing.T) {
 	s := component(t, res, "fixture.HiddenResponse")
 	require.Equal(t, map[string]any{"name": map[string]any{"type": "string"}}, s["properties"])
 	require.Equal(t, []any{"name"}, s["required"])
+}
+
+type stdlibShapes struct {
+	Number json.Number   `json:"number"`
+	IP     net.IP        `json:"ip"`
+	Big    *big.Int      `json:"big"`
+	NullID uuid.NullUUID `json:"null_id"`
+	Bytes  []byte        `json:"bytes"`
+	Hash   [2]byte       `json:"hash"`
+	Err    error         `json:"err"`
+}
+
+// TestStdlibShapes: standard library types are documented in the shape
+// encoding/json reads and writes. A response may hold an error, which the
+// schema leaves open.
+func TestStdlibShapes(t *testing.T) {
+	r := NewReflector()
+	err := r.AddResponse(reflect.TypeFor[stdlibShapes]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	s := component(t, res, "openapi.stdlibShapes")
+	require.Equal(t, map[string]any{"type": "number"}, prop(t, s, "number"))
+	require.Equal(t, map[string]any{"type": "string"}, prop(t, s, "ip"))
+	require.Equal(t, map[string]any{"type": []any{"integer", "null"}}, prop(t, s, "big"))
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "uuid"}, prop(t, s, "null_id"))
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "contentEncoding": "base64"}, prop(t, s, "bytes"))
+	require.Equal(t, map[string]any{
+		"type":     []any{"array", "null"},
+		"items":    map[string]any{"type": "integer", "format": "int32", "minimum": 0.0, "maximum": 255.0},
+		"minItems": 2.0,
+		"maxItems": 2.0,
+	}, prop(t, s, "hash"))
+	require.Equal(t, map[string]any{}, prop(t, s, "err"))
+
+	// What encoding/json writes for the zero value matches each schema.
+	raw, err := json.Marshal(&stdlibShapes{})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"number":0,"ip":"","big":null,"null_id":null,"bytes":null,"hash":[0,0],"err":null}`, string(raw))
 }
 
 // A response documents a default; only a request type is refused the tag.

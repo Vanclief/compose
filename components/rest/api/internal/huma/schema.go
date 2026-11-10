@@ -8,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
-	"net"
 	"net/netip"
-	"net/url"
 	"reflect"
 	"regexp"
 	"sort"
@@ -40,13 +38,11 @@ const (
 
 // Special JSON Schema formats.
 var (
-	ipType              = reflect.TypeFor[net.IP]()
 	ipAddrType          = reflect.TypeFor[netip.Addr]()
 	rawMessageType      = reflect.TypeFor[json.RawMessage]()
 	schemaProviderType  = reflect.TypeFor[SchemaProvider]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 	timeType            = reflect.TypeFor[time.Time]()
-	urlType             = reflect.TypeFor[url.URL]()
 )
 
 func deref(t reflect.Type) reflect.Type {
@@ -204,6 +200,13 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 		{"not", s.Not, omitEmpty},
 		{"discriminator", s.Discriminator, omitEmpty},
 	}, s.Extensions)
+}
+
+// Unhide clears the hidden flag a hidden:"true" field tag set, so the
+// property is marshalled again. compose: the strict contract lists hidden
+// properties, which a response still sends.
+func (s *Schema) Unhide() {
+	s.hidden = false
 }
 
 // compilePatterns panics when a pattern is not a valid Go regular
@@ -655,14 +658,12 @@ func SchemaFromType(r Registry, t reflect.Type) *Schema {
 		return custom
 	}
 
-	// Handle special cases for known stdlib types.
+	// Handle special cases for known stdlib types. compose: net.IP is a
+	// builtin of the openapi registry, and url.URL is refused (encoding/json
+	// reads and writes it as an object).
 	switch t {
 	case timeType:
 		return &Schema{Type: TypeString, Nullable: isPointer, Format: "date-time"}
-	case urlType:
-		return &Schema{Type: TypeString, Nullable: isPointer, Format: "uri"}
-	case ipType:
-		return &Schema{Type: TypeString, Nullable: isPointer, Format: "ipv4"}
 	case ipAddrType:
 		return &Schema{Type: TypeString, Nullable: isPointer, Format: "ip"}
 	case rawMessageType:
@@ -721,20 +722,23 @@ func SchemaFromType(r Registry, t reflect.Type) *Schema {
 	case reflect.String:
 		s.Type = TypeString
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			// Special case: []byte will be serialized as a base64 string.
+			// compose: or as null when nil, so it is as nullable as any
+			// other slice. A [N]byte array is a JSON array of numbers.
 			s.Type = TypeString
 			s.ContentEncoding = "base64"
-		} else {
-			s.Type = TypeArray
 			s.Nullable = DefaultArrayNullable
-			s.Items = r.Schema(t.Elem(), true, t.Name()+"Item")
+			return &s
+		}
+		s.Type = TypeArray
+		s.Nullable = DefaultArrayNullable
+		s.Items = r.Schema(t.Elem(), true, t.Name()+"Item")
 
-			if t.Kind() == reflect.Array {
-				l := t.Len()
-				s.MinItems = &l
-				s.MaxItems = &l
-			}
+		if t.Kind() == reflect.Array {
+			l := t.Len()
+			s.MinItems = &l
+			s.MaxItems = &l
 		}
 	case reflect.Map:
 		s.Type = TypeObject

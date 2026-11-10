@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +95,58 @@ func TestContract(t *testing.T) {
 	fake = &fakeTB{TB: t}
 	contract.AssertResponse(fake, "nope", http.StatusOK, []byte(`{}`))
 	require.Len(t, fake.errors, 1)
+}
+
+type hiddenResp struct {
+	Name   string      `json:"name"`
+	Secret string      `json:"secret" hidden:"true"`
+	Inner  hiddenInner `json:"inner"`
+}
+
+type hiddenInner struct {
+	Token *string `json:"token,omitempty" hidden:"true"`
+}
+
+// TestContractHiddenField: a hidden field is left out of the published
+// documents but sent, so the strict contract lists it and checks its value;
+// a field that is neither documented nor hidden still fails.
+func TestContractHiddenField(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/hidden"), "", "get", func(ctx context.Context, req *fixture.HealthRequest) (hiddenResp, error) {
+		token := "t"
+		return hiddenResp{Name: "a", Secret: "b", Inner: hiddenInner{Token: &token}}, nil
+	})
+	reg.Ready()
+
+	contract := apitest.New(t, reg)
+	fake := &fakeTB{TB: t}
+	rec := contract.Do(fake, e, "hidden.get", httptest.NewRequest(http.MethodGet, "/hidden", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"name":"a","secret":"b","inner":{"token":"t"}}`, rec.Body.String())
+	require.Empty(t, fake.errors)
+
+	// A hidden field stays optional.
+	fake = &fakeTB{TB: t}
+	contract.AssertResponse(fake, "hidden.get", http.StatusOK, []byte(`{"name":"a","inner":{}}`))
+	require.Empty(t, fake.errors)
+
+	fake = &fakeTB{TB: t}
+	contract.AssertResponse(fake, "hidden.get", http.StatusOK, []byte(`{"name":"a","secret":"b","other":"c"}`))
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], "other is not a known field")
+
+	fake = &fakeTB{TB: t}
+	contract.AssertResponse(fake, "hidden.get", http.StatusOK, []byte(`{"name":"a","secret":1}`))
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], "secret must be string")
+
+	for _, v := range []api.Version{api.V31, api.V30} {
+		raw, err := reg.Spec(v)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "secret")
+		require.NotContains(t, string(raw), "token")
+	}
 }
 
 type labelsResponse struct {
