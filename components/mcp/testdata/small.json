@@ -70,6 +70,7 @@
         "operationId": "units.setNotes",
         "tags": ["Units"],
         "summary": "Replace the notes of a unit",
+        "x-destructive": true,
         "parameters": [
           {"name": "unit_id", "in": "path", "required": true, "schema": {"type": "integer"}},
           {"name": "X-Request-Id", "in": "header", "schema": {"type": "string"}}

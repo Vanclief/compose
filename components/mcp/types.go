@@ -350,7 +350,9 @@ type Function struct {
 	Composite bool
 	// ReadOnly is true for GET and HEAD operations and read-only composites.
 	ReadOnly bool
-	// Destructive is true for DELETE operations.
+	// Destructive is true for DELETE operations and for write operations
+	// (any method but GET and HEAD) marked x-destructive. A GET or HEAD
+	// stays non-destructive whether or not it carries the mark.
 	Destructive bool
 
 	composite *Composite
