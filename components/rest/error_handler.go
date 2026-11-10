@@ -14,8 +14,10 @@ import (
 // decides what to report. handler.ReportToSentry is one, for an app that
 // reports to Sentry. The api registry's Ready also calls it once at boot,
 // with an ez EINVALID error and handler.Request(c) nil, which
-// handler.ReportToSentry skips as a client error. ErrorHandler option.
-// Panics when fn is nil.
+// handler.ReportToSentry skips as a client error. The context of the request
+// a registry operation built (handler.Request(c).GetContext()) is already
+// cancelled when fn runs: fn reads values from it and does I/O with
+// c.Request().Context(). ErrorHandler option. Panics when fn is nil.
 func WithErrorReporter(fn func(c *echo.Context, err error)) Option {
 	if fn == nil {
 		panic(ez.New(ez.EINVALID, "rest: WithErrorReporter needs a function", nil))
@@ -34,7 +36,9 @@ func WithErrorReporter(fn func(c *echo.Context, err error)) Option {
 // locale reads handler.Request(c), which is nil for an error raised outside
 // a registry operation or handler.ManageError (an unknown route, 405, a panic
 // before the handler, the ez EINVALID error the api registry's Ready answers
-// once at boot). ErrorHandler option. Panics when fn is nil.
+// once at boot). That request's context is already cancelled when fn runs,
+// so fn reads values from it and does I/O with c.Request().Context().
+// ErrorHandler option. Panics when fn is nil.
 func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 	if fn == nil {
 		panic(ez.New(ez.EINVALID, "rest: WithErrorTranslator needs a function", nil))

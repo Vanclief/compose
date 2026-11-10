@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -211,8 +212,16 @@ func (r *registry) checkRequestKeys(t reflect.Type) error {
 		}
 
 		hidden := map[string]bool{}
-		hiddenFields(t, "", map[reflect.Type]bool{}, func(path string) {
+		hiddenFields(t, "", map[reflect.Type]bool{}, func(path string, f reflect.StructField) {
 			hidden[path] = true
+			isParam := slices.ContainsFunc(paramLocations, func(loc string) bool {
+				_, ok := f.Tag.Lookup(loc)
+				return ok
+			})
+			if isParam {
+				problems = append(problems, fmt.Sprintf("%s: field %s has hidden:\"true\", which is not supported on a parameter (the document would hide a parameter the server still reads)", t, path))
+				return
+			}
 			problems = append(problems, fmt.Sprintf("%s: field %s has hidden:\"true\", which is not allowed on request types (encoding/json still binds it)", t, path))
 		})
 
@@ -287,9 +296,10 @@ func goName(path string) string {
 	return path[i+1:]
 }
 
-// hiddenFields calls fn with the Go path of every field of t (including
-// fields of embedded structs, exported or not) tagged hidden:"true".
-func hiddenFields(t reflect.Type, prefix string, seen map[reflect.Type]bool, fn func(path string)) {
+// hiddenFields calls fn with the Go path and the field of every field of t
+// (including fields of embedded structs, exported or not) tagged
+// hidden:"true".
+func hiddenFields(t reflect.Type, prefix string, seen map[reflect.Type]bool, fn func(path string, f reflect.StructField)) {
 	if seen[t] {
 		return
 	}
@@ -298,7 +308,7 @@ func hiddenFields(t reflect.Type, prefix string, seen map[reflect.Type]bool, fn 
 		f := t.Field(i)
 		path := prefix + f.Name
 		if f.Tag.Get("hidden") == "true" {
-			fn(path)
+			fn(path, f)
 		}
 		ft := deref(f.Type)
 		if f.Anonymous && ft.Kind() == reflect.Struct {

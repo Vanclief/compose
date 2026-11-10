@@ -153,10 +153,15 @@ func mediaMatches(mediaRange, mediaType string) bool {
 }
 
 // writeResponse writes what the handler returned: a Blob as is, anything
-// else as JSON.
+// else as JSON. A nil pointer returned without an error is an EINTERNAL: the
+// document promises a body, and writing it would answer 200 null.
 func writeResponse(c *echo.Context, response any, mediaType string) error {
 	blob, ok := response.(Blob)
 	if !ok {
+		value := reflect.ValueOf(response)
+		if value.Kind() == reflect.Pointer && value.IsNil() {
+			return ez.New(ez.EINTERNAL, "the handler returned no response", nil)
+		}
 		return c.JSON(http.StatusOK, response)
 	}
 

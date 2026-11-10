@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
@@ -217,7 +218,9 @@ func headerListItems(lines []string) []string {
 // readBody reads (up to the operation's body limit) and decodes the JSON
 // body. It returns nil for an empty (or null) body and rejects non-JSON
 // content types (a missing Content-Type is treated as JSON) and bodies nested
-// deeper than maxBodyDepth. It also returns the raw bytes for decoding.
+// deeper than maxBodyDepth. The decoded body carries every number in
+// canonical text (see canonicalNumber). It also returns the raw bytes,
+// unchanged, for decoding.
 func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, op.maxBody))
 	var tooLarge *http.MaxBytesError
@@ -243,8 +246,9 @@ func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	if body == nil {
 		return nil, nil, nil
 	}
-	if nestedDeeper(body, maxBodyDepth) {
-		return nil, nil, ez.New(ez.EINVALID, fmt.Sprintf("body is nested deeper than %d levels", maxBodyDepth), nil)
+	body, err = canonicalBody(body, 0)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return body, raw, nil
@@ -256,31 +260,72 @@ func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 // allocations grow with its depth (with its square in the collision walk).
 const maxBodyDepth = 64
 
-// nestedDeeper reports whether the arrays and objects of a decoded JSON
-// value nest deeper than limit levels, each array and object counting as
-// one. It stops at the first one past the limit without looking inside it.
-func nestedDeeper(value any, limit int) bool {
+// canonicalBody walks a decoded JSON value whose arrays and objects are
+// depth levels deep, and returns it with every json.Number replaced by its
+// canonical text, in maps and slices in place. It refuses arrays and objects
+// nested deeper than maxBodyDepth, each array and object counting as one
+// level, at the first one past the limit without looking inside it.
+func canonicalBody(value any, depth int) (any, error) {
 	switch v := value.(type) {
+	case json.Number:
+		return canonicalNumber(v), nil
 	case map[string]any:
-		if limit == 0 {
-			return true
+		if depth == maxBodyDepth {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("body is nested deeper than %d levels", maxBodyDepth), nil)
 		}
-		for _, item := range v {
-			if nestedDeeper(item, limit-1) {
-				return true
+		for key, item := range v {
+			canonical, err := canonicalBody(item, depth+1)
+			if err != nil {
+				return nil, err
 			}
+			v[key] = canonical
 		}
 	case []any:
-		if limit == 0 {
-			return true
+		if depth == maxBodyDepth {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("body is nested deeper than %d levels", maxBodyDepth), nil)
 		}
-		for _, item := range v {
-			if nestedDeeper(item, limit-1) {
-				return true
+		for i, item := range v {
+			canonical, err := canonicalBody(item, depth+1)
+			if err != nil {
+				return nil, err
 			}
+			v[i] = canonical
 		}
 	}
-	return false
+	return value, nil
+}
+
+// canonicalNumber returns the text the validator sees for a JSON number: the
+// decimal digits of an integer an int64 or uint64 holds, else the shortest
+// text of the nearest float64 (an underflow such as 1e-999999 is 0, as
+// encoding/json reads it into a float64). The validator parses every number
+// it checks with big.Rat, which takes exponents up to a million at
+// milliseconds each; canonical text keeps that cheap. A number no float64
+// holds (1e999999) becomes 1e309 or -1e309, just past the float64 range and
+// so past every bound a schema states: encoding/json then refuses it for
+// every numeric Go type and any, and a json.RawMessage field still gets the
+// client's text.
+func canonicalNumber(n json.Number) json.Number {
+	s := string(n)
+	i, err := strconv.ParseInt(s, 10, 64)
+	if err == nil {
+		return json.Number(strconv.FormatInt(i, 10))
+	}
+	u, err := strconv.ParseUint(s, 10, 64)
+	if err == nil {
+		return json.Number(strconv.FormatUint(u, 10))
+	}
+	// The decoder accepted s as a JSON number, which ParseFloat always
+	// parses: its only error is a value out of range, returned as an
+	// infinity of the number's sign.
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil && f < 0 {
+		return "-1e309"
+	}
+	if err != nil {
+		return "1e309"
+	}
+	return json.Number(strconv.FormatFloat(f, 'g', -1, 64))
 }
 
 func isJSON(contentType string) bool {

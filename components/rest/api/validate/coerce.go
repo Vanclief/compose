@@ -14,7 +14,8 @@ type Kind struct {
 }
 
 // Coerce converts raw parameter values to the JSON value the schema expects.
-// Integers and numbers become json.Number, booleans accept exactly "true" and
+// Integers and numbers become json.Number in canonical text (a number as the
+// shortest text of the nearest float64), booleans accept exactly "true" and
 // "false", arrays take repeated values or one comma-separated value. A value
 // that does not parse is returned as the raw string so validation reports a
 // type error. No values means absent and returns nil.
@@ -38,11 +39,14 @@ func Coerce(values []string, kind Kind) any {
 		}
 		return json.Number(strconv.FormatUint(u, 10))
 	case "number":
-		_, err := strconv.ParseFloat(values[0], 64)
+		f, err := strconv.ParseFloat(values[0], 64)
 		if err != nil || !json.Valid([]byte(values[0])) {
 			return values[0]
 		}
-		return json.Number(values[0])
+		// The canonical text: the validator parses the number with big.Rat,
+		// which takes exponents up to a million (1e-999999) at milliseconds
+		// each.
+		return json.Number(strconv.FormatFloat(f, 'g', -1, 64))
 	case "boolean":
 		switch values[0] {
 		case "true":

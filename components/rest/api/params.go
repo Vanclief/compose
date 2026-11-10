@@ -58,15 +58,17 @@ func splitValues(values []string) []string {
 // as EINTERNAL. Any other conversion failure comes from client input the
 // schema could not rule out (a date-time the schema accepts but time.Time
 // rejects, an integer out of the field's range) and becomes one EINVALID
-// naming each parameter, never echoing the value.
+// naming each parameter, never echoing the value. The embedded pointers on
+// every parameter's path are allocated whether or not it was sent, so a
+// method promoted from one (Validate) never meets nil.
 func setParams(req reflect.Value, params []openapi.Param, values [][]string) error {
 	var fields []validate.FieldError
 	for i, p := range params {
+		field := fieldOf(req, p.Index)
 		if len(values[i]) == 0 {
 			continue
 		}
 
-		field := fieldOf(req, p.Index)
 		var err error
 		if p.In == "header" && derefType(field.Type()) == timeType {
 			err = setHTTPTime(field, values[i][0])
@@ -99,7 +101,8 @@ func setHTTPTime(v reflect.Value, s string) error {
 	return nil
 }
 
-// fieldOf returns the field at index, allocating embedded pointers on the way.
+// fieldOf returns the field at index, allocating embedded pointers on the
+// way; a pointer field at index itself stays as it is.
 func fieldOf(v reflect.Value, index []int) reflect.Value {
 	for _, idx := range index {
 		if v.Kind() == reflect.Pointer {
@@ -115,10 +118,18 @@ func fieldOf(v reflect.Value, index []int) reflect.Value {
 
 // checkParamTypes rejects parameter fields setValue cannot fill from text:
 // []byte, maps, arrays, nested slices and structs that do not implement
-// encoding.TextUnmarshaler.
+// encoding.TextUnmarshaler; and parameters reached through an unexported
+// embedded pointer, which setParams cannot allocate.
 func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 	var problems []string
 	for _, p := range params {
+		embedded := unexportedEmbeddedPointer(reqType, p.Index)
+		if embedded != nil {
+			problems = append(problems, fmt.Sprintf(
+				"%s parameter %s: reached through the unexported embedded pointer %s, which cannot be allocated (export the type or embed it by value)",
+				p.In, p.Name, embedded))
+			continue
+		}
 		t := reqType.FieldByIndex(p.Index).Type
 		if !paramTypeSupported(t) {
 			problems = append(problems, fmt.Sprintf(
@@ -128,6 +139,19 @@ func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 	}
 	if len(problems) > 0 {
 		return ez.New(ez.EINVALID, strings.Join(problems, "; "), nil)
+	}
+	return nil
+}
+
+// unexportedEmbeddedPointer returns the type of the first unexported
+// embedded pointer on the way to the field of t at index, or nil.
+func unexportedEmbeddedPointer(t reflect.Type, index []int) reflect.Type {
+	for _, idx := range index[:len(index)-1] {
+		f := derefType(t).Field(idx)
+		if f.Type.Kind() == reflect.Pointer && !f.IsExported() {
+			return f.Type
+		}
+		t = f.Type
 	}
 	return nil
 }

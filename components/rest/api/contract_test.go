@@ -700,3 +700,29 @@ func TestOperationsPublic(t *testing.T) {
 	require.Equal(t, []string{"application/pdf"}, byID["runs.report"].Produces)
 	require.Equal(t, []string{echo.MIMEApplicationJSON}, byID["runs.get"].Produces)
 }
+
+// A handler that returns a nil pointer and no error is answered as a 500,
+// not as a 200 null the document does not describe.
+func TestNilPointerResponse(t *testing.T) {
+	e := newEcho()
+	missing := true
+	check := func(ctx context.Context, req *fixture.HealthRequest) (*fixture.HealthResponse, error) {
+		if missing {
+			return nil, nil
+		}
+		return &fixture.HealthResponse{OK: true}, nil
+	}
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/health"), "", "check", check)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/health", "")
+	resp := requireError(t, rec, http.StatusInternalServerError, "the handler returned no response")
+	require.Equal(t, ez.EINTERNAL, resp.Error.Code)
+
+	missing = false
+	rec = s.do(http.MethodGet, "/health", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{"ok":true}`, rec.Body.String())
+}

@@ -957,6 +957,126 @@ func TestBodyDepthLimit(t *testing.T) {
 	require.Equal(t, 1, freeCalls)
 }
 
+// doWithin runs the request and fails the test when it has not answered
+// after d.
+func doWithin(t *testing.T, d time.Duration, s *server, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- s.do(method, target, body)
+	}()
+	select {
+	case rec := <-done:
+		return rec
+	case <-time.After(d):
+		t.Fatalf("%s %.40s still running after %s", method, target, d)
+		return nil
+	}
+}
+
+// floatsRequest takes non-negative numbers in the query.
+type floatsRequest struct {
+	requests.NoRules
+	V []float64 `json:"-" query:"v" minimum:"0"`
+}
+
+// The validator parses every number it checks against a bound or an
+// integer type with big.Rat, at milliseconds each for an exponent like
+// 1e-999999; it sees canonical text, so 2,000 of them answer at once.
+func TestHugeExponents(t *testing.T) {
+	s, calls := nodeServer()
+	children := func(n string) string {
+		items := strings.TrimSuffix(strings.Repeat(`{"retries":`+n+`},`, 2000), ",")
+		return `{"children":[` + items + `]}`
+	}
+
+	// An underflow is 0 to the validator; encoding/json refuses it for an int.
+	rec := doWithin(t, 5*time.Second, s, http.MethodPost, "/nodes", children("1e-999999"))
+	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
+
+	// A number no float64 holds is past every bound to the validator.
+	rec = doWithin(t, 5*time.Second, s, http.MethodPost, "/nodes", children("1e999999"))
+	requireError(t, rec, http.StatusBadRequest, "retries must be <= 3")
+	require.Zero(t, *calls)
+
+	e := newEcho()
+	var got *floatsRequest
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/floats"), "", "list", func(ctx context.Context, req *floatsRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	floats := &server{e: e, reg: reg}
+
+	values := strings.TrimSuffix(strings.Repeat("1e-999999,", 2000), ",")
+	rec = doWithin(t, 5*time.Second, floats, http.MethodGet, "/floats?v="+values, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Len(t, got.V, 2000)
+	require.Zero(t, got.V[0])
+}
+
+// exactRequest holds integers a float64 cannot hold exactly.
+type exactRequest struct {
+	requests.NoRules
+	I int64  `json:"i"`
+	U uint64 `json:"u"`
+}
+
+// Canonical number text never routes an integer through float64.
+func TestExactIntegers(t *testing.T) {
+	e := newEcho()
+	var got *exactRequest
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/exact"), "", "create", func(ctx context.Context, body *exactRequest) (nodeResponse, error) {
+		got = body
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/exact", `{"i":9007199254740993,"u":12345678901234567890}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, int64(9007199254740993), got.I)
+	require.Equal(t, uint64(12345678901234567890), got.U)
+}
+
+// pageRequest embeds the pagination parameters through a pointer.
+type pageRequest struct {
+	*pagination.CursorRequest
+	Name string `json:"-" query:"name"`
+	Page *int   `json:"-" query:"page"`
+}
+
+// An embedded pointer carrying parameters is allocated even when none of
+// them is sent, so the Validate promoted from it runs; a pointer parameter
+// that is not sent stays nil.
+func TestEmbeddedPointerParams(t *testing.T) {
+	e := newEcho()
+	var got *pageRequest
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/pages"), "", "list", func(ctx context.Context, req *pageRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/pages?name=x", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NotNil(t, got.CursorRequest)
+	// Zero but for the default limit Validate applied.
+	require.Equal(t, pagination.CursorRequest{Limit: pagination.DEFAULT_LIMIT}, *got.CursorRequest)
+	require.Equal(t, "x", got.Name)
+	require.Nil(t, got.Page)
+
+	rec = s.do(http.MethodGet, "/pages?limit=5&page=2", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 5, got.Limit)
+	require.NotNil(t, got.Page)
+	require.Equal(t, 2, *got.Page)
+}
+
 func TestMultipartRemovesSpilledFiles(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -1001,4 +1121,34 @@ func TestMultipartRemovesSpilledFiles(t *testing.T) {
 	require.Equal(t, int64(fileSize), size)
 	require.NotEmpty(t, seen, "the file did not spill to disk")
 	require.Empty(t, spilled())
+}
+
+// rawRequest carries free-form JSON the handler reads itself.
+type rawRequest struct {
+	requests.NoRules
+	Data json.RawMessage `json:"data"`
+}
+
+// A number no float64 holds still reaches a json.RawMessage field as the
+// client wrote it, and is refused where a Go number would have to hold it.
+func TestOutOfRangeNumbers(t *testing.T) {
+	e := newEcho()
+	var got string
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/raw"), "", "create", func(ctx context.Context, req *rawRequest) (nodeResponse, error) {
+		got = string(req.Data)
+		return nodeResponse{OK: true}, nil
+	})
+	api.POST(reg.Group("/any"), "", "create", func(ctx context.Context, req *freeForm) (nodeResponse, error) {
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/raw", `{"data":{"x":[1e999999,-1e400]}}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, `{"x":[1e999999,-1e400]}`, got)
+
+	rec = s.do(http.MethodPost, "/any", `{"data":1e999999}`)
+	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
 }

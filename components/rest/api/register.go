@@ -209,6 +209,14 @@ func (r *Registry) check(op *operation) error {
 	if strings.Contains(op.path, "*") {
 		return ez.New(ez.EINVALID, "wildcard paths are not supported: the document cannot describe them", nil)
 	}
+	// Echo starts a parameter at any :, but the document and the binder read
+	// a placeholder only as a whole segment (/:id).
+	for _, segment := range strings.Split(op.path, "/") {
+		name, _ := strings.CutPrefix(segment, ":")
+		if strings.Contains(name, ":") {
+			return ez.New(ez.EINVALID, fmt.Sprintf("path segment %q has a : that does not start it, which the document cannot describe: make the placeholder a whole segment", segment), nil)
+		}
+	}
 	if !namePattern.MatchString(op.name) {
 		return ez.New(ez.EINVALID, fmt.Sprintf("operation name %q must match %s", op.name, namePattern), nil)
 	}

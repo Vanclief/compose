@@ -109,8 +109,12 @@ func Public() Option {
 	}}
 }
 
-// Timeout sets the request context timeout (requests.WithTimeout).
+// Timeout sets the request context timeout (requests.WithTimeout). Panics
+// when d is not positive.
 func Timeout(d time.Duration) Option {
+	if d <= 0 {
+		panic(ez.New(ez.EINVALID, "api: Timeout must be positive", nil))
+	}
 	return Option{name: "api.Timeout", op: func(op *operation) {
 		op.timeout = d
 	}}

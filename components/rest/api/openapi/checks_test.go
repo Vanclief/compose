@@ -149,7 +149,7 @@ func TestRequestKeyErrors(t *testing.T) {
 	}{
 		{"unexported embedded struct", reflect.TypeFor[fixture.UnexportedEmbed](), `openapi: fixture.UnexportedEmbed: field base.Level (json "level") is bound by encoding/json but missing from the schema`},
 		{"hidden field", reflect.TypeFor[fixture.HiddenField](), `openapi: fixture.HiddenField: field Secret has hidden:"true", which is not allowed on request types (encoding/json still binds it)`},
-		{"hidden param", reflect.TypeFor[fixture.HiddenParam](), `openapi: fixture.HiddenParam: field Q has hidden:"true", which is not allowed on request types (encoding/json still binds it)`},
+		{"hidden param", reflect.TypeFor[fixture.HiddenParam](), `openapi: fixture.HiddenParam: field Q has hidden:"true", which is not supported on a parameter (the document would hide a parameter the server still reads)`},
 		{"embedded non-struct", reflect.TypeFor[fixture.EmbeddedSlice](), `openapi: fixture.EmbeddedSlice: field Tags (json "Tags") is bound by encoding/json but missing from the schema`},
 		{"shadowed Go name", reflect.TypeFor[fixture.ShadowedGoName](), `openapi: fixture.ShadowedGoName: field Inner.ID (json "a_id") is bound by encoding/json but missing from the schema`},
 		// Built at runtime: vet's structtag check rejects the literals.

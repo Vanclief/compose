@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/require"
@@ -303,6 +304,16 @@ type bytesParamRequest struct {
 	Data []byte `json:"-" query:"data"`
 }
 
+// pageParams carries a parameter, embedded through an unexported pointer.
+type pageParams struct {
+	Limit int `json:"-" query:"limit"`
+}
+
+type unexportedPointerRequest struct {
+	requests.NoRules
+	*pageParams
+}
+
 type mapParamRequest struct {
 	requests.NoRules
 	Filter map[string]string `json:"-" query:"filter"`
@@ -464,6 +475,26 @@ func TestRegistrationFailures(t *testing.T) {
 	})
 	require.Contains(t, msg, "wildcard paths are not supported")
 
+	// Echo starts a parameter at a : inside a segment, which the document
+	// cannot describe, in the operation path or the group prefix.
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "/v:version", "get", stub)
+	})
+	require.Contains(t, msg, `api: GET /runs/v:version (runs.get): path segment "v:version" has a : that does not start it, which the document cannot describe: make the placeholder a whole segment`)
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.GetRequest, fixture.Run](g.Group("/:id:x"), "", "get", stub)
+	})
+	require.Contains(t, msg, `path segment ":id:x" has a : that does not start it`)
+
+	// A placeholder without a name.
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[fixture.HealthRequest, fixture.HealthResponse](g, "/:", "get", stub)
+	})
+	require.Contains(t, msg, `placeholder : has no path:"" field`)
+
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
 		_, g = newGroup()
 		msg = panicMessage(t, func() {
@@ -484,6 +515,12 @@ func TestRegistrationFailures(t *testing.T) {
 		api.GET[mapParamRequest, fixture.Run](g, "", "get", stub)
 	})
 	require.Contains(t, msg, "query parameter filter: type map[string]string is not supported")
+
+	_, g = newGroup()
+	msg = panicMessage(t, func() {
+		api.GET[unexportedPointerRequest, fixture.Run](g, "", "get", stub)
+	})
+	require.Contains(t, msg, "query parameter limit: reached through the unexported embedded pointer *api_test.pageParams, which cannot be allocated (export the type or embed it by value)")
 
 	optionalParams := []struct {
 		register func(g *api.Group)
@@ -621,6 +658,9 @@ func TestOptionFailures(t *testing.T) {
 		}, "response type interface {} is an interface: the handler must return a concrete type"},
 		{func() { api.GET[fixture.ReportRequest, *api.Blob](newGroup(), "/:id", "report", stub) }, "the handler must return api.Blob, not *api.Blob"},
 		{func() { api.Authenticate(nil) }, "api: Authenticate needs a function"},
+		{func() { api.MaxBodyBytes(0) }, "api: MaxBodyBytes must be positive"},
+		{func() { api.Timeout(0) }, "api: Timeout must be positive"},
+		{func() { api.Timeout(-time.Second) }, "api: Timeout must be positive"},
 		{func() { api.Produces[fixture.ExportRequest]("text/csv", nil) }, "api: Produces needs a function"},
 		{func() { api.New(echo.New(), api.Public(), api.Authenticate(app.Authenticate)) }, "api: New: api.Public and api.Authenticate cannot both be passed to api.New"},
 		{func() { newGroup().Group("/:id", api.Authenticate(app.Authenticate), api.Public()) }, "api: group /runs/:id: api.Public and api.Authenticate cannot both be passed to a group"},
