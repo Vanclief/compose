@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.33.0
+
+### Highlights
+
+- **MCP catalog tools bound their arguments before doing the work**: `search_functions`, `describe_function` and `explain_term` answer from the catalog in-process, past the REST API and its rate limits, and built their whole answer before cutting it to `mcp.Config.MaxOutputBytes`, so any caller with a valid token could make one call cost far more than its request. On the 296-function emma catalog a 4 MiB `describe_function` call naming one function over and over allocated about 560 MiB, one naming 400,000 unknown functions about 3 GiB over 3.6 s, and a `search_functions` query of two million words held a core for 1.7 s. `describe_function` and `explain_term` now take at most 50 names or terms, which their input schemas advertise as `maxItems`, answer a name repeated in one call once (after trimming), and refuse a name or term longer than 256 characters (lengths count characters after trimming); `search_functions` refuses a query longer than 256 characters or of more than 32 words (underscores count as spaces), and a `module` longer than 256 characters. A list that is too long gets the schema refusal an empty one already got, `validating "arguments": ... maxItems: array length N is greater than 50`; the other refusals are one tool error line that does not quote the input back, such as `error invalid: names[1] has 4194304 characters, more than 256` or `error invalid: query has 40 words, more than 32; search for a few words`. Calls within the limits otherwise answer as before, cut with the `[incomplete: ...]` note when long. The arguments are still decoded whole before these checks, so the app's body limit on the MCP route remains what caps a request's size.
+
 ## v1.32.0
 
 ### Highlights
