@@ -208,8 +208,9 @@ func TestRunMigrationsFromBaselineLeavesPoolSessionsAlone(t *testing.T) {
 	err := db.RunMigrationsFromBaseline(baseline, migrate.NewMigrations())
 	require.NoError(t, err)
 
-	// The load connection was discarded, and with no migrations nothing else opened one
-	assert.Equal(t, 0, db.MigrationDB.Stats().OpenConnections)
+	// The load connection was discarded, and with no migrations only the
+	// migration lock's connection went back to the pool
+	assert.Equal(t, 1, db.MigrationDB.Stats().OpenConnections)
 
 	// The dump sets lock_timeout to 0 for its session and loadBaseline resets
 	// only search_path, so a kept load session would answer 0 here

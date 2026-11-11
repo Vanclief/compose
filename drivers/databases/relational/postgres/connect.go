@@ -97,10 +97,23 @@ func ConnectToDatabase(cfg *ConnectionConfig) (*relational.DB, error) {
 	// client_connection_check_interval (PostgreSQL 14+) makes the server abort
 	// the statement of a client that died mid-migration within about 5 seconds,
 	// instead of running it and holding its locks until it finishes.
+	// The connection holding the migration advisory lock runs no statement, so
+	// that check never sees its client go; TCP keepalives every 10 seconds after
+	// 30 idle, 3 unanswered, make the server drop the session of a vanished
+	// host connected directly, and the lock with it, in about a minute instead
+	// of the 2 hours of Linux's default. The server ignores them on a Unix
+	// socket and only logs a setting the platform cannot apply.
+	// idle_session_timeout (PostgreSQL 14+) is turned off because a database
+	// or role default would end that idle session, and release the lock, in
+	// the middle of a migration.
 	migrationSQLDB := sql.OpenDB(newConnector(dsn, dialTimeout, 0, writeTimeout, map[string]interface{}{
 		"statement_timeout":                "0",
 		"lock_timeout":                     strconv.Itoa(lockTimeout),
 		"client_connection_check_interval": "5000",
+		"tcp_keepalives_idle":              "30",
+		"tcp_keepalives_interval":          "10",
+		"tcp_keepalives_count":             "3",
+		"idle_session_timeout":             "0",
 	}))
 	migrationSQLDB.SetConnMaxIdleTime(30 * time.Second)
 
