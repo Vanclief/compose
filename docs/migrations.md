@@ -38,8 +38,9 @@ completion, and they have their own `lock_timeout`, `migrationLockTimeout` in th
 than that for a lock held by another session fails, the boot fails, and the next start retries it
 instead of hanging the deploy. The server also checks every 5 s that the client is still there
 (`client_connection_check_interval`: Postgres 14 or newer on Linux, 15 or newer on macOS and BSD,
-never on Windows; a server that refuses it fails the pool's first statement, the baseline load or
-`RunMigrations` or `RollbackLastMigration` whenever a migration is registered, not the connect),
+never on Windows; a server that refuses it fails the pool's first statement, which is the
+migration lock below: on every `RunMigrationsFromBaseline`, and on `RunMigrations` or
+`RollbackLastMigration` whenever a migration is registered, not on the connect),
 so a container killed mid-migration does not leave a backend holding locks until the statement
 ends. The pool shares the main pool's model registry, so a migration may use registered models,
 and it drops its idle connections after 30 s, so it holds nothing once migrations are done.
@@ -54,6 +55,51 @@ skip forever. Write `DROP INDEX CONCURRENTLY IF EXISTS` before it so the retry r
 its own `Exec` call, or separated by a `--bun:split` line in an `.up.sql` file: two statements in
 one string run as one implicit transaction, which `CONCURRENTLY` refuses, and a `.tx.up.sql` file
 cannot hold it at all.
+
+## Instances booting together
+
+On Postgres, `RunMigrations`, `RunMigrationsFromBaseline` and `RollbackLastMigration` hold a
+session-level advisory lock for the whole call, so instances of an app that boot together against
+one database run their migrations one at a time. The lock is taken before the ledger is read, on a
+migration pool connection that does nothing but hold it, and released when the call returns, also
+when a migration fails or panics. An instance that finds the lock taken in `RunMigrations` or
+`RunMigrationsFromBaseline` logs "Waiting for another instance to finish its migrations" once and
+tries again every half second, for as long as the other instance runs; there is no timeout, so the
+wait counts against the platform's health window like a migration of its own. Once it holds the
+lock it reads the ledger and runs only what is still pending, usually nothing.
+`RollbackLastMigration` does not wait: when another instance holds the lock it fails with
+`ECONFLICT`, because after a wait the last group would be a different one than the caller meant to
+undo. `RunMigrationsFromBaseline` holds it from the check for a
+`bun_migrations` table to the last migration, so only one instance loads the baseline into a
+fresh database and the others find it loaded. `RunMigrations` and `RollbackLastMigration` with no
+migration registered return without taking it.
+
+The lock is released with `pg_advisory_unlock`. When that fails, its connection is closed, and the
+server drops the lock with the session. A container killed while it holds the lock closes its
+socket, and the server drops the lock then too. A host that vanishes without closing the socket
+leaves a session that runs no statement, which `client_connection_check_interval` does not check.
+The migration pool sets TCP keepalives on its sessions (`tcp_keepalives_idle` 30 s,
+`tcp_keepalives_interval` 10 s, `tcp_keepalives_count` 3), so on a direct connection the server
+drops that session and the lock after about a minute instead of the operating system default, 2
+hours on Linux. The server ignores those settings on a Unix socket, and only logs one the platform
+cannot apply.
+
+The lock has limits:
+
+- It is Postgres only. On SQLite there is no lock and the calls behave as before.
+- A session-level lock needs a server session that stays with the client. PgBouncer in transaction
+  pooling mode does not give one; run migrations against the server directly or through session
+  pooling. Through transaction pooling the lock can stay on a pooled server connection after the
+  call returns, and later boots wait for it.
+- It holds one connection for the whole call, next to the ones the migrations use. The migration
+  pool `postgres.ConnectToDatabase` opens has no cap. A `relational.DB` built by hand without
+  `MigrationDB` runs migrations on its main pool, which then needs room for at least two
+  connections, or the call waits forever.
+- Only the three calls above take it. An app that drives `migrate.Migrator` itself is not covered.
+- Every compose app uses the same lock key, and advisory locks are per database: two apps that
+  share one database run their migrations one at a time too.
+- Migrations must still be safe to run twice and have unique names. The lock keeps two instances
+  from running a migration at the same time, not a crashed instance's retry from running it again.
 
 ## The schema baseline
 
@@ -143,10 +189,9 @@ end, so a line of that shape inside a function body, or a dump without the frame
 as is. `RunMigrationsFromBaseline` is Postgres only, even with an empty `Baseline`; an app whose
 tests run on SQLite keeps calling `RunMigrations` there.
 
-Two instances booting together against the same fresh database both try the load; the second fails
-on a duplicate object and passes on its next start, since the first has committed the floor by then.
-Running migrations from two instances at once is not supported either, because bun's ledger has no
-unique name. Run one instance while a migration is pending.
+Two instances booting together against the same fresh database load the dump once: the second
+waits for the migration lock, then finds the `bun_migrations` table and checks the floor, as
+described under "Instances booting together".
 
 ## Taking a checkpoint
 

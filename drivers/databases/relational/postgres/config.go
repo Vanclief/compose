@@ -32,12 +32,13 @@ type ConnectionConfig struct {
 	// connection, so a migration blocked by a lock held by another session fails
 	// and the next start retries it instead of hanging the boot. 0 or unset
 	// means the 10 second default; there is no off. Statement and read timeouts
-	// do not apply to migrations.
+	// do not apply to migrations. It does not bound the wait for the migration
+	// lock another instance holds, which has no timeout.
 	MigrationLockTimeout int `mapstructure:"migrationLockTimeout"`
 	// MaxOpenConns caps the main pool. 0 leaves it unlimited (database/sql default).
 	// Set it below the server's max_connections with headroom for other clients
-	// and for the migration pool, which is not capped and holds one or two
-	// connections while migrations run.
+	// and for the migration pool, which is not capped and holds two or three
+	// connections while migrations run, one of them for the migration lock.
 	MaxOpenConns int `mapstructure:"maxOpenConns"`
 	// MaxIdleConns caps idle connections kept in the pool. 0 keeps the database/sql default.
 	MaxIdleConns int `mapstructure:"maxIdleConns"`

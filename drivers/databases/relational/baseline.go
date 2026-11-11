@@ -2,7 +2,6 @@ package relational
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"regexp"
@@ -28,6 +27,8 @@ type Baseline struct {
 
 // RunMigrationsFromBaseline - Loads the baseline into a fresh database, or
 // checks an existing one is not behind it, then runs the pending migrations.
+// It holds the migration lock from the check to the last migration, like
+// RunMigrations.
 func (db *DB) RunMigrationsFromBaseline(baseline Baseline, migrations *migrate.Migrations) error {
 	ctx := context.Background()
 
@@ -55,12 +56,20 @@ func (db *DB) RunMigrationsFromBaseline(baseline Baseline, migrations *migrate.M
 		}
 	}
 
+	// One lock covers the fresh check, the load and the migrations, so a second
+	// instance reads the ledger only after the first has loaded and migrated
+	unlock, err := db.lockMigrations(ctx)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	defer unlock()
+
 	// The ledger is read before migrate.Migrator.Init runs, because Init would
 	// create the bun_migrations table the baseline creates itself. Only a
 	// missing table counts as fresh: the dump creates the bun tables without
 	// IF NOT EXISTS, so it cannot load over an existing empty ledger.
 	var fresh bool
-	err := db.NewRaw("SELECT to_regclass('bun_migrations') IS NULL").Scan(ctx, &fresh)
+	err = db.NewRaw("SELECT to_regclass('bun_migrations') IS NULL").Scan(ctx, &fresh)
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -81,7 +90,7 @@ func (db *DB) RunMigrationsFromBaseline(baseline Baseline, migrations *migrate.M
 		}
 	}
 
-	err = db.RunMigrations(migrations)
+	err = db.runMigrations(ctx, migrations)
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -103,12 +112,7 @@ func (db *DB) loadBaseline(ctx context.Context, baseline Baseline) error {
 	// The dump empties search_path and sets lock_timeout and statement_timeout
 	// to 0 for its session. Discarding the connection instead of returning it
 	// to the pool stops the Migrate that follows from reusing that session.
-	defer func() {
-		conn.Raw(func(any) error { // nolint:errcheck // Returns ErrBadConn on purpose
-			return driver.ErrBadConn
-		})
-		conn.Close() // nolint:errcheck // Raw already closed it
-	}()
+	defer discardConn(conn)
 
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
