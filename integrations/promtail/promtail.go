@@ -333,27 +333,42 @@ func (c *Client) request(lines []line) pushRequest {
 	return req
 }
 
-// labels extracts the configured labels from the key=value tokens that
+// labels extracts the configured labels from the name=value fields that
 // zerolog's ConsoleWriter prints, then applies the static labels on top.
 //
-// The last token for a name wins: ConsoleWriter prints the message before the
-// fields, so a token injected through the message cannot override the real
-// field. The label is then dropped when that final value is outside
-// labelValueRegex, so an invalid real value never falls back to an injected
-// one. A name keeps at most maxLabelValues distinct values per
+// ConsoleWriter prints the fields last, after the message, each as name=value
+// with one space between them. A string value is printed bare unless it holds
+// a space, a quote, a backslash or a byte outside printable ASCII, in which
+// case it is printed by strconv.Quote; any other value is a JSON number,
+// true, false, null, object or array. labels reads the fields from the end of
+// the line backwards with lastField and stops at the first text that is not a
+// whole field, so it never reads a field out of another field's value, and
+// the message, which is free text, can only be reached once every real field
+// has been read. The first value read for a name wins, so a token in the
+// message cannot override the real field. The label is then dropped when that
+// value is outside labelValueRegex, so an invalid real value never falls back
+// to an injected one. A name keeps at most maxLabelValues distinct values per
 // labelResetInterval, later ones are dropped until the next reset.
+//
+// Text the writer prints after the fields, such as a FormatExtra, or a field
+// name holding a space ends the scan there, so the fields before it give no
+// labels.
 func (c *Client) labels(text string) map[string]string {
 	labels := map[string]string{}
 
-	for _, token := range strings.Split(text, " ") {
-		parts := strings.Split(token, "=")
-		if len(parts) != 2 {
-			continue
+	for text != "" {
+		name, value, start, ok := lastField(text)
+		if !ok {
+			break
 		}
 
-		if slices.Contains(c.labelNames, parts[0]) {
-			labels[parts[0]] = parts[1]
+		_, seen := labels[name]
+		if !seen && slices.Contains(c.labelNames, name) {
+			labels[name] = value
 		}
+
+		// start is 0 or the field follows a space
+		text = text[:max(start-1, 0)]
 	}
 
 	for name, value := range labels {
@@ -365,6 +380,107 @@ func (c *Client) labels(text string) map[string]string {
 	maps.Copy(labels, c.staticLabels)
 
 	return labels
+}
+
+// lastField reads the field that ends text, as ConsoleWriter prints it, and
+// returns its name, its value, the index the field starts at, which is 0 or
+// follows a space, and false when text does not end with a whole field.
+//
+// A last token with no quote or backslash after its first "=", or anywhere
+// when it has no "=", ends in a bare value, which holds no space, so the token
+// is the whole field and the name ends at that "=". The end of a quoted
+// string or of a JSON value holding one always has a quote after the token's
+// first "=", since a string that holds an "=" closes after it. Otherwise a
+// value ending in a quote is a quoted string and one ending in } or ] a JSON
+// object or array, read back to its opening quote or bracket, and the name
+// runs from the previous space to the "=" before it. Such a value is returned
+// with its quotes or brackets, which labelValueRegex refuses.
+func lastField(text string) (string, string, int, bool) {
+	tokenStart := strings.LastIndexByte(text, ' ') + 1
+	token := text[tokenStart:]
+
+	name, value, found := strings.Cut(token, "=")
+	end := token
+	if found {
+		end = value
+	}
+
+	if !strings.ContainsAny(end, `"\`) {
+		if !found || name == "" {
+			return "", "", 0, false
+		}
+		return name, value, tokenStart, true
+	}
+
+	var valueStart int
+	switch text[len(text)-1] {
+	case '"':
+		valueStart = openingQuote(text, len(text)-1)
+	case '}', ']':
+		valueStart = openingBracket(text)
+	default:
+		return "", "", 0, false
+	}
+
+	if valueStart < 1 || text[valueStart-1] != '=' {
+		return "", "", 0, false
+	}
+
+	start := strings.LastIndexByte(text[:valueStart-1], ' ') + 1
+	name = text[start : valueStart-1]
+	if name == "" {
+		return "", "", 0, false
+	}
+
+	return name, text[valueStart:], start, true
+}
+
+// openingQuote returns the index of the quote that opens the string whose
+// closing quote is text[closing], or -1. In strconv.Quote and JSON output a
+// backslash always starts an escape, so a quote is escaped exactly when an odd
+// number of backslashes precede it.
+func openingQuote(text string, closing int) int {
+	for i := closing - 1; i >= 0; i-- {
+		if text[i] != '"' {
+			continue
+		}
+
+		backslashes := 0
+		for j := i - 1; j >= 0 && text[j] == '\\'; j-- {
+			backslashes++
+		}
+
+		if backslashes%2 == 0 {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// openingBracket returns the index of the { or [ that opens the JSON object or
+// array ending text, or -1. Brackets inside JSON strings are skipped.
+func openingBracket(text string) int {
+	depth := 0
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] {
+		case '}', ']':
+			depth++
+		case '{', '[':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		case '"':
+			// Jump to the string's opening quote, the loop then steps past it
+			i = openingQuote(text, i)
+			if i < 0 {
+				return -1
+			}
+		}
+	}
+
+	return -1
 }
 
 // allowLabelValue records value for name and reports whether it fits within
