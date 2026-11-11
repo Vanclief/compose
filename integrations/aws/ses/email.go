@@ -41,6 +41,10 @@ func (c *Client) SendEmail(ctx context.Context, email Email) (string, error) {
 		return "", err
 	}
 
+	if c.outbox != nil {
+		return c.recordEmail(ctx, email)
+	}
+
 	if len(email.Attachments) > 0 {
 		return c.sendRawEmail(ctx, email)
 	}
