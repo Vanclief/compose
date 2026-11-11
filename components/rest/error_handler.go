@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v5"
+	"github.com/vanclief/compose/components/rest/api/validate"
 	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/ez"
 )
@@ -83,8 +84,21 @@ func WithErrorTranslator(fn func(c *echo.Context, err error) error) Option {
 // internal error or panic stack reaches the client. An
 // *echo.BindingError embeds the HTTPError without being one, so a typed
 // binder's error returned straight to Echo gets the status text, the way
-// handler.BindedJSONResponse keeps binding detail out of its answer too. The
-// request_id is the X-Request-Id of the response: under Configure the
+// handler.BindedJSONResponse keeps binding detail out of its answer too.
+//
+// An ez EINVALID error that carries the field errors of the api registry's
+// request validation (validate.Fields) is answered with them as the fields
+// list of the envelope, one {in, name, message} entry per failing field in
+// the order the message joins them and at most validate.MaxFields of them,
+// so a client can mark the field without parsing the message. The list is
+// read from anywhere in the error's chain: an app that wraps such an error
+// in an EINVALID of its own answers with its own message and the same list.
+// Any other error has no fields key, an EINVALID from an app's Validate
+// included unless the app built it with validate.NewFieldsError.
+// WithErrorTranslator replaces the message only: the entries keep the
+// registry's English text.
+//
+// The request_id is the X-Request-Id of the response: under Configure the
 // request's id, the one the request log line carries, and otherwise whatever
 // the app's own middleware set there, which Echo's middleware.RequestID copies
 // from the client. The request's own X-Request-Id is never read. A HEAD
@@ -161,6 +175,13 @@ func ErrorHandler(opts ...Option) echo.HTTPErrorHandler {
 			}
 		}
 
+		var fields []handler.FieldError
+		if isEZ && code == ez.EINVALID {
+			for _, field := range validate.Fields(err) {
+				fields = append(fields, handler.FieldError(field))
+			}
+		}
+
 		// The error is answered: err now holds the outcome of the write.
 		if c.Request().Method == http.MethodHead {
 			err = c.NoContent(status)
@@ -169,6 +190,7 @@ func ErrorHandler(opts ...Option) echo.HTTPErrorHandler {
 				Code:      code,
 				Message:   message,
 				RequestID: requestID(c),
+				Fields:    fields,
 			}
 			err = c.JSON(status, handler.ErrorResponse{Error: stdErr})
 		}

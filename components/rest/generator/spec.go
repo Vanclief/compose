@@ -1106,8 +1106,9 @@ func errorResponse() map[string]any {
 
 // registerErrorSchemas adds the error envelope to components.schemas.
 //
-// BaseHandler.ManageError writes `ErrorResponse{Error: StandardError{...}}`. None of the
-// fields carry `omitempty`, so all three are always serialized and are therefore required.
+// BaseHandler.ManageError writes `ErrorResponse{Error: StandardError{...}}`. Code, Message
+// and RequestID carry no `omitempty`, so all three are always serialized and are therefore
+// required. StandardError.Fields is left out: ManageError never sets it.
 // Declaring it here gives every operation a typed error instead of a bare `type: object`,
 // which generators emit as `unknown`.
 func registerErrorSchemas(schemas map[string]map[string]any) {

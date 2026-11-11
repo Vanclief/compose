@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -290,6 +291,29 @@ func TestSchemaBeforeValidate(t *testing.T) {
 	rec := s.do(http.MethodPatch, target, `{"max_total_runs":-1,"status":"failed"}`)
 	resp := requireError(t, rec, http.StatusBadRequest, "max_total_runs must be >= 0")
 	require.NotContains(t, resp.Error.Message, "failure_reason")
+	require.Equal(t, []handler.FieldError{{In: "body", Name: "max_total_runs", Message: "must be >= 0"}}, resp.Error.Fields)
+	require.Nil(t, s.app.Last())
+
+	// A Validate failure is the app's own error: it lists no fields.
+	rec = s.do(http.MethodPatch, target, `{"status":"failed"}`)
+	resp = requireError(t, rec, http.StatusBadRequest, "failure_reason is required")
+	require.Nil(t, resp.Error.Fields)
+	require.NotContains(t, rec.Body.String(), "fields")
+}
+
+func TestManyFailingFieldsAreCapped(t *testing.T) {
+	s := newServer(t)
+
+	// 150 array items break the schema: the answer lists the first 100 of
+	// them, in index order, and counts the rest, whatever the request held.
+	body := `{"name":"x","steps":[1` + strings.Repeat(",1", 149) + `]}`
+	rec := s.do(http.MethodPost, "/runs", body)
+	resp := requireError(t, rec, http.StatusBadRequest, "steps.0 must be object")
+	require.Len(t, resp.Error.Fields, 100)
+	for i, field := range resp.Error.Fields {
+		require.Equal(t, handler.FieldError{In: "body", Name: "steps." + strconv.Itoa(i), Message: "must be object"}, field)
+	}
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; and 50 more"), resp.Error.Message)
 	require.Nil(t, s.app.Last())
 }
 

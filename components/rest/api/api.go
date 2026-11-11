@@ -29,7 +29,8 @@
 // Errors, the pipeline's and the handler's, are returned to Echo, so
 // middleware after next(c) gets them from next(c), and are answered by the
 // app's HTTPErrorHandler: rest.ErrorHandler answers them in the
-// handler.ErrorResponse envelope the spec documents, and its
+// handler.ErrorResponse envelope the spec documents, listing the fields a
+// request failed validation on under fields, and its
 // WithErrorTranslator and WithErrorReporter options localize and report
 // them. Echo's default handler would answer every
 // registry error as a 500 {"message":"Internal Server Error"}, so Ready calls

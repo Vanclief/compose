@@ -2,6 +2,9 @@ package validate
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -276,4 +279,72 @@ func TestNewFieldsError(t *testing.T) {
 	require.Equal(t, "query a must be integer; b is required", ez.ErrorMessage(err))
 	require.Len(t, Fields(err), 2)
 	require.Nil(t, Fields(ez.New(ez.EINVALID, "other", nil)))
+}
+
+func TestFieldsErrorKeepsMaxFields(t *testing.T) {
+	var fields []FieldError
+	for i := range MaxFields + 50 {
+		fields = append(fields, FieldError{In: "body", Name: fmt.Sprintf("items.%04d", i), Message: "must be string"})
+	}
+
+	// The first MaxFields in order are kept, and the message counts the rest.
+	err := NewFieldsError(fields)
+	kept := Fields(err)
+	require.Len(t, kept, MaxFields)
+	require.Equal(t, "items.0000", kept[0].Name)
+	require.Equal(t, "items.0099", kept[MaxFields-1].Name)
+	require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; items.0099 must be string; and 50 more"), ez.ErrorMessage(err))
+
+	// Exactly MaxFields are all listed, with nothing appended.
+	err = NewFieldsError(fields[:MaxFields])
+	require.Len(t, Fields(err), MaxFields)
+	require.NotContains(t, ez.ErrorMessage(err), "more")
+}
+
+func TestFieldsErrorOrdersIndicesAsNumbers(t *testing.T) {
+	var fields []FieldError
+	for i := range MaxFields + 50 {
+		fields = append(fields, FieldError{In: "body", Name: fmt.Sprintf("steps.%d.retries", i), Message: "must be >= 0"})
+	}
+	slices.Reverse(fields)
+
+	// The fields kept of a long array are its first items, not the first in
+	// text order, where steps.100 comes before steps.2.
+	err := NewFieldsError(fields)
+	for i, field := range Fields(err) {
+		require.Equal(t, fmt.Sprintf("steps.%d.retries", i), field.Name)
+	}
+	require.True(t, strings.HasPrefix(ez.ErrorMessage(err), "steps.0.retries must be >= 0; steps.1.retries must be >= 0; steps.2.retries"), ez.ErrorMessage(err))
+
+	// Everything but a run of digits keeps the order of strings.Compare.
+	names := []string{"b", "a.b", "a-b", "a", "tags.10", "tags.2", "tags.01", "tags.1", "x2y", "x10"}
+	fields = nil
+	for _, name := range names {
+		fields = append(fields, FieldError{In: "body", Name: name, Message: "is invalid"})
+	}
+	var got []string
+	for _, field := range Fields(NewFieldsError(fields)) {
+		got = append(got, field.Name)
+	}
+	require.Equal(t, []string{"a", "a-b", "a.b", "b", "tags.01", "tags.1", "tags.2", "tags.10", "x2y", "x10"}, got)
+}
+
+func TestValidateMergesExtraFields(t *testing.T) {
+	schema := compile(t, "op:updateRun.json", "fixture.UpdateRequest")
+	extra := FieldError{In: "body", Name: "Status", Message: `is not a known field, did you mean "status"`}
+
+	// A valid instance fails on the caller's fields alone.
+	valid := `{"path":{"id":"` + validID + `"},"body":{}}`
+	err := schema.Validate(instance(t, valid), extra)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Equal(t, []FieldError{extra}, Fields(err))
+
+	// Schema violations and the caller's fields are reported together.
+	invalid := `{"path":{"id":"` + validID + `"},"body":{"max_total_runs":-1}}`
+	err = schema.Validate(instance(t, invalid), extra)
+	want := []FieldError{
+		extra,
+		{In: "body", Name: "max_total_runs", Message: "must be >= 0"},
+	}
+	require.Equal(t, want, Fields(err))
 }

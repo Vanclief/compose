@@ -53,6 +53,12 @@ func assertSchemaMatchesStruct(t *testing.T, schemas map[string]map[string]any, 
 			t.Fatalf("%s.%s: expected a json tag", structType.Name(), field.Name)
 		}
 
+		// ManageError, whose answers this schema documents, never sets
+		// Fields: see registerErrorSchemas.
+		if structType == reflect.TypeOf(handler.StandardError{}) && tag == "fields" {
+			continue
+		}
+
 		omitempty := false
 		for _, part := range tagParts[1:] {
 			if part == "omitempty" {

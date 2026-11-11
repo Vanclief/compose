@@ -81,12 +81,14 @@ func (c *Compiler) Compile(name string, schema map[string]any) (*Schema, error) 
 	return &Schema{schema: compiled}, nil
 }
 
-// Validate returns nil or an ez.EINVALID error carrying FieldErrors.
-// Errors that are not schema violations are returned as ez.EINTERNAL.
-func (s *Schema) Validate(instance any) error {
+// Validate returns nil or an ez.EINVALID error carrying FieldErrors: the
+// schema's violations together with extra, the fields the caller found
+// failing by a check of its own, in one NewFieldsError. Errors that are not
+// schema violations are returned as ez.EINTERNAL, without extra.
+func (s *Schema) Validate(instance any, extra ...FieldError) error {
 	err := s.schema.Validate(instance)
 	if err == nil {
-		return nil
+		return NewFieldsError(extra)
 	}
 
 	verr, ok := err.(*jsonschema.ValidationError)
@@ -99,7 +101,7 @@ func (s *Schema) Validate(instance any) error {
 		return ez.New(ez.EINVALID, "request is invalid", nil)
 	}
 
-	return NewFieldsError(fields)
+	return NewFieldsError(append(fields, extra...))
 }
 
 func validateEmail(v any) error {

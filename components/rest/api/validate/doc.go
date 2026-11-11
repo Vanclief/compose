@@ -13,7 +13,7 @@
 // a single goroutine, as the api registry does in Ready. A compiled Schema is immutable and safe
 // to use from any number of goroutines.
 //
-// Validation errors become a single ez.EINVALID error whose message lists every
-// failing field. Messages never contain the submitted value. Fields returns the
-// same list in structured form.
+// Validation errors become a single ez.EINVALID error whose message lists the
+// failing fields, the first MaxFields of them. Messages never contain the
+// submitted value. Fields returns the same list in structured form.
 package validate
