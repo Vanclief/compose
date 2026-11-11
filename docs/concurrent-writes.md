@@ -209,7 +209,8 @@ instance changes these other things:
 - **Migrations** take a lock, so instances that boot together run each migration once. See
   [migrations](migrations.md).
 - **`components/scheduler`** runs its jobs in the process that registered them. Two instances
-  each run every job.
+  each run every job, unless each Scheduler is given a claimer (`scheduler.WithClaimer`), which
+  runs each boundary of a recurring job on one instance. See [scheduler](scheduler.md).
 - **`components/ratelimit`** counts in memory, so each instance has its own counters and a client
   gets the limit once per instance.
 - **`session.NewMemoryStore`** keeps sessions in the process. Use the bun store when there is more

@@ -1,8 +1,15 @@
+// Package scheduler runs recurring jobs on wall-clock minute boundaries and
+// one-shot jobs on demand, keyed by id, in one process.
+//
+// Every instance of an app runs every recurring job at every boundary unless
+// the Scheduler has a Claimer (WithClaimer), which lets one instance run each
+// boundary of a recurring job. The claims subpackage has one on PostgreSQL.
 package scheduler
 
 import (
 	"context"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -66,6 +73,7 @@ type Scheduler struct {
 	log             logger.Logger
 	shutdownTimeout time.Duration
 	jobTimeout      time.Duration
+	claimer         Claimer          // nil: every due boundary runs here
 	now             func() time.Time // time.Now by default; tests override to steer the minute loop
 }
 
@@ -220,7 +228,8 @@ func (s *Scheduler) catchUp(ctx context.Context, last, now time.Time) time.Time 
 }
 
 // runDue admits, once each, the registrations due at any minute boundary from
-// first through last inclusive.
+// first through last inclusive. With a Claimer, the latest boundary each one
+// is due at is claimed by its owner goroutine before the job runs.
 func (s *Scheduler) runDue(ctx context.Context, first, last time.Time) {
 	if ctx.Err() != nil {
 		return
@@ -231,32 +240,106 @@ func (s *Scheduler) runDue(ctx context.Context, first, last time.Time) {
 	s.mu.RUnlock()
 
 	for _, r := range registrations {
-		if !dueBetween(r.when, first, last) {
+		tick, due := latestDue(r.when, first, last)
+		if !due {
 			continue
 		}
-		admitted := s.admit(ctx, r.id, r.job, admitSkip)
+		claimTick := time.Time{}
+		if s.claimer != nil {
+			claimTick = tick
+		}
+		admitted := s.admit(ctx, r.id, r.job, admitSkip, claimTick)
 		if !admitted {
 			s.log.Debug().Str("job_id", r.id).Msg("Job already running, skipping")
 		}
 	}
 }
 
-// dueBetween reports whether when matches any minute boundary from first
-// through last inclusive.
-func dueBetween(when Schedule, first, last time.Time) bool {
-	for b := first; !b.After(last); b = b.Add(time.Minute) {
+// invokeClaimed claims tick for id and, when the claim is won, invokes job and
+// releases the claim once job returns. A lost claim or a claim error skips the
+// invocation. A claim error is logged at error level, since missing a tick is
+// safer than every instance running it, unless ctx was cancelled, by shutdown
+// or Supersede, which is no failure of the store. A claim won after ctx was
+// cancelled, from a store that does not stop on cancellation, is released
+// without running job. A claim error is never released: Release matches by
+// tick only, so it could free the same tick won by another instance.
+func (s *Scheduler) invokeClaimed(ctx context.Context, id string, job Job, tick time.Time) {
+	if ctx.Err() != nil {
+		s.log.Debug().Str("job_id", id).Msg("Scheduler job cancelled before claim")
+		return
+	}
+
+	won, err := s.claim(ctx, id, tick)
+	if err != nil && ctx.Err() != nil {
+		s.log.Debug().Str("job_id", id).Time("tick", tick).Err(err).Msg("Scheduler job cancelled during claim")
+		return
+	}
+	if err != nil {
+		s.log.Error().Str("job_id", id).Time("tick", tick).Err(err).Msg("Scheduler claim failed, skipping")
+		return
+	}
+	if !won {
+		s.log.Debug().Str("job_id", id).Time("tick", tick).Msg("Job claim refused, skipping")
+		return
+	}
+	if ctx.Err() != nil {
+		s.log.Debug().Str("job_id", id).Time("tick", tick).Msg("Scheduler job cancelled during claim, releasing")
+		s.release(ctx, id, tick)
+		return
+	}
+
+	s.invoke(ctx, id, job)
+	s.release(ctx, id, tick)
+}
+
+// claim asks the Claimer for tick, bounded by claimTimeout, with the lease
+// for the job timeout.
+func (s *Scheduler) claim(ctx context.Context, id string, tick time.Time) (bool, error) {
+	claimCtx, cancel := context.WithTimeout(ctx, claimTimeout)
+	defer cancel()
+	return s.claimer.Claim(claimCtx, id, tick, leaseFor(s.jobTimeout))
+}
+
+// leaseFor returns the lease of a claim for jobTimeout: jobTimeout plus
+// leaseMargin, saturated at the largest Duration so a huge job timeout does
+// not wrap to a negative lease.
+func leaseFor(jobTimeout time.Duration) time.Duration {
+	if jobTimeout > math.MaxInt64-leaseMargin {
+		return math.MaxInt64
+	}
+	return jobTimeout + leaseMargin
+}
+
+// release releases the claim on tick for id. ctx may already be cancelled, by
+// the job's end or by shutdown, so the release runs on a context that keeps
+// ctx's values but not its cancellation, bounded by claimTimeout. A failure
+// is logged: the claim then blocks later ticks until its lease expires.
+func (s *Scheduler) release(ctx context.Context, id string, tick time.Time) {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
+	defer cancel()
+
+	err := s.claimer.Release(releaseCtx, id, tick)
+	if err != nil {
+		s.log.Error().Str("job_id", id).Time("tick", tick).Err(err).Msg("Scheduler claim release failed")
+	}
+}
+
+// latestDue returns the latest minute boundary from first through last
+// inclusive that when matches, and false when it matches none.
+func latestDue(when Schedule, first, last time.Time) (time.Time, bool) {
+	for b := last; !b.Before(first); b = b.Add(-time.Minute) {
 		if when.matches(b) {
-			return true
+			return b, true
 		}
 	}
-	return false
+	return time.Time{}, false
 }
 
 // RunOnce starts job under id now. It returns false without running anything
 // when id is empty, job is nil, ctx is already done, the Scheduler is
 // stopping, or id is busy; a busy id's pending job is left untouched.
 func (s *Scheduler) RunOnce(ctx context.Context, id string, job Job) bool {
-	return s.admit(ctx, id, job, admitSkip)
+	return s.admit(ctx, id, job, admitSkip, time.Time{})
 }
 
 // Supersede starts job under id now when id is idle. When id is busy it
@@ -265,7 +348,7 @@ func (s *Scheduler) RunOnce(ctx context.Context, id string, job Job) bool {
 // current invocation returns. It returns false when id is empty, job is nil,
 // ctx is already done, or the Scheduler is stopping.
 func (s *Scheduler) Supersede(ctx context.Context, id string, job Job) bool {
-	return s.admit(ctx, id, job, admitSupersede)
+	return s.admit(ctx, id, job, admitSupersede, time.Time{})
 }
 
 // RunNext starts job under id now when id is idle. When id is busy it replaces
@@ -274,12 +357,15 @@ func (s *Scheduler) Supersede(ctx context.Context, id string, job Job) bool {
 // returns false when id is empty, job is nil, ctx is already done, or the
 // Scheduler is stopping. A pending job whose ctx is done by then is dropped.
 func (s *Scheduler) RunNext(ctx context.Context, id string, job Job) bool {
-	return s.admit(ctx, id, job, admitNext)
+	return s.admit(ctx, id, job, admitNext, time.Time{})
 }
 
 // admit starts job on an idle id or, depending on mode, queues it as the busy
 // id's pending job. It reports whether the job was started or queued.
-func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMode) bool {
+// claimTick is the boundary the owner goroutine claims before job runs; it is
+// zero for a run that is not claimed. The id is busy from admission, so it
+// stays busy while the claim is in flight.
+func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMode, claimTick time.Time) bool {
 	if id == "" || job == nil || ctx.Err() != nil {
 		return false
 	}
@@ -296,7 +382,7 @@ func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMod
 		s.running[id] = &runningJob{cancel: cancel}
 		s.wg.Add(1)
 		s.runMu.Unlock()
-		go s.own(jobCtx, id, cancel, job)
+		go s.own(jobCtx, id, cancel, job, claimTick)
 		return true
 	}
 
@@ -315,9 +401,17 @@ func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMod
 
 // own is the owner goroutine of a busy id. It runs the current invocation,
 // then promotes the pending job, if any, until there is nothing left to run.
-func (s *Scheduler) own(ctx context.Context, id string, cancel context.CancelCauseFunc, job Job) {
+// When claimTick is set the first invocation runs only if its claim is won,
+// and the claim is released once it returns, panic and shutdown included,
+// before any pending job runs; pending jobs are not claimed.
+func (s *Scheduler) own(ctx context.Context, id string, cancel context.CancelCauseFunc, job Job, claimTick time.Time) {
 	for {
-		s.invoke(ctx, id, job)
+		if claimTick.IsZero() {
+			s.invoke(ctx, id, job)
+		} else {
+			s.invokeClaimed(ctx, id, job, claimTick)
+			claimTick = time.Time{}
+		}
 		cancel(nil)
 
 		s.runMu.Lock()
@@ -467,8 +561,9 @@ func (s *Scheduler) Idled() <-chan struct{} {
 	return s.idledCh
 }
 
-// Active returns the number of ids with admitted work: running, or waiting for
-// a permit from a WithLimit option. A pending job adds nothing to the count.
+// Active returns the number of ids with admitted work: running, waiting for a
+// permit from a WithLimit option, or claiming their boundary from a Claimer.
+// A pending job adds nothing to the count.
 func (s *Scheduler) Active() int64 {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()

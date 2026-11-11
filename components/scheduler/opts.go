@@ -51,6 +51,32 @@ func WithJobTimeout(d time.Duration) Option {
 	}
 }
 
+// WithClaimer makes recurring jobs run on one instance per minute boundary:
+// before a due recurring job runs, the Scheduler claims the boundary from c
+// and skips the run unless the claim is won (see Claimer). Run every
+// instance in the same time zone. Every and Hourly compare only the minute of
+// the hour in local time, so zones whose UTC offsets differ by whole hours
+// agree, but zones whose offsets differ by a fraction of an hour (+5:30,
+// +5:45, -3:30) select different instants for a schedule that fraction does
+// not fit, such as Hourly or Every(time.Hour), and each instance then wins its
+// own boundaries. Daily compares in its own location, the same on every
+// instance unless it is time.Local.
+//
+// The claim's lease is the job timeout plus one minute (capped at the largest
+// Duration), counted from the claim, while the job timeout starts when the
+// job body is about to run. A run outlives its lease, and can overlap a run
+// of a later boundary on another instance, when the claim's answer, the wait
+// for a WithLimit permit and the time the job takes to return once its job
+// timeout cancels it add up to more than that minute, when the job ignores
+// its context, or when it runs under a Start ctx with a deadline, which
+// replaces the job timeout. Nil => no claims, every instance runs every due
+// boundary.
+func WithClaimer(c Claimer) Option {
+	return func(s *Scheduler) {
+		s.claimer = c
+	}
+}
+
 // WithLimit caps at n the number of jobs whose id starts with prefix that run
 // at the same time, across RunOnce, Supersede, RunNext and recurring jobs. A
 // job over the cap waits for a permit, still counts in Active, and gives up
