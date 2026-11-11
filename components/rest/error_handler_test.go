@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/compose/components/rest/api/validate"
 	"github.com/vanclief/compose/components/rest/handler"
 	"github.com/vanclief/ez"
 )
@@ -372,6 +373,78 @@ func TestErrorHandlerTranslator(t *testing.T) {
 		require.NotContains(t, rec.Body.String(), "traducido", path)
 	}
 	require.Len(t, seen, 2)
+}
+
+func TestErrorHandlerFields(t *testing.T) {
+	failed := []validate.FieldError{
+		{In: "body", Name: "email", Message: "is required"},
+		{In: "query", Name: "limit", Message: "must be <= 1000"},
+	}
+	translate := func(c *echo.Context, err error) error {
+		return ez.New(ez.EINVALID, "traducido", err)
+	}
+	e := echo.New()
+	e.HTTPErrorHandler = ErrorHandler()
+	e.GET("/fields", func(c *echo.Context) error {
+		return ez.Wrap(validate.NewFieldsError(failed))
+	})
+	e.GET("/plain", func(c *echo.Context) error {
+		return ez.New(ez.EINVALID, "email is required", nil)
+	})
+	e.GET("/internal", func(c *echo.Context) error {
+		return ez.New(ez.EINTERNAL, "boom", validate.NewFieldsError(failed))
+	})
+	e.GET("/echo", func(c *echo.Context) error {
+		return echo.NewHTTPError(http.StatusBadRequest, "bad").Wrap(validate.NewFieldsError(failed))
+	})
+
+	// Sorted by location then name, as the message joins them.
+	want := []handler.FieldError{
+		{In: "query", Name: "limit", Message: "must be <= 1000"},
+		{In: "body", Name: "email", Message: "is required"},
+	}
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fields", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	got := errorEnvelope(t, rec)
+	require.Equal(t, ez.EINVALID, got.Code)
+	require.Equal(t, "query limit must be <= 1000; email is required", got.Message)
+	require.Equal(t, want, got.Fields)
+	require.Contains(t, rec.Body.String(), `"fields":[{"in":"query","name":"limit","message":`)
+
+	// An EINVALID without field errors has no fields key, and neither has an
+	// error that is not answered as an ez EINVALID, whatever its chain holds.
+	for _, path := range []string{"/plain", "/internal", "/echo", "/nope"} {
+		rec = httptest.NewRecorder()
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.NotContains(t, rec.Body.String(), "fields", path)
+	}
+
+	// A request that fails on more fields than validate.MaxFields lists the
+	// first 100, so the answer stays small whatever the request held.
+	var many []validate.FieldError
+	for i := range 150 {
+		many = append(many, validate.FieldError{In: "body", Name: fmt.Sprintf("items.%03d", i), Message: "must be string"})
+	}
+	e.GET("/many", func(c *echo.Context) error {
+		return validate.NewFieldsError(many)
+	})
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/many", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	got = errorEnvelope(t, rec)
+	require.Len(t, got.Fields, 100)
+	require.Equal(t, "items.099", got.Fields[99].Name)
+	require.True(t, strings.HasSuffix(got.Message, "; and 50 more"), got.Message)
+
+	// A translator replaces the message and leaves the fields alone.
+	e.HTTPErrorHandler = ErrorHandler(WithErrorTranslator(translate))
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fields", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	got = errorEnvelope(t, rec)
+	require.Equal(t, "traducido", got.Message)
+	require.Equal(t, want, got.Fields)
 }
 
 // requirePanicsInvalid asserts fn panics with an ez EINVALID error with

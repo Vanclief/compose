@@ -213,10 +213,40 @@
         ],
         "type": "object"
       },
+      "handler.FieldError": {
+        "properties": {
+          "in": {
+            "description": "Where the field is in the request: path, query, header or body.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Why the field failed. It never contains the submitted value.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The parameter name, or the dotted path inside the parameter or the body (tags.1, config.name), with * in place of a map key. Empty when the entry is about the location itself, such as a missing body.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "in",
+          "name",
+          "message"
+        ],
+        "type": "object"
+      },
       "handler.StandardError": {
         "properties": {
           "code": {
             "type": "string"
+          },
+          "fields": {
+            "description": "The request fields that failed validation, at most 100. Present only on the 400 of a request that failed request validation.",
+            "items": {
+              "$ref": "#/components/schemas/handler.FieldError"
+            },
+            "maxItems": 100,
+            "type": "array"
           },
           "message": {
             "type": "string"

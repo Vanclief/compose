@@ -346,7 +346,8 @@ as unknown keys, then bind). Decode once instead.
    `api/collisions.go`). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
    joins `<field> <reason>` with `; `, parameters prefixed with their location
    (`query limit must be <= 1000`), never echoing submitted values (400 under
-   `rest.ErrorHandler`, same envelope).
+   `rest.ErrorHandler`, same envelope, which also lists the failing fields under `fields`;
+   see section 7, Errors).
 8. Decode once into a new request whose embedded pointer structs are allocated first, at
    every depth of embedding, so a `Validate` promoted from one does not meet nil whichever
    keys were sent. Two shapes are left nil: an embedded pointer with a JSON name, which is
@@ -776,9 +777,25 @@ Errors
 - **`request_id` in every error body** (own): keep. `rest.Configure` also sends it as the
   `X-Request-Id` response header for log correlation (v1.29.0).
 - **Optional `fields` list in the envelope** (huma `ErrorDetail`, ogen `FieldError`, goa
-  `Field`): `{"error":{"code","message","request_id","fields":[{"name","message"}]}}`.
-  Deferred. The mapper builds the list internally now; exposing it is permanent once SDKs
-  see it, so decide once a UI asks for per-field highlighting.
+  `Field`): `{"error":{"code","message","request_id","fields":[{"in","name","message"}]}}`.
+  Shipped in v1.33.0. `rest.ErrorHandler` writes the list when the error it answers is an ez
+  `EINVALID` carrying the registry's field errors (`validate.Fields`), in the order the
+  message joins them: `in` is `path`, `query`, `header` or `body`, `name` the parameter name
+  or the dotted path inside the parameter or the body (`tags.1`, `config.name`, `*` for a map
+  key), `message` the reason without the submitted value. The key is absent on every other
+  error, a `Validate()` failure included, since that error is the app's own (an app that
+  builds it with `validate.NewFieldsError` gets the list). `message` keeps the joined
+  sentence, so existing clients change nothing; `WithErrorTranslator` replaces `message`
+  only and the entries stay in English. The schema is `handler.FieldError`, an optional
+  array property of `handler.StandardError` in the registry's document. `ManageError` never
+  sets it, so the legacy generator's `StandardError` schema does not list it. The shape is
+  permanent now that SDKs see it.
+- **At most 100 fields per error** (own, `validate.MaxFields`): a request can fail on as many
+  fields as it has values, so `validate.NewFieldsError` keeps the first 100 in its order
+  (location, then name with a run of digits compared as a number, so `steps.2` precedes `steps.10`);
+  `fields` lists those and `message` names them and ends with `; and <n> more`. Without the
+  cap a 1 MiB body of failing array items was answered with about 15 MB of `message`, and
+  the list would have tripled that.
 
 Types
 
@@ -904,7 +921,8 @@ Remaining:
 - **`Validate()` stays mandatory**: the pipeline calls `Body.Validate()` after schema validation
   and before the handler, so cross-field rules have one home. `requests.NoRules` is the embeddable
   no-op. Revisit after emma migrates.
-- **`fields` in the envelope: later.** Build the list internally now.
+- **`fields` in the envelope**: decided here as "later, build the list internally now";
+  shipped in v1.33.0 (section 7, Errors).
 - **Response validation lives in a compose `apitest` helper**, because it needs compose's
   compiled strict copy of the document.
 

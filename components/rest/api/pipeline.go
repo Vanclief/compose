@@ -127,12 +127,7 @@ func (op *operation) serve(c *echo.Context) error {
 	}
 
 	// Report schema violations and case collisions together.
-	err := op.schema.Validate(instance)
-	fields := validate.Fields(err)
-	if err != nil && fields == nil {
-		return ez.Wrap(err)
-	}
-	err = validate.NewFieldsError(append(fields, collisions...))
+	err := op.schema.Validate(instance, collisions...)
 	if err != nil {
 		return ez.Wrap(err)
 	}

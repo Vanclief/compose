@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,11 @@ type FieldError struct {
 	Message string
 }
 
+// MaxFields is the most fields one error lists. A request can fail on as
+// many fields as it has values, so an uncapped list would make the answer
+// many times the size of the request that caused it.
+const MaxFields = 100
+
 // fieldsError is the cause of the ez.EINVALID returned by NewFieldsError.
 type fieldsError struct {
 	fields  []FieldError
@@ -36,13 +42,21 @@ func (e *fieldsError) Error() string {
 }
 
 // NewFieldsError builds a single ez.EINVALID error from fields, sorted by
-// location (path, query, header, body) then name, with duplicates removed.
+// location (path, query, header, body) then name, a run of digits in a name
+// compared as a number, with duplicates removed.
 // The message joins "<name> <message>" with "; ", prefixing parameter names
-// with their location. Returns nil when fields is empty.
+// with their location. Only the first MaxFields are kept: the message then
+// ends with "; and <n> more", and Fields returns the ones kept. Returns nil
+// when fields is empty.
 func NewFieldsError(fields []FieldError) error {
 	fields = normalize(fields)
 	if len(fields) == 0 {
 		return nil
+	}
+
+	more := len(fields) - MaxFields
+	if more > 0 {
+		fields = slices.Clone(fields[:MaxFields])
 	}
 
 	parts := make([]string, len(fields))
@@ -50,11 +64,15 @@ func NewFieldsError(fields []FieldError) error {
 		parts[i] = displayName(f) + " " + f.Message
 	}
 	message := strings.Join(parts, "; ")
+	if more > 0 {
+		message += "; and " + strconv.Itoa(more) + " more"
+	}
 
 	return ez.New(ez.EINVALID, message, &fieldsError{fields: fields, message: message})
 }
 
-// Fields returns the structured field errors carried by err, or nil.
+// Fields returns the structured field errors carried by err, at most
+// MaxFields of them, or nil.
 func Fields(err error) []FieldError {
 	var fe *fieldsError
 	if !errors.As(err, &fe) {
@@ -92,13 +110,62 @@ func normalize(fields []FieldError) []FieldError {
 		if rank != 0 {
 			return rank
 		}
-		names := strings.Compare(a.Name, b.Name)
+		names := compareNames(a.Name, b.Name)
 		if names != 0 {
 			return names
 		}
 		return strings.Compare(a.Message, b.Message)
 	})
 	return slices.Compact(out)
+}
+
+// compareNames orders field names as strings.Compare does, except that a run
+// of digits is compared as a number, so "steps.2" comes before "steps.10"
+// and the fields NewFieldsError keeps of a long array are its first items.
+func compareNames(a, b string) int {
+	x := a
+	y := b
+	for x != "" && y != "" {
+		if !isDigit(x[0]) || !isDigit(y[0]) {
+			if x[0] != y[0] {
+				return cmp.Compare(x[0], y[0])
+			}
+			x = x[1:]
+			y = y[1:]
+			continue
+		}
+
+		xn := digitRun(x)
+		yn := digitRun(y)
+		xv := strings.TrimLeft(x[:xn], "0")
+		yv := strings.TrimLeft(y[:yn], "0")
+		if len(xv) != len(yv) {
+			return cmp.Compare(len(xv), len(yv))
+		}
+		if xv != yv {
+			return strings.Compare(xv, yv)
+		}
+		x = x[xn:]
+		y = y[yn:]
+	}
+	if len(x) != len(y) {
+		return cmp.Compare(len(x), len(y))
+	}
+	// Equal as numbers, such as "a.01" and "a.1": keep the order total.
+	return strings.Compare(a, b)
+}
+
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+// digitRun returns the length of the run of digits s starts with.
+func digitRun(s string) int {
+	n := 0
+	for n < len(s) && isDigit(s[n]) {
+		n++
+	}
+	return n
 }
 
 // collect walks the santhosh error tree and maps every leaf to FieldErrors.
