@@ -172,3 +172,20 @@ func (c *Client) SetObjectACL(ctx context.Context, input *s3.PutObjectAclInput) 
 
 	return output, nil
 }
+
+// GetObjectACL returns the owner and the grants of one object, for instance to check what
+// SetObjectACL or an upload's canned ACL left on it.
+func (c *Client) GetObjectACL(ctx context.Context, input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
+	if input == nil {
+		return nil, ez.New(ez.EINVALID, "input is required", nil)
+	}
+
+	input.Bucket = aws.String(c.Bucket)
+
+	output, err := c.s3.GetObjectAcl(ctx, input)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	return output, nil
+}
