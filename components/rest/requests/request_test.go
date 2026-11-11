@@ -123,25 +123,183 @@ func TestNewIgnoresClientHeaders(t *testing.T) {
 	})
 }
 
-func TestWithTimeoutReleasesDefaultTimeout(t *testing.T) {
-	var defaultContext context.Context
+func TestNewDefaultTimeout(t *testing.T) {
+	start := time.Now()
 
-	captureDefault := func(req *StandardRequest) {
-		defaultContext = req.Context
-	}
-
-	request := New(http.Header{}, "127.0.0.1", captureDefault, WithTimeout(time.Minute))
+	request := New(http.Header{}, "127.0.0.1")
 	defer request.Cancel()
 
-	require.ErrorIs(t, defaultContext.Err(), context.Canceled)
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(DEFAULT_TIMEOUT), deadline, time.Second)
+}
+
+func TestWithTimeoutReplacesDefaultTimeout(t *testing.T) {
+	start := time.Now()
+	var earlierContext context.Context
+
+	captureEarlier := func(req *StandardRequest) {
+		earlierContext = req.Context
+	}
+
+	request := New(http.Header{}, "127.0.0.1", captureEarlier, WithTimeout(60*time.Second))
+	defer request.Cancel()
+
+	// The default timeout is applied after the options, and only without
+	// WithTimeout: the options never see a deadline to shed.
+	_, ok := earlierContext.Deadline()
+	require.False(t, ok)
 
 	require.NoError(t, request.GetContext().Err())
 	require.Equal(t, request.GetID(), RequestID(request.GetContext()))
 
 	deadline, ok := request.GetContext().Deadline()
 	require.True(t, ok)
-	require.Greater(t, time.Until(deadline), DEFAULT_TIMEOUT)
+	require.WithinDuration(t, start.Add(60*time.Second), deadline, time.Second)
 
 	request.Cancel()
 	require.ErrorIs(t, request.GetContext().Err(), context.Canceled)
+}
+
+func TestWithTimeoutLaterOnlyShortens(t *testing.T) {
+	start := time.Now()
+
+	request := New(http.Header{}, "127.0.0.1", WithTimeout(time.Minute))
+	first := request.GetContext()
+
+	WithTimeout(time.Hour)(request)
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(time.Minute), deadline, time.Second)
+
+	WithTimeout(time.Second)(request)
+	deadline, ok = request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(time.Second), deadline, 500*time.Millisecond)
+	require.Equal(t, request.GetID(), RequestID(request.GetContext()))
+
+	// Cancel releases the timers of every context the request held, and is
+	// safe to call twice.
+	require.NotNil(t, request.Cancel)
+	require.NoError(t, first.Err())
+	request.Cancel()
+	request.Cancel()
+	require.ErrorIs(t, request.GetContext().Err(), context.Canceled)
+	require.ErrorIs(t, first.Err(), context.Canceled)
+}
+
+func TestAccept(t *testing.T) {
+	request := New(http.Header{}, "127.0.0.1")
+	require.Equal(t, "", request.GetAccept())
+
+	request.SetAccept("text/csv")
+	require.Equal(t, "text/csv", request.GetAccept())
+}
+
+type parentKey struct{}
+
+func TestNewWithContextStoresRequestID(t *testing.T) {
+	request := NewWithContext(context.Background(), http.Header{}, "127.0.0.1")
+	defer request.Cancel()
+
+	require.NotEmpty(t, request.ID)
+	require.Equal(t, request.ID, RequestID(request.GetContext()))
+}
+
+func TestNewWithContextSeesParentValues(t *testing.T) {
+	parent := context.WithValue(context.Background(), parentKey{}, "value")
+
+	request := NewWithContext(parent, http.Header{}, "127.0.0.1", WithTimeout(time.Minute))
+	defer request.Cancel()
+
+	require.Equal(t, "value", request.GetContext().Value(parentKey{}))
+	require.Equal(t, request.ID, RequestID(request.GetContext()))
+}
+
+func TestNewWithContextCancelledWithParent(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+
+	request := NewWithContext(parent, http.Header{}, "127.0.0.1", WithTimeout(time.Minute))
+	defer request.Cancel()
+
+	require.NoError(t, request.GetContext().Err())
+
+	cancelParent()
+	require.ErrorIs(t, request.GetContext().Err(), context.Canceled)
+}
+
+func TestNewWithContextDefaultTimeout(t *testing.T) {
+	start := time.Now()
+
+	request := NewWithContext(context.Background(), http.Header{}, "127.0.0.1")
+	defer request.Cancel()
+
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(DEFAULT_TIMEOUT), deadline, time.Second)
+}
+
+func TestNewWithContextWithTimeoutExceedsDefault(t *testing.T) {
+	start := time.Now()
+
+	request := NewWithContext(context.Background(), http.Header{}, "127.0.0.1", WithTimeout(60*time.Second))
+	defer request.Cancel()
+
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(60*time.Second), deadline, time.Second)
+	require.Equal(t, request.ID, RequestID(request.GetContext()))
+}
+
+func TestNewWithContextParentDeadlineWins(t *testing.T) {
+	start := time.Now()
+
+	parent, cancelParent := context.WithTimeout(context.Background(), time.Second)
+	defer cancelParent()
+
+	request := NewWithContext(parent, http.Header{}, "127.0.0.1", WithTimeout(60*time.Second))
+	defer request.Cancel()
+
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(time.Second), deadline, 500*time.Millisecond)
+}
+
+func TestNewWithContextCancelKeepsParent(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	request := NewWithContext(parent, http.Header{}, "127.0.0.1", WithTimeout(time.Minute))
+
+	request.Cancel()
+	require.ErrorIs(t, request.GetContext().Err(), context.Canceled)
+	require.NoError(t, parent.Err())
+}
+
+type optionKey struct{}
+
+func TestNewWithContextWithTimeoutKeepsEarlierValues(t *testing.T) {
+	start := time.Now()
+
+	setValue := func(req *StandardRequest) {
+		req.SetContext(context.WithValue(req.GetContext(), optionKey{}, "option"))
+	}
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	request := NewWithContext(parent, http.Header{}, "127.0.0.1", setValue, WithTimeout(time.Minute))
+	defer request.Cancel()
+
+	require.Equal(t, "option", request.GetContext().Value(optionKey{}))
+	require.Equal(t, request.ID, RequestID(request.GetContext()))
+	require.NoError(t, request.GetContext().Err())
+
+	deadline, ok := request.GetContext().Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(time.Minute), deadline, time.Second)
+
+	request.Cancel()
+	require.ErrorIs(t, request.GetContext().Err(), context.Canceled)
+	require.NoError(t, parent.Err())
 }
