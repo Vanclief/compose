@@ -3,13 +3,18 @@ package pagination
 import (
 	"encoding/json"
 	"encoding/xml"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
+	"github.com/labstack/echo/v5"
 	"github.com/vanclief/ez"
 )
 
-func TestCursorRequestUnmarshalsOnlyClientFields(t *testing.T) {
+func TestCursorRequestJSONIgnoresEveryField(t *testing.T) {
+	// The client fields are query parameters, never body fields, and Filter
+	// is server-side only, so a JSON body sets nothing.
 	body := []byte(`{
 		"limit": 10,
 		"cursor": "abc",
@@ -31,17 +36,36 @@ func TestCursorRequestUnmarshalsOnlyClientFields(t *testing.T) {
 		t.Fatalf("unmarshal cursor request: %v", err)
 	}
 
-	if len(request.Filter) != 0 {
-		t.Fatalf("expected client filters to be ignored, got %d", len(request.Filter))
-	}
-
-	if request.Limit != 10 || request.Cursor != "abc" || request.Sort != "-name" || !request.IncludeCount {
-		t.Fatalf("expected the client fields to be read, got %+v", request)
+	if !reflect.DeepEqual(request, CursorRequest{}) {
+		t.Fatalf("expected the body to be ignored, got %+v", request)
 	}
 }
 
-func TestCursorRequestXMLIgnoresServerSideFields(t *testing.T) {
-	// echo binds an XML body with encoding/xml, which does not honour json:"-".
+func TestCursorRequestBindsQueryParameters(t *testing.T) {
+	// echo binds a GET's query string with the query tag, through an
+	// embedding request struct as the apps declare them.
+	type listRequest struct {
+		CursorRequest
+		Name string `json:"-" query:"name"`
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/?limit=10&cursor=abc&sort=-name&include_count=true&name=x", nil)
+	c := echo.New().NewContext(req, httptest.NewRecorder())
+
+	var request listRequest
+	err := c.Bind(&request)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	if request.Limit != 10 || request.Cursor != "abc" || request.Sort != "-name" || !request.IncludeCount || request.Name != "x" {
+		t.Fatalf("expected the query parameters to be read, got %+v", request)
+	}
+}
+
+func TestCursorRequestXMLIgnoresEveryField(t *testing.T) {
+	// echo binds an XML body with encoding/xml, which does not honour
+	// json:"-", so every field carries xml:"-" too.
 	body := []byte(`<CursorRequest>
 		<Limit>10</Limit>
 		<Filter><Field>password_hash</Field><Comparison>; drop</Comparison></Filter>
@@ -53,12 +77,8 @@ func TestCursorRequestXMLIgnoresServerSideFields(t *testing.T) {
 		t.Fatalf("unmarshal cursor request: %v", err)
 	}
 
-	if len(request.Filter) != 0 {
-		t.Fatalf("expected the server-side filter to be ignored, got %+v", request)
-	}
-
-	if request.Limit != 10 {
-		t.Fatalf("expected the client fields to be read, got %+v", request)
+	if !reflect.DeepEqual(request, CursorRequest{}) {
+		t.Fatalf("expected the body to be ignored, got %+v", request)
 	}
 }
 
