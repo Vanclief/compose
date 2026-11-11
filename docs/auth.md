@@ -715,6 +715,26 @@ Redirect URIs match exactly, except `http` URIs on a loopback host (`localhost`,
 `http://localhost/callback` and returns to `http://localhost:<port>/callback`. A `redirect_uri`
 sent to the token endpoint must be the URI used at authorize, port included.
 
+`DisableClientMetadataDocuments` turns Client ID Metadata Documents off: the metadata advertises
+`client_id_metadata_document_supported: false` and an https `client_id` is an unknown client
+unless `Clients` lists it, so the server never fetches a URL and clients register dynamically.
+
+Authorize refuses a `code_challenge` that is not 43 base64url characters, a `state` over 4096
+bytes, a `scope` over 2048 bytes and a `redirect_uri` over 2048 bytes, the last as not registered
+even when a client stored before the bound has it. Registration and documents refuse a
+`client_name` over 512 bytes, more than 10 redirect URIs and a redirect URI over 2048 bytes;
+`Clients` may list any number. A `client_id` over 2048 bytes that `Clients` does not list is an
+unknown client at authorize and at the token endpoint, even when an earlier version cached a
+document under it. A client registered before names were bounded keeps working, and the pending
+request stores its name cut to 512 bytes. The built-in login page refuses an identifier over 512
+bytes before `Challenge` or `Verify` sees it, showing the generic error and keeping the pending
+request unchanged, and refuses a form body, urlencoded or multipart, over 64 KiB.
+
+The limits count the bytes received. The Store keeps JSON, which writes `<`, `>`, `&`, control
+characters and invalid UTF-8 as 6-byte escapes, so a pending request can take up to about 55 KB as
+stored for a registered client and about 68 KB for a metadata document client whose URL is made
+of such characters, and a stored client up to about 125 KB (137 KB for a cached document).
+
 ### Your own consent page
 
 Set `LoginURL` instead of `Login` to sign users in on the application's page:
@@ -844,7 +864,8 @@ A zero value takes the default. `New` rejects negative durations and a negative
 | `IdleTTL` | 30 days | Under `RefreshTokenTTL` `Never`, how long a connection lives after its last refresh; each rotation moves the family's expiry to `IdleTTL` from then. Kept with the family when issued, so a change applies to new connections only. Ignored under a finite `RefreshTokenTTL`. `Never` is rejected. |
 | `RequestTTL` | 10 minutes | A pending login, from authorize to approval. |
 | `CodeTTL` | 1 minute | An authorization code until it is exchanged. |
-| `RegisteredClientTTL` | 365 days | Renewed on each authorize and on each code or refresh exchange, before its tokens are written, so a client that keeps refreshing never expires, under `RefreshTokenTTL` `Never` included. Only unused clients expire. |
+| `RegisteredClientTTL` | 365 days | A dynamically registered client once a user has approved it. Renewed on each authorize and on each code or refresh exchange, before its tokens are written, so a client that keeps refreshing never expires, under `RefreshTokenTTL` `Never` included. Only unused clients expire. Clients registered before v1.33.0 count as approved. |
+| `UnusedClientTTL` | 7 days | A dynamically registered client no user has approved yet: registration stores it this long and each authorize extends it to this long from then and no further; its first code exchange approves it and gives it `RegisteredClientTTL`. An unapproved registration expires `UnusedClientTTL` after its last authorize, or after its registration without one. Must cover a whole login: `New` rejects a value below `RequestTTL` plus `CodeTTL`. |
 | `MetadataCacheTTL` | 1h | Cached Client ID Metadata Documents, regardless of `Cache-Control`. |
 | `RefreshTimeout` | 10s | The Store calls of a refresh, which run detached from the request: the reads, the client renewal, the token writes and the family swap. |
 | `MaxLoginAttempts` | 5 | Failed `Challenge` or `Verify` calls that void a pending request on the built-in page. |

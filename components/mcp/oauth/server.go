@@ -27,6 +27,7 @@ const (
 	defaultRequestTTL          = 10 * time.Minute
 	defaultCodeTTL             = time.Minute
 	defaultRegisteredClientTTL = 365 * 24 * time.Hour
+	defaultUnusedClientTTL     = 7 * 24 * time.Hour
 	defaultMetadataCacheTTL    = time.Hour
 	defaultRefreshTimeout      = 10 * time.Second
 	defaultMaxLoginAttempts    = 5
@@ -89,6 +90,7 @@ func New(cfg Config) (*Server, error) {
 		{"RequestTTL", &cfg.RequestTTL, defaultRequestTTL, false},
 		{"CodeTTL", &cfg.CodeTTL, defaultCodeTTL, false},
 		{"RegisteredClientTTL", &cfg.RegisteredClientTTL, defaultRegisteredClientTTL, false},
+		{"UnusedClientTTL", &cfg.UnusedClientTTL, defaultUnusedClientTTL, false},
 		{"MetadataCacheTTL", &cfg.MetadataCacheTTL, defaultMetadataCacheTTL, false},
 		{"RefreshTimeout", &cfg.RefreshTimeout, defaultRefreshTimeout, false},
 	}
@@ -102,6 +104,11 @@ func New(cfg Config) (*Server, error) {
 		if *d.value == 0 {
 			*d.value = d.fallback
 		}
+	}
+	// A pending client must outlive the login it is used for, or the code
+	// exchange that approves it finds it gone.
+	if cfg.UnusedClientTTL < cfg.RequestTTL+cfg.CodeTTL {
+		return nil, ez.New(ez.EINVALID, "oauth: Config.UnusedClientTTL must be at least Config.RequestTTL plus Config.CodeTTL, so a client outlives a login", nil)
 	}
 	if cfg.MaxLoginAttempts < 0 {
 		return nil, ez.New(ez.EINVALID, "oauth: Config.MaxLoginAttempts must not be negative", nil)
@@ -365,7 +372,7 @@ func (s *Server) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request)
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic", "client_secret_post"},
-		ClientIDMetadataDocumentSupported: true,
+		ClientIDMetadataDocumentSupported: !s.cfg.DisableClientMetadataDocuments,
 	})
 }
 
