@@ -234,13 +234,29 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// renderDescribe prints how to call each named function.
+// renderDescribe prints how to call each named function, once per name.
 func (c *Catalog) renderDescribe(names []string) string {
+	names = uniqueNames(names)
 	blocks := make([]string, 0, len(names))
 	for _, name := range names {
-		blocks = append(blocks, c.describeFunction(strings.TrimSpace(name)))
+		blocks = append(blocks, c.describeFunction(name))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// uniqueNames trims each name and drops the repeats, keeping the first.
+func uniqueNames(names []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // describeFunction is the block of one function, or the unknown-name hint.
@@ -406,11 +422,13 @@ func unknownName(kind, name string, suggestions []string) string {
 	return out
 }
 
-// renderExplain prints each term with its fields and the functions using it.
+// renderExplain prints each term with its fields and the functions using it,
+// once per name.
 func (c *Catalog) renderExplain(terms []string) string {
+	terms = uniqueNames(terms)
 	blocks := make([]string, 0, len(terms))
 	for _, name := range terms {
-		blocks = append(blocks, c.explainTerm(strings.TrimSpace(name)))
+		blocks = append(blocks, c.explainTerm(name))
 	}
 	return strings.Join(blocks, "\n\n")
 }

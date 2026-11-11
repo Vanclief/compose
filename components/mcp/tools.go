@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +32,31 @@ type describeInput struct {
 type explainInput struct {
 	Terms []string `json:"terms" jsonschema:"term names or aliases"`
 }
+
+// The limits of the catalog tools' arguments. search_functions,
+// describe_function and explain_term answer in-process, past the REST API
+// and its rate limits, so their arguments bound the work of a call before
+// any of it is done. No honest call comes near them, and a result is cut at
+// MaxOutputBytes anyway. The input schemas carry maxItems; the lengths and
+// the word count are checked by the handlers, because the validator's
+// maxLength error would quote the whole string back, uncut.
+const (
+	// maxListItems is the most names describe_function, or terms
+	// explain_term, takes in one call. The describe blocks of the emma
+	// catalog average about 500 bytes, so fewer than 50 of them fill the
+	// default 24000-byte output.
+	maxListItems = 50
+	// maxNameLength is the most characters of one name or term, or of the
+	// module search_functions is given, whitespace around it aside. The
+	// names of the emma catalog run under 100.
+	maxNameLength = 256
+	// maxQueryLength is the most characters of a search_functions query.
+	maxQueryLength = 256
+	// maxQueryWords is the most words of a search_functions query. A search
+	// costs about the number of words times the size of the catalog, and
+	// every word must match, so a long query finds nothing anyway.
+	maxQueryWords = 32
+)
 
 type callInput struct {
 	Name string         `json:"name" jsonschema:"full function name, module.function"`
@@ -118,7 +144,13 @@ func (s *Server) registerTools() error {
 
 	err = addTool(s, &mcp.Tool{Name: "search_functions", Description: searchDescription, Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, call *caller, in searchInput) (string, bool) {
-			return s.catalog.renderSearch(in.Module, in.Query), false
+			module := strings.TrimSpace(in.Module)
+			query := strings.TrimSpace(in.Query)
+			err := checkQuery(module, query)
+			if err != nil {
+				return errorText(err), true
+			}
+			return s.catalog.renderSearch(module, query), false
 		})
 	if err != nil {
 		return ez.Wrap(err)
@@ -126,6 +158,10 @@ func (s *Server) registerTools() error {
 
 	err = addTool(s, &mcp.Tool{Name: "describe_function", Description: describeDescription, Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, call *caller, in describeInput) (string, bool) {
+			err := checkNames("names", in.Names)
+			if err != nil {
+				return errorText(err), true
+			}
 			return s.catalog.renderDescribe(in.Names), false
 		}, "names")
 	if err != nil {
@@ -134,6 +170,10 @@ func (s *Server) registerTools() error {
 
 	err = addTool(s, &mcp.Tool{Name: "explain_term", Description: explainDescription, Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, call *caller, in explainInput) (string, bool) {
+			err := checkNames("terms", in.Terms)
+			if err != nil {
+				return errorText(err), true
+			}
 			return s.catalog.renderExplain(in.Terms), false
 		}, "terms")
 	if err != nil {
@@ -163,15 +203,47 @@ func (s *Server) registerTools() error {
 	return nil
 }
 
+// checkNames refuses a list whose entry, trimmed, is longer than
+// maxNameLength characters. arg is the argument name the error reports.
+func checkNames(arg string, names []string) error {
+	for i, name := range names {
+		n := utf8.RuneCountInString(strings.TrimSpace(name))
+		if n > maxNameLength {
+			return ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s[%d] has %d characters, more than %d", arg, i, n, maxNameLength), nil)
+		}
+	}
+	return nil
+}
+
+// checkQuery refuses a search whose module name is longer than maxNameLength
+// characters, or whose query is longer than maxQueryLength characters or of
+// more than maxQueryWords words. The caller trims both first, so the length
+// check bounds the split into words and the search that follows.
+func checkQuery(module, query string) error {
+	n := utf8.RuneCountInString(module)
+	if n > maxNameLength {
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: module has %d characters, more than %d", n, maxNameLength), nil)
+	}
+	n = utf8.RuneCountInString(query)
+	if n > maxQueryLength {
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: query has %d characters, more than %d; search for a few words", n, maxQueryLength), nil)
+	}
+	words := len(searchWords(query))
+	if words > maxQueryWords {
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: query has %d words, more than %d; search for a few words", words, maxQueryWords), nil)
+	}
+	return nil
+}
+
 // addTool registers a text tool. The input schema is inferred from In; the
-// properties named in nonEmpty become arrays that need at least one item.
-// The handler runs through runTool.
-func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mcp.CallToolRequest, *caller, In) (string, bool), nonEmpty ...string) error {
+// properties named in lists become arrays of 1 to maxListItems items. The
+// handler runs through runTool.
+func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mcp.CallToolRequest, *caller, In) (string, bool), lists ...string) error {
 	schema, err := jsonschema.For[In](nil)
 	if err != nil {
 		return ez.New(ez.EINTERNAL, "mcp: cannot infer the input schema of "+tool.Name+": "+err.Error(), err)
 	}
-	for _, name := range nonEmpty {
+	for _, name := range lists {
 		prop := schema.Properties[name]
 		if prop == nil {
 			return ez.New(ez.EINTERNAL, "mcp: tool "+tool.Name+" has no property "+name, nil)
@@ -179,6 +251,7 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 		prop.Type = "array"
 		prop.Types = nil
 		prop.MinItems = jsonschema.Ptr(1)
+		prop.MaxItems = jsonschema.Ptr(maxListItems)
 	}
 	tool.InputSchema = schema
 	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})

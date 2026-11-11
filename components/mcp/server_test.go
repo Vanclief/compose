@@ -346,6 +346,95 @@ func TestServerCatalogTools(t *testing.T) {
 	assert.True(t, res.IsError)
 }
 
+// repeatName is a list of n copies of name.
+func repeatName(name string, n int) []string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = name
+	}
+	return names
+}
+
+func TestServerCatalogToolLimits(t *testing.T) {
+	s := newShopServer(t, shopConfig(t))
+	c := s.Catalog()
+	call := func(name string, args map[string]any) (string, bool) {
+		t.Helper()
+		text, failed, err := s.CallTool(context.Background(), shopHeader(), name, args)
+		require.NoError(t, err)
+		return text, failed
+	}
+
+	// A repeated name, trimmed, is answered once.
+	text, failed := call("describe_function", map[string]any{"names": repeatName(" orders.add_line ", maxListItems)})
+	assert.False(t, failed)
+	assert.Equal(t, c.renderDescribe([]string{"orders.add_line"}), text)
+	text, failed = call("explain_term", map[string]any{"terms": repeatName("Order", maxListItems)})
+	assert.False(t, failed)
+	assert.Equal(t, c.renderExplain([]string{"Order"}), text)
+
+	// A longer list is refused by the input schema before any name is looked
+	// up, repeated or distinct.
+	text, failed = call("describe_function", map[string]any{"names": repeatName("orders.add_line", 100000)})
+	assert.True(t, failed)
+	assert.Contains(t, text, "maxItems: array length 100000 is greater than 50")
+	assert.Less(t, len(text), 500)
+	unknown := make([]string, 100000)
+	for i := range unknown {
+		unknown[i] = "nope.f" + strconv.Itoa(i)
+	}
+	text, failed = call("describe_function", map[string]any{"names": unknown})
+	assert.True(t, failed)
+	assert.Contains(t, text, "maxItems: array length 100000 is greater than 50")
+	assert.Less(t, len(text), 500)
+	text, failed = call("explain_term", map[string]any{"terms": unknown})
+	assert.True(t, failed)
+	assert.Contains(t, text, "maxItems: array length 100000 is greater than 50")
+	assert.Less(t, len(text), 500)
+
+	// At the limit every distinct unknown name gets its answer.
+	text, failed = call("describe_function", map[string]any{"names": unknown[:maxListItems]})
+	assert.False(t, failed)
+	assert.Contains(t, text, `unknown function "nope.f49"`)
+
+	// A name longer than maxNameLength is refused without being quoted back.
+	huge := strings.Repeat("a", 4<<20)
+	text, failed = call("describe_function", map[string]any{"names": []string{"orders.add_line", huge}})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: names[1] has 4194304 characters, more than 256", text)
+	text, failed = call("explain_term", map[string]any{"terms": []string{huge}})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: terms[0] has 4194304 characters, more than 256", text)
+	text, failed = call("describe_function", map[string]any{"names": []string{" " + strings.Repeat("é", maxNameLength) + " "}})
+	assert.False(t, failed)
+	assert.True(t, strings.HasPrefix(text, "unknown function"), text)
+
+	// A query over maxQueryLength characters or maxQueryWords words is
+	// refused before it is matched against any function.
+	text, failed = call("search_functions", map[string]any{"query": strings.Repeat("e ", 2<<20)})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: query has 4194303 characters, more than 256; search for a few words", text)
+	text, failed = call("search_functions", map[string]any{"module": strings.Repeat("m", 4<<20), "query": "e"})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: module has 4194304 characters, more than 256", text)
+	text, failed = call("search_functions", map[string]any{"query": strings.Repeat("e_", maxQueryWords) + "e"})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: query has 33 words, more than 32; search for a few words", text)
+	query := strings.Repeat("e ", maxQueryWords)
+	text, failed = call("search_functions", map[string]any{"query": query})
+	assert.False(t, failed)
+	assert.Equal(t, c.renderSearch("", query), text)
+
+	// The transport refuses the same calls.
+	session := connect(t, s, "key:secret")
+	text, failed = callTool(t, session, "describe_function", map[string]any{"names": repeatName("orders.add_line", maxListItems+1)})
+	assert.True(t, failed)
+	assert.Contains(t, text, "maxItems: array length 51 is greater than 50")
+	text, failed = callTool(t, session, "search_functions", map[string]any{"query": strings.Repeat("e ", maxQueryWords+1)})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: query has 33 words, more than 32; search for a few words", text)
+}
+
 // callEcho calls a function that the fixture echoes and decodes the echo.
 func callEcho(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) shopEcho {
 	t.Helper()
