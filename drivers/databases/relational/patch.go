@@ -25,7 +25,7 @@ import (
 // each other. A write whose new value or validity depends on the row's
 // current state (a status transition, a counter, a rule across two fields
 // that two requests could each change) needs the row locked and re-read in
-// the same transaction instead.
+// the same transaction instead: use Mutate or LockRow.
 //
 // The zero value is an empty patch.
 type Patch struct {
