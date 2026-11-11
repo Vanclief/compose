@@ -3,8 +3,13 @@ package pagination
 import (
 	"context"
 	"database/sql/driver"
+	"encoding"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -57,13 +62,36 @@ type Options struct {
 // a direction predates Direction and was issued under the endpoint's default
 // order, so it is held to opts.Direction.
 //
+// A cursor whose sort or unique value cannot have been issued for the order
+// is ez.EINVALID, before any query. Each value is held to the Go type it is
+// issued from: the sort column's under a client sort, otherwise the type
+// GetSortValue returns on a zero model, and for the unique value the type
+// GetUniqueValue returns on it. A bool takes a bool, a number kind any
+// number, a string kind or a type with its own MarshalText a string, and a
+// time.Time an RFC 3339 string; a driver.Valuer sort column is held to the
+// kind its Value returns on a zero field. A value is not checked when its
+// form cannot be told: a Valuer whose zero Value is nil or fails, such as
+// sql.NullString, a default sort or unique value of a struct, slice or map
+// type or of a type with its own MarshalJSON, or a GetSortValue or
+// GetUniqueValue that returns nil or panics on a zero model. Nor is a string
+// checked against its column's type: a Postgres data exception (SQLSTATE
+// class 22) on the page query whose reported position is the literal of the
+// cursor's sort or unique string, such as one that is not a valid uuid, is
+// ez.EINVALID too. Any other data exception, without a position or at other
+// text, stays ez.EINTERNAL. The match is on the query's text, so a literal of
+// the caller's own with exactly the text of a cursor value counts as the
+// cursor's, and a cursor string Postgres cannot read stays ez.EINTERNAL on a
+// query with a relation whose apply function calls JoinOn, which bun writes
+// again on each render.
+//
 // The count is closed by default: r.IncludeCount without opts.AllowCount is
 // ez.EINVALID, before any query.
 //
 // A query error keeps its own code: an ez error keeps its code,
 // context.Canceled is ez.ECANCELED, context.DeadlineExceeded or a network
 // timeout is ez.ETIMEOUT, and any other error, a Postgres statement_timeout
-// included, is ez.EINTERNAL. Whether and when a done context ends a query,
+// included, is ez.EINTERNAL, but for the data exception on a page with a
+// cursor above. Whether and when a done context ends a query,
 // and with which error, is up to database/sql and the driver.
 //
 // q's top-level conditions must be joined by AND: put OR conditions inside
@@ -127,6 +155,11 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		if cursor.SortField != order.expr || cursorDirection != string(order.direction) {
 			return nil, CursorResponse{}, ez.New(ez.EINVALID, "Cursor was issued for a different order", nil)
 		}
+
+		err = checkCursorValues(cursor, order, model)
+		if err != nil {
+			return nil, CursorResponse{}, ez.Wrap(err)
+		}
 	}
 
 	q, err = applyFilters(q, r.Filter)
@@ -161,6 +194,9 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 
 	dest, err = scanPage(ctx, q, dest)
 	if err != nil {
+		if cursor != nil && cursorDataException(err, q, cursor) {
+			return nil, CursorResponse{}, ez.New(ez.EINVALID, "invalid cursor data", err)
+		}
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
 
@@ -223,6 +259,221 @@ func cursorHoldsType(typ reflect.Type) bool {
 	}
 
 	return reflect.PointerTo(typ).Implements(reflect.TypeFor[driver.Valuer]())
+}
+
+// checkCursorValues returns ez.EINVALID when the cursor's sort or unique value
+// has a type the server cannot have issued for order, which only a forged
+// cursor has, so Postgres is not asked to compare a column with a value of
+// another type. Each value is held to the Go type it is issued from: the sort
+// column's under a client sort, and otherwise the types GetSortValue and
+// GetUniqueValue return, read on a zero model.
+func checkCursorValues(cursor *Cursor, order sortOrder, model Paginatable) error {
+	typ := reflect.TypeOf(model)
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+
+	zero, ok := reflect.New(typ).Interface().(Paginatable)
+	if !ok {
+		return nil
+	}
+
+	var sortType reflect.Type
+	if order.schemaField != nil {
+		sortType = clientSortType(order.schemaField)
+	} else {
+		sortType = jsonFormType(resultType(zero.GetSortValue))
+	}
+
+	if !cursorValueFits(sortType, cursor.SortValue) || !cursorValueFits(jsonFormType(resultType(zero.GetUniqueValue)), cursor.UniqueValue) {
+		return ez.New(ez.EINVALID, "invalid cursor data", nil)
+	}
+
+	return nil
+}
+
+// clientSortType returns the type of the value fieldValue issues for field:
+// the field's own, or for a driver.Valuer the type its Value returns on a
+// zero field, which fieldValue then normalises by kind.
+func clientSortType(field *schema.Field) reflect.Type {
+	typ := field.IndirectType
+	if !reflect.PointerTo(typ).Implements(reflect.TypeFor[driver.Valuer]()) {
+		return typ
+	}
+
+	valuer := reflect.New(typ).Interface().(driver.Valuer)
+
+	return resultType(func() interface{} {
+		value, err := valuer.Value()
+		if err != nil {
+			// The kind cannot be told, so the value is not checked
+			return nil
+		}
+		return value
+	})
+}
+
+// resultType returns the type of get's result, or nil when get returns nil,
+// fails or panics, as one reading through a nil pointer field of a zero model
+// does, so the value is not checked.
+func resultType(get func() interface{}) (typ reflect.Type) {
+	defer func() {
+		if recover() != nil {
+			typ = nil
+		}
+	}()
+
+	return reflect.TypeOf(get())
+}
+
+// jsonFormType returns the type whose form cursorValueFits checks for a value
+// of typ that EncodeCursor writes with encoding/json: string, or *string, for
+// a type with its own MarshalText, which encoding/json writes as a JSON string,
+// float64, or *float64, for a json.Number, a string it writes as a JSON
+// number, nil for one with its own MarshalJSON, whose form cannot be told, and
+// typ itself otherwise, time.Time included. As for a value inside an interface,
+// only the methods of typ itself count, not those of a pointer to it.
+func jsonFormType(typ reflect.Type) reflect.Type {
+	if typ == nil {
+		return nil
+	}
+
+	elem := typ
+	if elem.Kind() == reflect.Pointer {
+		elem = elem.Elem()
+	}
+
+	if elem == reflect.TypeFor[time.Time]() {
+		return typ
+	}
+
+	if elem == reflect.TypeFor[json.Number]() {
+		if typ.Kind() == reflect.Pointer {
+			return reflect.TypeFor[*float64]()
+		}
+		return reflect.TypeFor[float64]()
+	}
+
+	if typ.Implements(reflect.TypeFor[json.Marshaler]()) {
+		return nil
+	}
+
+	if typ.Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
+		if typ.Kind() == reflect.Pointer {
+			return reflect.TypeFor[*string]()
+		}
+		return reflect.TypeFor[string]()
+	}
+
+	return typ
+}
+
+// cursorValueFits reports whether value, as DecodeCursor returns it, can be
+// the JSON form of a value of type typ: a bool for a bool, any number for a
+// number, a string for a string and an RFC 3339 string for a time.Time. nil
+// fits only a pointer, and a nil typ or a type of another kind takes any
+// value.
+func cursorValueFits(typ reflect.Type, value any) bool {
+	if typ == nil {
+		return true
+	}
+
+	if typ.Kind() == reflect.Pointer {
+		if value == nil {
+			return true
+		}
+		typ = typ.Elem()
+	}
+
+	if typ == reflect.TypeFor[time.Time]() {
+		text, ok := value.(string)
+		if !ok {
+			return false
+		}
+		_, err := time.Parse(time.RFC3339Nano, text)
+		return err == nil
+	}
+
+	switch typ.Kind() {
+	case reflect.Bool:
+		_, ok := value.(bool)
+		return ok
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		switch value.(type) {
+		case int64, uint64, float64:
+			return true
+		}
+		return false
+	case reflect.String:
+		_, ok := value.(string)
+		return ok
+	}
+
+	return true
+}
+
+// cursorDataException reports whether err is a Postgres data exception,
+// SQLSTATE class 22, that one of cursor's values raised in q, the page query,
+// such as a string that is not a valid uuid. bun writes a cursor's string into
+// the query as a literal, and Postgres reports the position of the literal it
+// could not read (field P, a 1-based character index into the query text,
+// counted in bytes on a SQL_ASCII database, where non-ASCII text before the
+// literal leaves it unmatched), so
+// the exception is the cursor's when the query text at that position starts
+// with the literal of the cursor's sort or unique value, written by the same
+// bun formatter. Numbers and bools cannot raise a data exception there. An
+// exception without a position, such as a division by zero, or at any other
+// text, such as a bad literal in the caller's own conditions, is not the
+// cursor's. q is rendered again on a copy, so a query whose second render
+// puts other text at that position is not matched. pgdriver.Error is matched
+// by its Field method, as relational's baseline loader matches it.
+func cursorDataException(err error, q *bun.SelectQuery, cursor *Cursor) bool {
+	var pgErr interface{ Field(byte) string }
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+
+	if !strings.HasPrefix(pgErr.Field('C'), "22") {
+		return false
+	}
+
+	position, err := strconv.Atoi(pgErr.Field('P'))
+	if err != nil {
+		return false
+	}
+
+	gen := q.DB().QueryGen()
+
+	// A copy, so rendering does not add to the caller's query
+	rendered := *q
+	query, err := rendered.AppendQuery(gen, nil)
+	if err != nil {
+		return false
+	}
+
+	runes := []rune(string(query))
+	if position < 1 || position > len(runes) {
+		return false
+	}
+	text := string(runes[position-1:])
+
+	for _, value := range []any{cursor.SortValue, cursor.UniqueValue} {
+		_, ok := value.(string)
+		if !ok {
+			continue
+		}
+
+		// A quote right after the literal is a doubled quote inside a longer
+		// one, as 'it''s' after the cursor's 'it'
+		rest, found := strings.CutPrefix(text, string(gen.Append(nil, value)))
+		if found && !strings.HasPrefix(rest, "'") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // queryModel returns the query's own *[]T, or nil when q has no slice model.

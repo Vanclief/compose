@@ -13,6 +13,10 @@ package pagination
 // changing its spelling rejects every cursor in flight. GetUniqueField's text is
 // recorded in cursors too but not checked on replay, so changing it or its
 // column's type leaves cursors in flight carrying values of the old one.
+// When a request carries a cursor, Paginate calls GetUniqueValue, and
+// GetSortValue under the default sort, on a zero model to learn the type of
+// the values the cursor must hold, and a cursor value of another type is
+// ez.EINVALID; see Paginate.
 type Paginatable interface {
 	GetSortField() string        // Returns the SQL expression of the default sort, e.g. "?TableAlias.created_at"
 	GetSortValue() interface{}   // Returns the value of the default sort field

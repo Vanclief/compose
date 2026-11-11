@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	pgquery "github.com/vanclief/compose/drivers/databases/relational/postgres/query"
 	"github.com/vanclief/ez"
@@ -1018,4 +1021,256 @@ func TestPaginateRejectsQueryModelOfAnotherType(t *testing.T) {
 		t.Fatalf("expected the message to name both types, got %q", ez.ErrorMessage(err))
 	}
 	requireQueries(t, conn)
+}
+
+// timeRecord sorts by created_at by default.
+type timeRecord struct {
+	bun.BaseModel `bun:"table:records,alias:r"`
+
+	ID        int64     `bun:"id,pk"`
+	CreatedAt time.Time `bun:"created_at"`
+}
+
+func (r timeRecord) GetSortField() string        { return "?TableAlias.created_at" }
+func (r timeRecord) GetSortValue() interface{}   { return r.CreatedAt }
+func (r timeRecord) GetUniqueField() string      { return "?TableAlias.id" }
+func (r timeRecord) GetUniqueValue() interface{} { return r.ID }
+
+func TestPaginateRejectsCursorValueOfAnotherType(t *testing.T) {
+	rankCursor := func(sortValue, uniqueValue any) string {
+		return encodeTestCursor(t, Cursor{SortField: "?TableAlias.rank", SortValue: sortValue, UniqueField: "?TableAlias.id", UniqueValue: uniqueValue, Direction: "desc"})
+	}
+	nameCursor := func(sortValue, uniqueValue any) string {
+		return encodeTestCursor(t, Cursor{SortField: `?TableAlias."name"`, SortValue: sortValue, UniqueField: "?TableAlias.id", UniqueValue: uniqueValue, Direction: "asc"})
+	}
+	clientRankCursor := func(sortValue, uniqueValue any) string {
+		return encodeTestCursor(t, Cursor{SortField: `?TableAlias."rank"`, SortValue: sortValue, UniqueField: "?TableAlias.id", UniqueValue: uniqueValue, Direction: "asc"})
+	}
+
+	tests := []struct {
+		name   string
+		cursor string
+		sort   string
+	}{
+		{name: "default sort, string sort value", cursor: rankCursor("5", int64(2))},
+		{name: "default sort, bool sort value", cursor: rankCursor(true, int64(2))},
+		{name: "default sort, null sort value", cursor: rankCursor(nil, int64(2))},
+		{name: "default sort, string unique value", cursor: rankCursor(int64(5), "2")},
+		{name: "default sort, bool unique value", cursor: rankCursor(int64(5), false)},
+		{name: "client string sort, number sort value", cursor: nameCursor(int64(5), int64(2)), sort: "name"},
+		{name: "client string sort, string unique value", cursor: nameCursor("b", "2"), sort: "name"},
+		{name: "client number sort, string sort value", cursor: clientRankCursor("5", int64(2)), sort: "rank"},
+		{name: "client number sort, bool unique value", cursor: clientRankCursor(int64(5), true), sort: "rank"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := newRecordConn()
+			request := &CursorRequest{Limit: 2, Cursor: tc.cursor, Sort: tc.sort, IncludeCount: true}
+
+			_, _, err := paginateRecords(conn, request, Options{Direction: DESC, SortFields: recordSortFields, AllowCount: true})
+			requireCode(t, err, ez.EINVALID)
+			if ez.ErrorMessage(err) != "invalid cursor data" {
+				t.Fatalf("expected the invalid cursor message, got %q", ez.ErrorMessage(err))
+			}
+			// Neither the count nor the page runs
+			requireQueries(t, conn)
+		})
+	}
+}
+
+// uuidRecord sorts by rank by default, with a uuid.UUID, which has its own
+// MarshalText, as the tie-breaker.
+type uuidRecord struct {
+	bun.BaseModel `bun:"table:records,alias:r"`
+
+	ID   uuid.UUID `bun:"id,pk"`
+	Rank int64     `bun:"rank"`
+}
+
+func (r uuidRecord) GetSortField() string        { return "?TableAlias.rank" }
+func (r uuidRecord) GetSortValue() interface{}   { return r.Rank }
+func (r uuidRecord) GetUniqueField() string      { return "?TableAlias.id" }
+func (r uuidRecord) GetUniqueValue() interface{} { return r.ID }
+
+func TestPaginateChecksCursorValuesByIssuedType(t *testing.T) {
+	issued, err := json.Marshal(time.Date(2026, 11, 11, 10, 30, 0, 123456000, time.FixedZone("", -6*3600)))
+	if err != nil {
+		t.Fatalf("marshal time: %v", err)
+	}
+	issuedTime := strings.Trim(string(issued), `"`)
+	id := uuid.MustParse("6f1c2a8e-3b7d-4e5f-9a0b-1c2d3e4f5a6b").String()
+
+	// timeRecord's default sort
+	byTime := func(sortValue any) Cursor {
+		return Cursor{SortField: "?TableAlias.created_at", SortValue: sortValue, UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "asc"}
+	}
+	// uuidRecord's default sort
+	byRank := func(uniqueValue any) Cursor {
+		return Cursor{SortField: "?TableAlias.rank", SortValue: int64(5), UniqueField: "?TableAlias.id", UniqueValue: uniqueValue, Direction: "asc"}
+	}
+	// A client sort on valuerRecord
+	byColumn := func(column string, sortValue any) Cursor {
+		return Cursor{SortField: `?TableAlias."` + column + `"`, SortValue: sortValue, UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "asc"}
+	}
+
+	tests := []struct {
+		name   string
+		model  Paginatable
+		cursor Cursor
+		sort   string
+		valid  bool
+	}{
+		{name: "default time sort, issued time", model: timeRecord{}, cursor: byTime(issuedTime), valid: true},
+		{name: "default time sort, text", model: timeRecord{}, cursor: byTime("yesterday")},
+		{name: "default time sort, number", model: timeRecord{}, cursor: byTime(int64(1700000000))},
+		{name: "MarshalText unique value, issued text", model: uuidRecord{}, cursor: byRank(id), valid: true},
+		{name: "MarshalText unique value, number", model: uuidRecord{}, cursor: byRank(int64(7))},
+		{name: "client time sort, issued time", model: valuerRecord{}, cursor: byColumn("created_at", issuedTime), sort: "created_at", valid: true},
+		{name: "client time sort, text", model: valuerRecord{}, cursor: byColumn("created_at", "yesterday"), sort: "created_at"},
+		{name: "client time sort, number", model: valuerRecord{}, cursor: byColumn("created_at", int64(1700000000)), sort: "created_at"},
+		// A Valuer is held to the kind its Value returns on a zero field
+		{name: "client string Valuer sort, text", model: valuerRecord{}, cursor: byColumn("by_value", "value b"), sort: "by_value", valid: true},
+		{name: "client string Valuer sort, number", model: valuerRecord{}, cursor: byColumn("by_value", int64(5)), sort: "by_value"},
+		{name: "client pointer string Valuer sort, number", model: valuerRecord{}, cursor: byColumn("by_struct", int64(5)), sort: "by_struct"},
+		{name: "client uuid sort, text", model: valuerRecord{}, cursor: byColumn("uuid", id), sort: "uuid", valid: true},
+		{name: "client uuid sort, number", model: valuerRecord{}, cursor: byColumn("uuid", int64(5)), sort: "uuid"},
+		{name: "client int Valuer sort, number", model: valuerRecord{}, cursor: byColumn("int_value", int64(5)), sort: "int_value", valid: true},
+		{name: "client int Valuer sort, text", model: valuerRecord{}, cursor: byColumn("int_value", "5"), sort: "int_value"},
+		// A zero sql.NullString's Value is nil, so its kind cannot be told
+		{name: "client Valuer sort with a nil zero Value, number", model: valuerRecord{}, cursor: byColumn("nullable", int64(5)), sort: "nullable", valid: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &fakeConn{}
+			db := newFakeDB(conn)
+			request := &CursorRequest{Limit: 2, Cursor: encodeTestCursor(t, tc.cursor), Sort: tc.sort}
+			opts := Options{Direction: ASC, SortFields: map[string]string{tc.sort: tc.sort}}
+
+			var err error
+			switch tc.model.(type) {
+			case timeRecord:
+				_, _, err = Paginate(context.Background(), db.NewSelect().Model(&[]timeRecord{}), request, timeRecord{}, opts)
+			case uuidRecord:
+				_, _, err = Paginate(context.Background(), db.NewSelect().Model(&[]uuidRecord{}), request, uuidRecord{}, opts)
+			default:
+				_, _, err = Paginate(context.Background(), db.NewSelect().Model(&[]valuerRecord{}), request, valuerRecord{}, opts)
+			}
+
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("paginate: %v", err)
+				}
+				if len(conn.queries) != 1 {
+					t.Fatalf("expected the page query, got %q", conn.queries)
+				}
+				return
+			}
+
+			requireCode(t, err, ez.EINVALID)
+			requireQueries(t, conn)
+		})
+	}
+}
+
+func TestPaginateChecksNoTypeWhenZeroModelPanics(t *testing.T) {
+	// createdRecord's GetSortValue dereferences a nil CreatedAt on a zero model.
+	conn := &fakeConn{}
+	db := newFakeDB(conn)
+	cursor := encodeTestCursor(t, Cursor{SortField: "?TableAlias.created_at", SortValue: int64(1700000000), UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "desc"})
+
+	_, _, err := Paginate(context.Background(), db.NewSelect().Model(&[]createdRecord{}), &CursorRequest{Limit: 2, Cursor: cursor}, createdRecord{}, Options{Direction: DESC})
+	if err != nil {
+		t.Fatalf("paginate: %v", err)
+	}
+
+	requireQueries(t, conn, `SELECT "r"."id", "r"."name", "r"."created_at" FROM "records" AS "r" WHERE (("r".created_at, "r".id) < (1700000000, 2)) ORDER BY "r".created_at DESC, "r".id DESC LIMIT 3`)
+}
+
+// fakePgError carries a SQLSTATE and a position the way pgdriver.Error does.
+type fakePgError struct {
+	code     string
+	position string
+}
+
+func (e fakePgError) Field(k byte) string {
+	switch k {
+	case 'C':
+		return e.code
+	case 'P':
+		return e.position
+	}
+
+	return ""
+}
+
+func (e fakePgError) Error() string {
+	return "ERROR #" + e.code
+}
+
+// TestPaginateDataExceptionFromTheCursorIsInvalid fails the page query with a
+// data exception at a chosen position of the query it rendered. Which errors
+// Postgres reports where is in the Postgres tests.
+func TestPaginateDataExceptionFromTheCursorIsInvalid(t *testing.T) {
+	cursor := encodeTestCursor(t, Cursor{SortField: `?TableAlias."name"`, SortValue: "abc", UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "asc"})
+	empty := encodeTestCursor(t, Cursor{SortField: `?TableAlias."name"`, SortValue: "", UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "asc"})
+	// The filter puts non-ASCII text before the cursor's literal, so a
+	// position in characters differs from one in bytes
+	filter := []pgquery.Filter{{Field: "name", Comparison: ">=", Value: "ñandú"}}
+
+	// at returns the 1-based character position of literal in query, or, with
+	// bytes, its byte position
+	at := func(query, literal string, bytes bool) string {
+		index := strings.Index(query, literal)
+		if index < 0 {
+			t.Fatalf("%s is not in %s", literal, query)
+		}
+		if bytes {
+			return strconv.Itoa(index + 1)
+		}
+		return strconv.Itoa(utf8.RuneCountInString(query[:index]) + 1)
+	}
+
+	tests := []struct {
+		name         string
+		cursor       string
+		code         string
+		position     func(query string) string
+		includeCount bool
+		wantCode     string
+	}{
+		{name: "at the cursor's literal", cursor: cursor, code: "22P02", position: func(q string) string { return at(q, "'abc'", false) }, wantCode: ez.EINVALID},
+		{name: "at the cursor's empty literal", cursor: empty, code: "22P02", position: func(q string) string { return at(q, "''", false) }, wantCode: ez.EINVALID},
+		{name: "unparsable position", cursor: cursor, code: "22P02", position: func(string) string { return "x" }, wantCode: ez.EINTERNAL},
+		{name: "at the byte position of the cursor's literal", cursor: cursor, code: "22P02", position: func(q string) string { return at(q, "'abc'", true) }, wantCode: ez.EINTERNAL},
+		{name: "at the caller's own literal", cursor: cursor, code: "22P02", position: func(q string) string { return at(q, "'ñandú'", false) }, wantCode: ez.EINTERNAL},
+		{name: "without a position", cursor: cursor, code: "22012", position: func(string) string { return "" }, wantCode: ez.EINTERNAL},
+		{name: "position past the query", cursor: cursor, code: "22P02", position: func(q string) string { return strconv.Itoa(utf8.RuneCountInString(q) + 1) }, wantCode: ez.EINTERNAL},
+		{name: "position zero", cursor: cursor, code: "22P02", position: func(string) string { return "0" }, wantCode: ez.EINTERNAL},
+		{name: "other class at the cursor's literal", cursor: cursor, code: "42883", position: func(q string) string { return at(q, "'abc'", false) }, wantCode: ez.EINTERNAL},
+		{name: "page without a cursor", code: "22P02", position: func(q string) string { return at(q, "'ñandú'", false) }, wantCode: ez.EINTERNAL},
+		{name: "on the count", cursor: cursor, code: "22P02", position: func(q string) string { return at(q, "'abc'", false) }, includeCount: true, wantCode: ez.EINTERNAL},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := Options{Direction: ASC, AllowCount: true, SortFields: map[string]string{"name": "name"}}
+
+			// Render the page query once on a connection that answers it
+			conn := newRecordConn()
+			_, _, err := paginateRecords(conn, &CursorRequest{Limit: 2, Sort: "name", Cursor: tc.cursor, Filter: filter}, opts)
+			if err != nil {
+				t.Fatalf("paginate: %v", err)
+			}
+			page := conn.queries[len(conn.queries)-1]
+
+			conn = newRecordConn()
+			conn.err = fakePgError{code: tc.code, position: tc.position(page)}
+			request := &CursorRequest{Limit: 2, Sort: "name", Cursor: tc.cursor, Filter: filter, IncludeCount: tc.includeCount}
+
+			_, _, err = paginateRecords(conn, request, opts)
+			requireCode(t, err, tc.wantCode)
+		})
+	}
 }
