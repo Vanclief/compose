@@ -46,6 +46,7 @@ This serves the reference page of `openapi.yaml` with what changed since `previo
 ---
 
 - [config](https://github.com/vanclief/compose/docs/config.md) - Loading env/ settings
+- [concurrent writes](docs/concurrent-writes.md) - why two requests can undo each other's changes to one row, and the helpers that prevent it: `relational.Patch` writes only the columns a request sent, `relational.Mutate` and `relational.LockRow` lock the row and read it again before the write
 - [migrations](docs/migrations.md) - how the migration runner and its own connection pool behave, and the schema baseline that replaces old migration files
 - [testing](docs/testing.md) - running an app's tests with no AWS credentials: the in-memory S3 client, the recording SES client and the test database helpers
 
