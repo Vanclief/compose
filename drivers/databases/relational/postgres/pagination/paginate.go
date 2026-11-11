@@ -27,12 +27,20 @@ type Options struct {
 	// e.g. {"name": "name"}, rendered as ?TableAlias."name" from the model's bun schema. Empty means the
 	// client cannot choose the sort. A client-sortable column must be NOT NULL and selected by the query: the
 	// keyset comparison skips rows whose sort value is NULL, and a column the query does not select pages from
-	// a zero value. Give each sortable column an index on (column, unique column) for large tables. A Go float
-	// field sorts correctly only on a column no wider than its type, holding finite values: a float32 only on
-	// real, a float64 on real or double precision. A wider column, double precision under a float32 or numeric
-	// with more digits than the field holds, is rounded in the cursor, so pages repeat or skip rows and may
-	// never end, and NaN or ±Infinity cannot be stored in a cursor, so the page fails with ez.EINTERNAL. Map a
-	// numeric column to a string or decimal type implementing driver.Valuer instead.
+	// a zero value. A page whose last row reads as NULL fails with ez.EINTERNAL instead of issuing a cursor
+	// that ends or repeats the list. A row reads as NULL when its sort field is a nil pointer, a Valuer whose
+	// Value is nil, or a zero time.Time in a field tagged nullzero, bun's declaration that zero is NULL. Any
+	// other zero time.Time, behind a non-nil pointer, as a Valuer's Value or in a field without nullzero, is
+	// a stored 0001-01-01 and pages as one, so a NULL or an unselected column read into it is not caught. Nor
+	// is a NULL in an integer or string field, which reads as 0 or "", nor NULL rows the keyset comparison
+	// skips after a cursor whose own value is not NULL. Give each sortable column an index on (column, unique
+	// column) for large tables.
+	//
+	// A Go float field sorts correctly only on a column no wider than its type, holding finite values: a
+	// float32 only on real, a float64 on real or double precision. A wider column, double precision under a
+	// float32 or numeric with more digits than the field holds, is rounded in the cursor, so pages repeat or
+	// skip rows and may never end, and NaN or ±Infinity cannot be stored in a cursor, so the page fails with
+	// ez.EINTERNAL. Map a numeric column to a string or decimal type implementing driver.Valuer instead.
 	SortFields map[string]string
 	// AllowCount lets the client ask for a count with IncludeCount. False means the client cannot ask for a
 	// count. The count is a count(*) over the whole filtered query on every request that asks for it, so

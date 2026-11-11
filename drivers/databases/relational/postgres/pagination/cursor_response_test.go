@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -205,8 +206,8 @@ func TestBuildPageRejectsClientSortValueTheCursorCannotHold(t *testing.T) {
 		column  string
 		message string
 	}{
-		{column: "status", message: "Sort column status is NULL on the last row of the page; a sortable column must be NOT NULL"},
-		{column: "nullable", message: "Sort column nullable is NULL on the last row of the page; a sortable column must be NOT NULL"},
+		{column: "status", message: "Sort column status is NULL on the last row of the page, or the query does not select it; a sortable column must be NOT NULL and selected"},
+		{column: "nullable", message: "Sort column nullable is NULL on the last row of the page, or the query does not select it; a sortable column must be NOT NULL and selected"},
 		{column: "bytes", message: "Sort column bytes has a Value of type []uint8, which a cursor cannot hold"},
 	}
 
@@ -225,6 +226,225 @@ func TestBuildPageRejectsClientSortValueTheCursorCannotHold(t *testing.T) {
 				t.Fatalf("expected no cursor, got %q", resp.NextCursor)
 			}
 		})
+	}
+}
+
+// nullSortRecord holds the shapes a NULL sort column takes in Go. Its default
+// sort value is whatever Sort holds.
+type nullSortRecord struct {
+	bun.BaseModel `bun:"table:records,alias:r"`
+
+	ID        int64        `bun:"id,pk"`
+	CreatedAt time.Time    `bun:"created_at"`
+	ClosedAt  time.Time    `bun:"closed_at,nullzero"`
+	UpdatedAt *time.Time   `bun:"updated_at"`
+	PausedAt  *time.Time   `bun:"paused_at,nullzero"`
+	SeenAt    sql.NullTime `bun:"seen_at"`
+	Sort      any          `bun:"-"`
+}
+
+func (r nullSortRecord) GetSortField() string        { return "?TableAlias.created_at" }
+func (r nullSortRecord) GetSortValue() interface{}   { return r.Sort }
+func (r nullSortRecord) GetUniqueField() string      { return "?TableAlias.id" }
+func (r nullSortRecord) GetUniqueValue() interface{} { return r.ID }
+
+// failingValuer is a string whose Value fails, as a Valuer that validates
+// does on a value it does not know.
+type failingValuer string
+
+func (v failingValuer) Value() (driver.Value, error) {
+	return nil, errors.New("unknown value")
+}
+
+func TestBuildPageRejectsNullDefaultSortValue(t *testing.T) {
+	dated := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	zero := time.Time{}
+
+	// null is whether the value is refused as NULL; want, when set, is the
+	// cursor's sort value otherwise
+	tests := []struct {
+		name     string
+		value    any
+		nullZero bool
+		null     bool
+		want     any
+	}{
+		{name: "nil", value: nil, null: true},
+		{name: "nil pointer", value: (*time.Time)(nil), null: true},
+		{name: "nil pointer to a Valuer", value: (*sql.NullTime)(nil), null: true},
+		{name: "Valuer with a nil Value", value: sql.NullTime{}, null: true},
+		{name: "zero time in a nullzero column", value: zero, nullZero: true, null: true},
+		// bun's nullable time is no Valuer, and its type says zero is NULL
+		{name: "zero bun.NullTime", value: bun.NullTime{}, null: true},
+		{name: "pointer to the zero bun.NullTime", value: &bun.NullTime{}, null: true},
+		// Without nullzero, bun writes a zero time.Time as year 1, a real value
+		{name: "zero time in a column without nullzero", value: zero, want: "0001-01-01T00:00:00Z"},
+		// NULL is the nil pointer or nil Value, so the zero time behind them is stored
+		{name: "pointer to the zero time in a nullzero column", value: &zero, nullZero: true, want: "0001-01-01T00:00:00Z"},
+		{name: "Valuer with the zero time in a nullzero column", value: sql.NullTime{Valid: true}, nullZero: true},
+		{name: "time", value: dated, nullZero: true, want: "2026-11-11T10:00:00Z"},
+		{name: "pointer to a time", value: &dated, want: "2026-11-11T10:00:00Z"},
+		{name: "bun.NullTime", value: bun.NullTime{Time: dated}, want: "2026-11-11T10:00:00Z"},
+		// Value is only asked for NULL: the cursor encodes the value itself
+		{name: "Valuer whose Value fails", value: failingValuer("legacy"), want: "legacy"},
+		// NULL in an integer or string field reads as a real value
+		{name: "zero integer", value: int64(0), nullZero: true, want: int64(0)},
+		{name: "empty string", value: "", nullZero: true, want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			order := sortOrder{expr: "?TableAlias.created_at", direction: DESC, nullZero: tc.nullZero}
+			row := nullSortRecord{ID: 1, Sort: tc.value}
+
+			_, resp, err := buildPage([]nullSortRecord{row, row}, 1, order)
+
+			if tc.null {
+				requireCode(t, err, ez.EINTERNAL)
+				want := "Sort column ?TableAlias.created_at is NULL on the last row of the page, or the query does not select it; a sortable column must be NOT NULL and selected"
+				if ez.ErrorMessage(err) != want {
+					t.Fatalf("expected %q, got %q", want, ez.ErrorMessage(err))
+				}
+				if resp.NextCursor != "" {
+					t.Fatalf("expected no cursor, got %q", resp.NextCursor)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("build page: %v", err)
+			}
+			if resp.NextCursor == "" {
+				t.Fatal("expected a cursor")
+			}
+			if tc.want == nil {
+				return
+			}
+
+			cursor := decodeTestCursor(t, resp.NextCursor)
+			if cursor.SortValue != tc.want {
+				t.Fatalf("expected %#v, got %#v", tc.want, cursor.SortValue)
+			}
+		})
+	}
+}
+
+func TestBuildPageRejectsNullClientSortValue(t *testing.T) {
+	table := newFakeDB(&fakeConn{}).Table(reflect.TypeOf(nullSortRecord{}))
+	dated := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	zero := time.Time{}
+
+	// want is the cursor's sort value, or nil when the value is refused as NULL
+	tests := []struct {
+		name   string
+		column string
+		row    nullSortRecord
+		want   any
+	}{
+		{name: "nil pointer", column: "updated_at", row: nullSortRecord{ID: 1}},
+		{name: "nil pointer in a nullzero field", column: "paused_at", row: nullSortRecord{ID: 1}},
+		{name: "Valuer with a nil Value", column: "seen_at", row: nullSortRecord{ID: 1}},
+		{name: "zero time in a nullzero field", column: "closed_at", row: nullSortRecord{ID: 1}},
+		// Without nullzero, bun writes a zero time.Time as year 1, a real value
+		{name: "zero time in a field without nullzero", column: "created_at", row: nullSortRecord{ID: 1}, want: "0001-01-01T00:00:00Z"},
+		// NULL is the nil pointer or nil Value, so the zero time behind them is stored
+		{name: "pointer to the zero time", column: "updated_at", row: nullSortRecord{ID: 1, UpdatedAt: &zero}, want: "0001-01-01T00:00:00Z"},
+		{name: "pointer to the zero time in a nullzero field", column: "paused_at", row: nullSortRecord{ID: 1, PausedAt: &zero}, want: "0001-01-01T00:00:00Z"},
+		{name: "Valuer with the zero time", column: "seen_at", row: nullSortRecord{ID: 1, SeenAt: sql.NullTime{Valid: true}}, want: "0001-01-01T00:00:00Z"},
+		{name: "time in a nullzero field", column: "closed_at", row: nullSortRecord{ID: 1, ClosedAt: dated}, want: "2026-11-11T10:00:00Z"},
+		{name: "time", column: "created_at", row: nullSortRecord{ID: 1, CreatedAt: dated}, want: "2026-11-11T10:00:00Z"},
+		{name: "pointer to a time", column: "updated_at", row: nullSortRecord{ID: 1, UpdatedAt: &dated}, want: "2026-11-11T10:00:00Z"},
+		{name: "Valuer with a time", column: "seen_at", row: nullSortRecord{ID: 1, SeenAt: sql.NullTime{Time: dated, Valid: true}}, want: "2026-11-11T10:00:00Z"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			order := sortOrder{expr: `?TableAlias."` + tc.column + `"`, schemaField: table.FieldMap[tc.column], direction: ASC}
+
+			_, resp, err := buildPage([]nullSortRecord{tc.row, tc.row}, 1, order)
+
+			if tc.want == nil {
+				requireCode(t, err, ez.EINTERNAL)
+				want := "Sort column " + tc.column + " is NULL on the last row of the page, or the query does not select it; a sortable column must be NOT NULL and selected"
+				if ez.ErrorMessage(err) != want {
+					t.Fatalf("expected %q, got %q", want, ez.ErrorMessage(err))
+				}
+				if resp.NextCursor != "" {
+					t.Fatalf("expected no cursor, got %q", resp.NextCursor)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("build page: %v", err)
+			}
+
+			cursor := decodeTestCursor(t, resp.NextCursor)
+			if cursor.SortValue != tc.want {
+				t.Fatalf("expected %#v, got %#v", tc.want, cursor.SortValue)
+			}
+		})
+	}
+}
+
+// exprRecord's GetSortField returns Expr, so one model tries every spelling.
+type exprRecord struct {
+	bun.BaseModel `bun:"table:records,alias:r"`
+
+	ID        int64     `bun:"id,pk"`
+	CreatedAt time.Time `bun:"created_at"`
+	ClosedAt  time.Time `bun:"closed_at,nullzero"`
+	Expr      string    `bun:"-"`
+}
+
+func (r exprRecord) GetSortField() string        { return r.Expr }
+func (r exprRecord) GetSortValue() interface{}   { return r.ClosedAt }
+func (r exprRecord) GetUniqueField() string      { return "?TableAlias.id" }
+func (r exprRecord) GetUniqueValue() interface{} { return r.ID }
+
+func TestCursorRequestOrderResolvesTheDefaultSortColumnNullZero(t *testing.T) {
+	db := newFakeDB(&fakeConn{})
+
+	tests := []struct {
+		expr string
+		want bool
+	}{
+		{expr: "?TableAlias.closed_at", want: true},
+		{expr: `?TableAlias."closed_at"`, want: true},
+		{expr: `"r"."closed_at"`, want: true},
+		{expr: "closed_at", want: true},
+		{expr: "?TableAlias.created_at", want: false},
+		// An expression names no column, so its zero time is a real value
+		{expr: "date_trunc('day', ?TableAlias.closed_at)", want: false},
+		{expr: "?TableAlias.missing", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			request := &CursorRequest{}
+
+			order, err := request.order(db, exprRecord{Expr: tc.expr}, Options{Direction: ASC})
+			if err != nil {
+				t.Fatalf("order: %v", err)
+			}
+			if order.nullZero != tc.want {
+				t.Fatalf("expected nullZero %v, got %v", tc.want, order.nullZero)
+			}
+		})
+	}
+}
+
+func TestBuildPageListsNullRowsBeforeTheLast(t *testing.T) {
+	dated := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	items := []nullSortRecord{{ID: 1}, {ID: 2, Sort: dated}, {ID: 3}}
+
+	page, resp, err := buildPage(items, 2, sortOrder{expr: "?TableAlias.created_at", direction: DESC, nullZero: true})
+	if err != nil {
+		t.Fatalf("build page: %v", err)
+	}
+
+	if len(page) != 2 || decodeTestCursor(t, resp.NextCursor).SortValue != "2026-11-11T10:00:00Z" {
+		t.Fatalf("expected two rows and the dated row's cursor, got %+v and %+v", page, resp)
 	}
 }
 
