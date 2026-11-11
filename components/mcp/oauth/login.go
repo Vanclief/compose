@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -17,6 +18,16 @@ import (
 var loginFS embed.FS
 
 var loginTemplate = template.Must(template.ParseFS(loginFS, "templates/login.html"))
+
+const (
+	// maxIdentifierBytes bounds the identifier of the built-in login form,
+	// which the pending request stores once Challenge accepts it and the form
+	// shows again. Real ones are an email address or a phone number.
+	maxIdentifierBytes = 512
+	// genericLoginError is what the form shows for a failure it does not
+	// explain.
+	genericLoginError = "Something went wrong. Try again."
+)
 
 // loginPage is the view model of the login page. With Heading set the page
 // shows only Heading and Message.
@@ -57,9 +68,23 @@ func (s *Server) serveLoginPage(w http.ResponseWriter, r *http.Request) {
 // so parallel submissions cannot exceed the attempt limit.
 func (s *Server) serveLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// The form is a few short fields; capped like a registration body.
+	// ParseForm reads an urlencoded body and leaves a multipart one, which
+	// ParseMultipartForm reads next. ParseForm is called on its own because
+	// ParseMultipartForm drops its error, a body over the cap included, when
+	// the body is not multipart.
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocumentBytes)
+	err := r.ParseForm()
+	if err == nil {
+		err = r.ParseMultipartForm(maxDocumentBytes)
+	}
+	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		s.renderMessage(w, http.StatusBadRequest, "Invalid request", "The form could not be read. Start again from the application.")
+		return
+	}
 	id := r.PostFormValue("request")
 	var request authRequest
-	err := s.getRecord(ctx, KindRequest, id, true, &request)
+	err = s.getRecord(ctx, KindRequest, id, true, &request)
 	if err != nil {
 		s.renderRequestError(w, r, err)
 		return
@@ -69,6 +94,12 @@ func (s *Server) serveLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	identifier := strings.TrimSpace(r.PostFormValue("identifier"))
 	if request.Identifier != "" {
 		identifier = request.Identifier
+	}
+	if len(identifier) > maxIdentifierBytes {
+		// Never stored, shown again or passed to Challenge or Verify. The
+		// credential needs no bound: it only goes to Verify.
+		s.keepRequest(w, r, id, request, "", genericLoginError)
+		return
 	}
 	credential := r.PostFormValue("credential")
 	if identifier == "" {
@@ -125,7 +156,7 @@ func (s *Server) attemptMessage(ctx context.Context, err error, shown ...string)
 		return ez.ErrorMessage(err)
 	}
 	s.report(ctx, err)
-	return "Something went wrong. Try again."
+	return genericLoginError
 }
 
 // keepRequest puts the request back and shows the form again with message.

@@ -334,24 +334,34 @@ func TestNewValidation(t *testing.T) {
 		"client with fragment": func(c *Config) {
 			c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"https://client.example/cb#x"}}}
 		},
-		"client with custom uri":  func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"myapp://cb"}}} },
-		"token prefix missing":    func(c *Config) { c.TokenPrefix = "" },
-		"token prefix short":      func(c *Config) { c.TokenPrefix = "a" },
-		"token prefix uppercase":  func(c *Config) { c.TokenPrefix = "Acme" },
-		"token prefix with _":     func(c *Config) { c.TokenPrefix = "ac_me" },
-		"token prefix too long":   func(c *Config) { c.TokenPrefix = "abcdefghijk" },
-		"access ttl never":        func(c *Config) { c.AccessTokenTTL = Never },
-		"access ttl negative":     func(c *Config) { c.AccessTokenTTL = -time.Hour },
-		"refresh ttl negative":    func(c *Config) { c.RefreshTokenTTL = -time.Hour },
-		"idle ttl never":          func(c *Config) { c.IdleTTL = Never },
-		"idle ttl negative":       func(c *Config) { c.IdleTTL = -time.Hour },
-		"request ttl never":       func(c *Config) { c.RequestTTL = Never },
-		"code ttl never":          func(c *Config) { c.CodeTTL = Never },
-		"code ttl negative":       func(c *Config) { c.CodeTTL = -2 },
-		"client ttl never":        func(c *Config) { c.RegisteredClientTTL = Never },
-		"metadata cache never":    func(c *Config) { c.MetadataCacheTTL = Never },
-		"refresh timeout never":   func(c *Config) { c.RefreshTimeout = Never },
-		"login attempts negative": func(c *Config) { c.MaxLoginAttempts = -1 },
+		"client with custom uri":        func(c *Config) { c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{"myapp://cb"}}} },
+		"token prefix missing":          func(c *Config) { c.TokenPrefix = "" },
+		"token prefix short":            func(c *Config) { c.TokenPrefix = "a" },
+		"token prefix uppercase":        func(c *Config) { c.TokenPrefix = "Acme" },
+		"token prefix with _":           func(c *Config) { c.TokenPrefix = "ac_me" },
+		"token prefix too long":         func(c *Config) { c.TokenPrefix = "abcdefghijk" },
+		"access ttl never":              func(c *Config) { c.AccessTokenTTL = Never },
+		"access ttl negative":           func(c *Config) { c.AccessTokenTTL = -time.Hour },
+		"refresh ttl negative":          func(c *Config) { c.RefreshTokenTTL = -time.Hour },
+		"idle ttl never":                func(c *Config) { c.IdleTTL = Never },
+		"idle ttl negative":             func(c *Config) { c.IdleTTL = -time.Hour },
+		"request ttl never":             func(c *Config) { c.RequestTTL = Never },
+		"code ttl never":                func(c *Config) { c.CodeTTL = Never },
+		"code ttl negative":             func(c *Config) { c.CodeTTL = -2 },
+		"client ttl never":              func(c *Config) { c.RegisteredClientTTL = Never },
+		"unused client ttl never":       func(c *Config) { c.UnusedClientTTL = Never },
+		"unused client ttl neg.":        func(c *Config) { c.UnusedClientTTL = -time.Hour },
+		"metadata cache never":          func(c *Config) { c.MetadataCacheTTL = Never },
+		"refresh timeout never":         func(c *Config) { c.RefreshTimeout = Never },
+		"login attempts negative":       func(c *Config) { c.MaxLoginAttempts = -1 },
+		"unused client ttl below login": func(c *Config) { c.UnusedClientTTL = 10 * time.Minute },
+		"unused client ttl below custom login": func(c *Config) {
+			c.UnusedClientTTL = time.Second
+			c.RequestTTL = time.Hour
+		},
+		"client with long uri": func(c *Config) {
+			c.Clients = []Client{{ID: "a", Name: "A", RedirectURIs: []string{testRedirect + "?" + strings.Repeat("q", maxURLBytes)}}}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -425,6 +435,19 @@ func TestNewValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "Config.IdleTTL cannot be Never")
 
 	cfg = valid()
+	cfg.UnusedClientTTL = time.Second
+	_, err = New(cfg)
+	require.Error(t, err)
+	for _, field := range []string{"Config.UnusedClientTTL", "Config.RequestTTL", "Config.CodeTTL"} {
+		assert.Contains(t, err.Error(), field, "the error names the three fields")
+	}
+
+	cfg = valid()
+	cfg.UnusedClientTTL = 11 * time.Minute
+	_, err = New(cfg)
+	assert.NoError(t, err, "UnusedClientTTL may equal RequestTTL plus CodeTTL")
+
+	cfg = valid()
 	cfg.TokenPrefix = "abcdefghij"
 	_, err = New(cfg)
 	assert.NoError(t, err, "a 10 character prefix leaves room for at and rt")
@@ -445,6 +468,7 @@ func TestNewValidation(t *testing.T) {
 	assert.Equal(t, 10*time.Minute, s.cfg.RequestTTL)
 	assert.Equal(t, time.Minute, s.cfg.CodeTTL)
 	assert.Equal(t, 365*24*time.Hour, s.cfg.RegisteredClientTTL)
+	assert.Equal(t, 7*24*time.Hour, s.cfg.UnusedClientTTL)
 	assert.Equal(t, time.Hour, s.cfg.MetadataCacheTTL)
 	assert.Equal(t, 10*time.Second, s.cfg.RefreshTimeout)
 	assert.Equal(t, 5, s.cfg.MaxLoginAttempts)
@@ -696,6 +720,54 @@ func TestAuthorizeErrors(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, res.status)
 	assert.Empty(t, res.header.Get("Location"))
 	assert.Contains(t, res.body, "response_type must be code")
+}
+
+// TestAuthorizeBounds: a state or scope longer than its limit and a
+// code_challenge that is not an S256 challenge are refused with
+// invalid_request and store no request; an oversized state is not echoed.
+// Values at the limits are accepted.
+func TestAuthorizeBounds(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	registered := env.register(t)
+	_, challenge := pkce("a")
+	cases := map[string]func(url.Values){
+		"state too long":      func(p url.Values) { p.Set("state", strings.Repeat("s", maxStateBytes+1)) },
+		"scope too long":      func(p url.Values) { p.Set("scope", strings.Repeat("s", maxScopeBytes+1)) },
+		"challenge too long":  func(p url.Values) { p.Set("code_challenge", challenge+"A") },
+		"challenge too short": func(p url.Values) { p.Set("code_challenge", challenge[:42]) },
+		"challenge padded":    func(p url.Values) { p.Set("code_challenge", challenge[:42]+"=") },
+		"challenge base64":    func(p url.Values) { p.Set("code_challenge", challenge[:42]+"+") },
+		"challenge LF":        func(p url.Values) { p.Set("code_challenge", challenge[:42]+"\n") },
+		"challenge CRLF":      func(p url.Values) { p.Set("code_challenge", challenge[:39]+"\r\n\r\n") },
+		"challenge huge":      func(p url.Values) { p.Set("code_challenge", strings.Repeat("c", 600<<10)) },
+	}
+	for name, mutate := range cases {
+		params := authorizeParams("public", challenge)
+		mutate(params)
+		res := env.authorize(t, params)
+		require.Equal(t, http.StatusFound, res.status, name)
+		q := res.location(t).Query()
+		assert.Equal(t, "invalid_request", q.Get("error"), name)
+		if name == "state too long" {
+			assert.False(t, q.Has("state"), "an oversized state is not echoed")
+		} else {
+			assert.Equal(t, "st-1", q.Get("state"), name)
+		}
+
+		// A registered client gets the error page instead.
+		params = authorizeParams(registered, challenge)
+		mutate(params)
+		res = env.authorize(t, params)
+		assert.Equal(t, http.StatusBadRequest, res.status, name)
+		assert.Contains(t, res.body, "Invalid request", name)
+	}
+	assert.Zero(t, env.storedCount(KindRequest), "no refused request is stored")
+
+	params := authorizeParams("public", challenge)
+	params.Set("state", strings.Repeat("s", maxStateBytes))
+	params.Set("scope", strings.Repeat("s", maxScopeBytes))
+	env.startLogin(t, params)
+	assert.Equal(t, 1, env.storedCount(KindRequest))
 }
 
 func TestNULByteIDsAreUnknown(t *testing.T) {

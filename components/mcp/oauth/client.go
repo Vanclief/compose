@@ -19,8 +19,22 @@ import (
 )
 
 const (
-	// maxDocumentBytes bounds a metadata document and a registration body.
+	// maxDocumentBytes bounds a metadata document, a registration body and a
+	// login form body.
 	maxDocumentBytes = 64 << 10
+	// maxURLBytes bounds a redirect URI and a Client ID Metadata Document
+	// URL. Both are copied into every pending request of the client, and
+	// real ones are well under a hundred bytes; 2048 is also what browsers
+	// and proxies are commonly assumed to carry in a URL.
+	maxURLBytes = 2048
+	// maxClientNameBytes bounds the client_name of a registration or a
+	// metadata document, which every pending request of the client copies
+	// and the login page shows. Real names are a few words.
+	maxClientNameBytes = 512
+	// maxRedirectURIs bounds the redirect URIs of a registration or a
+	// metadata document, which the stored client keeps. Real clients list
+	// one or two. Config.Clients are the operator's own and not bounded.
+	maxRedirectURIs = 10
 	// errDocumentFetch is the message of every failure to fetch a metadata
 	// document.
 	errDocumentFetch = "oauth: the client metadata document could not be fetched"
@@ -43,9 +57,13 @@ func checkClient(client Client) error {
 }
 
 // validRedirectURI accepts https URIs, and http URIs on a loopback host for
-// native clients, without fragment. The host must be ASCII: the login page
-// shows it, and a Unicode lookalike of a known host would defeat that.
+// native clients, without fragment and at most maxURLBytes long. The host
+// must be ASCII: the login page shows it, and a Unicode lookalike of a known
+// host would defeat that.
 func validRedirectURI(raw string) bool {
+	if len(raw) > maxURLBytes {
+		return false
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.Fragment != "" || u.User != nil || !isASCII(u.Host) {
 		return false
@@ -105,7 +123,11 @@ var errRefusedAddress = errors.New("oauth: the address is not public")
 
 // knownClient resolves a client_id without fetching anything: Config.Clients
 // first, then stored clients (registered or cached documents). Unknown ids
-// yield ez.ENOTFOUND.
+// yield ez.ENOTFOUND, and so do, without reading the Store, an id longer than
+// maxURLBytes and a document URL while DisableClientMetadataDocuments is set.
+// Every client lookup starts here, and lookupClient and authenticateClient
+// fall back to a document only through acceptsDocument, which refuses the
+// same two.
 func (s *Server) knownClient(ctx context.Context, clientID string) (Client, error) {
 	if clientID == "" {
 		return Client{}, ez.New(ez.ENOTFOUND, "oauth: client_id is missing", nil)
@@ -116,25 +138,69 @@ func (s *Server) knownClient(ctx context.Context, clientID string) (Client, erro
 			return client, nil
 		}
 	}
-	var client Client
-	err := s.getRecord(ctx, KindClient, clientID, false, &client)
+	// Refused before the Store is read: an earlier version, without the
+	// bound, may have cached a document under a longer id.
+	if len(clientID) > maxURLBytes {
+		return Client{}, ez.New(ez.ENOTFOUND, "oauth: client_id is too long", nil)
+	}
+	if s.cfg.DisableClientMetadataDocuments && isDocumentURL(clientID) {
+		return Client{}, ez.New(ez.ENOTFOUND, "oauth: client metadata documents are disabled", nil)
+	}
+	raw, err := s.readRecord(ctx, KindClient, clientID, false)
 	if err != nil {
 		return Client{}, ez.Wrap(err)
+	}
+	var record clientRecord
+	err = json.Unmarshal(raw, &record)
+	if err != nil {
+		return Client{}, ez.New(ez.EINTERNAL, "oauth: decoding a client record failed", err)
+	}
+	client := record.Client
+	if record.Pending {
+		client.pendingRecord = raw
 	}
 	return client, nil
 }
 
+// keepClient is the client renewal of the authorize endpoint, which needs no
+// login and so never grants RegisteredClientTTL to a client no user has
+// approved. A pending client is extended to UnusedClientTTL from now: its
+// record is swapped for itself only while it still holds the bytes
+// knownClient read, so once a code exchange has approved the client the swap
+// misses and the approval's RegisteredClientTTL stays. Concurrent authorizes
+// that read the same pending record all succeed, each setting
+// UnusedClientTTL from its own now, so the last one to write wins. Any
+// other client goes to renewClient, which renews an approved one to
+// RegisteredClientTTL and leaves Config.Clients and cached documents alone.
+// A failing Store is ez.EINTERNAL.
+func (s *Server) keepClient(ctx context.Context, client Client) error {
+	if client.pendingRecord == nil {
+		err := s.renewClient(ctx, client)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		return nil
+	}
+	err := s.cfg.Store.Swap(ctx, KindClient, client.ID, client.pendingRecord, client.pendingRecord, time.Now().Add(s.cfg.UnusedClientTTL))
+	if err != nil && ez.ErrorCode(err) != ez.ENOTFOUND {
+		return ez.New(ez.EINTERNAL, "oauth: extending the client record failed", err)
+	}
+	return nil
+}
+
 // renewClient stores a dynamically registered client again with a fresh
-// RegisteredClientTTL expiry, so clients in use never expire while dormant
-// ones do. client must be the full stored record, as knownClient returns it.
-// Clients from Config.Clients are not stored, and cached Client ID Metadata
-// Documents keep their MetadataCacheTTL, so both are left alone. A failing
-// Store is ez.EINTERNAL.
+// RegisteredClientTTL expiry and without the pending mark, so clients in use
+// never expire while dormant ones do. It runs on the code exchange, which
+// approves a pending client, on each refresh, and at authorize for a client
+// that is not pending (see keepClient). client must be the full
+// stored record, as knownClient returns it. Clients from Config.Clients are
+// not stored, and cached Client ID Metadata Documents keep their
+// MetadataCacheTTL, so both are left alone. A failing Store is ez.EINTERNAL.
 func (s *Server) renewClient(ctx context.Context, client Client) error {
 	if client.configured || isDocumentURL(client.ID) {
 		return nil
 	}
-	err := s.putRecord(ctx, KindClient, client.ID, client, time.Now().Add(s.cfg.RegisteredClientTTL))
+	err := s.putRecord(ctx, KindClient, client.ID, clientRecord{Client: client}, time.Now().Add(s.cfg.RegisteredClientTTL))
 	if err != nil {
 		return ez.Wrap(err)
 	}
@@ -142,9 +208,9 @@ func (s *Server) renewClient(ctx context.Context, client Client) error {
 }
 
 // lookupClient resolves a client_id for the authorize endpoint: knownClient,
-// then a Client ID Metadata Document when the id is an https URL. Unknown
-// ids yield ez.ENOTFOUND, a document that cannot be reached ez.EUNAVAILABLE,
-// an unusable one ez.EINVALID.
+// then a Client ID Metadata Document when acceptsDocument allows the id.
+// Unknown ids yield ez.ENOTFOUND, a document that cannot be reached
+// ez.EUNAVAILABLE, an unusable one ez.EINVALID.
 func (s *Server) lookupClient(ctx context.Context, clientID string) (Client, error) {
 	client, err := s.knownClient(ctx, clientID)
 	if err == nil {
@@ -153,7 +219,7 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (Client, err
 	if ez.ErrorCode(err) != ez.ENOTFOUND {
 		return Client{}, ez.Wrap(err)
 	}
-	if !isDocumentURL(clientID) {
+	if !s.acceptsDocument(clientID) {
 		return Client{}, ez.New(ez.ENOTFOUND, "oauth: unknown client", nil)
 	}
 
@@ -168,9 +234,20 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (Client, err
 	return client, nil
 }
 
-// isDocumentURL reports whether a client_id names a Client ID Metadata
-// Document: an https URL with a path, without query, fragment, user info or
-// dot segments.
+// acceptsDocument reports whether clientID names a Client ID Metadata
+// Document this server accepts, fetches at authorize and lets act as a public
+// client at the token endpoint: never while DisableClientMetadataDocuments is
+// set, and never for an id longer than maxURLBytes, which knownClient refuses
+// too.
+func (s *Server) acceptsDocument(clientID string) bool {
+	return !s.cfg.DisableClientMetadataDocuments && len(clientID) <= maxURLBytes && isDocumentURL(clientID)
+}
+
+// isDocumentURL reports whether a client_id has the shape of a Client ID
+// Metadata Document: an https URL with a path, without query, fragment, user
+// info or dot segments. It has no length bound, so the checks that ask
+// whether an id is a document (the switch in knownClient, the skip in
+// renewClient) cannot be bypassed by length; acceptsDocument adds the bound.
 func isDocumentURL(clientID string) bool {
 	u, err := url.Parse(clientID)
 	if err != nil {
@@ -289,6 +366,12 @@ func (s *Server) fetchClientDocument(ctx context.Context, clientID string) (Clie
 	if doc.ClientName == "" || len(doc.RedirectURIs) == 0 {
 		return Client{}, ez.New(ez.EINVALID, "oauth: the client metadata document needs client_name and redirect_uris", nil)
 	}
+	if len(doc.RedirectURIs) > maxRedirectURIs {
+		return Client{}, ez.New(ez.EINVALID, "oauth: the client metadata document has more than "+strconv.Itoa(maxRedirectURIs)+" redirect URIs", nil)
+	}
+	if len(doc.ClientName) > maxClientNameBytes {
+		return Client{}, ez.New(ez.EINVALID, "oauth: the client metadata document has a client_name longer than "+strconv.Itoa(maxClientNameBytes)+" bytes", nil)
+	}
 	for _, uri := range doc.RedirectURIs {
 		if !validRedirectURI(uri) {
 			return Client{}, ez.New(ez.EINVALID, "oauth: the client metadata document has an invalid redirect URI", nil)
@@ -345,9 +428,13 @@ func (s *Server) serveRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uris is required")
 		return
 	}
+	if len(meta.RedirectURIs) > maxRedirectURIs {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uris must list at most "+strconv.Itoa(maxRedirectURIs)+" URIs")
+		return
+	}
 	for _, uri := range meta.RedirectURIs {
 		if !validRedirectURI(uri) {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect URIs must be https, or http on localhost, without fragment: "+uri)
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect URIs must be https, or http on localhost, without fragment and at most "+strconv.Itoa(maxURLBytes)+" bytes: "+uri)
 			return
 		}
 	}
@@ -363,12 +450,17 @@ func (s *Server) serveRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "token_endpoint_auth_method must be none, client_secret_basic or client_secret_post")
 		return
 	}
+	if len(meta.ClientName) > maxClientNameBytes {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "client_name must be at most "+strconv.Itoa(maxClientNameBytes)+" bytes")
+		return
+	}
 
 	client := Client{ID: randomID(), Name: meta.ClientName, RedirectURIs: meta.RedirectURIs}
 	if method != "none" {
 		client.Secret = randomID()
 	}
-	err = s.putRecord(r.Context(), KindClient, client.ID, client, time.Now().Add(s.cfg.RegisteredClientTTL))
+	// Pending until a user approves the client: see clientRecord.
+	err = s.putRecord(r.Context(), KindClient, client.ID, clientRecord{Client: client, Pending: true}, time.Now().Add(s.cfg.UnusedClientTTL))
 	if err != nil {
 		s.serverError(r.Context(), w, err, "the client could not be stored")
 		return

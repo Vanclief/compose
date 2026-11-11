@@ -10,7 +10,8 @@
 //   - discovery: RFC 8414 authorization server metadata and RFC 9728
 //     protected resource metadata, both under /.well-known;
 //   - client registration: Client ID Metadata Documents (an https URL as
-//     client_id), RFC 7591 dynamic registration, and clients listed in Config;
+//     client_id, unless DisableClientMetadataDocuments is set), RFC 7591
+//     dynamic registration, and clients listed in Config;
 //   - the authorization code flow with PKCE (S256 only), the RFC 8707 resource
 //     parameter, exact redirect URI matching (any port for http loopback
 //     URIs, RFC 8252), and single-use codes;
@@ -92,7 +93,9 @@
 // MetadataCacheTTL regardless of their Cache-Control; registration is open
 // to any client and limited only per client address (RegistrationLimit,
 // counted against ClientIP), so clients spread over many addresses can still
-// fill the Store; the MCP endpoint sends no CORS headers; a tool call checks
+// fill the Store, each registration nobody logs in with until UnusedClientTTL
+// after its last authorize, so one that keeps calling authorize stays;
+// the MCP endpoint sends no CORS headers; a tool call checks
 // its token three times, in Protect, in AuthFunc and in the application's
 // Verify, two Store reads each, which is accepted as defense in depth; access
 // tokens issued before a rotation stay valid until they expire.
@@ -196,12 +199,21 @@ type Config struct {
 	// CodeTTL bounds an authorization code until it is exchanged. Defaults
 	// to 1 minute.
 	CodeTTL time.Duration
-	// RegisteredClientTTL keeps a dynamically registered client. Each
-	// authorize, and each code or refresh exchange before its tokens are
-	// written, stores the client again with a fresh expiry, so only clients
-	// unused for this long expire, even under a longer RefreshTokenTTL.
-	// Defaults to 365 days.
+	// RegisteredClientTTL keeps a dynamically registered client once a user
+	// has approved it. Each authorize, and each code or refresh exchange
+	// before its tokens are written, stores the approved client again with a
+	// fresh expiry, so only clients unused for this long expire, even under a
+	// longer RefreshTokenTTL. Defaults to 365 days.
 	RegisteredClientTTL time.Duration
+	// UnusedClientTTL keeps a dynamically registered client that no user has
+	// approved yet: registration stores it for this long, and each authorize
+	// extends it to this long from then and no further, so a registration
+	// nobody completes a login with expires UnusedClientTTL after its last
+	// authorize (or its registration, without one). The first code
+	// exchange approves the client and gives it RegisteredClientTTL. It must
+	// cover a whole login: New rejects a value below RequestTTL plus CodeTTL.
+	// Defaults to 7 days.
+	UnusedClientTTL time.Duration
 	// MetadataCacheTTL is how long a fetched Client ID Metadata Document is
 	// cached, regardless of its Cache-Control. Defaults to 1h.
 	MetadataCacheTTL time.Duration
@@ -249,6 +261,14 @@ type Config struct {
 	// client set here is trusted to reach any host. Redirects are never
 	// followed.
 	HTTPClient *http.Client
+	// DisableClientMetadataDocuments turns Client ID Metadata Documents off:
+	// the metadata advertises client_id_metadata_document_supported false,
+	// and a client_id that is an https URL is an unknown client, unless it is
+	// listed in Clients, so the server never fetches a URL. Clients register
+	// dynamically instead. A client connected through a document before the
+	// switch can no longer refresh (invalid_client); its access tokens stay
+	// valid until they expire. The zero value keeps documents on.
+	DisableClientMetadataDocuments bool
 }
 
 // Login configures the built-in login page. The page asks for an identifier,
@@ -311,6 +331,23 @@ type Client struct {
 	// configured marks a client from Config.Clients, the only clients that
 	// authorize errors are redirected to.
 	configured bool
+	// pendingRecord holds the bytes knownClient read for a dynamically
+	// registered client that no user has approved yet; nil for every other
+	// client. The authorize step extends the record only while it still
+	// holds them.
+	pendingRecord []byte
+}
+
+// clientRecord is a dynamically registered client as stored. Pending is set
+// at registration and dropped by the first code exchange, or by the first
+// refresh when that write failed, which renewClient stores without it: a
+// pending client lives UnusedClientTTL from its
+// registration or its last authorize, an approved one RegisteredClientTTL
+// from its last authorize or token request. Records stored before Pending
+// existed, and cached Client ID Metadata Documents, decode as not pending.
+type clientRecord struct {
+	Client
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Pending describes a pending authorization request for a custom login

@@ -1,9 +1,12 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -314,4 +317,106 @@ func TestLoginMaxAttemptsConfigured(t *testing.T) {
 	assert.Contains(t, res.body, "Login link expired")
 	res = env.login(t, id, "ana@acme.com", "pw")
 	assert.Equal(t, http.StatusBadRequest, res.status, "the voided request cannot be approved")
+}
+
+// TestLoginIdentifierBound: an identifier longer than maxIdentifierBytes is
+// refused with the generic error, never reaches Challenge or Verify and is
+// never stored in the pending request, which stays usable; a form body over
+// maxDocumentBytes is not read at all.
+func TestLoginIdentifierBound(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var seen []string
+	record := func(identifier string) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, identifier)
+	}
+	for name, challenged := range map[string]bool{"password": false, "challenge": true} {
+		t.Run(name, func(t *testing.T) {
+			seen = nil
+			env := newEnv(t, func(c *Config) {
+				c.Login.Verify = func(ctx context.Context, identifier, credential string) (Grant, error) {
+					record(identifier)
+					return testGrant, nil
+				}
+				if challenged {
+					c.Login.Challenge = func(ctx context.Context, identifier string) error {
+						record(identifier)
+						return nil
+					}
+				}
+			}, nil)
+			_, challenge := pkce("i")
+			id := env.startLogin(t, authorizeParams("public", challenge))
+			before, err := env.s.cfg.Store.Get(ctx, KindRequest, id)
+			require.NoError(t, err)
+
+			long := strings.Repeat("i", maxIdentifierBytes+1)
+			res := env.login(t, id, long, "pw")
+			assert.Equal(t, http.StatusOK, res.status)
+			assert.Contains(t, res.body, "Something went wrong. Try again.")
+			assert.NotContains(t, res.body, long, "the identifier is not shown again")
+			stored, err := env.s.cfg.Store.Get(ctx, KindRequest, id)
+			require.NoError(t, err, "the request is kept")
+			assert.Equal(t, before, stored, "the request is stored unchanged")
+
+			res = env.postForm(t, "/oauth/login", url.Values{"request": {id}, "identifier": {strings.Repeat("i", 5<<20)}})
+			assert.Equal(t, http.StatusBadRequest, res.status)
+			assert.Contains(t, res.body, "The form could not be read.")
+			stored, err = env.s.cfg.Store.Get(ctx, KindRequest, id)
+			require.NoError(t, err, "the request is kept")
+			assert.Equal(t, before, stored)
+
+			mu.Lock()
+			assert.Empty(t, seen, "the app's callbacks never see the value")
+			mu.Unlock()
+
+			// An identifier at the limit reaches the app.
+			limit := strings.Repeat("i", maxIdentifierBytes)
+			res = env.login(t, id, limit, "pw")
+			assert.NotContains(t, res.body, "Something went wrong.")
+			mu.Lock()
+			assert.Equal(t, []string{limit}, seen, "Challenge or Verify gets the identifier at the limit")
+			mu.Unlock()
+		})
+	}
+}
+
+// multipartLogin posts the login form as multipart/form-data.
+func (env *testEnv) multipartLogin(t *testing.T, fields map[string]string) response {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for name, value := range fields {
+		require.NoError(t, form.WriteField(name, value))
+	}
+	require.NoError(t, form.Close())
+	req, err := http.NewRequest(http.MethodPost, env.url+"/oauth/login", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return env.do(t, req)
+}
+
+// TestLoginMultipart: the login form may be posted as multipart/form-data, as
+// it could before the body cap; a multipart body over the cap is refused like
+// an urlencoded one and leaves the pending request as it was.
+func TestLoginMultipart(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, nil, nil)
+	_, challenge := pkce("p")
+	id := env.startLogin(t, authorizeParams("public", challenge))
+	before, err := env.s.cfg.Store.Get(ctx, KindRequest, id)
+	require.NoError(t, err)
+
+	res := env.multipartLogin(t, map[string]string{"request": id, "identifier": strings.Repeat("i", 5<<20)})
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "The form could not be read.")
+	stored, err := env.s.cfg.Store.Get(ctx, KindRequest, id)
+	require.NoError(t, err, "the request is kept")
+	assert.Equal(t, before, stored)
+
+	res = env.multipartLogin(t, map[string]string{"request": id, "identifier": "ana@acme.com", "credential": "pw"})
+	assert.Equal(t, http.StatusSeeOther, res.status, res.body)
+	codeFrom(t, res)
 }

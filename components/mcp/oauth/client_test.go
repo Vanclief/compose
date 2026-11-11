@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
@@ -179,9 +180,13 @@ func TestRedirectRegistered(t *testing.T) {
 	}
 }
 
-// TestRegisteredClientLifetime: a registration lives a year from its last
-// authorize; cached documents keep their 1h lifetime.
+// TestRegisteredClientLifetime: a registration lives UnusedClientTTL, which
+// each authorize extends to UnusedClientTTL and no further, until its first
+// code exchange gives it a year; from then each authorize renews it for a
+// year, as it does a client stored before the pending mark existed. Cached
+// documents keep their 1h lifetime.
 func TestRegisteredClientLifetime(t *testing.T) {
+	ctx := context.Background()
 	host := newDocumentHost(t)
 	env := newEnv(t, func(c *Config) {
 		c.HTTPClient = host.server.Client()
@@ -192,17 +197,38 @@ func TestRegisteredClientLifetime(t *testing.T) {
 		defer store.mu.Unlock()
 		return time.Until(store.records[memoryKey(KindClient, id)].expiresAt)
 	}
+	week := 7 * 24 * time.Hour
 	year := 365 * 24 * time.Hour
 
 	clientID := env.postJSON(t, "/oauth/register", `{"redirect_uris": ["`+testRedirect+`"]}`).json(t)["client_id"].(string)
-	assert.InDelta(t, year.Seconds(), expiry(clientID).Seconds(), 60)
+	assert.InDelta(t, week.Seconds(), expiry(clientID).Seconds(), 60, "a registration nobody approved lives a week")
 
-	var client Client
-	require.NoError(t, env.s.getRecord(context.Background(), KindClient, clientID, false, &client))
-	require.NoError(t, env.s.putRecord(context.Background(), KindClient, clientID, client, time.Now().Add(time.Hour)))
-	_, challenge := pkce("l")
+	// The record is moved an hour out, as it stands an hour before it expires.
+	raw, err := store.Get(ctx, KindClient, clientID)
+	require.NoError(t, err)
+	require.NoError(t, store.Put(ctx, KindClient, clientID, raw, time.Now().Add(time.Hour)))
+	verifier, challenge := pkce("l")
 	env.startLogin(t, authorizeParams(clientID, challenge))
-	assert.InDelta(t, year.Seconds(), expiry(clientID).Seconds(), 60, "authorize renews the registration")
+	assert.InDelta(t, week.Seconds(), expiry(clientID).Seconds(), 60, "authorize extends a pending client by a week only")
+
+	code := env.codeFor(t, clientID, challenge)
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code}, "code_verifier": {verifier}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.InDelta(t, year.Seconds(), expiry(clientID).Seconds(), 60, "the code exchange gives the approved client a year")
+
+	// An approved client an hour from its expiry is renewed by authorize.
+	raw, err = store.Get(ctx, KindClient, clientID)
+	require.NoError(t, err)
+	require.NoError(t, store.Put(ctx, KindClient, clientID, raw, time.Now().Add(time.Hour)))
+	env.startLogin(t, authorizeParams(clientID, challenge))
+	assert.InDelta(t, year.Seconds(), expiry(clientID).Seconds(), 60, "authorize renews an approved client for a year")
+
+	// A client stored before the pending mark existed is treated as approved.
+	var legacy Client
+	require.NoError(t, env.s.getRecord(ctx, KindClient, clientID, false, &legacy))
+	require.NoError(t, env.s.putRecord(ctx, KindClient, clientID, legacy, time.Now().Add(time.Hour)))
+	env.startLogin(t, authorizeParams(clientID, challenge))
+	assert.InDelta(t, year.Seconds(), expiry(clientID).Seconds(), 60, "authorize renews a client stored before the upgrade for a year")
 
 	documentID := host.add("/client.json", map[string]any{"client_name": "Hosted", "redirect_uris": []string{testRedirect}})
 	env.startLogin(t, authorizeParams(documentID, challenge))
@@ -213,6 +239,283 @@ func TestRegisteredClientLifetime(t *testing.T) {
 	_, stored := store.records[memoryKey(KindClient, "public")]
 	store.mu.Unlock()
 	assert.False(t, stored, "configured clients are not stored")
+}
+
+// register registers a public client with testRedirect and returns its id.
+func (env *testEnv) register(t *testing.T) string {
+	t.Helper()
+	res := env.postJSON(t, "/oauth/register", validRegistration)
+	require.Equal(t, http.StatusCreated, res.status, res.body)
+	return res.json(t)["client_id"].(string)
+}
+
+// storedCount is the number of records of kind in the memory store of env,
+// expired ones included.
+func (env *testEnv) storedCount(kind string) int {
+	store := env.s.cfg.Store.(*memoryStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	count := 0
+	for key := range store.records {
+		if strings.HasPrefix(key, kind+"\x00") {
+			count++
+		}
+	}
+	return count
+}
+
+// TestUnusedClientExpires: a registration no user approves is gone after
+// UnusedClientTTL, while one approved within it lives on. Instead of
+// sleeping, the client records are moved UnusedClientTTL and a minute into
+// the past in the memory store, as if that much time had gone by.
+func TestUnusedClientExpires(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	unused := env.register(t)
+	approved := env.register(t)
+
+	verifier, challenge := pkce("u")
+	code := env.codeFor(t, approved, challenge)
+	res := env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {approved}, "code": {code}, "code_verifier": {verifier}})
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	refresh := res.json(t)["refresh_token"].(string)
+
+	store := env.s.cfg.Store.(*memoryStore)
+	store.mu.Lock()
+	for _, id := range []string{unused, approved} {
+		key := memoryKey(KindClient, id)
+		record := store.records[key]
+		record.expiresAt = record.expiresAt.Add(-env.s.cfg.UnusedClientTTL - time.Minute)
+		store.records[key] = record
+	}
+	store.mu.Unlock()
+
+	res = env.authorize(t, authorizeParams(unused, challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Unknown application", "the unapproved registration expired")
+
+	env.startLogin(t, authorizeParams(approved, challenge))
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {approved}, "refresh_token": {refresh}})
+	assert.Equal(t, http.StatusOK, res.status, "the approved client outlives UnusedClientTTL: "+res.body)
+}
+
+// TestKeepClientAfterApproval: an authorize that read the client while it was
+// pending does not undo a code exchange that approved it meanwhile.
+func TestKeepClientAfterApproval(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, nil, nil)
+	clientID := env.register(t)
+	pending, err := env.s.knownClient(ctx, clientID)
+	require.NoError(t, err)
+	require.NotNil(t, pending.pendingRecord, "a new registration is pending")
+
+	require.NoError(t, env.s.renewClient(ctx, pending))
+	require.NoError(t, env.s.keepClient(ctx, pending))
+
+	approved, err := env.s.knownClient(ctx, clientID)
+	require.NoError(t, err)
+	assert.Nil(t, approved.pendingRecord, "the client stays approved")
+	store := env.s.cfg.Store.(*memoryStore)
+	store.mu.Lock()
+	expiresAt := store.records[memoryKey(KindClient, clientID)].expiresAt
+	store.mu.Unlock()
+	assert.Greater(t, time.Until(expiresAt), 364*24*time.Hour, "the client keeps RegisteredClientTTL")
+}
+
+// TestLegacyClientNameIsCut: a client registered before names were bounded
+// keeps working, and the pending request stores its name cut to
+// maxClientNameBytes at a UTF-8 boundary.
+func TestLegacyClientNameIsCut(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, nil, nil)
+	// Byte 512 falls inside an é, so the cut must step back to 511.
+	name := "a" + strings.Repeat("é", 30<<10)
+	legacy := Client{ID: "legacy-client-registered-before-the-bound-xx", Name: name, RedirectURIs: []string{testRedirect}}
+	require.NoError(t, env.s.putRecord(ctx, KindClient, legacy.ID, legacy, time.Now().Add(time.Hour)))
+
+	_, challenge := pkce("n")
+	id := env.startLogin(t, authorizeParams(legacy.ID, challenge))
+	var request authRequest
+	require.NoError(t, env.s.getRecord(ctx, KindRequest, id, false, &request))
+	assert.LessOrEqual(t, len(request.ClientName), maxClientNameBytes)
+	assert.Equal(t, name[:511], request.ClientName)
+	assert.True(t, utf8.ValidString(request.ClientName))
+}
+
+// TestLegacyLongRedirectURI: a client registered before redirect URIs were
+// bounded can hold one longer than maxURLBytes. Authorize refuses it as not
+// registered, whether sent or defaulted from the client's only URI, stores no
+// request and does not renew the client.
+func TestLegacyLongRedirectURI(t *testing.T) {
+	ctx := context.Background()
+	env := newEnv(t, nil, nil)
+	long := testRedirect + "?" + strings.Repeat("q", 60<<10)
+	legacy := Client{ID: "legacy-client-with-a-long-redirect-uri-xxxx", Name: "Legacy", RedirectURIs: []string{long}}
+	expiresAt := time.Now().Add(time.Hour)
+	require.NoError(t, env.s.putRecord(ctx, KindClient, legacy.ID, legacy, expiresAt))
+
+	_, challenge := pkce("r")
+	sent := authorizeParams(legacy.ID, challenge)
+	sent.Set("redirect_uri", long)
+	defaulted := authorizeParams(legacy.ID, challenge)
+	defaulted.Del("redirect_uri")
+	for name, params := range map[string]url.Values{"sent": sent, "defaulted": defaulted} {
+		res := env.authorize(t, params)
+		assert.Equal(t, http.StatusBadRequest, res.status, name)
+		assert.Contains(t, res.body, "redirect URI is not registered", name)
+	}
+	assert.Zero(t, env.storedCount(KindRequest))
+	store := env.s.cfg.Store.(*memoryStore)
+	store.mu.Lock()
+	stored := store.records[memoryKey(KindClient, legacy.ID)].expiresAt
+	store.mu.Unlock()
+	assert.True(t, stored.Equal(expiresAt), "the client is not renewed")
+}
+
+// TestRegisterBounds: a client_name or redirect URI longer than the limits is
+// refused and nothing is stored; values at the limits are accepted.
+func TestRegisterBounds(t *testing.T) {
+	env := newEnv(t, nil, nil)
+	name := strings.Repeat("n", maxClientNameBytes)
+	uri := testRedirect + "?" + strings.Repeat("q", maxURLBytes-len(testRedirect)-1)
+
+	res := env.postJSON(t, "/oauth/register", `{"client_name": "`+name+`n", "redirect_uris": ["`+testRedirect+`"]}`)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Equal(t, "invalid_client_metadata", oauthErrorCode(t, res))
+	res = env.postJSON(t, "/oauth/register", `{"redirect_uris": ["`+uri+`q"]}`)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Equal(t, "invalid_redirect_uri", oauthErrorCode(t, res))
+	assert.Zero(t, env.storedCount(KindClient))
+
+	uris := func(count int) string {
+		list := make([]string, count)
+		for i := range list {
+			list[i] = `"` + testRedirect + `"`
+		}
+		return strings.Join(list, ", ")
+	}
+	res = env.postJSON(t, "/oauth/register", `{"redirect_uris": [`+uris(maxRedirectURIs+1)+`]}`)
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Equal(t, "invalid_redirect_uri", oauthErrorCode(t, res))
+	assert.Zero(t, env.storedCount(KindClient))
+
+	res = env.postJSON(t, "/oauth/register", `{"client_name": "`+name+`", "redirect_uris": ["`+uri+`"]}`)
+	assert.Equal(t, http.StatusCreated, res.status, res.body)
+	res = env.postJSON(t, "/oauth/register", `{"redirect_uris": [`+uris(maxRedirectURIs)+`]}`)
+	assert.Equal(t, http.StatusCreated, res.status, res.body)
+}
+
+// TestClientMetadataDocumentBounds: a document URL longer than maxURLBytes is
+// an unknown client and is not fetched; a document with a client_name longer
+// than maxClientNameBytes or more than maxRedirectURIs redirect URIs is an
+// invalid one.
+func TestClientMetadataDocumentBounds(t *testing.T) {
+	host := newDocumentHost(t)
+	env := newEnv(t, func(c *Config) {
+		c.HTTPClient = host.server.Client()
+	}, nil)
+	_, challenge := pkce("b")
+
+	res := env.authorize(t, authorizeParams(host.server.URL+"/"+strings.Repeat("a", maxURLBytes)+".json", challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Unknown application")
+	assert.Equal(t, int32(0), host.fetches.Load())
+
+	longName := host.add("/longname.json", map[string]any{"client_name": strings.Repeat("n", maxClientNameBytes+1), "redirect_uris": []string{testRedirect}})
+	res = env.authorize(t, authorizeParams(longName, challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Invalid application")
+
+	redirects := make([]string, maxRedirectURIs+1)
+	for i := range redirects {
+		redirects[i] = testRedirect
+	}
+	manyRedirects := host.add("/many.json", map[string]any{"client_name": "Many", "redirect_uris": redirects})
+	res = env.authorize(t, authorizeParams(manyRedirects, challenge))
+	assert.Equal(t, http.StatusBadRequest, res.status)
+	assert.Contains(t, res.body, "Invalid application")
+	assert.Contains(t, res.body, "more than 10 redirect URIs")
+	assert.Zero(t, env.storedCount(KindClient))
+	assert.Zero(t, env.storedCount(KindRequest))
+}
+
+// TestLongCachedDocumentIsUnknown: a document an earlier version cached under
+// an id longer than maxURLBytes is an unknown client, documents on or off: at
+// authorize and at the token endpoint, without a fetch and without its
+// cached expiry being extended.
+func TestLongCachedDocumentIsUnknown(t *testing.T) {
+	for name, disable := range map[string]bool{"documents on": false, "documents off": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			host := newDocumentHost(t)
+			env := newEnv(t, func(c *Config) {
+				c.HTTPClient = host.server.Client()
+				c.DisableClientMetadataDocuments = disable
+			}, nil)
+			path := "/" + strings.Repeat("a", 2100-len(host.server.URL)-6) + ".json"
+			clientID := host.add(path, map[string]any{"client_name": "Long", "redirect_uris": []string{testRedirect}})
+			require.Greater(t, len(clientID), maxURLBytes)
+			// The record as the earlier version cached it: a plain Client.
+			cached := Client{ID: clientID, Name: "Long", RedirectURIs: []string{testRedirect}}
+			expiresAt := time.Now().Add(time.Hour)
+			require.NoError(t, env.s.putRecord(ctx, KindClient, clientID, cached, expiresAt))
+
+			_, challenge := pkce("w")
+			res := env.authorize(t, authorizeParams(clientID, challenge))
+			assert.Equal(t, http.StatusBadRequest, res.status)
+			assert.Contains(t, res.body, "Unknown application")
+
+			res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {shapedRefreshToken(t)}})
+			assert.Equal(t, "invalid_client", oauthErrorCode(t, res))
+
+			assert.Equal(t, int32(0), host.fetches.Load())
+			assert.Zero(t, env.storedCount(KindRequest))
+			store := env.s.cfg.Store.(*memoryStore)
+			store.mu.Lock()
+			stored := store.records[memoryKey(KindClient, clientID)].expiresAt
+			store.mu.Unlock()
+			assert.True(t, stored.Equal(expiresAt), "the cached expiry is not extended")
+		})
+	}
+}
+
+// TestDisableClientMetadataDocuments: with the switch set the metadata says
+// documents are not supported, and a document client_id is an unknown client
+// at authorize and at the token endpoint, cached or not, without a fetch.
+// A client listed in Config.Clients keeps working whatever its id.
+func TestDisableClientMetadataDocuments(t *testing.T) {
+	ctx := context.Background()
+	host := newDocumentHost(t)
+	clientID := host.add("/client.json", map[string]any{"client_name": "Hosted Client", "redirect_uris": []string{testRedirect}})
+	cachedID := host.add("/cached.json", map[string]any{"client_name": "Cached Client", "redirect_uris": []string{testRedirect}})
+	listedID := "https://client.example/listed.json"
+	env := newEnv(t, func(c *Config) {
+		c.HTTPClient = host.server.Client()
+		c.DisableClientMetadataDocuments = true
+		c.Clients = append(c.Clients, Client{ID: listedID, Name: "Listed", RedirectURIs: []string{testRedirect}})
+	}, nil)
+	// A document cached before the switch was set.
+	cached := Client{ID: cachedID, Name: "Cached Client", RedirectURIs: []string{testRedirect}}
+	require.NoError(t, env.s.putRecord(ctx, KindClient, cachedID, cached, time.Now().Add(time.Hour)))
+
+	res := env.get(t, "/.well-known/oauth-authorization-server")
+	require.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, false, res.json(t)["client_id_metadata_document_supported"])
+
+	verifier, challenge := pkce("d")
+	for _, id := range []string{clientID, cachedID} {
+		res = env.authorize(t, authorizeParams(id, challenge))
+		assert.Equal(t, http.StatusBadRequest, res.status, id)
+		assert.Contains(t, res.body, "Unknown application", id)
+
+		res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "client_id": {id}, "refresh_token": {shapedRefreshToken(t)}})
+		assert.Equal(t, "invalid_client", oauthErrorCode(t, res), id)
+	}
+	assert.Equal(t, int32(0), host.fetches.Load())
+	assert.Zero(t, env.storedCount(KindRequest))
+
+	code := env.codeFor(t, listedID, challenge)
+	res = env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {listedID}, "code": {code}, "code_verifier": {verifier}})
+	assert.Equal(t, http.StatusOK, res.status, res.body)
 }
 
 // documentHost serves Client ID Metadata Documents over TLS and counts the
@@ -455,6 +758,9 @@ func TestIsDocumentURL(t *testing.T) {
 		"https://client.example/a/../c.json": false,
 		"https://client.example/a/%2e%2e/c":  false,
 		"https://client.example/a..b/c.json": true,
+		// No length bound: the shape alone makes an id a document, so the
+		// switch and the renewal skip hold for long ids too.
+		"https://client.example/" + strings.Repeat("a", maxURLBytes): true,
 	}
 	for clientID, want := range cases {
 		assert.Equal(t, want, isDocumentURL(clientID), clientID)
@@ -529,8 +835,9 @@ func TestTokenRequestsRenewClientBeforeTokens(t *testing.T) {
 	exchange := func(failRenewal bool) response {
 		verifier, challenge := pkce("r")
 		code := env.codeFor(t, clientID, challenge)
-		// The authorize step renews the client too, so only the exchange
-		// can renew it from here.
+		// The authorize step renews or extends the client too, so the
+		// client is shortened after it: only the exchange can renew it from
+		// here.
 		shorten(failRenewal)
 		return env.postForm(t, "/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code}, "code_verifier": {verifier}})
 	}

@@ -12,10 +12,22 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/vanclief/compose/components/auth/token"
 	"github.com/vanclief/ez"
+)
+
+const (
+	// maxStateBytes bounds the state parameter of an authorization request,
+	// which the pending request stores and the redirect carries back. Real
+	// values are tens to a few hundred bytes, more when a client packs JSON
+	// into it.
+	maxStateBytes = 4096
+	// maxScopeBytes bounds the scope parameter of an authorization request,
+	// which the pending request stores. Real values are a few words.
+	maxScopeBytes = 2048
 )
 
 // oauthError is the RFC 6749 error body.
@@ -73,7 +85,10 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	if redirectURI == "" && len(client.RedirectURIs) == 1 {
 		redirectURI = client.RedirectURIs[0]
 	}
-	if !redirectRegistered(client, redirectURI) {
+	// The length is checked before the match: a client registered before
+	// redirect URIs were bounded can hold a longer one, which every pending
+	// request would copy.
+	if len(redirectURI) > maxURLBytes || !redirectRegistered(client, redirectURI) {
 		s.renderMessage(w, http.StatusBadRequest, "Invalid request", "The redirect URI is not registered for this application.")
 		return
 	}
@@ -85,6 +100,11 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state := query.Get("state")
+	stateTooLong := len(state) > maxStateBytes
+	if stateTooLong {
+		// Not echoed in the error redirect either.
+		state = ""
+	}
 	fail := func(code, description string) {
 		if client.configured {
 			http.Redirect(w, r, withParams(redirectURI, "error", code, "error_description", description, "state", state), http.StatusFound)
@@ -96,12 +116,26 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 		s.renderMessage(w, status, "Invalid request", description)
 	}
+	if stateTooLong {
+		fail("invalid_request", fmt.Sprintf("state must be at most %d bytes", maxStateBytes))
+		return
+	}
 	if query.Get("response_type") != "code" {
 		fail("unsupported_response_type", "response_type must be code")
 		return
 	}
-	if query.Get("code_challenge") == "" || query.Get("code_challenge_method") != "S256" {
+	challenge := query.Get("code_challenge")
+	if challenge == "" || query.Get("code_challenge_method") != "S256" {
 		fail("invalid_request", "PKCE with code_challenge_method S256 is required")
+		return
+	}
+	if !validChallenge(challenge) {
+		fail("invalid_request", "code_challenge must be the S256 challenge, 43 base64url characters without padding")
+		return
+	}
+	scope := query.Get("scope")
+	if len(scope) > maxScopeBytes {
+		fail("invalid_request", fmt.Sprintf("scope must be at most %d bytes", maxScopeBytes))
 		return
 	}
 	if !s.sameResource(query.Get("resource")) {
@@ -109,7 +143,7 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.renewClient(r.Context(), client)
+	err = s.keepClient(r.Context(), client)
 	if err != nil {
 		s.report(r.Context(), err)
 		fail("server_error", "the client could not be stored")
@@ -119,11 +153,11 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	id := randomID()
 	request := authRequest{
 		ClientID:      client.ID,
-		ClientName:    client.Name,
+		ClientName:    pendingName(client.Name),
 		RedirectURI:   redirectURI,
 		State:         state,
-		Scope:         query.Get("scope"),
-		CodeChallenge: query.Get("code_challenge"),
+		Scope:         scope,
+		CodeChallenge: challenge,
 		ExpiresAt:     time.Now().Add(s.cfg.RequestTTL),
 	}
 	err = s.putRecord(r.Context(), KindRequest, id, request, request.ExpiresAt)
@@ -138,6 +172,40 @@ func (s *Server) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 		login = s.cfg.LoginURL
 	}
 	http.Redirect(w, r, withParams(login, "request", id), http.StatusFound)
+}
+
+// pendingName is the client name a pending request stores: cut to
+// maxClientNameBytes at a UTF-8 boundary. Registration and documents refuse
+// longer names, but a client registered before they did keeps a name of up
+// to the 64 KiB body, which every authorize would copy; the client itself
+// keeps working.
+func pendingName(name string) string {
+	if len(name) <= maxClientNameBytes {
+		return name
+	}
+	cut := maxClientNameBytes
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut]
+}
+
+// validChallenge reports whether challenge has the shape of an S256 code
+// challenge: a SHA-256, base64url encoded without padding, which is exactly
+// 43 characters of [A-Za-z0-9_-]. Each byte is checked, since the base64
+// decoder would skip \r and \n.
+func validChallenge(challenge string) bool {
+	if len(challenge) != 43 {
+		return false
+	}
+	for i := 0; i < len(challenge); i++ {
+		c := challenge[i]
+		base64url := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+		if !base64url {
+			return false
+		}
+	}
+	return true
 }
 
 // renderAuthorizeError shows why the client could not be resolved.
@@ -281,7 +349,9 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request) {
 // public clients send their client_id. A Client ID Metadata Document is
 // never fetched here: its client is public, and the code or refresh token
 // already binds the client_id, so an outage at the document host cannot
-// fail a token request. On failure it writes the error and returns false.
+// fail a token request. While DisableClientMetadataDocuments is set a
+// document client_id is an unknown client. On failure it writes the error
+// and returns false.
 func (s *Server) authenticateClient(w http.ResponseWriter, r *http.Request) (Client, bool) {
 	basicID, basicSecret, basic := r.BasicAuth()
 	fail := func() (Client, bool) {
@@ -319,7 +389,7 @@ func (s *Server) authenticateClient(w http.ResponseWriter, r *http.Request) (Cli
 		return Client{}, false
 	}
 	if err != nil {
-		if !isDocumentURL(clientID) {
+		if !s.acceptsDocument(clientID) {
 			return fail()
 		}
 		client = Client{ID: clientID}
