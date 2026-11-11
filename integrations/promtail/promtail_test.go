@@ -1,8 +1,10 @@
 package promtail
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -382,7 +385,7 @@ func TestClientLabelsCannotOverrideStaticLabels(t *testing.T) {
 	assert.Equal(t, map[string]string{"app": "api", "env": "test", "method": "GET"}, labels)
 }
 
-func TestClientLabelsLastTokenWins(t *testing.T) {
+func TestClientLabelsLastFieldWins(t *testing.T) {
 	client, err := newClient(testParams("http://loki"))
 	require.NoError(t, err)
 
@@ -393,6 +396,103 @@ func TestClientLabelsLastTokenWins(t *testing.T) {
 	// An invalid real value drops the label instead of falling back to an injected token
 	labels = client.labels("INF user sent status=200 status=[bad]")
 	assert.Equal(t, map[string]string{"app": "api", "env": "test"}, labels)
+}
+
+// consoleLine returns the line zerolog's ConsoleWriter prints for the event
+// write logs, with its colors stripped as request strips them.
+func consoleLine(t *testing.T, write func(zerolog.Logger)) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	write(zerolog.New(zerolog.ConsoleWriter{Out: &buf}).With().Timestamp().Logger())
+
+	return ansiRegex.ReplaceAllString(strings.TrimRight(buf.String(), "\n"), "")
+}
+
+func TestClientLabelsReadOnlyRealFields(t *testing.T) {
+	params := testParams("http://loki")
+	params.PromtailLabels = "method,status,uri"
+
+	client, err := newClient(params)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		write func(zerolog.Logger)
+		want  map[string]string
+	}{
+		{
+			name: "request",
+			write: func(l zerolog.Logger) {
+				l.Info().Str("method", "GET").Str("uri", "/a").Int("status", 200).Msg("request")
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "GET", "status": "200", "uri": "/a"},
+		},
+		{
+			// user_agent prints after status and uri
+			name: "user agent holding fields",
+			write: func(l zerolog.Logger) {
+				l.Warn().Str("method", "POST").Str("uri", "/auth/login").Str("user_agent", "curl/8 status=200 uri=/health").Int("status", 401).Send()
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "POST", "status": "401", "uri": "/auth/login"},
+		},
+		{
+			name: "quoted values with escaped quotes and backslashes",
+			write: func(l zerolog.Logger) {
+				l.Warn().
+					Str("method", "POST").
+					Str("uri", "/auth/login").
+					Int("status", 401).
+					Str("user_agent", `x" status=200 uri="/health`).
+					Str("zreferer", `a\" uri=/health \`).
+					Send()
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "POST", "status": "401", "uri": "/auth/login"},
+		},
+		{
+			name: "message holding fields",
+			write: func(l zerolog.Logger) {
+				l.Warn().Str("method", "POST").Str("uri", "/auth/login").Int("status", 401).Msg("login method=GET status=200 uri=/health")
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "POST", "status": "401", "uri": "/auth/login"},
+		},
+		{
+			name: "stray quote in the message",
+			write: func(l zerolog.Logger) {
+				l.Warn().Str("method", "POST").Str("uri", "/auth/login").Int("status", 401).Str("user_agent", `" status=200 uri=/health "`).Msg(`say "hi`)
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "POST", "status": "401", "uri": "/auth/login"},
+		},
+		{
+			name: "object field after the labels",
+			write: func(l zerolog.Logger) {
+				l.Warn().Str("method", "POST").Str("uri", "/auth/login").Int("status", 401).Interface("zdata", map[string]string{"k": `x" status=200 uri=/health`}).Send()
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "POST", "status": "401", "uri": "/auth/login"},
+		},
+		{
+			// The names print as z"b=x and z\b=y, bare values after odd names
+			name: "field names holding a quote and a backslash",
+			write: func(l zerolog.Logger) {
+				l.Info().Str("method", "GET").Str("uri", "/a").Int("status", 200).Str(`z"b`, "x").Str(`z\b`, "y").Send()
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "GET", "status": "200", "uri": "/a"},
+		},
+		{
+			// ConsoleWriter prints the error first and an empty string bare
+			name: "error and empty value",
+			write: func(l zerolog.Logger) {
+				l.Error().Err(errors.New("boom status=200")).Str("method", "GET").Str("referer", "").Int("status", 500).Str("uri", "/a").Send()
+			},
+			want: map[string]string{"app": "api", "env": "test", "method": "GET", "status": "500", "uri": "/a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, client.labels(consoleLine(t, tt.write)))
+		})
+	}
 }
 
 func TestClientLabelsDropValuesPastLimit(t *testing.T) {
