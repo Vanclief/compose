@@ -3,6 +3,7 @@ package pagination
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -61,6 +62,11 @@ type sortOrder struct {
 	expr        string        // SQL expression ordered by, as pinned in the cursor
 	schemaField *schema.Field // bun field of a client sort, nil for the model's default sort
 	direction   OrderDirection
+
+	// nullZero holds, for the default sort, whether its column is a bun field
+	// tagged nullzero, so a zero time.Time in it is NULL. A client sort reads
+	// schemaField.NullZero.
+	nullZero bool
 }
 
 // order returns the effective order: the client sort when Sort is set,
@@ -79,6 +85,7 @@ func (r *CursorRequest) order(db *bun.DB, model Paginatable, opts Options) (sort
 		order := sortOrder{
 			expr:      model.GetSortField(),
 			direction: opts.Direction,
+			nullZero:  sortColumnNullZero(db, model),
 		}
 		return order, nil
 	}
@@ -112,6 +119,30 @@ func (r *CursorRequest) order(db *bun.DB, model Paginatable, opts Options) (sort
 	}
 
 	return order, nil
+}
+
+// sortColumnNullZero reports whether the column model.GetSortField() names is
+// a bun field of the model's table tagged nullzero. The column is the text
+// after the expression's last ".", without surrounding double quotes, so
+// ?TableAlias.created_at, "u"."created_at" and created_at all name
+// created_at; an expression that names no column of the table is not
+// nullzero.
+func sortColumnNullZero(db *bun.DB, model Paginatable) bool {
+	typ := reflect.TypeOf(model)
+	if typ != nil && typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+
+	if typ == nil || typ.Kind() != reflect.Struct {
+		return false
+	}
+
+	expr := model.GetSortField()
+	column := strings.Trim(expr[strings.LastIndex(expr, ".")+1:], `"`)
+
+	field, ok := db.Table(typ).FieldMap[column]
+
+	return ok && field.NullZero
 }
 
 // applyFilters adds the server-side filters to q.
