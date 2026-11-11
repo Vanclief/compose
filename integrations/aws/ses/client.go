@@ -38,6 +38,10 @@ type Client struct {
 	sessionTTL    int64
 	refreshTTL    int64
 	sessionMutex  sync.RWMutex
+
+	// outbox is set by NewRecordingClient. A client with an outbox records
+	// what it is asked to send instead of calling AWS.
+	outbox *Outbox
 }
 
 // NewClient creates and returns a new AWS Client from configuration

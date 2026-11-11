@@ -10,6 +10,10 @@ import (
 
 // SendSMS Send SMS using AWS SNS
 func (c *Client) SendSMS(ctx context.Context, phoneNumber string, message string) (string, error) {
+	if c.outbox != nil {
+		return c.recordSMS(ctx, phoneNumber, message)
+	}
+
 	svc, err := c.getSNSService(ctx)
 	if err != nil {
 		return "", ez.Wrap(err)
