@@ -214,6 +214,81 @@ func TestDrop(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestCreateAndDropOutlastShortTimeouts gives Create and Drop a config whose
+// timeouts no CREATE or DROP DATABASE fits in, as a test suite with short
+// timeouts for its own queries does.
+func TestCreateAndDropOutlastShortTimeouts(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Registered before Create: when Create fails after CREATE DATABASE, or
+	// the Drop under test fails, the database is still there and only its
+	// base name is known
+	t.Cleanup(func() {
+		err := Sweep(context.Background(), cfg, 0)
+		assert.NoError(t, err)
+	})
+
+	short := cfg
+	short.ReadTimeout = 1
+	short.StatementTimeout = 1
+
+	created, err := Create(short)
+	require.NoError(t, err)
+
+	assert.True(t, databaseExists(t, cfg, created.Database))
+	assert.Equal(t, 1, created.ReadTimeout, "the returned config keeps the caller's timeouts")
+	assert.Equal(t, 1, created.StatementTimeout)
+
+	err = Drop(created)
+	require.NoError(t, err)
+	assert.False(t, databaseExists(t, cfg, created.Database))
+}
+
+func TestWithAdminTimeouts(t *testing.T) {
+	tests := []struct {
+		name string
+		in   postgres.ConnectionConfig
+		want postgres.ConnectionConfig
+	}{
+		{
+			name: "unset timeouts",
+			in:   postgres.ConnectionConfig{},
+			want: postgres.ConnectionConfig{StatementTimeout: postgres.DEFAULT_STATEMENT_TIMEOUT, ReadTimeout: postgres.DEFAULT_STATEMENT_TIMEOUT + adminReadMargin},
+		},
+		{
+			name: "short timeouts are raised, dial and write are used as given",
+			in:   postgres.ConnectionConfig{DialTimeout: 1, ReadTimeout: 1, WriteTimeout: 1, StatementTimeout: 1},
+			want: postgres.ConnectionConfig{DialTimeout: 1, ReadTimeout: postgres.DEFAULT_STATEMENT_TIMEOUT + adminReadMargin, WriteTimeout: 1, StatementTimeout: postgres.DEFAULT_STATEMENT_TIMEOUT},
+		},
+		{
+			name: "the read timeout outlasts a long statement timeout",
+			in:   postgres.ConnectionConfig{StatementTimeout: 60_000},
+			want: postgres.ConnectionConfig{StatementTimeout: 60_000, ReadTimeout: 60_000 + adminReadMargin},
+		},
+		{
+			name: "a short read timeout is raised past a long statement timeout",
+			in:   postgres.ConnectionConfig{ReadTimeout: 1, StatementTimeout: 60_000},
+			want: postgres.ConnectionConfig{StatementTimeout: 60_000, ReadTimeout: 60_000 + adminReadMargin},
+		},
+		{
+			name: "a long read timeout is kept over a short statement timeout",
+			in:   postgres.ConnectionConfig{ReadTimeout: 400_000, StatementTimeout: 1},
+			want: postgres.ConnectionConfig{StatementTimeout: postgres.DEFAULT_STATEMENT_TIMEOUT, ReadTimeout: 400_000},
+		},
+		{
+			name: "longer timeouts are kept",
+			in:   postgres.ConnectionConfig{DialTimeout: 60_000, ReadTimeout: 400_000, WriteTimeout: 90_000, StatementTimeout: 300_000},
+			want: postgres.ConnectionConfig{DialTimeout: 60_000, ReadTimeout: 400_000, WriteTimeout: 90_000, StatementTimeout: 300_000},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, withAdminTimeouts(tt.in))
+		})
+	}
+}
+
 func TestDropRefusesANameCreateDidNotGenerate(t *testing.T) {
 	cfg := testConfig(t)
 

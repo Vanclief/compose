@@ -63,6 +63,20 @@ func checkBaseName(name string) error {
 // the last commits on a crash costs nothing, while the per-test fixtures and
 // truncates stop paying an fsync each. When that fails the database is dropped
 // before the error is returned.
+//
+// Create, Drop and Sweep run their own statements with a statement timeout of
+// at least the default of the postgres package, and a read timeout longer
+// than that statement timeout: the timeouts of cfg are for the queries of the
+// tests, and CREATE and DROP DATABASE can outlast short ones on a busy server.
+// A statement or read timeout of cfg that is longer is kept, the dial and
+// write timeouts are used as given, and the config Create returns carries the
+// timeouts of cfg unchanged.
+//
+// The read timeout also bounds the wait for the server's first answer, so a
+// server that accepts the connection and then says nothing is waited on for
+// that read timeout, 35 seconds with the defaults, and not for the read
+// timeout of cfg. One that does not accept the connection is given up on
+// after the dial timeout of cfg.
 func Create(cfg postgres.ConnectionConfig) (postgres.ConnectionConfig, error) {
 	err := checkBaseName(cfg.Database)
 	if err != nil {
@@ -77,7 +91,7 @@ func Create(cfg postgres.ConnectionConfig) (postgres.ConnectionConfig, error) {
 
 	cfg.Database = strings.ToLower(fmt.Sprintf("%s_%d_%s", cfg.Database, time.Now().Unix(), hex.EncodeToString(randomBytes)))
 
-	err = postgres.CreateDatabase(cfg)
+	err = postgres.CreateDatabase(withAdminTimeouts(cfg))
 	if err != nil {
 		return postgres.ConnectionConfig{}, ez.Wrap(err)
 	}
@@ -95,7 +109,8 @@ func Create(cfg postgres.ConnectionConfig) (postgres.ConnectionConfig, error) {
 // it. Dropping a database that does not exist is not an error. It is the only
 // forced drop in the package, so it takes the config Create returned and
 // refuses a name that does not end in Create's stamp: passing the base config
-// by mistake must not drop the database of that name.
+// by mistake must not drop the database of that name. See Create for the
+// timeouts the drop runs with.
 func Drop(cfg postgres.ConnectionConfig) error {
 	name := cfg.Database
 
@@ -125,6 +140,11 @@ func Drop(cfg postgres.ConnectionConfig) error {
 // drop instead of terminating it. A failed drop does not stop the others, but
 // the sweep stops once ctx is done and leaves the rest for a later run. The
 // error returned holds what failed, joined with errors.Join.
+//
+// See Create for the timeouts the sweep runs with. Connecting to the server
+// is not bound by ctx, only by those timeouts. A ctx deadline earlier than the
+// statement timeout cuts the wait for a drop short, and the server may still
+// finish that drop after Sweep has reported it as failed.
 func Sweep(ctx context.Context, cfg postgres.ConnectionConfig, maxAge time.Duration) error {
 	err := checkBaseName(cfg.Database)
 	if err != nil {
@@ -246,10 +266,29 @@ func disableSynchronousCommit(cfg postgres.ConnectionConfig) error {
 	})
 }
 
+// adminReadMargin is how much longer than the statement timeout, in
+// milliseconds, an admin connection waits for an answer.
+const adminReadMargin = 5 * 1000
+
+// withAdminTimeouts returns cfg with the statement timeout raised to the
+// default of the postgres package when it is shorter, and the read timeout
+// raised to adminReadMargin past that statement timeout when it is shorter.
+// See Create for why. The read timeout is the longer one so the server ends a
+// statement that runs out of time and says so; were the connection to give up
+// first, the statement would go on without it, and a database could be
+// created or dropped after the call reported a failure.
+func withAdminTimeouts(cfg postgres.ConnectionConfig) postgres.ConnectionConfig {
+	cfg.StatementTimeout = max(cfg.StatementTimeout, postgres.DEFAULT_STATEMENT_TIMEOUT)
+	cfg.ReadTimeout = max(cfg.ReadTimeout, cfg.StatementTimeout+adminReadMargin)
+
+	return cfg
+}
+
 // onAdminDatabase runs fn on a connection to the postgres database of the
-// server cfg points at, then closes it. A close error is returned only when
-// fn succeeded.
+// server cfg points at, opened with the timeouts of withAdminTimeouts, then
+// closes it. A close error is returned only when fn succeeded.
 func onAdminDatabase(cfg postgres.ConnectionConfig, fn func(db *relational.DB) error) error {
+	cfg = withAdminTimeouts(cfg)
 	cfg.Database = "postgres" // We need to connect to the default database
 
 	db, err := postgres.ConnectToDatabase(&cfg)
