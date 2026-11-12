@@ -7,6 +7,7 @@ Each section names the release its changes ship in; dates are on [GitHub release
 ### Highlights
 
 - **Go 1.26.11 is required**, for [CVE-2026-97054](https://pkg.go.dev/vuln/GO-2026-6859): an HTTP/1 server that limits a request body with `http.MaxBytesReader` could crash with a runtime panic when the limit was exceeded while its handler read the body and wrote the response header at the same time. Compose reads bodies through `http.MaxBytesReader` in the route registry (`components/rest/api`) and on the OAuth login page. An app that requires this version builds with Go 1.26.11 at least; on the 1.27 line the fix is in Go 1.27.4, and 1.27.0 to 1.27.3 are still affected.
+- **Dependencies**: `golang.org/x/crypto` v0.58.0 → v0.59.0, which brings `x/text` v0.44.0, `x/sync` v0.25.0 and `x/sys` v0.50.0 with it. It clears GO-2026-5932 from vulnerability scans of an app that requires compose; the advisory is about `x/crypto/openpgp`, a package compose does not import.
 
 ## v1.33.0
 
