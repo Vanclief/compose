@@ -97,10 +97,10 @@ func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil,
 		"raw":      map[string]any{},
 		"anything": map[string]any{},
 		"timeout":  map[string]any{"type": "integer", "format": "int64", "description": "nanoseconds"},
-		"seen":     map[string]any{"type": "string", "format": "date-time", "nullable": true},
-		"rank":     map[string]any{"type": "integer", "format": "int32", "nullable": true},
-		"level":    map[string]any{"type": "integer", "format": "int32", "nullable": true},
-		"flag":     map[string]any{"type": "integer", "format": "int32", "nullable": true},
+		"seen":     map[string]any{"$ref": "#/components/schemas/database_sql_NullTime"},
+		"rank":     map[string]any{"$ref": "#/components/schemas/database_sql_NullInt32"},
+		"level":    map[string]any{"$ref": "#/components/schemas/database_sql_NullInt16"},
+		"flag":     map[string]any{"$ref": "#/components/schemas/database_sql_NullByte"},
 		"address":  map[string]any{"type": "string"},
 		"big":      map[string]any{"type": "integer"},
 		"price":    map[string]any{"$ref": "#/components/schemas/github_com_shopspring_decimal_Decimal"},
@@ -113,10 +113,24 @@ func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil,
 	if !reflect.DeepEqual(schemas["github_com_shopspring_decimal_Decimal"], map[string]any{"type": "string", "format": "decimal"}) {
 		t.Fatalf("expected the TypeSchemas entry as the type's component, got %v", schemas["github_com_shopspring_decimal_Decimal"])
 	}
-	// Nullable mappings stay optional; the others are always serialized.
+	// A sql.Null type is the struct encoding/json writes, {"Time": ..., "Valid": ...}.
+	wantNullTime := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"Time":  map[string]any{"type": "string", "format": "date-time"},
+			"Valid": map[string]any{"type": "boolean"},
+		},
+		"required": []string{"Time", "Valid"},
+	}
+	if !reflect.DeepEqual(schemas["database_sql_NullTime"], wantNullTime) {
+		t.Fatalf("expected sql.NullTime as its struct, got %v", schemas["database_sql_NullTime"])
+	}
+	// Mapped value types, the sql.Null structs among them, are always serialized.
 	required := schemas["things_Thing"]["required"].([]string)
-	if containsString(required, "seen") || !containsString(required, "count") || !containsString(required, "price") {
-		t.Fatalf("unexpected required list %v", required)
+	for _, name := range []string{"seen", "rank", "level", "flag", "count", "price"} {
+		if !containsString(required, name) {
+			t.Fatalf("expected %s required, got %v", name, required)
+		}
 	}
 }
 
@@ -233,6 +247,12 @@ func Get(ctx context.Context, request *GetRequest) (*Wrapper, error) { return ni
 			"description": "A thing.",
 		}, "status_id"),
 	}
+	// Describing Thing does not describe Wrapper, which gets Thing's MarshalJSON.
+	_, err = Generate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "type Wrapper embeds Thing, which defines MarshalJSON, so it marshals as Thing alone; Config.TypeSchemas describes Thing, not the types that embed it") {
+		t.Fatalf("expected the wrapper of a described marshaler refused, got %v", err)
+	}
+	cfg.TypeSchemas["example.com/app/things.Wrapper"] = ExtendGenerated(map[string]any{})
 	spec, err := Generate(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -47,7 +47,7 @@ func TestSchemaForStructRequiresAlwaysSerializedModelFields(t *testing.T) {
 
 	// A struct in application/models: value-typed fields without omitempty are
 	// required; omitempty, pointer, slice, and map fields stay optional.
-	modelSchema := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/models/entity")
+	modelSchema, _ := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/models/entity")
 	required, ok := modelSchema["required"].([]string)
 	if !ok {
 		t.Fatalf("expected model schema required list, got %v", modelSchema["required"])
@@ -64,7 +64,7 @@ func TestSchemaForStructRequiresAlwaysSerializedModelFields(t *testing.T) {
 
 	// The same struct outside application/models (a module wrapper) follows the same rule;
 	// splitRequestSide strips it again where a request reaches the type.
-	wrapperSchema := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/modules/entities")
+	wrapperSchema, _ := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/modules/entities")
 	if !reflect.DeepEqual(wrapperSchema["required"], []string{"id", "name", "active"}) {
 		t.Fatalf("expected the same required list outside models packages, got %v", wrapperSchema["required"])
 	}
@@ -106,7 +106,7 @@ func TestDeprecatedFieldsAreFlaggedNeverDropped(t *testing.T) {
 	}
 
 	builder := &schemaBuilder{modulePath: "example.com/app", requiredPackagePrefix: "/application/models/"}
-	schema := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/models/entity")
+	schema, _ := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/models/entity")
 
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
