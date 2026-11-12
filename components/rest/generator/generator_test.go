@@ -873,7 +873,7 @@ func TestSchemaNameAliasesAndPrefixCollapse(t *testing.T) {
 
 func TestParseRoutesRejectsFlatHandlerReferenceWithHandlersFile(t *testing.T) {
 	root := writeFixture(t, map[string]string{
-		"routes_example.go": "e.GET(\"/example\", h.List)\n",
+		"routes_example.go": "package api\n\nfunc addRoutes() {\n\te.GET(\"/example\", h.List)\n}\n",
 	})
 
 	_, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes_*.go", HandlersFile: "handlers.go", HandlerGlob: "handler/*/*.go"})
@@ -887,7 +887,7 @@ func TestParseRoutesRejectsFlatHandlerReferenceWithHandlersFile(t *testing.T) {
 
 func TestParseRoutesRejectsUnknownGroups(t *testing.T) {
 	root := writeFixture(t, map[string]string{
-		"routes_example.go": "api := missing.Group(\"/api\")\n",
+		"routes_example.go": "package api\n\nfunc addRoutes() {\n\tapi := missing.Group(\"/api\")\n}\n",
 	})
 
 	_, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes_*.go", HandlerGlob: "handler/*/*.go"})

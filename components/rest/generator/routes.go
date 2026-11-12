@@ -1,6 +1,9 @@
 package generator
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -51,10 +54,8 @@ func (r Route) OpenAPIPath() string {
 }
 
 var (
-	reGroupAssign = regexp.MustCompile(`^(\w+)\s*:=\s*(\w+)\.Group\("([^"]*)"`)
-	reRouteCall   = regexp.MustCompile(`^(\w+)\.(GET|POST|PUT|PATCH|DELETE|HEAD)\("([^"]*)",\s*(.+)$`)
-	rePathParam   = regexp.MustCompile(`:([^/]+)`)
-	reOASParam    = regexp.MustCompile(`\{([^}]+)\}`)
+	rePathParam = regexp.MustCompile(`:([^/]+)`)
+	reOASParam  = regexp.MustCompile(`\{([^}]+)\}`)
 )
 
 // ParseRoutes returns every route declared in the files matched by cfg.RoutesGlob, sorted by
@@ -129,16 +130,23 @@ func newRouteParser(cfg Config) routeParser {
 	}
 }
 
-// parseFile reads the group assignments and route calls of one file, one declaration per line.
-// It returns the routes and the "file:line METHOD path" of every route with no handler method
-// that Skip does not cover.
+// parseFile reads the group assignments and route calls of one file, in source order. A
+// group assignment is `child := parent.Group("/prefix", ...)`; a route call is
+// `group.GET("/path", handler, ...)` (or POST, PUT, PATCH, DELETE, HEAD) with a string literal
+// path, anywhere in the file, including calls spread over several lines; comments and string
+// literals are not code and declare nothing. It returns the routes and the
+// "file:line METHOD path" of every route with no handler method that Skip does not cover.
 func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, nil, ez.Wrap(err)
 	}
 
-	lines := strings.Split(string(data), "\n")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, absPath, data, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return nil, nil, ez.New(ez.EINVALID, absPath+": route file is not valid Go", err)
+	}
 
 	basePaths := map[string]string{}
 	rootPaths := map[string]string{}
@@ -150,46 +158,39 @@ func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 	var routes []Route
 	var handlerless []string
 
-	for i, raw := range lines {
-		lineNo := i + 1
-		location := absPath + ":" + strconv.Itoa(lineNo)
-
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
+	ast.Inspect(file, func(node ast.Node) bool {
+		if err != nil {
+			return false
 		}
 
-		line = stripTrailingComment(line)
-
-		groupMatches := reGroupAssign.FindStringSubmatch(line)
-		if len(groupMatches) > 0 {
-			child := groupMatches[1]
-			parent := groupMatches[2]
-			groupPath := groupMatches[3]
-
-			parentPath, ok := basePaths[parent]
-			if !ok {
-				return nil, nil, ez.New(ez.EINVALID, location+": unknown parent group "+strconv.Quote(parent), nil)
+		assign, ok := node.(*ast.AssignStmt)
+		if ok {
+			err = p.readGroupAssign(fset, absPath, assign, basePaths, rootPaths)
+			if err != nil {
+				err = ez.Wrap(err)
+				return false
 			}
 
-			basePaths[child] = parentPath + groupPath
-			rootPaths[child] = rootPaths[parent]
-			continue
+			return true
 		}
 
-		routeMatches := reRouteCall.FindStringSubmatch(line)
-		if len(routeMatches) == 0 {
-			continue
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
 		}
 
-		receiver := routeMatches[1]
-		method := strings.ToUpper(routeMatches[2])
-		suffix := routeMatches[3]
-		handlerRaw := strings.TrimSpace(routeMatches[4])
+		receiver, method, suffix, ok := routeCall(call)
+		if !ok {
+			return true
+		}
+
+		lineNo := fset.Position(call.Pos()).Line
+		location := absPath + ":" + strconv.Itoa(lineNo)
 
 		basePath, ok := basePaths[receiver]
 		if !ok {
-			return nil, nil, ez.New(ez.EINVALID, location+": unknown route group "+strconv.Quote(receiver), nil)
+			err = ez.New(ez.EINVALID, location+": unknown route group "+strconv.Quote(receiver), nil)
+			return false
 		}
 
 		fullPath := basePath + suffix
@@ -202,8 +203,10 @@ func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 			flat:       p.cfg.flat(),
 		}
 
+		handlerRaw := handlerText(fset, file, data, call)
+
 		if p.cfg.DeprecatedWrapper != "" {
-			r.Deprecated = strings.Contains(handlerRaw, p.cfg.DeprecatedWrapper+"(")
+			r.Deprecated = callsWrapper(call, p.cfg.DeprecatedWrapper)
 		}
 
 		nestedMatch, flatMatch := p.handlerMatches(handlerRaw)
@@ -212,7 +215,8 @@ func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 			r.Namespace = lowerFirst(nestedMatch[1])
 			r.Handler = nestedMatch[2]
 		case len(flatMatch) > 1 && !p.cfg.flat():
-			return nil, nil, ez.New(ez.EINVALID, location+": flat handler reference "+p.cfg.ReceiverVar+"."+flatMatch[1]+" is not allowed with a HandlersFile", nil)
+			err = ez.New(ez.EINVALID, location+": flat handler reference "+p.cfg.ReceiverVar+"."+flatMatch[1]+" is not allowed with a HandlersFile", nil)
+			return false
 		case len(flatMatch) > 1:
 			r.Namespace = flatNamespace(strings.TrimPrefix(fullPath, rootPaths[receiver]))
 			r.Handler = flatMatch[1]
@@ -223,15 +227,228 @@ func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 		}
 
 		routes = append(routes, r)
+
+		return true
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return routes, handlerless, nil
 }
 
-// handlerMatches returns the handler reference of a route call's arguments as either
+// readGroupAssign records `child := parent.Group("/prefix", ...)`: child's base path is
+// parent's plus the prefix, and its root path is parent's. Any other assignment is ignored.
+func (p routeParser) readGroupAssign(fset *token.FileSet, absPath string, assign *ast.AssignStmt, basePaths map[string]string, rootPaths map[string]string) error {
+	if assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return nil
+	}
+
+	child, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok {
+		return nil
+	}
+
+	call, ok := assign.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+
+	parent, name, ok := selectorCall(call)
+	if !ok || name != "Group" || len(call.Args) == 0 {
+		return nil
+	}
+
+	groupPath, ok := stringLiteral(call.Args[0])
+	if !ok {
+		return nil
+	}
+
+	parentPath, ok := basePaths[parent]
+	if !ok {
+		location := absPath + ":" + strconv.Itoa(fset.Position(assign.Pos()).Line)
+		return ez.New(ez.EINVALID, location+": unknown parent group "+strconv.Quote(parent), nil)
+	}
+
+	basePaths[child.Name] = parentPath + groupPath
+	rootPaths[child.Name] = rootPaths[parent]
+
+	return nil
+}
+
+// routeCall reports whether call is `group.METHOD("/path", ...)` with an HTTP method Echo
+// registers that way, a string literal path and at least one argument after it.
+func routeCall(call *ast.CallExpr) (string, string, string, bool) {
+	receiver, method, ok := selectorCall(call)
+	if !ok || len(call.Args) < 2 {
+		return "", "", "", false
+	}
+
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	default:
+		return "", "", "", false
+	}
+
+	path, ok := stringLiteral(call.Args[0])
+	if !ok {
+		return "", "", "", false
+	}
+
+	return receiver, method, path, true
+}
+
+// selectorCall returns x and name of a call `x.name(...)` whose x is a plain identifier.
+func selectorCall(call *ast.CallExpr) (string, string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", "", false
+	}
+
+	x, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", "", false
+	}
+
+	return x.Name, selector.Sel.Name, true
+}
+
+func stringLiteral(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+
+	return value, true
+}
+
+// handlerText is the source of a route call's handler argument, the one after the path, for
+// the handler lookup. The arguments after it are middleware and are not read, so a route is
+// never documented as a middleware method. Comments and the bodies of
+// function literals are left out: a function literal is the route's handler itself, so an
+// h.Namespace.Method its body calls is not.
+func handlerText(fset *token.FileSet, file *ast.File, data []byte, call *ast.CallExpr) string {
+	tokenFile := fset.File(call.Pos())
+	handler := call.Args[1]
+	start := handler.Pos()
+	end := handler.End()
+
+	var cuts []ast.Node
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			if comment.Pos() >= start && comment.End() <= end {
+				cuts = append(cuts, comment)
+			}
+		}
+	}
+	ast.Inspect(handler, func(node ast.Node) bool {
+		lit, ok := node.(*ast.FuncLit)
+		if ok {
+			cuts = append(cuts, lit.Body)
+			return false
+		}
+		return true
+	})
+	sort.Slice(cuts, func(i int, j int) bool {
+		return cuts[i].Pos() < cuts[j].Pos()
+	})
+
+	var text strings.Builder
+	pos := start
+	for _, cut := range cuts {
+		if cut.Pos() > pos {
+			text.Write(data[tokenFile.Offset(pos):tokenFile.Offset(cut.Pos())])
+			text.WriteString(" ")
+		}
+		if cut.End() > pos {
+			pos = cut.End()
+		}
+	}
+	text.Write(data[tokenFile.Offset(pos):tokenFile.Offset(end)])
+
+	return text.String()
+}
+
+// callsWrapper reports a call of the Config.DeprecatedWrapper function among a route call's
+// arguments after the path: around the handler, among the middleware or inside a function
+// literal. The wrapper is a function name, "logDeprecated", which also matches a call written
+// with any qualifier, such as mw.logDeprecated(...), or a qualified name, "mw.Deprecated",
+// which matches only calls written with exactly that qualifier. Comments and string literals
+// call nothing.
+func callsWrapper(call *ast.CallExpr, wrapper string) bool {
+	qualifier := ""
+	name := wrapper
+	dot := strings.LastIndex(wrapper, ".")
+	if dot >= 0 {
+		qualifier = wrapper[:dot]
+		name = wrapper[dot+1:]
+	}
+
+	found := false
+	for _, arg := range call.Args[1:] {
+		ast.Inspect(arg, func(node ast.Node) bool {
+			inner, ok := node.(*ast.CallExpr)
+			if ok && isFunction(inner.Fun, qualifier, name) {
+				found = true
+			}
+			return !found
+		})
+	}
+
+	return found
+}
+
+// isFunction reports an expression that names the function name, through parentheses and type
+// arguments: name itself or any x.name when qualifier is empty, and otherwise only x.name
+// where x, without parentheses, is written as qualifier ("mw", or "a.mw" for a.mw.name).
+func isFunction(expr ast.Expr, qualifier string, name string) bool {
+	switch fun := expr.(type) {
+	case *ast.ParenExpr:
+		return isFunction(fun.X, qualifier, name)
+	case *ast.IndexExpr:
+		return isFunction(fun.X, qualifier, name)
+	case *ast.IndexListExpr:
+		return isFunction(fun.X, qualifier, name)
+	case *ast.Ident:
+		return qualifier == "" && fun.Name == name
+	case *ast.SelectorExpr:
+		if fun.Sel.Name != name {
+			return false
+		}
+		return qualifier == "" || selectorText(fun.X) == qualifier
+	}
+
+	return false
+}
+
+// selectorText is a chain of names, a or a.b.c, as written without parentheses; "" for any
+// other expression.
+func selectorText(expr ast.Expr) string {
+	switch x := expr.(type) {
+	case *ast.ParenExpr:
+		return selectorText(x.X)
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		left := selectorText(x.X)
+		if left == "" {
+			return ""
+		}
+		return left + "." + x.Sel.Name
+	}
+
+	return ""
+}
+
+// handlerMatches returns the handler reference of a route call's handler argument as either
 // `h.Namespace.Method` (nestedMatch) or `h.Method` (flatMatch). The handler is the first
-// reference; a nested one later in the line (middleware such as h.Auth.Required) does not
-// shadow a flat handler before it.
+// reference; a nested one after it in the same argument does not shadow a flat handler
+// before it.
 func (p routeParser) handlerMatches(handlerRaw string) ([]string, []string) {
 	nestedMatch := p.nestedHandler.FindStringSubmatchIndex(handlerRaw)
 	flatMatch := p.flatHandler.FindStringSubmatchIndex(handlerRaw)
@@ -285,14 +502,6 @@ func lowerFirst(value string) string {
 	}
 
 	return string(runes)
-}
-
-func stripTrailingComment(line string) string {
-	idx := strings.Index(line, "//")
-	if idx < 0 {
-		return line
-	}
-	return strings.TrimSpace(line[:idx])
 }
 
 func ensureNoDuplicateOperations(routes []Route) error {

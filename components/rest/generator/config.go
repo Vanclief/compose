@@ -18,8 +18,8 @@ type Config struct {
 	// Root is the module root, the directory holding go.mod. Defaults to the working directory.
 	Root string
 	// RoutesGlob matches the files declaring routes, e.g. "application/interfaces/rest/routes_*.go".
-	// Route declarations must fit on one line: `x := parent.Group("/prefix", ...)` and
-	// `x.GET("/path", h.Method, ...)`.
+	// Each file is parsed as Go, and routes are the calls `x := parent.Group("/prefix", ...)`
+	// and `x.GET("/path", h.Method, ...)`, on one line or several.
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
 	// routed as `h.Name.Method` (nested mode). Empty selects flat mode: one handler type routed as
@@ -128,7 +128,11 @@ type Config struct {
 	Negotiate              string
 	NegotiatedContentTypes []string
 	// DeprecatedWrapper names the function wrapping deprecated route handlers, e.g.
-	// "logDeprecated". Deprecated routes are documented `deprecated: true` and
+	// "logDeprecated", which also matches a call written with any qualifier, such as
+	// mw.logDeprecated(...), or "mw.Deprecated", which matches only calls written with exactly
+	// that qualifier. A route is
+	// deprecated when its call has a call of that function among the arguments after the
+	// path. Deprecated routes are documented `deprecated: true` and
 	// `x-internal: true`: in the full spec for the clients still calling them, left out of the
 	// public one (see Spec.Public and DeprecatedOperationSuffix).
 	DeprecatedWrapper string
