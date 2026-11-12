@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -189,4 +190,38 @@ func TestWindowCounterExhaustedPeeksWithoutCharging(t *testing.T) {
 
 	// Keys are peeked independently
 	assert.False(t, rl.Exhausted("other"))
+}
+
+func TestWindowCounterClampsAWindowTooLongForADuration(t *testing.T) {
+	if strconv.IntSize == 32 {
+		t.Skip("a 32-bit int cannot hold a window too long for a time.Duration")
+	}
+
+	// int64 lets the table compile where int is 32 bits, where the test is skipped
+	tests := []struct {
+		name          string
+		windowSeconds int64
+	}{
+		{"just past the longest duration", 9_223_372_037},
+		{"two to the fortieth", 1 << 40},
+		{"max int", math.MaxInt},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl, _ := newTestWindowCounter(int(tt.windowSeconds), 2)
+
+			assert.Equal(t, time.Duration(maxWindowSeconds)*time.Second, rl.window)
+
+			allowed := 0
+			for range 10 {
+				if rl.Allow("user") {
+					allowed++
+				}
+			}
+
+			assert.Equal(t, 2, allowed)
+			assert.True(t, rl.Exhausted("user"))
+		})
+	}
 }
