@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -9,6 +10,9 @@ const (
 	DEFAULT_WINDOW = 60
 	DEFAULT_LIMIT  = 60
 )
+
+// maxWindowSeconds is the longest window, in seconds, a time.Duration can hold.
+const maxWindowSeconds = math.MaxInt64 / int64(time.Second)
 
 // WindowCounter implements a simple window counter
 type WindowCounter struct {
@@ -31,6 +35,8 @@ type UserCounter struct {
 
 // NewWindowCounter returns a limiter that allows limit requests per key every
 // windowSeconds. Non-positive values fall back to DEFAULT_WINDOW and DEFAULT_LIMIT.
+// A window longer than a time.Duration can hold, about 292 years, is clamped to
+// the longest one it can.
 func NewWindowCounter(windowSeconds, limit int) *WindowCounter {
 	if windowSeconds <= 0 {
 		windowSeconds = DEFAULT_WINDOW
@@ -40,7 +46,8 @@ func NewWindowCounter(windowSeconds, limit int) *WindowCounter {
 		limit = DEFAULT_LIMIT
 	}
 
-	window := time.Duration(windowSeconds) * time.Second
+	seconds := min(int64(windowSeconds), maxWindowSeconds)
+	window := time.Duration(seconds) * time.Second
 
 	return &WindowCounter{
 		usersCounter: map[string]*UserCounter{},
