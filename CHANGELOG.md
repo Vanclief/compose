@@ -2,7 +2,11 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
-## v1.34.1
+## v1.35.0
+
+### Breaking
+
+- **`query.ParseDateToFilter` is gone; `query.TimeRangeFilters` bounds a column by the two instants as given.** `ParseDateToFilter` added 24 hours minus one second to its upper bound whatever the bound was, so a client that asked for rows up to `2026-03-12T17:45:10Z` got rows up to `2026-03-13T17:45:09Z`. That served one convention, a client that sends the instant its last day starts, and was wrong for every other upper bound. `TimeRangeFilters(column, from, to)` takes the same arguments, refuses the same input with the same messages, and adds nothing: both bounds are in the range, compared in whole seconds. Go code that calls `ParseDateToFilter` no longer compiles, so the change cannot go unnoticed in a list that would otherwise lose its last day. An endpoint whose clients send the start of the last day keeps that contract in the app: when the upper bound is not empty, parse it, add `24*time.Hour - time.Second`, and pass the result formatted as RFC 3339, answering a value that does not parse with the app's own `ez.EINVALID`. Clients that can change send the last second they want.
 
 ### Highlights
 
