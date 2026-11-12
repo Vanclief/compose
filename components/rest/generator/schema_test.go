@@ -46,8 +46,16 @@ func TestSchemaForStructRequiresAlwaysSerializedModelFields(t *testing.T) {
 	builder := &schemaBuilder{modulePath: "example.com/app", requiredPackagePrefix: "/application/models/"}
 
 	// A struct in application/models: value-typed fields without omitempty are
-	// required; omitempty, pointer, slice, and map fields stay optional.
+	// required; omitempty, pointer, slice, and map fields stay optional, and the pointer,
+	// slice and map fields are nullable, as a nil one is written null.
 	modelSchema, _ := builder.schemaForStruct(structType, map[string]string{}, "example.com/app/application/models/entity")
+	properties, _ := modelSchema["properties"].(map[string]any)
+	for _, name := range []string{"owner", "tags", "meta"} {
+		property, _ := properties[name].(map[string]any)
+		if property["nullable"] != true {
+			t.Fatalf("expected %s nullable, got %v", name, property)
+		}
+	}
 	required, ok := modelSchema["required"].([]string)
 	if !ok {
 		t.Fatalf("expected model schema required list, got %v", modelSchema["required"])
@@ -584,8 +592,8 @@ func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil,
 	want := map[string]any{
 		"part":    map[string]any{"allOf": []any{partRef}, "nullable": true, "type": "object"},
 		"kind":    map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/things_Kind"}}, "nullable": true, "type": "string"},
-		"parts":   map[string]any{"type": "array", "items": partRef},
-		"by_name": map[string]any{"type": "object", "additionalProperties": partRef},
+		"parts":   map[string]any{"type": "array", "items": partRef, "nullable": true},
+		"by_name": map[string]any{"type": "object", "additionalProperties": partRef, "nullable": true},
 		"note":    map[string]any{"type": "string", "nullable": true},
 	}
 	if !reflect.DeepEqual(properties, want) {

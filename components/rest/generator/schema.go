@@ -2111,8 +2111,9 @@ func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, 
 	case *ast.Ident:
 		return b.schemaForIdent(t.Name, pkgPath)
 	case *ast.StarExpr:
-		// A pointer field marshals as null when nil. Array items, map values, embedded
-		// structs and results are dereferenced by their callers: those are not nullable.
+		// A pointer field marshals as null when nil (a slice or map field too: fieldSchema).
+		// Array items, map values, embedded structs and results are dereferenced by their
+		// callers: those are not nullable.
 		return nullableSchema(b.schemaForExpr(t.X, imports, pkgPath))
 	case *ast.SelectorExpr:
 		pkgIdent, ok := t.X.(*ast.Ident)
@@ -2198,7 +2199,8 @@ func (b *schemaBuilder) schemaForInstantiation(generic ast.Expr, expr ast.Expr, 
 		// instantiation differs.
 		index, isIndex := expr.(*ast.IndexExpr)
 		if isSQLNull(ref) && isIndex {
-			schema := sqlNullObject("V", b.schemaForExpr(index.Index, imports, pkgPath))
+			value := &ast.Field{Names: []*ast.Ident{ast.NewIdent("V")}, Type: index.Index}
+			schema := sqlNullObject("V", b.fieldSchema(value, imports, pkgPath))
 			required, _ := schema["required"].([]string)
 			b.markDerived(required)
 			return schema
@@ -2644,8 +2646,8 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 			props[name] = schema
 
 			// Nil-able fields (pointers, slices, maps — directly or through a named
-			// type) marshal as null and stay optional; when in doubt the field stays
-			// optional, never falsely required.
+			// type) marshal as null and stay optional, their schemas nullable (fieldSchema);
+			// when in doubt the field stays optional, never falsely required.
 			if !jsonFieldOmitsEmpty(field) && !b.isNilableFieldType(field.Type, imports, pkgPath, 0) {
 				required = append(required, name)
 			}
@@ -2764,8 +2766,19 @@ func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
 }
 
 // fieldSchema is a struct field's schema. The `,string` option puts a boolean, number or string
-// (or a pointer to one) inside a JSON string.
+// (or a pointer to one) inside a JSON string. A slice or map field without omitempty or
+// omitzero is nullable: encoding/json writes a nil one as null (with either option it leaves a
+// nil one out).
 func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
+	schema := b.valueFieldSchema(field, imports, pkgPath)
+	if !jsonFieldOmitsEmpty(field) && b.isNilCollection(field.Type, imports, pkgPath, 0) {
+		return nullableSchema(schema)
+	}
+
+	return schema
+}
+
+func (b *schemaBuilder) valueFieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
 	if containsString(jsonTagOptions(field), "string") {
 		elem := field.Type
 		star, isPointer := elem.(*ast.StarExpr)
@@ -2782,6 +2795,74 @@ func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string,
 	}
 
 	return b.schemaForExpr(field.Type, imports, pkgPath)
+}
+
+// isNilCollection reports a slice ([]byte included) or a map, directly or through a named type,
+// which encoding/json writes as null when nil. A fixed-size array never is, a pointer is marked
+// by schemaForExpr, and a named type with a JSON or text marshaler, described in
+// Config.TypeSchemas or well known is left to its own schema: its marshaler decides what a nil
+// value is written as. A type declared from a described type with a marshaler gets neither the
+// method nor the description, so it is read through (describedMarshaler), and one declared from
+// a type knownUnderlying lists is that type, `type Addr net.IP` a []byte. Of the other
+// standard-library types the generator lists, only the maps standardLibraryNilCollections lists
+// are one; one it does not list is read from GOROOT (namedDeclaration), `net.IPMask` a []byte.
+// Aliases are resolved (aliasTarget) and take no step of the chain of named types, which fails
+// generation past maxDeclarationHops.
+func (b *schemaBuilder) isNilCollection(expr ast.Expr, imports map[string]string, pkgPath string, depth int) bool {
+	var ref typeRef
+	switch t := expr.(type) {
+	case *ast.ArrayType:
+		return t.Len == nil
+	case *ast.MapType:
+		return true
+	case *ast.Ident:
+		_, builtin := builtinSchema(t.Name)
+		if builtin {
+			return false
+		}
+		ref = typeRef{ImportPath: pkgPath, Name: t.Name}
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		ref = typeRef{ImportPath: imports[pkgIdent.Name], Name: t.Sel.Name}
+	default:
+		return false
+	}
+
+	ref = b.aliasTarget(ref)
+	_, described := b.typeSchemas[typeKey(ref)]
+	if described && (depth == 0 || !b.describedMarshaler(ref)) {
+		return false
+	}
+	listed, ok := knownUnderlyingExpr(ref)
+	if ok {
+		return depth > 0 && b.isNilCollection(listed, nil, "", depth+1)
+	}
+	if b.isListedStandardLibrary(ref) {
+		return standardLibraryNilCollections[typeKey(ref)]
+	}
+	_, wellKnown := b.wellKnownSchema(ref)
+	if wellKnown {
+		return false
+	}
+	if depth >= maxDeclarationHops {
+		b.recordLongChain(ref)
+		return false
+	}
+	info, pkg, ok := b.namedDeclaration(ref)
+	if !ok {
+		return false
+	}
+	// Only the field's own type's methods count: a type declared from another named type does
+	// not inherit that type's marshalers. An alias is that type, so its methods count.
+	methods := pkg.Methods[ref.Name]
+	if depth == 0 && (methods["MarshalJSON"] || methods["MarshalText"]) {
+		return false
+	}
+
+	return b.isNilCollection(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
 }
 
 // standardLibraryNilCollections are the standard library's named maps without a marshaler
@@ -3016,7 +3097,8 @@ func deprecatedSchema(schema map[string]any) map[string]any {
 	return flagged
 }
 
-// nullableSchema marks a pointer field's schema nullable. An empty schema already admits null.
+// nullableSchema marks the schema of a pointer, slice or map field nullable. An empty schema
+// already admits null.
 func nullableSchema(schema map[string]any) map[string]any {
 	if len(schema) == 0 {
 		return schema
