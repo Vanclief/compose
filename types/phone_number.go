@@ -11,17 +11,12 @@ import (
 
 type PhoneNumber string
 
-var phoneRegex *regexp.Regexp
+// phoneRegex matches a + sign, a country code and at least 4 more digits.
+// It is anchored to avoid substring matches.
+var phoneRegex = regexp.MustCompile(`^\+(9[976]\d|8[987530]\d|6[987]\d|5[90]\d|42\d|3[875]\d|2[98654321]\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\d{4,}$`)
 
-func init() {
-	var err error
-	// Anchored to avoid substring matches; pattern body is exactly your spec.
-	phoneRegex, err = regexp.Compile(`^\+(9[976]\d|8[987530]\d|6[987]\d|5[90]\d|42\d|3[875]\d|2[98654321]\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\d{10,14}$`)
-	if err != nil {
-		// No panic. Leave nil; validator will return EINTERNAL.
-		phoneRegex = nil
-	}
-}
+// maxPhoneDigits is the most digits E.164 allows in a number, country code included.
+const maxPhoneDigits = 15
 
 // NewPhoneNumber validates and returns a PhoneNumber.
 func NewPhoneNumber(s string) (PhoneNumber, error) {
@@ -123,11 +118,9 @@ func ValidatePhoneNumber(s string) error {
 		return ez.New(ez.EINVALID, "phone number is empty", nil)
 	}
 
-	if phoneRegex == nil {
-		return ez.New(ez.EINTERNAL, "phone validator not initialized", nil)
-	}
-
-	if !phoneRegex.MatchString(s) {
+	// Every character after the + is a digit once the regex matches, so the
+	// length after the + is the digit count.
+	if !phoneRegex.MatchString(s) || len(s)-1 > maxPhoneDigits {
 		msg := fmt.Sprintf("the phone number %s is invalid", s)
 		return ez.New(ez.EINVALID, msg, nil)
 	}

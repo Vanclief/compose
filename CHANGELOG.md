@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.34.1
+
+### Highlights
+
+- **`types.PhoneNumber` no longer refuses short national numbers.** It required 10 to 14 digits after the country code, so numbers from countries with 8 or 9 national digits were refused (Spain, France, the Netherlands, Australia, Singapore, Switzerland, Belgium and the United Arab Emirates among them), and a three-digit country code let a number of up to 17 digits through. A number is now a `+`, a country code and at least 4 more digits, with at most 15 digits in all, which is the E.164 limit. A stored number of 16 or 17 digits no longer scans or decodes. The route registry's `phone` format follows, since it calls `types.ValidatePhoneNumber`.
+
 ## v1.34.0
 
 ### Highlights
