@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vanclief/ez"
 )
 
 // ErrSchemaInvalid is sent when there is a problem building the schema.
@@ -244,18 +246,32 @@ func (s *Schema) compilePatterns() {
 	}
 }
 
+// compose: an empty value is refused like any other that is not true or
+// false, so required:"" does not read as an absent tag.
 func boolTag(f reflect.StructField, tag string, def bool) bool {
-	if v := f.Tag.Get(tag); v != "" {
-		switch v {
-		case "true":
-			return true
-		case "false":
-			return false
-		default:
-			panic(fmt.Errorf("invalid bool tag '%s' for field '%s': %v", tag, f.Name, v))
-		}
+	v, err := ParseBoolTag(f, tag, def)
+	if err != nil {
+		panic(ez.New(ez.EINVALID, fmt.Sprintf("field '%s': %s", f.Name, ez.ErrorMessage(err)), err))
 	}
-	return def
+	return v
+}
+
+// ParseBoolTag returns the value of the boolean tag on f, or def when f has
+// no such tag. A value other than exactly "true" or "false", the empty one
+// included, is an error: read loosely, required:"True" would leave a field
+// optional without a word.
+func ParseBoolTag(f reflect.StructField, tag string, def bool) (bool, error) {
+	v, ok := f.Tag.Lookup(tag)
+	if !ok {
+		return def, nil
+	}
+	switch v {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return def, ez.New(ez.EINVALID, fmt.Sprintf("the %s tag must be \"true\" or \"false\", not %q", tag, v), nil)
 }
 
 func intTag(f reflect.StructField, tag string) *int {

@@ -402,7 +402,7 @@ func TestSentNullAllowed(t *testing.T) {
 	require.NoError(t, err)
 	s := component(t, res, "openapi.nullAllowed")
 	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "uuid"}, prop(t, s, "id"))
-	require.Equal(t, map[string]any{"type": []any{"string", "null"}}, prop(t, s, "ip"))
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "ip"}, prop(t, s, "ip"))
 }
 
 func TestHiddenResponseAllowed(t *testing.T) {
@@ -440,7 +440,7 @@ func TestStdlibShapes(t *testing.T) {
 
 	s := component(t, res, "openapi.stdlibShapes")
 	require.Equal(t, map[string]any{"type": "number"}, prop(t, s, "number"))
-	require.Equal(t, map[string]any{"type": "string"}, prop(t, s, "ip"))
+	require.Equal(t, map[string]any{"type": "string", "format": "ip"}, prop(t, s, "ip"))
 	require.Equal(t, map[string]any{"type": []any{"integer", "null"}}, prop(t, s, "big"))
 	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "uuid"}, prop(t, s, "null_id"))
 	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "contentEncoding": "base64"}, prop(t, s, "bytes"))
@@ -452,7 +452,9 @@ func TestStdlibShapes(t *testing.T) {
 	}, prop(t, s, "hash"))
 	require.Equal(t, map[string]any{}, prop(t, s, "err"))
 
-	// What encoding/json writes for the zero value matches each schema.
+	// What encoding/json writes for the zero value matches each schema's
+	// type. The nil IP is written as "", which the ip format refuses, so an
+	// apitest contract fails a response that sends it.
 	raw, err := json.Marshal(&stdlibShapes{})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"number":0,"ip":"","big":null,"null_id":null,"bytes":null,"hash":[0,0],"err":null}`, string(raw))

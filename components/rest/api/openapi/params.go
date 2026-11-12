@@ -14,7 +14,7 @@ import (
 type Param struct {
 	Name       string       // wire name, header names lowercased
 	In         string       // "path" | "query" | "header"
-	Required   bool         // always true for path params
+	Required   bool         // always true for path params, which refuse required:"false"
 	Schema     *huma.Schema // inline schema (may be a $ref for enum types); Description lives in Doc
 	Index      []int        // reflect field index path into the request struct
 	Doc        string       // from doc tag
@@ -67,6 +67,14 @@ func buildParams(reg *registry, t reflect.Type) ([]Param, error) {
 			problems = append(problems, fmt.Sprintf("%s: struct %s parameters are not supported", where, in))
 			continue
 		}
+		required, err := huma.ParseBoolTag(f, "required", in == "path")
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %s", where, ez.ErrorMessage(err)))
+			continue
+		}
+		if !required && in == "path" {
+			problems = append(problems, fmt.Sprintf("%s: a path parameter is always required; drop required:\"false\"", where))
+		}
 
 		if in == "header" {
 			name = strings.ToLower(name)
@@ -87,7 +95,7 @@ func buildParams(reg *registry, t reflect.Type) ([]Param, error) {
 		params = append(params, Param{
 			Name:       name,
 			In:         in,
-			Required:   in == "path" || f.Tag.Get("required") == "true",
+			Required:   required,
 			Schema:     schema,
 			Index:      f.Index,
 			Doc:        f.Tag.Get("doc"),

@@ -62,6 +62,20 @@ func fileFields(t reflect.Type) ([]fileField, error) {
 			continue
 		}
 
+		required, err := huma.ParseBoolTag(f, "required", false)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("form:%q field %s: %s", name, f.Name, ez.ErrorMessage(err)))
+		}
+		// huma's struct walk skips a json:"-" field, so these tags are read
+		// here as strictly as on a body field: a loose value fails
+		// registration on a file field too.
+		for _, tag := range []string{"nullable", "deprecated", "hidden", "uniqueItems"} {
+			_, err = huma.ParseBoolTag(f, tag, false)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("form:%q field %s: %s", name, f.Name, ez.ErrorMessage(err)))
+			}
+		}
+
 		embedded := unexportedEmbeddedPointer(t, f.Index)
 		switch {
 		case name == "":
@@ -81,7 +95,7 @@ func fileFields(t reflect.Type) ([]fileField, error) {
 				name:     name,
 				index:    f.Index,
 				multiple: f.Type == fileHeadersType,
-				required: f.Tag.Get("required") == "true",
+				required: required,
 				doc:      f.Tag.Get("doc"),
 			})
 		}

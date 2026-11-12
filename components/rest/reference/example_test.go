@@ -272,6 +272,7 @@ func TestExampleValuePrecedenceAndConstraints(t *testing.T) {
 		"hostname": "example.com",
 		"ipv4":     "192.168.0.1",
 		"ipv6":     "2001:db8::1",
+		"ip":       "192.0.2.1",
 		"byte":     "U3dhZ2dlciByb2Nrcw==",
 		"binary":   "<binary>",
 		"int64":    "string",

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/apitest"
+	"github.com/vanclief/compose/types"
 )
 
 // fakeTB captures Errorf calls.
@@ -185,6 +187,41 @@ func TestContractNilMap(t *testing.T) {
 	doc = decode(t, raw)
 	require.Equal(t, "object", dig(t, doc, "components", "schemas", name, "properties", "labels", "type"))
 	require.Equal(t, true, dig(t, doc, "components", "schemas", name, "properties", "labels", "nullable"))
+}
+
+type addressResponse struct {
+	IP       net.IP                 `json:"ip"`
+	Pointer  *net.IP                `json:"pointer"`
+	Optional types.Optional[net.IP] `json:"optional,omitzero"`
+}
+
+// TestContractZeroIP: a zero net.IP held by value is written as "", which
+// the ip format refuses, so the contract fails it; a nil *net.IP is written
+// as null and an unset types.Optional[net.IP] is left out, and both pass.
+func TestContractZeroIP(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var res addressResponse
+	api.GET(reg.Group("/address"), "", "get", func(ctx context.Context, req *fixture.HealthRequest) (addressResponse, error) {
+		return res, nil
+	})
+	reg.Ready()
+
+	contract := apitest.New(t, reg)
+	fake := &fakeTB{TB: t}
+	rec := contract.Do(fake, e, "address.get", httptest.NewRequest(http.MethodGet, "/address", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"ip":"","pointer":null}`, rec.Body.String())
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], "address.get 200 response does not match the contract")
+	require.Contains(t, fake.errors[0], "ip must be a valid ip")
+
+	res.IP = net.ParseIP("192.0.2.1")
+	fake = &fakeTB{TB: t}
+	rec = contract.Do(fake, e, "address.get", httptest.NewRequest(http.MethodGet, "/address", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"ip":"192.0.2.1","pointer":null}`, rec.Body.String())
+	require.Empty(t, fake.errors)
 }
 
 // TestContractHead: rest.ErrorHandler answers a HEAD request with the status
