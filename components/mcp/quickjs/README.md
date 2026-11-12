@@ -22,13 +22,17 @@ What it leaves out and how it is laid out:
 - `-Wl,--max-memory=67108864 -Wl,--initial-memory=2097152`: 1024 pages
   (64 MiB) maximum, 32 pages initial. `script.go` sets the QuickJS heap limit
   to 48 MiB, so an allocation bomb ends in `InternalError: out of memory` while
-  wasi-libc's allocator still has room for function call replies.
+  wasi-libc's allocator still has room for function call replies. Since
+  quickjs-ng v0.18.0 (commits 90aa2c4 and db0fe52) an InternalError, out of
+  memory included, skips the script's `catch` and `finally` blocks, except
+  where QuickJS's Promise code, such as a Promise executor, turns it into a
+  rejection.
 
 ## Inputs
 
 | | |
 |---|---|
-| quickjs-ng | `6d46d07d04041b40f4f49eaa7fdebe44c314c699` (v0.17.0) |
+| quickjs-ng | `d7215b0ad3fc2c562e8317fd9bca058fd4863804` (v0.18.0) |
 | wasi-sdk | 25.0, `wasi-sdk-25.0-arm64-macos.tar.gz` sha256 `e1e529ea226b1db0b430327809deae9246b580fa3cae32d31c82dfe770233587` (clang 19.1.5) |
 | binaryen | wasm-opt version 133 |
 
@@ -52,7 +56,7 @@ with clang (no CMake), runs `wasm-opt` and writes `../quickjs.wasm`. The output
 is reproducible across build directories:
 
 ```
-2940915363534833f5600c3a0859fd4fe89b71851e69cde4acb5df03ad4d7fda  quickjs.wasm
+8ea590fe0ea0f422858800fcf81acf1ecef8fdf21aa6d55946b00b7c0a4860af  quickjs.wasm
 ```
 
 `TestScriptWasmMemoryIsCapped` pins this sha256, the memory maximum and the

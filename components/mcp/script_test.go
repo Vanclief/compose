@@ -491,7 +491,7 @@ func TestScriptFillRunStaysOffHeap(t *testing.T) {
 	}
 	before := allocated()
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{}, `const a = []
-try { for (;;) { a.push(new ArrayBuffer(1 << 20)) } } catch (e) {}
+new Promise(() => { for (;;) { a.push(new ArrayBuffer(1 << 20)) } })
 return a.length`)
 	require.NoError(t, err)
 	assert.NotEqual(t, "0", out)
@@ -508,7 +508,7 @@ func TestScriptOutOfMemoryIsNamed(t *testing.T) {
 		`const a = []; for (let i = 0; ; i++) { a.push(String(i) + "y") }`,
 		`const a = []; for (;;) { a.push([a.length]) }`,
 		`const a = []; for (;;) { a.push(new Error("e")) }`,
-		`const a = []; try { for (;;) { a.push([a.length]) } } catch (e) {} for (;;) { a.push("z" + a.length) }`,
+		`const a = []; new Promise(() => { for (;;) { a.push([a.length]) } }); for (;;) { a.push("z" + a.length) }`,
 	} {
 		_, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, code)
 		require.Error(t, err, code)
@@ -518,15 +518,40 @@ func TestScriptOutOfMemoryIsNamed(t *testing.T) {
 	}
 }
 
-// TestScriptOutOfMemoryIsCatchable: a second out-of-memory after the
-// first was caught and memory freed is a real error too, because the
-// allocator's grace returns once the heap is under the limit again.
-func TestScriptOutOfMemoryIsCatchable(t *testing.T) {
+// TestScriptOutOfMemoryIsNotCatchable: since quickjs-ng v0.18.0 an
+// out-of-memory error ends the script through try/catch, finally and
+// async functions. A Promise executor still turns it into a rejection the
+// script can handle; TestScriptOutOfMemoryCaughtInPromiseExecutor and the
+// tests that fill the heap rely on that path, so a QuickJS upgrade that
+// closes it fails here.
+func TestScriptOutOfMemoryIsNotCatchable(t *testing.T) {
+	fill := `const a = []; for (;;) { a.push(new ArrayBuffer(1 << 20)) }`
+	for _, code := range []string{
+		`try { ` + fill + ` } catch (e) { return "caught" }`,
+		`try { ` + fill + ` } finally { return "finally" }`,
+		`return (async () => { try { ` + fill + ` } catch (e) { return "caught" } })()`,
+	} {
+		out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, code)
+		require.Error(t, err, code)
+		assert.Equal(t, ez.EINVALID, ez.ErrorCode(err), code)
+		assert.Contains(t, err.Error(), "InternalError: out of memory", code)
+		assert.Empty(t, out, code)
+	}
+
+	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, `return new Promise(() => { `+fill+` }).catch((e) => "caught: " + e.message)`)
+	require.NoError(t, err)
+	assert.Equal(t, `"caught: out of memory"`, out)
+}
+
+// TestScriptOutOfMemoryCaughtInPromiseExecutor: a second out-of-memory
+// after the first was caught and memory freed is a real error too, because
+// the allocator's grace returns once the heap is under the limit again.
+func TestScriptOutOfMemoryCaughtInPromiseExecutor(t *testing.T) {
 	code := `const a = []
-try { for (;;) { a.push([a.length]) } } catch (e) {}
+new Promise(() => { for (;;) { a.push([a.length]) } })
 a.length -= 10000
 const b = []
-try { for (;;) { b.push([b.length]) } } catch (e) { return "caught: " + e.message }`
+return new Promise(() => { for (;;) { b.push([b.length]) } }).catch((e) => "caught: " + e.message)`
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, code)
 	require.NoError(t, err)
 	assert.Equal(t, `"caught: out of memory"`, out)
@@ -539,14 +564,14 @@ try { for (;;) { b.push([b.length]) } } catch (e) { return "caught: " + e.messag
 
 	// Without frees, each refusal still gets a fresh grace, a few times.
 	code = `const a = []
-let seen = ""
+const seen = []
 for (let i = 0; i < 4; i++) {
-	try { for (;;) { a.push({}) } } catch (e) { seen += (e === null ? "null" : e.message) + ";" }
+	seen.push(new Promise(() => { for (;;) { a.push({}) } }).catch((e) => e === null ? "null" : e.message))
 }
-return seen`
+return Promise.all(seen)`
 	out, err = runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, code)
 	require.NoError(t, err)
-	assert.Equal(t, `"out of memory;out of memory;out of memory;out of memory;"`, out)
+	assert.Equal(t, `["out of memory","out of memory","out of memory","out of memory"]`, out)
 }
 
 // TestScriptLostWriteErrorIsFrozen: a script cannot change the error that
@@ -566,16 +591,19 @@ throw new Error("mine")`)
 	assert.Equal(t, "mcp: script error: Error: mine (line 2)", ez.ErrorMessage(err))
 
 	// A call that fails before reaching the host is not a lost write: here
-	// the arguments do not fit in memory, and the server refuses writes.
+	// the arguments do not fit in memory, which ends the script, and the
+	// server refuses writes.
 	code = `const a = []
-try { for (;;) { a.push(new ArrayBuffer(1 << 20)) } } catch (e) {}
+new Promise(() => { for (;;) { a.push(new ArrayBuffer(1 << 20)) } })
 a.pop()
 try { api.packages.register_package({blob: "x".repeat(1 << 21)}) } catch (e) { return String(e) }`
 	caller = newFakeScriptCaller()
 	out, err = runScript(context.Background(), scriptTestCatalog(), caller, ScriptConfig{Timeout: 30 * time.Second}, code)
-	require.NoError(t, err)
-	assert.Contains(t, out, "out of memory")
-	assert.NotContains(t, out, "may have been called")
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "out of memory")
+	assert.NotContains(t, err.Error(), "may have been called")
+	assert.NotContains(t, err.Error(), "write")
 	assert.Empty(t, caller.calls)
 }
 
@@ -593,7 +621,7 @@ func TestScriptLostWriteReply(t *testing.T) {
 	caller := newFakeScriptCaller()
 	caller.responses["packages.register_package"] = `{"blob":"` + strings.Repeat("x", 2<<20) + `"}`
 	code := `const a = []
-try { for (;;) { a.push(new ArrayBuffer(1 << 20)) } } catch (e) {}
+new Promise(() => { for (;;) { a.push(new ArrayBuffer(1 << 20)) } })
 a.pop()
 try { api.packages.register_package({}) } catch (e) { return String(e) }
 return "read"`
@@ -608,6 +636,38 @@ return "read"`
 	out, err = runScript(context.Background(), scriptTestCatalog(), caller, ScriptConfig{AllowWrites: true}, `try { api.packages.register_package({}) } catch (e) { return String(e) }`)
 	require.NoError(t, err)
 	assert.Contains(t, out, "packages.register_package ran, and any changes it made stay, but the response is")
+}
+
+// TestScriptOutOfMemoryParsingReply: a reply whose text fits in memory but
+// whose parsed value does not ends the script past its try/catch; the
+// function has run, and a function that writes is named in the error.
+func TestScriptOutOfMemoryParsingReply(t *testing.T) {
+	run := func(fn string) (string, *fakeScriptCaller, error) {
+		caller := newFakeScriptCaller()
+		caller.responses[fn] = "[" + strings.Repeat("[],", 150000) + "[]]"
+		code := `const a = []
+new Promise(() => { for (;;) { a.push(new ArrayBuffer(1 << 20)) } })
+a.pop()
+try { api.` + fn + `({}) } catch (e) { return "caught: " + String(e) }
+return "read"`
+		out, err := runScript(context.Background(), scriptTestCatalog(), caller, ScriptConfig{AllowWrites: true, Timeout: 30 * time.Second}, code)
+		return out, caller, err
+	}
+
+	out, caller, err := run("packages.register_package")
+	require.Error(t, err)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Equal(t, "mcp: script failed after calls that write, which may have changed data (packages.register_package): script error: InternalError: out of memory (line 4)", ez.ErrorMessage(err))
+	assert.Empty(t, out)
+	assert.Len(t, caller.calls, 1)
+
+	out, caller, err = run("units.list_units")
+	require.Error(t, err)
+	assert.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	assert.Contains(t, err.Error(), "InternalError: out of memory (line 4)")
+	assert.NotContains(t, err.Error(), "calls that write")
+	assert.Empty(t, out)
+	assert.Len(t, caller.calls, 1)
 }
 
 // TestScriptErrorMessageIsOneLine: newlines in a thrown message cannot
@@ -922,7 +982,7 @@ func TestScriptConcurrencyLimit(t *testing.T) {
 // recursion traps below address 0 instead of overwriting static data.
 func TestScriptWasmMemoryIsCapped(t *testing.T) {
 	sum := sha256.Sum256(quickjsWasm)
-	assert.Equal(t, "2940915363534833f5600c3a0859fd4fe89b71851e69cde4acb5df03ad4d7fda", hex.EncodeToString(sum[:]))
+	assert.Equal(t, "8ea590fe0ea0f422858800fcf81acf1ecef8fdf21aa6d55946b00b7c0a4860af", hex.EncodeToString(sum[:]))
 
 	data := quickjsWasm
 	require.Equal(t, []byte("\x00asm\x01\x00\x00\x00"), data[:8])
@@ -1129,7 +1189,7 @@ func TestScriptOutOfMemoryDuringCall(t *testing.T) {
 	caller.responses["units.list_units"] = big
 	caller.responses["packages.register_package"] = big
 	fill := `const a = []
-try { for (;;) { a.push(new ArrayBuffer(1 << 20)) } } catch (e) {}
+new Promise(() => { for (;;) { a.push(new ArrayBuffer(1 << 20)) } })
 a.pop()
 a.pop()
 `
@@ -1360,12 +1420,12 @@ func TestScriptMemoryLimitHolds(t *testing.T) {
 	code := `const held = []
 let total = 0
 for (let size = 1 << 20; size >= 1024; size >>= 1) {
-	try { for (;;) { held.push(new ArrayBuffer(size)); total += size } } catch (e) {}
+	new Promise(() => { for (;;) { held.push(new ArrayBuffer(size)); total += size } })
 }
 for (let size = 2000; size >= 16; size--) {
-	try { held.push(new ArrayBuffer(size)); total += size } catch (e) {}
+	new Promise(() => { held.push(new ArrayBuffer(size)); total += size })
 }
-try { for (;;) { held.push(new ArrayBuffer(1 << 20)); total += 1 << 20 } } catch (e) {}
+new Promise(() => { for (;;) { held.push(new ArrayBuffer(1 << 20)); total += 1 << 20 } })
 return total`
 	out, err := runScript(context.Background(), scriptTestCatalog(), newFakeScriptCaller(), ScriptConfig{Timeout: 30 * time.Second}, code)
 	require.NoError(t, err)

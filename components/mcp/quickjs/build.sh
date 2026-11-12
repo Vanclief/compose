@@ -24,8 +24,8 @@ test "$(wasm-opt --version)" = "wasm-opt version 133" || {
 }
 
 git clone --quiet https://github.com/quickjs-ng/quickjs "$work/quickjs"
-git -C "$work/quickjs" checkout --quiet v0.17.0
-test "$(git -C "$work/quickjs" rev-parse HEAD)" = 6d46d07d04041b40f4f49eaa7fdebe44c314c699
+git -C "$work/quickjs" checkout --quiet v0.18.0
+test "$(git -C "$work/quickjs" rev-parse HEAD)" = d7215b0ad3fc2c562e8317fd9bca058fd4863804
 cp "$here/sandbox.c" "$work/quickjs/sandbox.c"
 
 # Relative paths and a fixed prefix map keep the build directory out of the

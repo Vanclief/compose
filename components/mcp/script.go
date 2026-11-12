@@ -58,7 +58,7 @@ const (
 	// maxScriptWriteNames caps the functions a failed run lists as called.
 	maxScriptWriteNames = 20
 	// scriptMemoryLimit is the QuickJS heap limit. It sits below the linear
-	// memory maximum so an allocation bomb ends in a catchable
+	// memory maximum so an allocation bomb ends the script with
 	// "InternalError: out of memory" while wasi-libc's allocator still has
 	// room for the 1 MiB stack, the static data, its own overhead and the
 	// replies of function calls.
@@ -111,7 +111,7 @@ func scriptLimits(cfg ScriptConfig) (time.Duration, int) {
 // included.
 //
 // Provenance: quickjs/build.sh links quickjs/sandbox.c with the engine of
-// quickjs-ng v0.17.0 and records the toolchain, flags and sha256 in
+// quickjs-ng v0.18.0 and records the toolchain, flags and sha256 in
 // quickjs/README.md. It has no quickjs-libc, so there is no std, os or
 // bjson module, no print, scriptArgs or gc global, and no module loader.
 // The 1 MiB C stack sits at the bottom of linear memory, so native code
