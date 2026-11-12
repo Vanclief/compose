@@ -60,9 +60,25 @@ type Config struct {
 	// TypeSchemas replaces the schema of a Go type, keyed by "importpath.TypeName", e.g.
 	// {"github.com/shopspring/decimal.Decimal": {"type": "string", "format": "decimal"}}. The
 	// type keeps its component, named as usual; the entry wins over the generator's mappings.
-	// A struct that defines MarshalJSON (or embeds one that does) and a generic type must be
-	// described here, generation fails otherwise. ExtendGenerated builds an entry from the
-	// derived schema.
+	// A struct that defines MarshalJSON, a struct into whose method set Go promotes the
+	// MarshalJSON or MarshalText of an embedded type, described here or not, and a generic type
+	// other than sql.Null[T] must be described here, generation fails otherwise. The generator
+	// does not substitute a generic type's arguments into its fields, so this holds too for a
+	// type declared from an instantiation of a generic type with either method, which it does
+	// not get, and for a struct that is one object, as encoding/json resolves its embedded
+	// fields, and embeds an instantiation, an alias of one or a type declared from one that its
+	// description cannot stand for as an allOf member: one embedded through a pointer at any
+	// depth, one with a field name that another field of the struct the generator reads
+	// shares, one with MarshalJSON or MarshalText that a tie leaves unpromoted, or one whose
+	// declaration embeds a type. Any
+	// other is that allOf member, as its field names do not depend on its type arguments. It
+	// holds as well for a struct embedding a type from a package missing from the module cache,
+	// where that type could promote one. A standard-library type the generator does not list is
+	// read from GOROOT's source, from the files selected for the platform the generator runs on,
+	// and generation fails wherever one is needed, as a field or embedded, when that source or
+	// one of its files cannot be read. A type with MarshalText and without MarshalJSON is a
+	// string unless described here.
+	// ExtendGenerated builds an entry from the derived schema.
 	TypeSchemas map[string]map[string]any
 	// SchemaPrefixCollapse maps a module-relative package path prefix to the path every package
 	// under it is named after, e.g. {"application/interfaces/rest/handler/":
