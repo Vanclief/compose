@@ -1286,7 +1286,7 @@ func Import(ctx context.Context, request *ImportRequest) (*UploadResponse, error
 	upload = componentSchemas(spec.Document)["files_UploadRequest"]
 	wantUpload := map[string]any{
 		"category": map[string]any{"type": "string"},
-		"files":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "format": "binary"}},
+		"files":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "format": "binary"}, "nullable": true},
 		"cover":    map[string]any{"type": "string", "format": "binary", "nullable": true},
 	}
 	if !reflect.DeepEqual(upload["properties"], wantUpload) {

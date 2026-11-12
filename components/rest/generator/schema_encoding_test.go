@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -342,7 +343,7 @@ type Labels []string
 		"properties": map[string]any{
 			"Code":   map[string]any{"$ref": "#/components/schemas/things_Code"},
 			"Shape":  map[string]any{"$ref": "#/components/schemas/things_Shape"},
-			"Labels": map[string]any{"$ref": "#/components/schemas/things_Labels"},
+			"Labels": map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/things_Labels"}}, "nullable": true},
 		},
 		"required": []string{"Code"},
 	}
@@ -389,12 +390,14 @@ type Thing struct {
 
 	byteSchema := map[string]any{"type": "integer", "format": "int32"}
 	base64 := map[string]any{"type": "string", "format": "byte"}
+	// A nil byte slice is written null, so a []byte field is nullable; an item is not.
+	nullableBase64 := map[string]any{"type": "string", "format": "byte", "nullable": true}
 	want := map[string]any{
 		"digest": map[string]any{"type": "array", "items": byteSchema, "minItems": 32, "maxItems": 32},
 		"key":    map[string]any{"type": "array", "items": byteSchema},
-		"raw":    base64,
-		"octets": base64,
-		"blobs":  map[string]any{"type": "array", "items": base64},
+		"raw":    nullableBase64,
+		"octets": nullableBase64,
+		"blobs":  map[string]any{"type": "array", "items": base64, "nullable": true},
 		"single": byteSchema,
 	}
 	properties := componentProperties(t, builder, "things_Thing")
@@ -496,7 +499,7 @@ type Thing struct {
 		"count": stringSchema,
 		"kind":  stringSchema,
 		"level": map[string]any{"$ref": "#/components/schemas/things_Level"},
-		"tags":  map[string]any{"type": "array", "items": map[string]any{"type": "integer", "format": "int64"}},
+		"tags":  map[string]any{"type": "array", "items": map[string]any{"type": "integer", "format": "int64"}, "nullable": true},
 		"plain": map[string]any{"type": "integer", "format": "int64"},
 	}
 	properties := componentProperties(t, builder, "things_Thing")
@@ -1161,6 +1164,125 @@ type Outer struct {
 		t.Errorf("expected Outer to keep its allOf, got %v", builder.schemas["things_Outer"])
 	}
 	assertConforms(t, builder, builder.schemas["things_Outer"], marshalled(t, embedOuter(tieValue, "z")))
+}
+
+type nilLabels []string
+
+type nilIndex map[string]int
+
+type nilCustom []string
+
+func (c nilCustom) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]string(append(nilCustom{}, c...)))
+}
+
+type nilThing struct {
+	Tags     []string          `json:"tags"`
+	M        map[string]string `json:"m"`
+	Omitted  []string          `json:"omitted,omitempty"`
+	Zero     map[string]int    `json:"zero,omitzero"`
+	Fixed    [2]int            `json:"fixed"`
+	Raw      []byte            `json:"raw"`
+	Labels   nilLabels         `json:"labels"`
+	Index    nilIndex          `json:"index"`
+	Custom   nilCustom         `json:"custom"`
+	Untagged []string
+}
+
+// encoding/json writes a nil slice or map as null, so a slice or map field without omitempty or
+// omitzero is nullable; a fixed-size array never is, and a type with a marshaler writes what it
+// writes. Whether a field is required does not change.
+func TestNilSlicesAndMapsAreNullable(t *testing.T) {
+	builder := buildThings(t, `package things
+
+import "encoding/json"
+
+type Labels []string
+
+type Index map[string]int
+
+type Custom []string
+
+func (c Custom) MarshalJSON() ([]byte, error) { return json.Marshal([]string(c)) }
+
+type Thing struct {
+	Tags     []string          `+"`json:\"tags\"`"+`
+	M        map[string]string `+"`json:\"m\"`"+`
+	Omitted  []string          `+"`json:\"omitted,omitempty\"`"+`
+	Zero     map[string]int    `+"`json:\"zero,omitzero\"`"+`
+	Fixed    [2]int            `+"`json:\"fixed\"`"+`
+	Raw      []byte            `+"`json:\"raw\"`"+`
+	Labels   Labels            `+"`json:\"labels\"`"+`
+	Index    Index             `+"`json:\"index\"`"+`
+	Custom   Custom            `+"`json:\"custom\"`"+`
+	Untagged []string
+}
+`, "Thing")
+
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stringItems := map[string]any{"type": "string"}
+	integer := map[string]any{"type": "integer", "format": "int64"}
+	want := map[string]any{
+		"tags":     map[string]any{"type": "array", "items": stringItems, "nullable": true},
+		"m":        map[string]any{"type": "object", "additionalProperties": stringItems, "nullable": true},
+		"omitted":  map[string]any{"type": "array", "items": stringItems},
+		"zero":     map[string]any{"type": "object", "additionalProperties": integer},
+		"fixed":    map[string]any{"type": "array", "items": integer, "minItems": 2, "maxItems": 2},
+		"raw":      map[string]any{"type": "string", "format": "byte", "nullable": true},
+		"labels":   map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/things_Labels"}}, "nullable": true},
+		"index":    map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/things_Index"}}, "nullable": true},
+		"custom":   map[string]any{"$ref": "#/components/schemas/things_Custom"},
+		"Untagged": map[string]any{"type": "array", "items": stringItems, "nullable": true},
+	}
+	properties := componentProperties(t, builder, "things_Thing")
+	if !reflect.DeepEqual(properties, want) {
+		t.Fatalf("expected %v, got %v", want, properties)
+	}
+	required := builder.schemas["things_Thing"]["required"]
+	if !reflect.DeepEqual(required, []string{"fixed"}) {
+		t.Fatalf("expected only the fixed array required, got %v", required)
+	}
+
+	// The components the nullable wrappers reference keep their own type, which
+	// fillNullableTypes later copies beside nullable.
+	fillNullableTypes(builder.schemas, builder.schemas)
+	labels := builder.schemas["things_Thing"]["properties"].(map[string]any)["labels"].(map[string]any)
+	if labels["type"] != "array" {
+		t.Fatalf("expected the nullable named slice typed array, got %v", labels)
+	}
+
+	empty := marshalled(t, &nilThing{})
+	wantEmpty := map[string]any{
+		"tags":     nil,
+		"m":        nil,
+		"fixed":    []any{float64(0), float64(0)},
+		"raw":      nil,
+		"labels":   nil,
+		"index":    nil,
+		"custom":   []any{},
+		"Untagged": nil,
+	}
+	if !reflect.DeepEqual(empty, wantEmpty) {
+		t.Fatalf("expected encoding/json to write nil slices and maps as null, got %v", empty)
+	}
+	assertConforms(t, builder, builder.schemas["things_Thing"], empty)
+
+	full := &nilThing{
+		Tags:     []string{"a"},
+		M:        map[string]string{"k": "v"},
+		Omitted:  []string{"o"},
+		Zero:     map[string]int{"z": 1},
+		Raw:      []byte("raw"),
+		Labels:   nilLabels{"l"},
+		Index:    nilIndex{"i": 1},
+		Custom:   nilCustom{"c"},
+		Untagged: []string{"u"},
+	}
+	assertConforms(t, builder, builder.schemas["things_Thing"], marshalled(t, full))
 }
 
 type declPriority textLevel
@@ -1856,6 +1978,93 @@ type Dup struct {
 	assertConforms(t, builder, builder.schemas["things_Dup"], value)
 }
 
+type nilCollectionsThing struct {
+	Strings sql.Null[[]string]       `json:"strings"`
+	Counts  sql.Null[map[string]int] `json:"counts"`
+	Bytes   sql.Null[[]byte]         `json:"bytes"`
+	Query   url.Values               `json:"query"`
+	Header  http.Header              `json:"header"`
+	Tags    declTags                 `json:"tags"`
+	CSV     declCSVAlias             `json:"csv"`
+}
+
+type declCSVAlias = declCSV
+
+// The field rule for nil slices and maps also holds for sql.Null[T]'s V, for the standard
+// library's named maps, and for a type declared from a marshaling slice type, which does not
+// inherit its marshaler; an alias of that type keeps it.
+func TestNilCollectionsBehindNamesAreNullable(t *testing.T) {
+	builder := buildThings(t, `package things
+
+import (
+	"database/sql"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+type CSV []string
+
+func (c CSV) MarshalText() ([]byte, error) { return []byte(strings.Join(c, ",")), nil }
+
+type Tags CSV
+
+type CSVAlias = CSV
+
+type Thing struct {
+	Strings sql.Null[[]string]       `+"`json:\"strings\"`"+`
+	Counts  sql.Null[map[string]int] `+"`json:\"counts\"`"+`
+	Bytes   sql.Null[[]byte]         `+"`json:\"bytes\"`"+`
+	Query   url.Values               `+"`json:\"query\"`"+`
+	Header  http.Header              `+"`json:\"header\"`"+`
+	Tags    Tags                     `+"`json:\"tags\"`"+`
+	CSV     CSVAlias                 `+"`json:\"csv\"`"+`
+}
+`, "Thing")
+
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties := componentProperties(t, builder, "things_Thing")
+	values := map[string]map[string]any{
+		"strings": {"type": "array", "items": map[string]any{"type": "string"}, "nullable": true},
+		"counts":  {"type": "object", "additionalProperties": map[string]any{"type": "integer", "format": "int64"}, "nullable": true},
+		"bytes":   {"type": "string", "format": "byte", "nullable": true},
+	}
+	for name, value := range values {
+		got := properties[name].(map[string]any)["properties"].(map[string]any)["V"]
+		if !reflect.DeepEqual(got, value) {
+			t.Errorf("%s: expected V %v, got %v", name, value, got)
+		}
+	}
+	nullable := map[string]string{"query": "net_url_Values", "header": "net_http_Header", "tags": "things_Tags"}
+	for name, component := range nullable {
+		want := map[string]any{"allOf": []any{map[string]any{"$ref": "#/components/schemas/" + component}}, "nullable": true}
+		if !reflect.DeepEqual(properties[name], want) {
+			t.Errorf("%s: expected %v, got %v", name, want, properties[name])
+		}
+	}
+	if !reflect.DeepEqual(properties["csv"], map[string]any{"$ref": "#/components/schemas/things_CSVAlias"}) {
+		t.Errorf("expected the alias of a MarshalText type not nullable, got %v", properties["csv"])
+	}
+
+	empty := marshalled(t, &nilCollectionsThing{})
+	wantEmpty := map[string]any{
+		"strings": map[string]any{"V": nil, "Valid": false},
+		"counts":  map[string]any{"V": nil, "Valid": false},
+		"bytes":   map[string]any{"V": nil, "Valid": false},
+		"query":   nil,
+		"header":  nil,
+		"tags":    nil,
+		"csv":     "",
+	}
+	if !reflect.DeepEqual(empty, wantEmpty) {
+		t.Fatalf("expected encoding/json to write %v, got %v", wantEmpty, empty)
+	}
+	assertConforms(t, builder, builder.schemas["things_Thing"], empty)
+}
+
 type AliasedLevel = textLevel
 
 type AliasedLevelAlias = AliasedLevel
@@ -2066,6 +2275,11 @@ type sqlPtrGenericDeclared struct {
 	X int `json:"x"`
 }
 
+type sqlPtrSlice struct {
+	*sql.Null[[]string]
+	X int `json:"x"`
+}
+
 type sqlPlain struct {
 	sql.Null[int]
 	X int `json:"x"`
@@ -2117,11 +2331,16 @@ type PtrGenericDeclared struct {
 	X int `+"`json:\"x\"`"+`
 }
 
+type PtrSlice struct {
+	*sql.Null[[]string]
+	X int `+"`json:\"x\"`"+`
+}
+
 type Plain struct {
 	sql.Null[int]
 	X int `+"`json:\"x\"`"+`
 }
-`, "PtrGeneric", "Shadow", "PtrAlias", "PtrDeclared", "PtrGenericAlias", "PtrGenericDeclared", "Plain")
+`, "PtrGeneric", "Shadow", "PtrAlias", "PtrDeclared", "PtrGenericAlias", "PtrGenericDeclared", "PtrSlice", "Plain")
 
 	err := builder.unresolvedError()
 	if err != nil {
@@ -2159,6 +2378,7 @@ type Plain struct {
 		{"PtrDeclared", &sqlPtrDeclared{}, map[string]any{"x": float64(0)}, &sqlPtrDeclared{SQLNullDeclared: &SQLNullDeclared{Int64: 1, Valid: true}}},
 		{"PtrGenericAlias", &sqlPtrGenericAlias{}, map[string]any{"x": float64(0)}, &sqlPtrGenericAlias{SQLGenericAlias: &SQLGenericAlias{V: 1, Valid: true}}},
 		{"PtrGenericDeclared", &sqlPtrGenericDeclared{}, map[string]any{"x": float64(0)}, &sqlPtrGenericDeclared{SQLGenericDeclared: &SQLGenericDeclared{V: "v", Valid: true}}},
+		{"PtrSlice", &sqlPtrSlice{}, map[string]any{"x": float64(0)}, &sqlPtrSlice{Null: &sql.Null[[]string]{Valid: true}}},
 		{"Plain", &sqlPlain{}, map[string]any{"V": float64(0), "Valid": false, "x": float64(0)}, &sqlPlain{Null: sql.Null[int]{V: 1, Valid: true}, X: 1}},
 	}
 	for _, c := range cases {
@@ -3084,9 +3304,10 @@ type ChainQ5 = ChainQ4
 type chainDQ ChainQ5
 
 type chainHolder struct {
-	D chainD  `json:"d"`
-	S chainDS `json:"s,string"`
-	Q chainDQ `json:"q"`
+	D     chainD      `json:"d"`
+	S     chainDS     `json:"s,string"`
+	Slice chainDSlice `json:"slice"`
+	Q     chainDQ     `json:"q"`
 }
 
 type chainEmbed8 struct {
@@ -3100,7 +3321,7 @@ type chainEmbed9 struct {
 }
 
 // An alias chain takes no step of a walk's depth limit: a type declared from the fifth alias of
-// a MarshalText type is its kind and is quoted by `,string`. A chain
+// a MarshalText type is its kind, is quoted by `,string` and, for a slice, is nullable. A chain
 // of 8 aliases is followed; a longer one fails generation.
 func TestLongAliasChains(t *testing.T) {
 	source := `package things
@@ -3160,9 +3381,10 @@ type ChainQ5 = ChainQ4
 type DQ ChainQ5
 
 type Holder struct {
-	D D  ` + "`json:\"d\"`" + `
-	S DS ` + "`json:\"s,string\"`" + `
-	Q DQ ` + "`json:\"q\"`" + `
+	D     D      ` + "`json:\"d\"`" + `
+	S     DS     ` + "`json:\"s,string\"`" + `
+	Slice DSlice ` + "`json:\"slice\"`" + `
+	Q     DQ     ` + "`json:\"q\"`" + `
 }
 
 type Embed8 struct {
@@ -3181,11 +3403,12 @@ type Embed9 struct {
 		t.Fatal(err)
 	}
 	value := marshalled(t, &chainHolder{D: 7, S: 7, Q: chainDQ{A: 7}})
-	want := map[string]any{"d": float64(7), "s": "7", "q": map[string]any{"A": float64(7)}}
+	want := map[string]any{"d": float64(7), "s": "7", "slice": nil, "q": map[string]any{"A": float64(7)}}
 	if !reflect.DeepEqual(value, want) {
 		t.Fatalf("expected encoding/json to write %v, got %v", want, value)
 	}
 	assertConforms(t, builder, builder.schemas["things_Holder"], value)
+	assertConforms(t, builder, builder.schemas["things_Holder"], marshalled(t, &chainHolder{Slice: chainDSlice{1}}))
 
 	embedded := []struct {
 		name   string
@@ -3237,6 +3460,7 @@ type descHolder struct {
 	Area     descArea     `json:"area"`
 	Priority descPriority `json:"priority"`
 	Quoted   descPriority `json:"quoted,string"`
+	Tags     descTags     `json:"tags"`
 	Sub      descSub      `json:"sub"`
 }
 
@@ -3277,6 +3501,7 @@ type Holder struct {
 	Area     Area     ` + "`json:\"area\"`" + `
 	Priority Priority ` + "`json:\"priority\"`" + `
 	Quoted   Priority ` + "`json:\"quoted,string\"`" + `
+	Tags     Tags     ` + "`json:\"tags\"`" + `
 	Sub      Sub      ` + "`json:\"sub\"`" + `
 }
 `
@@ -3293,12 +3518,12 @@ type Holder struct {
 	}
 
 	value := marshalled(t, &descHolder{Area: descArea{X: 1, Y: 2}, Priority: 3, Quoted: 3, Sub: "a"})
-	want := map[string]any{"area": map[string]any{"X": float64(1), "Y": float64(2)}, "priority": float64(3), "quoted": "3", "sub": "a"}
+	want := map[string]any{"area": map[string]any{"X": float64(1), "Y": float64(2)}, "priority": float64(3), "quoted": "3", "tags": nil, "sub": "a"}
 	if !reflect.DeepEqual(value, want) {
 		t.Fatalf("expected encoding/json to write %v, got %v", want, value)
 	}
 	assertConforms(t, builder, builder.schemas["things_Holder"], value)
-	assertConforms(t, builder, builder.schemas["things_Holder"], marshalled(t, &descHolder{Sub: "b"}))
+	assertConforms(t, builder, builder.schemas["things_Holder"], marshalled(t, &descHolder{Tags: descTags{"a"}, Sub: "b"}))
 	if !reflect.DeepEqual(builder.schemas["things_Sub"], map[string]any{"$ref": "#/components/schemas/things_DescKind"}) {
 		t.Errorf("expected Sub to keep the described DescKind, got %v", builder.schemas["things_Sub"])
 	}
@@ -3807,7 +4032,9 @@ type declListed struct {
 	LS  DeclLevel    `json:"ls,string"`
 	A   DeclAddr     `json:"a"`
 	N   DeclAmount   `json:"n"`
+	IP  DeclIP       `json:"ip"`
 	ID  DeclID       `json:"id"`
+	Raw DeclRaw      `json:"raw"`
 	Int DeclInt      `json:"int"`
 	LV  DeclLevelVar `json:"lv"`
 }
@@ -3863,7 +4090,9 @@ type Holder struct {
 	LS  DeclLevel    ` + "`json:\"ls,string\"`" + `
 	A   DeclAddr     ` + "`json:\"a\"`" + `
 	N   DeclAmount   ` + "`json:\"n\"`" + `
+	IP  DeclIP       ` + "`json:\"ip\"`" + `
 	ID  DeclID       ` + "`json:\"id\"`" + `
+	Raw DeclRaw      ` + "`json:\"raw\"`" + `
 	Int DeclInt      ` + "`json:\"int\"`" + `
 	LV  DeclLevelVar ` + "`json:\"lv\"`" + `
 }
@@ -3895,13 +4124,13 @@ type EmbLevel struct {
 	for i := range id {
 		id[i] = float64(0)
 	}
-	want := map[string]any{"t": map[string]any{}, "l": float64(0), "ls": "0", "a": map[string]any{}, "n": "", "id": id, "int": map[string]any{}, "lv": map[string]any{}}
+	want := map[string]any{"t": map[string]any{}, "l": float64(0), "ls": "0", "a": map[string]any{}, "n": "", "ip": nil, "id": id, "raw": nil, "int": map[string]any{}, "lv": map[string]any{}}
 	if !reflect.DeepEqual(zero, want) {
 		t.Fatalf("expected encoding/json to write %v, got %v", want, zero)
 	}
-	full := marshalled(t, &declListed{L: 4, LS: 4, N: "1.5"})
-	if full.(map[string]any)["n"] != "1.5" || full.(map[string]any)["ls"] != "4" {
-		t.Fatalf("expected encoding/json to write a string and a quoted int, got %v", full)
+	full := marshalled(t, &declListed{L: 4, LS: 4, N: "1.5", IP: DeclIP{1, 2, 3, 4}, Raw: DeclRaw(`{"a":1}`)})
+	if full.(map[string]any)["n"] != "1.5" || full.(map[string]any)["ip"] != "AQIDBA==" || full.(map[string]any)["ls"] != "4" {
+		t.Fatalf("expected encoding/json to write a string, base64 and a quoted int, got %v", full)
 	}
 	assertConforms(t, builder, builder.schemas["things_Holder"], zero)
 	assertConforms(t, builder, builder.schemas["things_Holder"], full)
@@ -4298,6 +4527,7 @@ type Ch8S8 struct {
 
 type declChainHolder struct {
 	E Ch8I1 `json:"e,string"`
+	L Ch8L1 `json:"l"`
 }
 
 type declChainEmbed struct {
@@ -4344,6 +4574,7 @@ type Ch8S8 struct {
 
 type Holder struct {
 	E Ch8I1 ` + "`json:\"e,string\"`" + `
+	L Ch8L1 ` + "`json:\"l\"`" + `
 }
 
 type Embed struct {
@@ -4382,10 +4613,11 @@ type EmbedPointer9 struct {
 		t.Fatal(err)
 	}
 	holder := marshalled(t, &declChainHolder{})
-	if !reflect.DeepEqual(holder, map[string]any{"e": "0"}) {
-		t.Fatalf("expected encoding/json to write a quoted int, got %v", holder)
+	if !reflect.DeepEqual(holder, map[string]any{"e": "0", "l": nil}) {
+		t.Fatalf("expected encoding/json to write a quoted int and null, got %v", holder)
 	}
 	assertConforms(t, builder, builder.schemas["things_Holder"], holder)
+	assertConforms(t, builder, builder.schemas["things_Holder"], marshalled(t, &declChainHolder{L: Ch8L1{1}}))
 	embed := marshalled(t, &declChainEmbed{})
 	if !reflect.DeepEqual(embed, map[string]any{"Ch8I1": float64(0), "x": float64(0)}) {
 		t.Fatalf("expected encoding/json to leave out the nil pointer's fields, got %v", embed)
@@ -5021,7 +5253,7 @@ type Tagged struct {
 	}
 	schema := builder.schemas["things_Fields"]
 	assertConforms(t, builder, schema, value)
-	assertConforms(t, builder, schema, marshalled(t, &h5Fields{OID: oid, IM: net.IPMask{}, HA: net.HardwareAddr{}, RB: sql.RawBytes{}, IS: sort.IntSlice{}, AO: asn1.ObjectIdentifier{}}))
+	assertConforms(t, builder, schema, marshalled(t, &h5Fields{OID: oid}))
 
 	wrong := map[string]any{
 		"mo": "x", "mos": float64(4), "w": "x", "om": "x", "fm": "x", "cs": "x", "k": "x", "h": float64(1), "st": float64(1), "hd": float64(1), "re": float64(1),
@@ -5607,6 +5839,7 @@ type Slices struct {
 	}
 	schema := builder.schemas["things_Slices"]
 	assertConforms(t, builder, schema, full)
+	assertConforms(t, builder, schema, marshalled(t, &k4Slices{}))
 
 	properties, _ := schema["properties"].(map[string]any)
 	for name, value := range want {
