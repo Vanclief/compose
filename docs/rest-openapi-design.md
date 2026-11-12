@@ -165,13 +165,24 @@ Rules enforced at registration (fail boot):
   `format`, `doc`, `example`, `deprecated`, `hidden`, `nullable`, plus `bun`, `db`, `yaml`,
   `xml`, `mapstructure` and `validate`, which the same structs carry for other libraries);
   Echo's `param` is rejected with a pointer to `path`, and `default` on a request type,
-  because the registry applies no default: the handler sets it and `doc` describes it. The
-  lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
+  because the registry applies no default: the handler sets it and `doc` describes it. A
+  boolean tag (`required`, `nullable`, `deprecated`, `hidden`, `uniqueItems`) must read
+  exactly `true` or `false` wherever the registry reads it: on a body field, an embedded
+  struct, a parameter and a file field alike, as must `additionalProperties` and `nullable`
+  on the blank `_` field: `required:"True"`, `required:"yes"` or `required:""` fails
+  registration instead of leaving the field optional. The registry does not read these
+  tags on a `json:"-"` field that is neither a parameter nor a form field, on an unexported
+  embedded struct, or on the blank `_` field apart from `additionalProperties` and
+  `nullable`, so a loose value there is not refused (the lint still refuses
+  `nullable:"true"` on a `json:"-"` field of struct type, `hidden:"true"` on any field
+  of a request type, `uniqueItems` with any value where it is misplaced, and `uniqueItems:"true"` on a
+  type it is not supported on). The lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
   on the value's type), the `format` tag on anything but a plain string or a slice of them
   (on a `time.Time`, a number, a `uuid.UUID` or any type that sets its own format or reads
   its own text, the schema and the decoder would disagree on the value's text), property names
   `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
-  reference, `minimum`/`maximum` outside a sized integer's range, a pointer to
+  reference or on a `types.Optional` of one, which accepts `null` already,
+  `minimum`/`maximum` outside a sized integer's range, a pointer to
   `types.Optional`, and on a request type a `path`, `query`, `header` or `form` tag in a
   struct the request type does not embed (a named field, a slice or map element), where the
   registry never reads it, or embeds with a JSON name (`*Paging` tagged `json:"paging"` is
@@ -610,7 +621,8 @@ lint, key check and variants.
   picks up embedded `pagination.CursorRequest`), builds `path`/`query`/`header` parameter
   objects, and uses `huma.SchemaFromField` per field for constraints.
 - **Request variants**: for every component reachable from a request type, rewrite
-  `Required` to "fields with `required:"true"`" (path params are always required), and make
+  `Required` to "fields with `required:"true"`" (path params are always required, and
+  registration fails for one tagged `required:"false"`), and make
   pointer fields nullable (`type: [T, "null"]`, a `$ref` as `anyOf [{$ref}, {type: null}]`)
   unless required, so `"failure_reason": null` keeps meaning absent, as `encoding/json`
   treats it today. A component gets a variant when its rewritten schema differs from huma's
@@ -634,18 +646,53 @@ lint, key check and variants.
 - **Type table** (`builtinSchemas`): `uuid.UUID` is `{type: string, format: uuid}`
   (`TextUnmarshaler` types otherwise become plain `string`), `types.Email` `format: email`,
   `types.PhoneNumber` `format: phone`, `types.Locale` and `types.Language` plain strings,
-  `types.UnixSeconds` `{type: integer, format: int64}`. Four standard types get the shape
+  `types.UnixSeconds` `{type: integer, format: int64}`. Six standard types get the shape
   `encoding/json` gives them, which huma's defaults miss: `json.Number` is a `number` (its
   kind is string), `big.Int` an `integer` (it has a text decoder but is written as a
   number, by a marshaler with a pointer receiver, which `encoding/json` calls only on an
   addressable value: the registry marshals a response through a pointer and
   `types.Optional` its value through one, and registration refuses a response type that
-  holds such a type by value inside a map value, where nothing is addressable), `net.IP` a plain string (huma says `ipv4`, which refuses IPv6) and
-  `uuid.NullUUID` a nullable uuid. The registry dereferences pointers
+  holds such a type by value inside a map value, where nothing is addressable), `net.IP`
+  `{type: string, format: ip}` (huma says `ipv4`, which refuses IPv6), `netip.Prefix` and
+  `netip.AddrPort` `{type: string, minLength: 1}` (no standard format describes them) and
+  `uuid.NullUUID` a nullable uuid. The text decoders of `net.IP`, `netip.Addr` (which huma
+  gives `format: ip`), `netip.Prefix` and `netip.AddrPort` turn `""` into no value without an
+  error, so the `ip` format and `minLength: 1` refuse a `""` value before the decoder sees
+  it: in a JSON body at any depth (a field, a pointer, a `types.Optional`, a slice item, a
+  map value) and as an empty item of a comma-separated query parameter or form value
+  (`?ips=192.0.2.1,` is a 400 naming `ips.1`). The rule covers values, not map keys: a map
+  keyed by one of these types accepts the key `""`, which the decoder turns into the zero
+  key. An empty parameter or form value is absent before validation, so `?ip=` or an empty
+  `X-Addr:` header reaches the handler as the zero value when the parameter is optional
+  and is refused as missing when it is required; an empty item of a header list is
+  dropped. A field's own `minLength` would replace the `1`, so registration refuses a
+  `minLength` below 1 in a request type wherever the tag reaches a `netip.Prefix` or
+  `netip.AddrPort`: through any number of pointers and `types.Optional`, in any order, and
+  on the items of one slice or array (`*[]*netip.Prefix`, `[]types.Optional[netip.Prefix]`,
+  `types.Optional[[]netip.AddrPort]`). Under a second slice or array, or on a map, huma
+  would put the tag on the inner array or the object, and the lint refuses it there as
+  misplaced. The same schemas describe responses: the zero value of these four types is
+  written as `""`, which an `apitest` contract fails, except on a `netip.Prefix` or
+  `netip.AddrPort` field whose own `minLength` tag is 0, which a response type may carry.
+  The registry dereferences pointers
   before the lookup and marks a pointer's schema nullable itself. compose `types/` do not
   implement `huma.SchemaProvider`: the copy is internal, so `types/` cannot import it, and
   huma stays confined to `components/rest/api/...`. The copy still honours `SchemaProvider`,
   but nothing implements it.
+- **Types that decode their own JSON**: a request field whose type is an app's own type
+  with an `UnmarshalJSON` and no `UnmarshalText` is published and validated by its Go
+  shape, its kind or its struct fields, because the registry cannot know what the method
+  reads (compose's own `types` are not: `types.Optional` is published as its element, the
+  others are in the type table above). That agrees with the
+  decoder for a string kind that reads a string (an app enum), but a struct whose
+  `UnmarshalJSON` reads a string (`"12 USD"`), or an integer type whose `UnmarshalJSON`
+  reads `"low"`, gets a schema no value of the field can satisfy: the form the decoder reads
+  fails the validator, and the form the schema publishes fails the decoder. It fails
+  closed: no value of the field can be sent, every request that sends one is a 400, and
+  nothing unvalidated reaches the handler; a request that leaves out an optional field of
+  such a type passes, and the handler gets its zero value. Giving the type an
+  `UnmarshalText` makes it a plain string in the document and the validator (`isOpaque`),
+  which is the way out when its wire form is a string.
 - **Enums as named components**: `enums.Set[T]` records the values by `reflect.Type`
   (`enums.Values`); repeated `Set` calls for one type record the union in first-seen order,
   and a field narrows with the `enum:"a,b"` tag. For a recorded type the registry registers a
@@ -707,8 +754,12 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
   whose parts `$ref` into it. Compiled schemas are immutable and goroutine-safe; the
   `Compiler` is not, so compile in `Ready` in one goroutine.
 - `AssertFormat()` on. `uuid` (structural, v7 passes by default) and `date-time` are built
-  in; register `email` and `phone` (compose's `types` checks). Unknown formats (`int64`,
-  `double`) are ignored, which is fine.
+  in; register `email` and `phone` (compose's `types` checks) and `ip`, which accepts what
+  `netip.ParseAddr` accepts: both families, and a zone, which `netip.Addr` keeps and
+  `net.IP`'s decoder refuses with a 400 of its own: `body could not be decoded` in a JSON
+  body and `form values could not be decoded` in a multipart form, which name no field, and
+  `query qip is invalid` or `header x-ip is invalid` for a parameter. Unknown formats (`int64`, `double`) are
+  ignored, which is fine.
 - Error mapping: `kind.Required{Missing}` becomes `field is required`, `kind.Type` becomes
   `field must be <want>`, `kind.Enum` becomes `field must be one of ...`, `kind.Format`
   becomes `field must be a valid <name>`, `kind.Minimum`/`Maximum`/`MinLength`/... become

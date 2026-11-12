@@ -61,6 +61,7 @@ const fixtureDoc = `{
           "created_at": {"type": "string", "format": "date-time"},
           "email": {"type": "string", "format": "email"},
           "phone": {"type": "string", "format": "phone"},
+          "ip": {"type": "string", "format": "ip"},
           "total": {"type": "number", "format": "double"},
           "count": {"type": "integer", "format": "int64"},
           "kind": {"anyOf": [{"type": "string"}, {"type": "null"}]},
@@ -218,17 +219,39 @@ func TestFormats(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	valid := `{"body":{"id":"` + validID + `","created_at":"2026-10-11T10:00:00Z","email":"a@b.co","phone":"+5215512345678",` +
+	valid := `{"body":{"id":"` + validID + `","created_at":"2026-10-11T10:00:00Z","email":"a@b.co","phone":"+5215512345678","ip":"2001:db8::1",` +
 		`"total":1.5,"count":12345678901234567890,"kind":null,"create":null}}`
 	require.NoError(t, schema.Validate(instance(t, valid)))
 
-	invalid := `{"body":{"id":"` + sentinel + `","created_at":"` + sentinel + `","email":"` + sentinel + `","phone":"` + sentinel + `","kind":1,` +
+	invalid := `{"body":{"id":"` + sentinel + `","created_at":"` + sentinel + `","email":"` + sentinel + `","phone":"` + sentinel + `","ip":"` + sentinel + `","kind":1,` +
 		`"create":{"name":"abc","config":{"retries":"` + sentinel + `"}}}}`
 	err = schema.Validate(instance(t, invalid))
 	require.Error(t, err)
-	require.Equal(t, "create.config.name is required; create.config.retries must be integer; created_at must be a valid date-time; email must be a valid email; id must be a valid uuid; "+
+	require.Equal(t, "create.config.name is required; create.config.retries must be integer; created_at must be a valid date-time; email must be a valid email; id must be a valid uuid; ip must be a valid ip; "+
 		"kind must be string or null; phone must be a valid phone", ez.ErrorMessage(err))
 	require.NotContains(t, err.Error(), sentinel)
+}
+
+// TestIPFormat: the ip format accepts what netip.ParseAddr accepts, of
+// either family and with a zone, and refuses the empty string, a prefix and
+// an address with a port.
+func TestIPFormat(t *testing.T) {
+	compiler, err := NewCompiler(json.RawMessage(fixtureDoc))
+	require.NoError(t, err)
+	schema, err := compiler.Compile("op:ip.json", map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"body": map[string]any{"type": "string", "format": "ip"}},
+	})
+	require.NoError(t, err)
+
+	for _, value := range []string{"192.0.2.1", "2001:db8::1", "::ffff:192.0.2.1", "fe80::1%eth0"} {
+		require.NoError(t, schema.Validate(map[string]any{"body": value}), value)
+	}
+	for _, value := range []string{"", "garbage", "192.0.2.010", "192.0.2.0/24", "192.0.2.1:443"} {
+		err = schema.Validate(map[string]any{"body": value})
+		require.Error(t, err, value)
+		require.Equal(t, "body must be a valid ip", ez.ErrorMessage(err), value)
+	}
 }
 
 func TestCompileErrors(t *testing.T) {

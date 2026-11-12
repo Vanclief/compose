@@ -3,6 +3,7 @@ package validate
 import (
 	"bytes"
 	"encoding/json"
+	"net/netip"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/vanclief/compose/types"
@@ -29,8 +30,9 @@ type Schema struct {
 }
 
 // NewCompiler loads the OpenAPI 3.1 document as resource "spec.json" and
-// registers the formats compose relies on (uuid and date-time are built in;
-// unknown formats such as int64 or double are ignored by santhosh).
+// registers the formats compose relies on, email, phone and ip (uuid and
+// date-time are built in; unknown formats such as int64 or double are ignored
+// by santhosh).
 func NewCompiler(doc json.RawMessage) (*Compiler, error) {
 	decoded, err := jsonschema.UnmarshalJSON(bytes.NewReader(doc))
 	if err != nil {
@@ -42,6 +44,7 @@ func NewCompiler(doc json.RawMessage) (*Compiler, error) {
 	compiler.AssertFormat()
 	compiler.RegisterFormat(&jsonschema.Format{Name: "email", Validate: validateEmail})
 	compiler.RegisterFormat(&jsonschema.Format{Name: "phone", Validate: validatePhone})
+	compiler.RegisterFormat(&jsonschema.Format{Name: "ip", Validate: validateIP})
 
 	err = compiler.AddResource(baseURL+specResource, decoded)
 	if err != nil {
@@ -121,4 +124,17 @@ func validatePhone(v any) error {
 	}
 
 	return types.ValidatePhoneNumber(s)
+}
+
+// validateIP accepts the addresses netip.ParseAddr accepts, of either family
+// and with a zone, and refuses the empty string, which the text decoders of
+// net.IP and netip.Addr would turn into no address without an error.
+func validateIP(v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return nil
+	}
+
+	_, err := netip.ParseAddr(s)
+	return err
 }

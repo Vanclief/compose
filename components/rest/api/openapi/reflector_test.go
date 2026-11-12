@@ -3,8 +3,10 @@ package openapi
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/big"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strings"
@@ -321,6 +323,143 @@ type requiredNullablePointerList struct {
 
 type optionalNullablePointer struct {
 	Note *string `json:"note" nullable:"true"`
+}
+
+// EmbeddedNote is a struct embedded with its fields promoted.
+type EmbeddedNote struct {
+	Note string `json:"note"`
+}
+
+// nullableEmbedded tags an embedded struct nullable.
+type nullableEmbedded struct {
+	EmbeddedNote `nullable:"true"`
+}
+
+// plainEmbedded embeds a struct with no nullable tag.
+type plainEmbedded struct {
+	EmbeddedNote
+}
+
+// prefixMinLengthZero sets minLength 0 on a required netip.Prefix.
+type prefixMinLengthZero struct {
+	A netip.Prefix `json:"a" required:"true" minLength:"0"`
+}
+
+// prefixListMinLengthZero sets minLength 0 on the items of a query list of
+// netip.Prefix.
+type prefixListMinLengthZero struct {
+	L []netip.Prefix `json:"-" query:"l" minLength:"0"`
+}
+
+// optionalAddrPortMinLength sets a negative minLength on a
+// types.Optional[netip.AddrPort].
+type optionalAddrPortMinLength struct {
+	A types.Optional[netip.AddrPort] `json:"a" minLength:"-1"`
+}
+
+// prefixMapMinLength sets minLength 0 on a map of netip.Prefix values.
+type prefixMapMinLength struct {
+	M map[string]netip.Prefix `json:"m" minLength:"0"`
+}
+
+// prefixMinLengthTwo sets minLength 2 on a netip.Prefix, which keeps ""
+// refused.
+type prefixMinLengthTwo struct {
+	A *netip.Prefix `json:"a" minLength:"2"`
+}
+
+// blankAdditionalProperties gives the blank field an empty
+// additionalProperties tag.
+type blankAdditionalProperties struct {
+	_    struct{} `additionalProperties:""`
+	Name string   `json:"name"`
+}
+
+// nullableStructPointer tags a pointer to a struct nullable.
+type nullableStructPointer struct {
+	Owner *nullOwner `json:"owner,omitempty" nullable:"true"`
+}
+
+// structPointer is a pointer to a struct with no nullable tag.
+type structPointer struct {
+	Owner *nullOwner `json:"owner,omitempty"`
+}
+
+// emptyRequired puts a required tag with no value on a body field.
+type emptyRequired struct {
+	Name string `json:"name" required:""`
+}
+
+// looseRequired puts a required tag that is not exactly true on a body
+// field.
+type looseRequired struct {
+	Name string `json:"name" required:"True"`
+}
+
+// emptyNullable puts a nullable tag with no value on a body field.
+type emptyNullable struct {
+	Note *string `json:"note" nullable:""`
+}
+
+// optionalPrefixItems sets minLength 0 on the items of a slice of
+// types.Optional[netip.Prefix].
+type optionalPrefixItems struct {
+	A []types.Optional[netip.Prefix] `json:"a" minLength:"0"`
+}
+
+// nullableOptionalStruct tags a types.Optional of a struct nullable.
+type nullableOptionalStruct struct {
+	Owner types.Optional[nullOwner] `json:"owner,omitzero" nullable:"true"`
+}
+
+// nullableOptionalStructPointer tags a types.Optional of a struct pointer
+// nullable.
+type nullableOptionalStructPointer struct {
+	Owner types.Optional[*nullOwner] `json:"owner,omitzero" nullable:"true"`
+}
+
+// nullableIgnoredStruct tags a struct field that is not read from the body
+// nullable.
+type nullableIgnoredStruct struct {
+	Owner nullOwner `json:"-" nullable:"true"`
+}
+
+// nullableIgnoredEmbedded tags an embedded struct that is not read from the
+// body nullable.
+type nullableIgnoredEmbedded struct {
+	EmbeddedNote `json:"-" nullable:"true"`
+}
+
+// nullableFormStruct tags a struct form field nullable.
+type nullableFormStruct struct {
+	Meta nullOwner `json:"-" form:"meta" nullable:"true"`
+}
+
+// nullableQueryStruct tags a struct query parameter nullable.
+type nullableQueryStruct struct {
+	Owner nullOwner `json:"-" query:"owner" nullable:"true"`
+}
+
+// nullableHeaderStruct tags a struct pointer header parameter nullable.
+type nullableHeaderStruct struct {
+	Owner *nullOwner `json:"-" header:"X-Owner" nullable:"true"`
+}
+
+// looseEmbedded puts boolean tags that are not exactly true or false on an
+// embedded struct.
+type looseEmbedded struct {
+	EmbeddedNote `nullable:"True" required:"yes" hidden:"1"`
+}
+
+// emptyEmbeddedPointer puts empty boolean tags on an embedded struct
+// pointer.
+type emptyEmbeddedPointer struct {
+	*EmbeddedNote `required:"" nullable:""`
+}
+
+// optionalPath tags a path parameter required:"false".
+type optionalPath struct {
+	ID string `json:"-" path:"id" required:"false"`
 }
 
 type nullableString struct {
@@ -681,7 +820,13 @@ func TestErrors(t *testing.T) {
 		{"duplicate param", reflect.TypeFor[fixture.DuplicateParam](), true, `duplicate header parameter "x-trace"`},
 		{"huma panic", reflect.TypeFor[fixture.BadValue](), false, "invalid"},
 		{"non-struct request", reflect.TypeFor[[]fixture.Run](), true, "must be a plain struct"},
-		{"nullable struct ref", reflect.TypeFor[fixture.NullableStruct](), false, "fixture.NullableStruct.Meta: nullable tag is not supported on object references; use a pointer"},
+		{"nullable struct ref", reflect.TypeFor[fixture.NullableStruct](), false, "fixture.NullableStruct.Meta: nullable tag is not supported on object references; in a request use *fixture.Meta, which accepts null unless it is required; to tell null from an absent key, or to send null in a response, use types.Optional[fixture.Meta], without the nullable tag"},
+		{"nullable struct pointer in a request", reflect.TypeFor[nullableStructPointer](), true, "openapi.nullableStructPointer.Owner: nullable tag is not supported on object references; in a request *openapi.nullOwner already accepts null unless it is required, so drop the tag; to tell null from an absent key, or to send null in a response, use types.Optional[openapi.nullOwner], without the nullable tag"},
+		{"nullable struct pointer in a response", reflect.TypeFor[nullableStructPointer](), false, "openapi.nullableStructPointer.Owner: nullable tag is not supported on object references; in a request *openapi.nullOwner already accepts null"},
+		{"empty required tag on a body field", reflect.TypeFor[emptyRequired](), true, `openapi: field 'Name': the required tag must be "true" or "false", not ""`},
+		{"loose required tag on a body field", reflect.TypeFor[looseRequired](), true, `openapi: field 'Name': the required tag must be "true" or "false", not "True"`},
+		{"empty nullable tag", reflect.TypeFor[emptyNullable](), false, `openapi: field 'Note': the nullable tag must be "true" or "false", not ""`},
+		{"path parameter tagged required false", reflect.TypeFor[optionalPath](), true, `openapi: openapi.optionalPath.ID: a path parameter is always required; drop required:"false"`},
 		{"bound beyond int8", reflect.TypeFor[fixture.WideBound](), false, "fixture.WideBound.N: maximum 1000 is above the int8 range"},
 		{"json string option in a request", reflect.TypeFor[fixture.StringOption](), true, "fixture.StringOption.N: the json string option is not supported"},
 		{"json string option in a response", reflect.TypeFor[fixture.StringOption](), false, "fixture.StringOption.N: the json string option is not supported"},
@@ -750,6 +895,26 @@ func TestErrors(t *testing.T) {
 		{"parameter tag on a shadowed field", reflect.TypeFor[shadowedParam](), true, `openapi.ShadowPaging.Limit: the query tag is never read: another field named Limit hides this one in the request type; rename one of them`},
 		{"parameter tags on fields that hide each other", reflect.TypeFor[ambiguousParam](), true, `openapi.ShadowPaging.Limit: the query tag is never read: another field named Limit hides this one in the request type`},
 		{"unique objects in a nested request struct", reflect.TypeFor[uniqueObjectsHolder](), true, `openapi.uniqueObjects.Items: uniqueItems is not supported on []openapi.nullableHolders in a request type`},
+		{"nullable embedded struct in a request", reflect.TypeFor[nullableEmbedded](), true, `openapi.nullableEmbedded.EmbeddedNote: the nullable tag does not apply to an embedded struct, whose fields are promoted into the enclosing object; drop the tag`},
+		{"nullable embedded struct in a response", reflect.TypeFor[nullableEmbedded](), false, `openapi.nullableEmbedded.EmbeddedNote: the nullable tag does not apply to an embedded struct`},
+		{"minLength 0 on a netip.Prefix", reflect.TypeFor[prefixMinLengthZero](), true, `openapi.prefixMinLengthZero.A: minLength 0 is not supported on netip.Prefix in a request type: its decoder reads "" as the zero value without an error, and the schema's minLength 1 is what refuses it; drop the tag or set it to 1 or more`},
+		{"minLength 0 on a netip.Prefix query list", reflect.TypeFor[prefixListMinLengthZero](), true, `openapi.prefixListMinLengthZero.L: minLength 0 is not supported on []netip.Prefix in a request type`},
+		{"negative minLength on an optional netip.AddrPort", reflect.TypeFor[optionalAddrPortMinLength](), true, `openapi.optionalAddrPortMinLength.A: minLength -1 is not supported on types.Optional[net/netip.AddrPort] in a request type`},
+		{"minLength on a map of netip.Prefix", reflect.TypeFor[prefixMapMinLength](), true, `openapi.prefixMapMinLength.M: minLength constrains a string, and on map[string]netip.Prefix the schema would carry it on an object`},
+		{"empty additionalProperties tag on the blank field", reflect.TypeFor[blankAdditionalProperties](), true, `openapi: field '_': the additionalProperties tag must be "true" or "false", not ""`},
+		{"minLength 0 on optional netip.Prefix items", reflect.TypeFor[optionalPrefixItems](), true, `openapi.optionalPrefixItems.A: minLength 0 is not supported on []types.Optional[net/netip.Prefix] in a request type`},
+		{"nullable optional struct in a request", reflect.TypeFor[nullableOptionalStruct](), true, `openapi.nullableOptionalStruct.Owner: the nullable tag is not supported on a types.Optional of a struct, which accepts null already; drop the tag`},
+		{"nullable optional struct in a response", reflect.TypeFor[nullableOptionalStruct](), false, `openapi.nullableOptionalStruct.Owner: the nullable tag is not supported on a types.Optional of a struct, which accepts null already; drop the tag`},
+		{"nullable optional struct pointer", reflect.TypeFor[nullableOptionalStructPointer](), true, `openapi.nullableOptionalStructPointer.Owner: the nullable tag is not supported on a types.Optional of a struct`},
+		{"nullable struct not read from the body", reflect.TypeFor[nullableIgnoredStruct](), true, `openapi.nullableIgnoredStruct.Owner: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"nullable struct not read from the body in a response", reflect.TypeFor[nullableIgnoredStruct](), false, `openapi.nullableIgnoredStruct.Owner: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"nullable embedded struct not read from the body", reflect.TypeFor[nullableIgnoredEmbedded](), true, `openapi.nullableIgnoredEmbedded.EmbeddedNote: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"nullable struct form field", reflect.TypeFor[nullableFormStruct](), true, `openapi.nullableFormStruct.Meta: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"nullable struct query parameter", reflect.TypeFor[nullableQueryStruct](), true, `openapi.nullableQueryStruct.Owner: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"nullable struct pointer header parameter", reflect.TypeFor[nullableHeaderStruct](), true, `openapi.nullableHeaderStruct.Owner: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`},
+		{"loose boolean tags on an embedded struct", reflect.TypeFor[looseEmbedded](), true, `openapi: openapi.looseEmbedded.EmbeddedNote: the required tag must be "true" or "false", not "yes"; openapi.looseEmbedded.EmbeddedNote: the nullable tag must be "true" or "false", not "True"; openapi.looseEmbedded.EmbeddedNote: the hidden tag must be "true" or "false", not "1"`},
+		{"loose boolean tags on an embedded struct in a response", reflect.TypeFor[looseEmbedded](), false, `openapi.looseEmbedded.EmbeddedNote: the required tag must be "true" or "false", not "yes"`},
+		{"empty boolean tags on an embedded struct pointer", reflect.TypeFor[emptyEmbeddedPointer](), true, `openapi: openapi.emptyEmbeddedPointer.EmbeddedNote: the required tag must be "true" or "false", not ""; openapi.emptyEmbeddedPointer.EmbeddedNote: the nullable tag must be "true" or "false", not ""`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -765,6 +930,157 @@ func TestErrors(t *testing.T) {
 			require.Contains(t, err.Error(), tt.want)
 		})
 	}
+}
+
+// TestStructPointerAcceptsNull: a pointer to a struct accepts null in a
+// request without a nullable tag, as the lint tells an app that tags one.
+func TestStructPointerAcceptsNull(t *testing.T) {
+	r := NewReflector()
+	_, err := r.AddRequest(reflect.TypeFor[structPointer]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	s := component(t, res, "openapi.structPointer")
+	require.Equal(t, map[string]any{"anyOf": []any{
+		map[string]any{"$ref": ref("openapi.nullOwner")},
+		map[string]any{"type": "null"},
+	}}, prop(t, s, "owner"))
+}
+
+// TestEmbeddedAndPrefixAllowed: an embedded struct without the nullable tag
+// registers in a request and a response, and a minLength of 1 or more on a
+// netip.Prefix replaces the 1.
+func TestEmbeddedAndPrefixAllowed(t *testing.T) {
+	r := NewReflector()
+	_, err := r.AddRequest(reflect.TypeFor[plainEmbedded]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[plainEmbedded]())
+	require.NoError(t, err)
+	_, err = r.AddRequest(reflect.TypeFor[prefixMinLengthTwo]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "minLength": 2.0}, prop(t, component(t, res, "openapi.prefixMinLengthTwo"), "a"))
+}
+
+// TestBoolTagValues: a boolean tag on a body field or a path, query or
+// header parameter must read exactly true or false, the empty value
+// included.
+func TestBoolTagValues(t *testing.T) {
+	locations := []struct {
+		name string
+		tag  string
+	}{
+		{"body field", `json:"f"`},
+		{"path parameter", `json:"-" path:"f"`},
+		{"query parameter", `json:"-" query:"f"`},
+		{"header parameter", `json:"-" header:"X-F"`},
+	}
+	for _, loc := range locations {
+		for _, tag := range []string{"required", "nullable", "deprecated", "hidden", "uniqueItems"} {
+			for _, value := range []string{"True", "1", ""} {
+				t.Run(loc.name+" "+tag+" "+value, func(t *testing.T) {
+					typ := reflect.StructOf([]reflect.StructField{{
+						Name: "F",
+						Type: reflect.TypeFor[[]string](),
+						Tag:  reflect.StructTag(fmt.Sprintf(`%s %s:%q`, loc.tag, tag, value)),
+					}})
+					_, err := NewReflector().AddRequest(typ)
+					require.Error(t, err)
+					require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+					require.Contains(t, ez.ErrorMessage(err), fmt.Sprintf(`the %s tag must be "true" or "false", not %q`, tag, value))
+				})
+			}
+		}
+	}
+}
+
+// TestEmptyTextMinLengthNestings: a minLength tag that reaches a
+// netip.Prefix or netip.AddrPort through pointers, types.Optional and one
+// slice or array, in any order, may not lower its minLength 1 in a request
+// type, and may raise it. Under a second slice the tag is refused as
+// misplaced either way.
+func TestEmptyTextMinLengthNestings(t *testing.T) {
+	nestings := []reflect.Type{
+		reflect.TypeFor[netip.Prefix](),
+		reflect.TypeFor[*netip.AddrPort](),
+		reflect.TypeFor[[]types.Optional[netip.Prefix]](),
+		reflect.TypeFor[types.Optional[[]netip.Prefix]](),
+		reflect.TypeFor[types.Optional[[]*netip.AddrPort]](),
+		reflect.TypeFor[types.Optional[*netip.Prefix]](),
+		reflect.TypeFor[*[]*netip.Prefix](),
+		reflect.TypeFor[[2]types.Optional[netip.AddrPort]](),
+		reflect.TypeFor[types.Optional[[2]*netip.Prefix]](),
+	}
+	for _, typ := range nestings {
+		field := func(minLength string) reflect.Type {
+			return reflect.StructOf([]reflect.StructField{{
+				Name: "A",
+				Type: typ,
+				Tag:  reflect.StructTag(fmt.Sprintf(`json:"a" minLength:%q`, minLength)),
+			}})
+		}
+		t.Run(typ.String(), func(t *testing.T) {
+			_, err := NewReflector().AddRequest(field("0"))
+			require.Error(t, err)
+			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+			require.Contains(t, ez.ErrorMessage(err), fmt.Sprintf(`.A: minLength 0 is not supported on %s in a request type`, typ))
+
+			r := NewReflector()
+			_, err = r.AddRequest(field("2"))
+			require.NoError(t, err)
+			_, err = r.Finalize()
+			require.NoError(t, err)
+		})
+	}
+
+	for _, minLength := range []string{"0", "2"} {
+		typ := reflect.StructOf([]reflect.StructField{{
+			Name: "A",
+			Type: reflect.TypeFor[[][]netip.Prefix](),
+			Tag:  reflect.StructTag(fmt.Sprintf(`json:"a" minLength:%q`, minLength)),
+		}})
+		_, err := NewReflector().AddRequest(typ)
+		require.Error(t, err)
+		require.Contains(t, ez.ErrorMessage(err), `.A: minLength constrains a string, and on [][]netip.Prefix the schema would carry it on an array`)
+		require.NotContains(t, ez.ErrorMessage(err), "is not supported on [][]netip.Prefix")
+	}
+}
+
+// TestEmbeddedBoolTagValues: a boolean tag on an embedded struct, whose
+// fields are promoted, must read exactly true or false, the empty value
+// included; false registers in a request and a response (uniqueItems is
+// refused there as misplaced whatever its value).
+func TestEmbeddedBoolTagValues(t *testing.T) {
+	embed := func(tag string) reflect.Type {
+		return reflect.StructOf([]reflect.StructField{{
+			Name:      "EmbeddedNote",
+			Type:      reflect.TypeFor[EmbeddedNote](),
+			Tag:       reflect.StructTag(tag),
+			Anonymous: true,
+		}})
+	}
+	for _, tag := range []string{"required", "nullable", "deprecated", "hidden", "uniqueItems"} {
+		for _, value := range []string{"True", "1", ""} {
+			t.Run(tag+" "+value, func(t *testing.T) {
+				_, err := NewReflector().AddRequest(embed(fmt.Sprintf(`%s:%q`, tag, value)))
+				require.Error(t, err)
+				require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+				require.Contains(t, ez.ErrorMessage(err), fmt.Sprintf(`.EmbeddedNote: the %s tag must be "true" or "false", not %q`, tag, value))
+			})
+		}
+	}
+
+	typ := embed(`required:"false" nullable:"false" deprecated:"false" hidden:"false"`)
+	r := NewReflector()
+	_, err := r.AddRequest(typ)
+	require.NoError(t, err)
+	err = r.AddResponse(typ)
+	require.NoError(t, err)
+	_, err = r.Finalize()
+	require.NoError(t, err)
 }
 
 // TestNullableFalseAllowed: nullable:"false" stays allowed where it has an

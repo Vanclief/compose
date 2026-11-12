@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -935,6 +936,162 @@ func TestMultipartAllOptional(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
+// requiredTagsRequest reads required:"true", required:"false" and no tag on
+// query, header and file fields.
+type requiredTagsRequest struct {
+	requests.NoRules
+	Must     string                `json:"-" query:"must" required:"true"`
+	May      string                `json:"-" query:"may" required:"false"`
+	Free     string                `json:"-" query:"free"`
+	Token    string                `json:"-" header:"X-Token" required:"true"`
+	Trace    string                `json:"-" header:"X-Trace" required:"false"`
+	Span     string                `json:"-" header:"X-Span"`
+	Manifest *multipart.FileHeader `json:"-" form:"manifest" required:"true"`
+	Notes    *multipart.FileHeader `json:"-" form:"notes" required:"false"`
+	Extra    *multipart.FileHeader `json:"-" form:"extra"`
+}
+
+type queryRequiredValues struct {
+	requests.NoRules
+	Title string `json:"-" query:"title" required:"True"`
+	Yes   string `json:"-" query:"yes" required:"yes"`
+	Empty string `json:"-" query:"empty" required:""`
+}
+
+type headerRequiredValues struct {
+	requests.NoRules
+	Title string `json:"-" header:"X-Title" required:"True"`
+	Yes   string `json:"-" header:"X-Yes" required:"yes"`
+	Empty string `json:"-" header:"X-Empty" required:""`
+}
+
+type fileRequiredValues struct {
+	requests.NoRules
+	Title *multipart.FileHeader `json:"-" form:"title" required:"True"`
+	Yes   *multipart.FileHeader `json:"-" form:"yes" required:"yes"`
+	Empty *multipart.FileHeader `json:"-" form:"empty" required:""`
+}
+
+// TestRequiredTagValues: a required tag on a parameter or a file field must
+// be exactly true or false, as on a body field; true makes the parameter or
+// the file required, false and no tag leave it optional.
+func TestRequiredTagValues(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	msg := panicMessage(t, func() {
+		api.GET[queryRequiredValues, nodeResponse](reg.Group("/query"), "", "list", stub)
+	})
+	require.Equal(t, `api: GET /query (query.list): openapi: api_test.queryRequiredValues.Title: the required tag must be "true" or "false", not "True"; api_test.queryRequiredValues.Yes: the required tag must be "true" or "false", not "yes"; api_test.queryRequiredValues.Empty: the required tag must be "true" or "false", not ""`, msg)
+
+	msg = panicMessage(t, func() {
+		api.GET[headerRequiredValues, nodeResponse](reg.Group("/header"), "", "list", stub)
+	})
+	require.Equal(t, `api: GET /header (header.list): openapi: api_test.headerRequiredValues.Title: the required tag must be "true" or "false", not "True"; api_test.headerRequiredValues.Yes: the required tag must be "true" or "false", not "yes"; api_test.headerRequiredValues.Empty: the required tag must be "true" or "false", not ""`, msg)
+
+	msg = panicMessage(t, func() {
+		api.POST[fileRequiredValues, nodeResponse](reg.Group("/files"), "", "upload", stub)
+	})
+	require.Equal(t, `api: POST /files (files.upload): form:"title" field Title: the required tag must be "true" or "false", not "True"; form:"yes" field Yes: the required tag must be "true" or "false", not "yes"; form:"empty" field Empty: the required tag must be "true" or "false", not ""`, msg)
+
+	e := newEcho()
+	reg = api.New(e, api.Public())
+	api.POST[requiredTagsRequest, nodeResponse](reg.Group("/tags"), "", "create", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	op := dig(t, decode(t, raw), "paths", "/tags", "post")
+	required := map[string]bool{}
+	for _, p := range dig(t, op, "parameters").([]any) {
+		param := p.(map[string]any)
+		required[param["name"].(string)] = param["required"] == true
+	}
+	require.Equal(t, map[string]bool{"must": true, "may": false, "free": false, "x-token": true, "x-trace": false, "x-span": false}, required)
+	require.Equal(t, []any{"manifest"}, dig(t, op, "requestBody", "content", "multipart/form-data", "schema", "required"))
+
+	manifest := part{name: "manifest", value: "steps: 3", filename: "manifest.yaml"}
+	upload := func(target string, header []string, parts ...part) *httptest.ResponseRecorder {
+		body, contentType := form(t, parts...)
+		return s.do(http.MethodPost, target, body, append(header, echo.HeaderContentType, contentType)...)
+	}
+	token := []string{"X-Token", "t"}
+
+	rec := upload("/tags?must=m", token, manifest)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = upload("/tags", token, manifest)
+	requireError(t, rec, http.StatusBadRequest, "query must is required")
+	rec = upload("/tags?must=m", nil, manifest)
+	requireError(t, rec, http.StatusBadRequest, "header x-token is required")
+	rec = upload("/tags?must=m", token)
+	requireError(t, rec, http.StatusBadRequest, "manifest is required")
+}
+
+// fileBoolValues puts boolean tags that are not exactly true or false on
+// file fields.
+type fileBoolValues struct {
+	requests.NoRules
+	Nullable   *multipart.FileHeader   `json:"-" form:"nullable" nullable:"yes"`
+	Empty      *multipart.FileHeader   `json:"-" form:"empty" nullable:""`
+	Hidden     *multipart.FileHeader   `json:"-" form:"hidden" hidden:"True"`
+	Bare       *multipart.FileHeader   `json:"-" form:"bare" hidden:""`
+	Deprecated *multipart.FileHeader   `json:"-" form:"deprecated" deprecated:""`
+	Old        *multipart.FileHeader   `json:"-" form:"old" deprecated:"1"`
+	Unique     []*multipart.FileHeader `json:"-" form:"unique" uniqueItems:"1"`
+}
+
+// textBoolValue puts a deprecated tag that is not exactly true or false on
+// a form value of a multipart request.
+type textBoolValue struct {
+	requests.NoRules
+	File  *multipart.FileHeader `json:"-" form:"file"`
+	Title string                `json:"title" deprecated:"1"`
+}
+
+// nullableFile tags a file field nullable.
+type nullableFile struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file" nullable:"true"`
+}
+
+// optionalFile is nullableFile without the tag.
+type optionalFile struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestFileFieldBoolTags: every boolean tag on a file field must be exactly
+// true or false, as on a form value; nullable:"true" on a single file is
+// refused with advice that registers when followed.
+func TestFileFieldBoolTags(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	msg := panicMessage(t, func() {
+		api.POST[fileBoolValues, nodeResponse](reg.Group("/files"), "", "upload", stub)
+	})
+	require.Equal(t, `api: POST /files (files.upload): `+
+		`form:"nullable" field Nullable: the nullable tag must be "true" or "false", not "yes"; `+
+		`form:"empty" field Empty: the nullable tag must be "true" or "false", not ""; `+
+		`form:"hidden" field Hidden: the hidden tag must be "true" or "false", not "True"; `+
+		`form:"bare" field Bare: the hidden tag must be "true" or "false", not ""; `+
+		`form:"deprecated" field Deprecated: the deprecated tag must be "true" or "false", not ""; `+
+		`form:"old" field Old: the deprecated tag must be "true" or "false", not "1"; `+
+		`form:"unique" field Unique: the uniqueItems tag must be "true" or "false", not "1"`, msg)
+
+	msg = panicMessage(t, func() {
+		api.POST[textBoolValue, nodeResponse](reg.Group("/texts"), "", "upload", stub)
+	})
+	require.Equal(t, `api: POST /texts (texts.upload): openapi: field 'Title': the deprecated tag must be "true" or "false", not "1"`, msg)
+
+	msg = panicMessage(t, func() {
+		api.POST[nullableFile, nodeResponse](reg.Group("/nullable"), "", "upload", stub)
+	})
+	require.Equal(t, `api: POST /nullable (nullable.upload): openapi: api_test.nullableFile.File: the nullable tag does not apply to a file field, which is optional unless it is required:"true"; drop the tag`, msg)
+
+	reg = api.New(newEcho(), api.Public())
+	api.POST[optionalFile, nodeResponse](reg.Group("/optional"), "", "upload", stub)
+	reg.Ready()
+}
+
 // numberFormRequest is a multipart request with number form values.
 type numberFormRequest struct {
 	requests.NoRules
@@ -1589,30 +1746,402 @@ func TestExactNumberBounds(t *testing.T) {
 
 type addressRequest struct {
 	requests.NoRules
-	IP net.IP `json:"ip"`
+	IP        net.IP                 `json:"ip" required:"true"`
+	MaybeIP   net.IP                 `json:"maybe_ip"`
+	Addr      netip.Addr             `json:"addr" required:"true"`
+	MaybeAddr netip.Addr             `json:"maybe_addr"`
+	Prefix    netip.Prefix           `json:"prefix"`
+	AddrPort  netip.AddrPort         `json:"addr_port"`
+	Pointer   *net.IP                `json:"pointer"`
+	List      []net.IP               `json:"list"`
+	Optional  types.Optional[net.IP] `json:"optional"`
+	ByName    map[string]net.IP      `json:"by_name"`
+	Allowed   netip.Prefix           `json:"allowed" enum:",10.0.0.0/8"`
+	Query     net.IP                 `json:"-" query:"ip"`
+	QueryList []net.IP               `json:"-" query:"ips"`
+	Header    netip.Addr             `json:"-" header:"X-Addr"`
 }
 
-// TestNetIP: a net.IP takes both address families; its decoder refuses a
-// bad address.
+// TestNetIP: an address field, required or not, takes both families and
+// refuses "" and a bad address, which its text decoder would turn into no
+// address or refuse after the validator; a prefix and an address with a
+// port refuse "", even where an enum tag lists it. A net.IP refuses ""
+// through a pointer, a slice, a types.Optional and a map value, and as an
+// item of a comma-separated query list. An empty parameter is absent, so an
+// optional one reaches the handler as the zero value.
 func TestNetIP(t *testing.T) {
 	e := newEcho()
 	reg := api.New(e, api.Public())
-	var got net.IP
+	var got *addressRequest
 	api.POST(reg.Group("/addresses"), "", "create", func(ctx context.Context, req *addressRequest) (nodeResponse, error) {
-		got = req.IP
+		got = req
 		return nodeResponse{OK: true}, nil
 	})
 	reg.Ready()
 	s := &server{e: e, reg: reg}
 
-	for _, ip := range []string{"192.0.2.1", "2001:db8::1", "::1"} {
-		rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+ip+`"}`)
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		require.True(t, net.ParseIP(ip).Equal(got), ip)
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	props := dig(t, decode(t, raw), "components", "schemas", "api_test.addressRequest", "properties")
+	ip := map[string]any{"type": "string", "format": "ip"}
+	nonEmpty := map[string]any{"type": "string", "minLength": 1.0}
+	require.Equal(t, ip, dig(t, props, "ip"))
+	require.Equal(t, ip, dig(t, props, "maybe_ip"))
+	require.Equal(t, ip, dig(t, props, "addr"))
+	require.Equal(t, ip, dig(t, props, "maybe_addr"))
+	require.Equal(t, nonEmpty, dig(t, props, "prefix"))
+	require.Equal(t, nonEmpty, dig(t, props, "addr_port"))
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "ip"}, dig(t, props, "pointer"))
+	require.Equal(t, map[string]any{"type": []any{"array", "null"}, "items": ip}, dig(t, props, "list"))
+	require.Equal(t, map[string]any{"type": []any{"string", "null"}, "format": "ip"}, dig(t, props, "optional"))
+	require.Equal(t, map[string]any{"type": []any{"object", "null"}, "additionalProperties": ip}, dig(t, props, "by_name"))
+	params := dig(t, decode(t, raw), "paths", "/addresses", "post", "parameters").([]any)
+	require.Len(t, params, 3)
+	require.Equal(t, ip, dig(t, params[0], "schema"))
+	require.Equal(t, map[string]any{"type": "array", "items": ip}, dig(t, params[1], "schema"))
+	require.Equal(t, ip, dig(t, params[2], "schema"))
+
+	body := func(extra string) string {
+		return `{"ip":"192.0.2.1","addr":"192.0.2.1"` + extra + `}`
 	}
 
-	rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+sentinel+`"}`)
+	for _, value := range []string{"192.0.2.1", "2001:db8::1"} {
+		rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+value+`","maybe_ip":"`+value+`","addr":"`+value+`","maybe_addr":"`+value+`"}`)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		want := netip.MustParseAddr(value)
+		require.True(t, net.ParseIP(value).Equal(got.IP), value)
+		require.True(t, net.ParseIP(value).Equal(got.MaybeIP), value)
+		require.Equal(t, want, got.Addr)
+		require.Equal(t, want, got.MaybeAddr)
+	}
+
+	for _, value := range []string{"", sentinel} {
+		rec := s.do(http.MethodPost, "/addresses", `{"ip":"`+value+`","addr":"192.0.2.1"}`)
+		requireError(t, rec, http.StatusBadRequest, "ip must be a valid ip")
+		rec = s.do(http.MethodPost, "/addresses", `{"ip":"192.0.2.1","addr":"`+value+`"}`)
+		requireError(t, rec, http.StatusBadRequest, "addr must be a valid ip")
+		rec = s.do(http.MethodPost, "/addresses", body(`,"maybe_ip":"`+value+`"`))
+		requireError(t, rec, http.StatusBadRequest, "maybe_ip must be a valid ip")
+		rec = s.do(http.MethodPost, "/addresses", body(`,"maybe_addr":"`+value+`"`))
+		requireError(t, rec, http.StatusBadRequest, "maybe_addr must be a valid ip")
+	}
+
+	rec := s.do(http.MethodPost, "/addresses", body(`,"prefix":""`))
+	requireError(t, rec, http.StatusBadRequest, "prefix must be at least 1 character")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"addr_port":""`))
+	requireError(t, rec, http.StatusBadRequest, "addr_port must be at least 1 character")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"prefix":"2001:db8::/32","addr_port":"[2001:db8::1]:443"`))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, netip.MustParsePrefix("2001:db8::/32"), got.Prefix)
+	require.Equal(t, netip.MustParseAddrPort("[2001:db8::1]:443"), got.AddrPort)
+
+	rec = s.do(http.MethodPost, "/addresses", body(`,"pointer":""`))
+	requireError(t, rec, http.StatusBadRequest, "pointer must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"list":["192.0.2.1",""]`))
+	requireError(t, rec, http.StatusBadRequest, "list.1 must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"optional":""`))
+	requireError(t, rec, http.StatusBadRequest, "optional must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"by_name":{"home":""}`))
+	requireError(t, rec, http.StatusBadRequest, "by_name.* must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses?ip="+sentinel, body(""))
+	requireError(t, rec, http.StatusBadRequest, "query ip must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses?ips=192.0.2.1,", body(""))
+	requireError(t, rec, http.StatusBadRequest, "query ips.1 must be a valid ip")
+	rec = s.do(http.MethodPost, "/addresses", body(`,"allowed":""`))
+	requireError(t, rec, http.StatusBadRequest, "allowed must be at least 1 character")
+
+	// An empty parameter is absent: an optional one is the zero value.
+	req := httptest.NewRequest(http.MethodPost, "/addresses?ip=", strings.NewReader(body("")))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set("X-Addr", "")
+	rec = httptest.NewRecorder()
+	s.e.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Nil(t, got.Query)
+	require.Equal(t, netip.Addr{}, got.Header)
+
+	rec = s.do(http.MethodPost, "/addresses?ip=2001:db8::2&ips=192.0.2.1,2001:db8::1", body(`,"pointer":null,"list":["2001:db8::1"],"optional":null,"by_name":{"home":"192.0.2.2"},"allowed":"10.0.0.0/8"`), "X-Addr", "192.0.2.3")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Len(t, got.QueryList, 2)
+	require.Equal(t, netip.MustParseAddr("192.0.2.3"), got.Header)
+	require.Equal(t, netip.MustParsePrefix("10.0.0.0/8"), got.Allowed)
+	require.Nil(t, got.Pointer)
+	require.Len(t, got.List, 1)
+	require.True(t, got.Optional.Set)
+	require.True(t, got.Optional.Null)
+	require.True(t, net.ParseIP("192.0.2.2").Equal(got.ByName["home"]))
+	require.True(t, net.ParseIP("2001:db8::2").Equal(got.Query))
+
+	// A zone passes the format: netip.Addr keeps it and net.IP's decoder
+	// refuses it.
+	rec = s.do(http.MethodPost, "/addresses", `{"ip":"192.0.2.1","addr":"fe80::1%eth0"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "eth0", got.Addr.Zone())
+	rec = s.do(http.MethodPost, "/addresses", `{"ip":"fe80::1%eth0","addr":"192.0.2.1"}`)
 	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
+	rec = s.do(http.MethodPost, "/addresses?ip=fe80::1%25eth0", body(""))
+	requireError(t, rec, http.StatusBadRequest, "query ip is invalid")
+}
+
+// optionalPrefixItems holds a list of optional prefixes.
+type optionalPrefixItems struct {
+	requests.NoRules
+	A []types.Optional[netip.Prefix] `json:"a" minLength:"0"`
+}
+
+// optionalPrefixItemsTwo raises the items' minLength to 2.
+type optionalPrefixItemsTwo struct {
+	requests.NoRules
+	A []types.Optional[netip.Prefix] `json:"a" minLength:"2"`
+}
+
+// TestOptionalPrefixItemsMinLength: minLength 0 on the items of a slice of
+// types.Optional[netip.Prefix] fails registration, since {"a":[""]} would
+// reach the handler as a set, zero prefix; minLength 2 keeps "" refused.
+func TestOptionalPrefixItemsMinLength(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	msg := panicMessage(t, func() {
+		api.POST[optionalPrefixItems, nodeResponse](reg.Group("/prefixes"), "", "create", stub)
+	})
+	require.Equal(t, `api: POST /prefixes (prefixes.create): openapi: api_test.optionalPrefixItems.A: minLength 0 is not supported on []types.Optional[net/netip.Prefix] in a request type: its decoder reads "" as the zero value without an error, and the schema's minLength 1 is what refuses it; drop the tag or set it to 1 or more`, msg)
+
+	e := newEcho()
+	reg = api.New(e, api.Public())
+	var got *optionalPrefixItemsTwo
+	api.POST(reg.Group("/prefixes"), "", "create", func(ctx context.Context, req *optionalPrefixItemsTwo) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/prefixes", `{"a":[""]}`)
+	requireError(t, rec, http.StatusBadRequest, "a.0 must be at least 2 characters")
+	rec = s.do(http.MethodPost, "/prefixes", `{"a":["10.0.0.0/8",null]}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []types.Optional[netip.Prefix]{
+		{Set: true, Value: netip.MustParsePrefix("10.0.0.0/8")},
+		{Set: true, Null: true},
+	}, got.A)
+}
+
+// addrPortForm is a multipart request with a list of addresses with ports
+// and an address read from form values.
+type addrPortForm struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
+	List []netip.AddrPort      `json:"list"`
+	IP   net.IP                `json:"ip"`
+}
+
+// TestAddrPortFormList: an empty item of a comma-separated form value of
+// netip.AddrPort is refused by its minLength 1, and net.IP's decoder refuses
+// a zoned address in a form value.
+func TestAddrPortFormList(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *addrPortForm
+	api.POST(reg.Group("/forms"), "", "create", func(ctx context.Context, req *addrPortForm) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	post := func(parts ...part) *httptest.ResponseRecorder {
+		body, contentType := form(t, parts...)
+		return s.do(http.MethodPost, "/forms", body, echo.HeaderContentType, contentType)
+	}
+
+	rec := post(part{name: "list", value: "192.0.2.1:80,"})
+	requireError(t, rec, http.StatusBadRequest, "list.1 must be at least 1 character")
+	rec = post(part{name: "ip", value: "fe80::1%eth0"})
+	requireError(t, rec, http.StatusBadRequest, "form values could not be decoded")
+
+	rec = post(part{name: "list", value: "192.0.2.1:80,[2001:db8::1]:443"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:80"), netip.MustParseAddrPort("[2001:db8::1]:443")}, got.List)
+}
+
+type nullableInner struct {
+	Name string `json:"name"`
+}
+
+// NullableEmbed is embedded with its fields promoted.
+type NullableEmbed struct {
+	Note string `json:"note"`
+}
+
+type nullableValueStruct struct {
+	requests.NoRules
+	Meta nullableInner `json:"meta" nullable:"true"`
+}
+
+type nullablePointerStruct struct {
+	requests.NoRules
+	Meta *nullableInner `json:"meta" nullable:"true"`
+}
+
+type nullableOptionalStruct struct {
+	requests.NoRules
+	Meta types.Optional[nullableInner] `json:"meta" nullable:"true"`
+}
+
+type nullableIgnoredStruct struct {
+	requests.NoRules
+	Meta nullableInner `json:"-" nullable:"true"`
+}
+
+type nullableIgnoredEmbed struct {
+	requests.NoRules
+	NullableEmbed `json:"-" nullable:"true"`
+}
+
+type nullableFormStruct struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
+	Meta nullableInner         `json:"-" form:"meta" nullable:"true"`
+}
+
+type nullableQueryStruct struct {
+	requests.NoRules
+	Meta nullableInner `json:"-" query:"meta" nullable:"true"`
+}
+
+type nullableOptionalResponse struct {
+	Meta types.Optional[nullableInner] `json:"meta,omitzero" nullable:"true"`
+}
+
+type valueStruct struct {
+	requests.NoRules
+	Meta *nullableInner `json:"meta"`
+}
+
+type optionalStruct struct {
+	requests.NoRules
+	Meta types.Optional[nullableInner] `json:"meta"`
+}
+
+type optionalResponse struct {
+	Meta types.Optional[nullableInner] `json:"meta,omitzero"`
+}
+
+type ignoredStruct struct {
+	requests.NoRules
+	Meta nullableInner `json:"-"`
+}
+
+type ignoredEmbed struct {
+	requests.NoRules
+	NullableEmbed `json:"-"`
+}
+
+type formStruct struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
+	Meta nullableInner         `json:"-" form:"meta"`
+}
+
+type queryStruct struct {
+	requests.NoRules
+	Meta nullableInner `json:"-" query:"meta"`
+}
+
+// nullableOptionalStrings tags types.Optional of types other than a struct
+// nullable, which publishes a type list with null.
+type nullableOptionalStrings struct {
+	requests.NoRules
+	Name  types.Optional[string]       `json:"name" nullable:"true"`
+	Tags  types.Optional[[]string]     `json:"tags" nullable:"true"`
+	Count types.Optional[int]          `json:"count" nullable:"true"`
+	Net   types.Optional[netip.Prefix] `json:"net" nullable:"true"`
+}
+
+// TestNullableTagAdvice: a nullable tag on a struct field is refused with
+// advice that fits the field, and following the advice registers and
+// passes Ready, or leaves only the field's other problem. nullable:"true"
+// on a types.Optional of anything but a struct stays allowed.
+func TestNullableTagAdvice(t *testing.T) {
+	refused := func(t *testing.T, register func(reg *api.Registry)) string {
+		t.Helper()
+		reg := api.New(newEcho(), api.Public())
+		return panicMessage(t, func() { register(reg) })
+	}
+	ready := func(t *testing.T, register func(reg *api.Registry)) {
+		t.Helper()
+		reg := api.New(newEcho(), api.Public())
+		register(reg)
+		reg.Ready()
+	}
+	const prefix = `api: POST /meta (meta.create): openapi: `
+
+	msg := refused(t, func(reg *api.Registry) {
+		api.POST[nullableValueStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableValueStruct.Meta: nullable tag is not supported on object references; in a request use *api_test.nullableInner, which accepts null unless it is required; to tell null from an absent key, or to send null in a response, use types.Optional[api_test.nullableInner], without the nullable tag`, msg)
+	ready(t, func(reg *api.Registry) {
+		api.POST[valueStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	ready(t, func(reg *api.Registry) {
+		api.POST[optionalStruct, optionalResponse](reg.Group("/meta"), "", "create", stub)
+	})
+
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullablePointerStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullablePointerStruct.Meta: nullable tag is not supported on object references; in a request *api_test.nullableInner already accepts null unless it is required, so drop the tag; to tell null from an absent key, or to send null in a response, use types.Optional[api_test.nullableInner], without the nullable tag`, msg)
+
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullableOptionalStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableOptionalStruct.Meta: the nullable tag is not supported on a types.Optional of a struct, which accepts null already; drop the tag`, msg)
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[valueStruct, nullableOptionalResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Contains(t, msg, `api_test.nullableOptionalResponse.Meta: the nullable tag is not supported on a types.Optional of a struct, which accepts null already; drop the tag`)
+
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullableIgnoredStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableIgnoredStruct.Meta: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`, msg)
+	ready(t, func(reg *api.Registry) {
+		api.POST[ignoredStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullableIgnoredEmbed, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableIgnoredEmbed.NullableEmbed: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`, msg)
+	ready(t, func(reg *api.Registry) {
+		api.POST[ignoredEmbed, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+
+	// A struct form or query field is refused for its type once the tag is
+	// dropped.
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullableFormStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableFormStruct.Meta: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`, msg)
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[formStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, `api: POST /meta (meta.create): form:"meta" field Meta must be *multipart.FileHeader or []*multipart.FileHeader`, msg)
+
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[nullableQueryStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Equal(t, prefix+`api_test.nullableQueryStruct.Meta: the nullable tag does not apply to a field that is not read from the body (json:"-"); drop the tag`, msg)
+	msg = refused(t, func(reg *api.Registry) {
+		api.POST[queryStruct, nodeResponse](reg.Group("/meta"), "", "create", stub)
+	})
+	require.Contains(t, msg, `struct query parameters are not supported`)
+
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST[nullableOptionalStrings, nodeResponse](reg.Group("/strings"), "", "create", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	rec := s.do(http.MethodPost, "/strings", `{"name":null,"tags":null,"count":null,"net":null}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
 type fixedArrayRequest struct {

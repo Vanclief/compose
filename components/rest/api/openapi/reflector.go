@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -55,6 +56,11 @@ func IsOptional(t reflect.Type) bool {
 	return ok
 }
 
+// minLengthOne is the minLength of the builtins whose text decoder reads ""
+// as their zero value. Every schema of those builtins shares it: a field's
+// minLength tag replaces the pointer, never writes through it.
+var minLengthOne = 1
+
 // builtinSchemas maps types whose schema we know better than huma's default:
 // the shape encoding/json reads and writes. A pointer to one is nullable, and
 // so is one marked Nullable here, which encoding/json writes as null.
@@ -67,8 +73,13 @@ var builtinSchemas = map[reflect.Type]huma.Schema{
 	reflect.TypeFor[types.UnixSeconds](): {Type: huma.TypeInteger, Format: "int64"},
 	// A string kind, written as a bare number.
 	reflect.TypeFor[json.Number](): {Type: huma.TypeNumber},
-	// Its text decoder takes both families and rejects a bad address.
-	reflect.TypeFor[net.IP](): {Type: huma.TypeString},
+	// Its text decoder takes both families and turns "" into a nil IP without
+	// an error, which the ip format refuses.
+	reflect.TypeFor[net.IP](): {Type: huma.TypeString, Format: "ip"},
+	// Their text decoders turn "" into the zero value without an error,
+	// which minLength refuses; no standard format describes them.
+	reflect.TypeFor[netip.Prefix]():   {Type: huma.TypeString, MinLength: &minLengthOne},
+	reflect.TypeFor[netip.AddrPort](): {Type: huma.TypeString, MinLength: &minLengthOne},
 	// A text unmarshaler, but read and written as a JSON number.
 	reflect.TypeFor[big.Int](): {Type: huma.TypeInteger},
 	// null when not Valid.

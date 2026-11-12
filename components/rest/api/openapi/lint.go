@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"fmt"
+	"mime/multipart"
 	"reflect"
 	"slices"
 	"strconv"
@@ -36,7 +37,9 @@ var allowedTags = map[string]bool{
 // that is, which the request shape makes nullable or non-null whatever the
 // tag says (see requestShape); nullable:"true" on a body field that cannot
 // hold null (see holdsNull); uniqueItems on items the schema compares
-// otherwise than the decoder (see uniqueItemsApplies); exclusiveMinimum or
+// otherwise than the decoder (see uniqueItemsApplies); minLength below 1 on
+// a netip.Prefix or netip.AddrPort, whose decoder reads "" as the zero value
+// (see refusesEmptyText); exclusiveMinimum or
 // exclusiveMaximum on a float (see floatBounded); a bound, length or item
 // tag huma would put on a schema of another JSON type, where nothing checks
 // it (see misplacedTags); and a nullable tag on the blank field, which makes
@@ -121,6 +124,20 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 			}
 		}
 
+		// huma merges an embedded struct with no JSON name into the
+		// enclosing object without reading its boolean tags, which the lint
+		// and the key check read there (nullable, hidden), so they are held
+		// to "true" or "false" here as on any other field.
+		tagName, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if f.Anonymous && tagName == "" && deref(f.Type).Kind() == reflect.Struct {
+			for _, tag := range []string{"required", "nullable", "deprecated", "hidden", "uniqueItems"} {
+				_, err := huma.ParseBoolTag(f, tag, false)
+				if err != nil {
+					*problems = append(*problems, fmt.Sprintf("%s.%s: %s", t, f.Name, ez.ErrorMessage(err)))
+				}
+			}
+		}
+
 		*problems = append(*problems, lintField(t, f)...)
 		if request {
 			*problems = append(*problems, misplacedTags(t, f)...)
@@ -128,6 +145,13 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 
 		if request && f.Tag.Get("uniqueItems") == "true" && !uniqueItemsApplies(f.Type) {
 			*problems = append(*problems, fmt.Sprintf("%s.%s: uniqueItems is not supported on %s in a request type: the schema compares the items' text, which the decoder may read as equal values; check uniqueness in Validate()", t, f.Name, f.Type))
+		}
+
+		if request && refusesEmptyText(f.Type) {
+			minLength, err := strconv.Atoi(f.Tag.Get("minLength"))
+			if err == nil && minLength < 1 {
+				*problems = append(*problems, fmt.Sprintf("%s.%s: minLength %d is not supported on %s in a request type: its decoder reads \"\" as the zero value without an error, and the schema's minLength 1 is what refuses it; drop the tag or set it to 1 or more", t, f.Name, minLength, f.Type))
+			}
 		}
 
 		if request && floatBounded(f.Type) {
@@ -693,8 +717,9 @@ func tagKeys(tag reflect.StructTag) []string {
 // typeless), the json string option (the schema would describe the
 // value unquoted while encoding/json reads and writes it as a string), a
 // format tag on a type that sets its own format or reads its own text (see
-// formatTagApplies), a nullable tag on a struct reference (huma cannot
-// express it; use a pointer) and minimum/maximum tags that exceed the range
+// formatTagApplies), a nullable tag on a struct reference or a
+// types.Optional of a struct (huma cannot express it) and minimum/maximum
+// tags that exceed the range
 // of a sized integer field (the value would pass the schema and fail Go
 // conversion).
 func lintField(t reflect.Type, f reflect.StructField) []string {
@@ -717,12 +742,38 @@ func lintField(t reflect.Type, f reflect.StructField) []string {
 		problems = append(problems, fmt.Sprintf("%s.%s: the nullable tag is not supported on %s, whose schema has no type and accepts null already", t, f.Name, f.Type))
 	}
 
+	// The advice differs for a pointer, which already accepts null in a
+	// request unless it is required. In a response a nil pointer to a struct
+	// needs omitempty (see sentNulls), so types.Optional is the way to send
+	// null there. An embedded struct whose fields are promoted has no key of
+	// its own, a file field is no JSON value, and a json:"-" field is not
+	// read from the body, so the tag means nothing on any of them. huma
+	// would write the tag on a types.Optional of a struct as the type list
+	// ["", "null"] next to the anyOf that accepts null, which no JSON Schema
+	// reader accepts.
 	ft := deref(f.Type)
-	if f.Tag.Get("nullable") == "true" && ft.Kind() == reflect.Struct && !isOpaque(ft) {
-		problems = append(problems, fmt.Sprintf("%s.%s: nullable tag is not supported on object references; use a pointer", t, f.Name))
+	elem, ok := optionalElem(ft)
+	optionalObject := ok && deref(elem).Kind() == reflect.Struct && !isOpaque(deref(elem))
+	object := ft.Kind() == reflect.Struct && !isOpaque(ft)
+	if f.Tag.Get("nullable") == "true" && (object || optionalObject) {
+		_, isForm := f.Tag.Lookup("form")
+		tagName, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		switch {
+		case f.Anonymous && tagName == "":
+			problems = append(problems, fmt.Sprintf("%s.%s: the nullable tag does not apply to an embedded struct, whose fields are promoted into the enclosing object; drop the tag", t, f.Name))
+		case isForm && f.Type == reflect.TypeFor[*multipart.FileHeader]():
+			problems = append(problems, fmt.Sprintf("%s.%s: the nullable tag does not apply to a file field, which is optional unless it is required:\"true\"; drop the tag", t, f.Name))
+		case f.Tag.Get("json") == "-":
+			problems = append(problems, fmt.Sprintf("%s.%s: the nullable tag does not apply to a field that is not read from the body (json:\"-\"); drop the tag", t, f.Name))
+		case optionalObject:
+			problems = append(problems, fmt.Sprintf("%s.%s: the nullable tag is not supported on a types.Optional of a struct, which accepts null already; drop the tag", t, f.Name))
+		case f.Type.Kind() == reflect.Pointer:
+			problems = append(problems, fmt.Sprintf("%s.%s: nullable tag is not supported on object references; in a request %s already accepts null unless it is required, so drop the tag; to tell null from an absent key, or to send null in a response, use types.Optional[%s], without the nullable tag", t, f.Name, f.Type, ft))
+		default:
+			problems = append(problems, fmt.Sprintf("%s.%s: nullable tag is not supported on object references; in a request use *%s, which accepts null unless it is required; to tell null from an absent key, or to send null in a response, use types.Optional[%s], without the nullable tag", t, f.Name, ft, ft))
+		}
 	}
 
-	elem, ok := optionalElem(ft)
 	if ok {
 		ft = deref(elem)
 	}
@@ -766,6 +817,36 @@ func formatTagApplies(t reflect.Type) bool {
 		t = deref(t.Elem())
 	}
 	return t.Kind() == reflect.String && builtinSchemas[t].Format == "" && !decodesOwnText(t)
+}
+
+// refusesEmptyText reports whether a minLength tag on a field of type t
+// replaces the minLength 1 that builtinSchemas gives a type whose decoder
+// reads "" as its zero value (netip.Prefix). The tag reaches that type
+// through any number of pointers and types.Optional, in any order, and
+// through one slice or array, on whose items huma puts it: *[]*T,
+// []types.Optional[T] and types.Optional[[]T] all carry it to T. Under a
+// second slice or array huma puts it on the inner array, on a map it stays
+// on the object, and on a type with its own text decoder it is that type's
+// own; misplacedTags refuses the first two, and none reaches T.
+func refusesEmptyText(t reflect.Type) bool {
+	items := false
+	for {
+		t = deref(t)
+		_, builtin := builtinSchemas[t]
+		if builtin {
+			return builtinSchemas[t].MinLength != nil
+		}
+		elem, ok := optionalElem(t)
+		if ok {
+			t = elem
+			continue
+		}
+		if isOpaque(t) || items || (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) {
+			return false
+		}
+		items = true
+		t = t.Elem()
+	}
 }
 
 // decodesOwnText reports whether t, or a pointer to it, implements
