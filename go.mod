@@ -1,6 +1,6 @@
 module github.com/vanclief/compose
 
-go 1.26.10
+go 1.26.11
 
 // v1.26.0 held components/rest/nul.go, a file name Go's module zip refuses
 // (nul is a reserved Windows device name), so the version cannot be fetched.

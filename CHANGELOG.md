@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.33.1
+
+### Highlights
+
+- **Go 1.26.11 is required**, for [CVE-2026-97054](https://pkg.go.dev/vuln/GO-2026-6859): an HTTP/1 server that limits a request body with `http.MaxBytesReader` could crash with a runtime panic when the limit was exceeded while its handler read the body and wrote the response header at the same time. Compose reads bodies through `http.MaxBytesReader` in the route registry (`components/rest/api`) and on the OAuth login page. An app that requires this version builds with Go 1.26.11 at least; on the 1.27 line the fix is in Go 1.27.4, and 1.27.0 to 1.27.3 are still affected.
+
 ## v1.33.0
 
 ### Breaking
