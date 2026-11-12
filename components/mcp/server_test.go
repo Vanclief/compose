@@ -472,9 +472,10 @@ func TestServerCallFunction(t *testing.T) {
 	assert.Equal(t, []any{"gift", "rush"}, got.Body)
 	assert.Equal(t, "r-42", got.RequestID)
 
-	// A body function called without body arguments sends an empty object.
+	// An optional body called without body arguments sends no body.
 	got = callEcho(t, session, "orders.set_tags", map[string]any{"order_id": 8})
-	assert.Equal(t, map[string]any{}, got.Body)
+	assert.Nil(t, got.Body)
+	assert.Equal(t, "", got.ContentType)
 }
 
 func TestServerCallFunctionErrors(t *testing.T) {

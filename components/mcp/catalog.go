@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"mime"
 	"reflect"
 	"regexp"
 	"sort"
@@ -212,9 +213,10 @@ func (b *catalogBuilder) addTerm(name string, t *Term) error {
 // addOperation adds the function of one document operation.
 func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 	op := ref.Operation
-	// grug: a request body without a JSON media type (multipart uploads,
-	// raw files) cannot be sent through call_function, so the operation is
-	// left out of the catalog rather than offered and failing.
+	// grug: a request body without a JSON media type, application/json or a
+	// +json type (multipart uploads, raw files), cannot be sent through
+	// call_function, so the operation is left out of the catalog rather than
+	// offered and failing.
 	if !jsonBody(b.doc.RequestBody(op.RequestBody)) {
 		return nil
 	}
@@ -292,27 +294,86 @@ func dispatchHeader(name string) bool {
 }
 
 // jsonBody reports whether a request body can be sent as JSON: it is absent,
-// declares no content, or has a media type starting with application/json.
+// declares no content, or has a JSON media type.
 func jsonBody(body *reference.RequestBody) bool {
 	if body == nil || body.Content.Len() == 0 {
 		return true
 	}
-	return jsonMedia(body.Content) != nil
+	_, media := jsonMedia(body.Content)
+	return media != nil
 }
 
-// jsonMedia returns the application/json media type, else the first whose
-// name starts with application/json, else nil.
-func jsonMedia(content reference.Ordered[*reference.MediaType]) *reference.MediaType {
+// jsonMedia returns the Content-Type to send and the media type of a JSON
+// body. The key application/json comes first, then the first key whose type
+// is application/json, both sent as exactly application/json: the key's
+// parameters are not sent, so they are not read either. Else the first key
+// whose type has the form x/y+json, with x and y not empty, is sent in
+// canonical form: the type in lower case with the key's parameters kept,
+// since types such as JSON:API give the parameters meaning. Such a key
+// counts only when mediaKey accepts it, so a Content-Type a handler cannot
+// read is never sent. Other types, such as application/jsonl and
+// application/json-seq, are not JSON. It returns "" and nil when no key is
+// JSON.
+func jsonMedia(content reference.Ordered[*reference.MediaType]) (string, *reference.MediaType) {
 	media, ok := content.Get("application/json")
 	if ok {
-		return media
+		return "application/json", media
 	}
 	for _, key := range content.Keys {
-		if strings.HasPrefix(strings.ToLower(key), "application/json") {
-			return content.Map[key]
+		if plainJSON(key) {
+			return "application/json", content.Map[key]
 		}
 	}
-	return nil
+	for _, key := range content.Keys {
+		typ, params, ok := mediaKey(key)
+		if !ok || !plusJSON(typ) {
+			continue
+		}
+		contentType := mime.FormatMediaType(typ, params)
+		if contentType != "" {
+			return contentType, content.Map[key]
+		}
+	}
+	return "", nil
+}
+
+// plainJSON reports whether the type of a media type key, the text before its
+// parameters without the white space around it, is application/json in any
+// letter case.
+func plainJSON(key string) bool {
+	typ, _, _ := strings.Cut(key, ";")
+	return strings.EqualFold(strings.TrimSpace(typ), "application/json")
+}
+
+// mediaKey parses a media type key into its lower-case type and parameters.
+// It refuses a key that mime.ParseMediaType rejects, and a key that holds a
+// "*" or a control byte other than a tab (below 0x20, or 0x7f). A "*" is a
+// wildcard in the type and marks an encoded or continued parameter, which
+// ParseMediaType drops when it cannot decode it; ParseMediaType accepts a
+// control byte inside a quoted parameter value.
+func mediaKey(key string) (string, map[string]string, bool) {
+	refused := strings.ContainsFunc(key, func(r rune) bool {
+		return r == '*' || r == 0x7f || (r < 0x20 && r != '\t')
+	})
+	if refused {
+		return "", nil, false
+	}
+	typ, params, err := mime.ParseMediaType(key)
+	if err != nil {
+		return "", nil, false
+	}
+	return typ, params, true
+}
+
+// plusJSON reports whether a lower-case type without parameters has the form
+// x/y+json with x and y not empty, such as application/merge-patch+json.
+func plusJSON(typ string) bool {
+	name, ok := strings.CutSuffix(typ, "+json")
+	if !ok {
+		return false
+	}
+	x, y, found := strings.Cut(name, "/")
+	return found && x != "" && y != ""
 }
 
 // operationName returns the snake_case module and function names of an
@@ -387,10 +448,12 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 	if body == nil {
 		return
 	}
-	media := jsonMedia(body.Content)
+	contentType, media := jsonMedia(body.Content)
 	if media == nil || media.Schema == nil {
 		return
 	}
+	f.bodyRequired = body.Required
+	f.bodyType = contentType
 	raw := media.Schema
 	b.index(b.accepted, b.termOf(raw), f.Name)
 

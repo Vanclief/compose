@@ -367,6 +367,16 @@ type Function struct {
 	// bodyWhole is true when the request body is the single "body" argument
 	// rather than one argument per property.
 	bodyWhole bool
+	// bodyRequired is true when the operation's request body is required and
+	// its JSON media type has a schema, so a call without body arguments
+	// still sends one, as {}. A required body without a schema leaves it
+	// false and is not sent.
+	bodyRequired bool
+	// bodyType is the Content-Type of the request body: exactly
+	// application/json for a media type whose type is application/json, with
+	// or without parameters, else the x/y+json media type in canonical form,
+	// the type in lower case with the document's parameters kept.
+	bodyType string
 }
 
 // Arg is one argument of a function.

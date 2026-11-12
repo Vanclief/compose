@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/vanclief/ez"
 
@@ -19,7 +20,7 @@ import (
 )
 
 // maxErrorBody bounds the response body quoted in an error that is not the
-// compose error envelope.
+// compose error envelope, and the Location quoted for a redirect.
 const maxErrorBody = 300
 
 // BearerPassthrough returns an AuthFunc that forwards the bearer token of the
@@ -109,12 +110,14 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	query := url.Values{}
 	header := http.Header{}
 	body := map[string]any{}
-	hasBody := false
+	// A body goes out when a body argument is passed or the body is required
+	// and has a schema. A required body with a schema is sent even without
+	// arguments, as {}, so the handler's own validation answers: with the
+	// missing fields of an object body, or with a type error for a body that
+	// is not an object. A required body without a schema is not sent.
+	hasBody := f.bodyRequired
 	for _, a := range f.Args {
 		v, provided := args[a.Name]
-		if a.In == "body" {
-			hasBody = true
-		}
 		if a.In == "path" && (!provided || v == nil) {
 			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s requires the path argument %s", f.Name, a.Name), nil)
 		}
@@ -146,6 +149,7 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 			header.Set(a.Name, value)
 		case "body":
 			body[a.Name] = v
+			hasBody = true
 		}
 	}
 
@@ -157,11 +161,9 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	var reader io.Reader
 	if hasBody {
 		var payload any = body
-		if f.bodyWhole {
-			payload = args["body"]
-		}
-		if payload == nil {
-			payload = map[string]any{}
+		whole, provided := args["body"]
+		if f.bodyWhole && provided {
+			payload = whole
 		}
 		data, err := json.Marshal(payload)
 		if err != nil {
@@ -190,7 +192,7 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	}
 	req.Header.Set("Accept", "application/json")
 	if hasBody {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", f.bodyType)
 	}
 
 	rec := httptest.NewRecorder()
@@ -209,7 +211,40 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 		}
 		return data, nil
 	}
+
+	// A redirect is not followed: it is the result when it says where the
+	// outcome is, and an error naming the location otherwise.
+	location, cut := cutLocation(rec.Header().Get("Location"))
+	if rec.Code < 400 && location != "" {
+		// The body of a redirect result is not read. The body of a 3xx that
+		// is not a result is read only for the compose error envelope, whose
+		// code and message win over the location.
+		if redirectIsResult(f.Method, rec.Code) {
+			return redirectResult(rec.Code, location, cut)
+		}
+		err = envelopeError(rec.Code, data)
+		if err != nil {
+			return nil, ez.Wrap(err)
+		}
+		return nil, redirectError(rec.Code, location, cut)
+	}
 	return nil, responseError(rec.Code, data)
+}
+
+// redirectIsResult reports whether a 3xx status answers a call. Only 301,
+// 302, 303, 307 and 308 are redirects; any other status, such as 300, 304,
+// 305 or 306, is not a result on any method. A GET or HEAD changed nothing,
+// so any of the five redirects is its answer. Another method gets 302 and
+// 303 as the place of its outcome, while 301, 307 and 308 say it was not
+// carried out and must be repeated at the location.
+func redirectIsResult(method string, status int) bool {
+	switch status {
+	case http.StatusFound, http.StatusSeeOther:
+		return true
+	case http.StatusMovedPermanently, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return method == http.MethodGet || method == http.MethodHead
+	}
+	return false
 }
 
 // checkArgNames rejects argument names the function does not take.
@@ -284,23 +319,73 @@ func nonJSONResult(contentType string, size int) (json.RawMessage, error) {
 	return data, nil
 }
 
+// cutLocation returns a Location header kept to valid UTF-8, without the
+// characters dropControl drops or surrounding space, and cut on a character
+// boundary at maxErrorBody bytes, and whether it was cut. Without those
+// characters the location cannot add a line to the text that quotes it, nor
+// reorder how that text reads.
+func cutLocation(location string) (string, bool) {
+	location = strings.Map(dropControl, strings.ToValidUTF8(location, ""))
+	location = strings.TrimSpace(location)
+	if len(location) <= maxErrorBody {
+		return location, false
+	}
+	return strings.ToValidUTF8(location[:maxErrorBody], ""), true
+}
+
+// dropControl removes, from a string given to strings.Map, control
+// characters, the line and paragraph separators U+2028 and U+2029, and
+// format characters such as U+202E (right-to-left override).
+func dropControl(r rune) rune {
+	if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp, unicode.Cf) {
+		return -1
+	}
+	return r
+}
+
+// redirectResult describes a redirect as a JSON object, such as
+// {"redirect":{"status":302,"location":"/orders/7"}}, with "truncated":true
+// when the location was cut. HTML characters are not escaped, so the
+// location reads as the handler wrote it.
+func redirectResult(status int, location string, cut bool) (json.RawMessage, error) {
+	type redirect struct {
+		Status    int    `json:"status"`
+		Location  string `json:"location"`
+		Truncated bool   `json:"truncated,omitempty"`
+	}
+	result := struct {
+		Redirect redirect `json:"redirect"`
+	}{redirect{Status: status, Location: location, Truncated: cut}}
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(result)
+	if err != nil {
+		return nil, ez.New(ez.EINTERNAL, "mcp: cannot describe a redirect response", err)
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// redirectError is the error of a redirect that is not a result, naming its
+// status and location, such as "307 Temporary Redirect, Location: /orders/7",
+// with a cut location marked [truncated].
+func redirectError(status int, location string, cut bool) error {
+	statusLine := strings.TrimSpace(fmt.Sprintf("%d %s", status, http.StatusText(status)))
+	message := statusLine + ", Location: " + location
+	if cut {
+		message += " [truncated]"
+	}
+	return ez.New(ez.HTTPStatusToError(status), message, nil)
+}
+
 // responseError converts a REST error response into an ez error: the code
 // and message of the compose error envelope, else the code of the status and
 // the start of the body.
 func responseError(status int, body []byte) error {
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	err := json.Unmarshal(body, &envelope)
-	if err == nil && envelope.Error.Code != "" {
-		message := envelope.Error.Message
-		if message == "" {
-			message = http.StatusText(status)
-		}
-		return ez.New(envelope.Error.Code, message, nil)
+	err := envelopeError(status, body)
+	if err != nil {
+		return ez.Wrap(err)
 	}
 
 	message := strings.TrimSpace(string(body))
@@ -311,4 +396,25 @@ func responseError(status int, body []byte) error {
 		message = http.StatusText(status)
 	}
 	return ez.New(ez.HTTPStatusToError(status), message, nil)
+}
+
+// envelopeError returns the error of a body that is the compose error
+// envelope with a code: its code and message, else the status text when the
+// message is empty. It returns nil for any other body.
+func envelopeError(status int, body []byte) error {
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	err := json.Unmarshal(body, &envelope)
+	if err != nil || envelope.Error.Code == "" {
+		return nil
+	}
+	message := envelope.Error.Message
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	return ez.New(envelope.Error.Code, message, nil)
 }
