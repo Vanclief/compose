@@ -1,8 +1,10 @@
 package ses
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net/mail"
 	"sync"
 	"testing"
 
@@ -27,6 +29,11 @@ func TestRecordingClientRecordsEmail(t *testing.T) {
 			name:     "sender name",
 			opts:     []ClientOption{WithEmailSender("sender@example.com"), WithSenderName("Compose")},
 			wantFrom: "Compose <sender@example.com>",
+		},
+		{
+			name:     "sender name with a comma",
+			opts:     []ClientOption{WithEmailSender("sender@example.com"), WithSenderName("Acme, Inc.")},
+			wantFrom: `"Acme, Inc." <sender@example.com>`,
 		},
 	}
 
@@ -218,6 +225,42 @@ func TestRecordingClientRecordsACopyOfTheEmail(t *testing.T) {
 	again := outbox.Emails()
 	assert.Equal(t, []string{"recipient@example.com"}, again[0].Email.Recipients)
 	assert.Equal(t, []byte("%PDF-1.7"), again[0].Email.Attachments[0].Data)
+}
+
+func TestRecordingClientKeepsTheCallersRecipients(t *testing.T) {
+	client, outbox := NewRecordingClient(WithEmailSender("sender@example.com"))
+
+	recipients := []string{"José Pérez <jose@example.com>", "plain@example.com"}
+	email := Email{
+		Recipients:  recipients,
+		Subject:     "Report",
+		TextBody:    "Attached",
+		Attachments: []Attachment{{Filename: "report.pdf", ContentType: "application/pdf", Data: []byte("data")}},
+	}
+
+	_, err := client.SendEmail(context.Background(), email)
+	require.NoError(t, err)
+
+	want := []string{"José Pérez <jose@example.com>", "plain@example.com"}
+	require.Equal(t, want, recipients)
+
+	emails := outbox.Emails()
+	require.Len(t, emails, 1)
+	require.Equal(t, want, emails[0].Email.Recipients)
+
+	rawEmail, err := client.buildRawEmail(email)
+	require.NoError(t, err)
+	require.Equal(t, want, recipients)
+
+	msg, err := mail.ReadMessage(bytes.NewReader(rawEmail))
+	require.NoError(t, err)
+
+	to, err := msg.Header.AddressList("To")
+	require.NoError(t, err)
+	require.Equal(t, []*mail.Address{
+		{Name: "José Pérez", Address: "jose@example.com"},
+		{Address: "plain@example.com"},
+	}, to)
 }
 
 func TestRecordingClientRecordsSMS(t *testing.T) {

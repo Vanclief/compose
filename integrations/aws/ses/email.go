@@ -3,9 +3,9 @@ package ses
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"mime"
+	"net/mail"
 	"path/filepath"
 	"strings"
 
@@ -208,8 +208,11 @@ func (c *Client) sendRawEmail(ctx context.Context, email Email) (string, error) 
 // buildRawEmail renders the email with its attachments as a MIME message
 func (c *Client) buildRawEmail(email Email) ([]byte, error) {
 	msg := gomail.NewMessage()
+
+	// gomail writes printable ASCII and tabs unchanged, which is all
+	// getSenderAddress returns whenever one of its forms parses back
 	msg.SetHeader("From", c.getSenderAddress())
-	msg.SetHeader("To", email.Recipients...)
+	msg.SetHeader("To", formatRecipients(email.Recipients)...)
 	msg.SetHeader("Subject", email.Subject)
 	setRawEmailBody(msg, email)
 
@@ -274,9 +277,102 @@ func setRawEmailBody(msg *gomail.Message, email Email) {
 	}
 }
 
+// formatRecipients returns the recipients as To header values in a new slice,
+// since gomail encodes the values it is given in place. gomail's header
+// encoder writes a value made only of printable ASCII and tabs unchanged and
+// RFC 2047 encodes any other value whole. A recipient made only of those bytes
+// is passed exactly as the caller wrote it. Any other recipient that
+// mail.ParseAddress reads as one address with a display name and an address
+// made only of those bytes is written as that name and address by
+// mail.Address.String, which quotes or RFC 2047 encodes the name as needed and
+// so gives a value gomail writes unchanged. mail.ParseAddress also reads the
+// name from a comment, as in "bob@example.com (José)", and from a group of one,
+// as in "Friends: José <jose@example.com>;", so such a recipient is rewritten
+// too, and a comment or a group label is not kept. Every other recipient is
+// passed as the caller wrote it, and gomail encodes it whole.
+func formatRecipients(recipients []string) []string {
+	formatted := make([]string, len(recipients))
+	for i := range recipients {
+		formatted[i] = recipients[i]
+		if isUnencodedHeaderText(recipients[i]) {
+			continue
+		}
+
+		address, err := mail.ParseAddress(recipients[i])
+		if err != nil || address.Name == "" || !isUnencodedHeaderText(address.Address) {
+			continue
+		}
+
+		formatted[i] = address.String()
+	}
+
+	return formatted
+}
+
+// isUnencodedHeaderText reports whether s is made only of printable ASCII and
+// tabs, the bytes gomail's header encoder leaves unchanged.
+func isUnencodedHeaderText(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\t' && (s[i] < ' ' || s[i] > '~') {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getSenderAddress returns the From address: the sender address alone when
+// there is no sender name, and otherwise the first of three forms that is made
+// only of bytes gomail's header encoder leaves unchanged and that
+// mail.ParseAddress parses to the sender's address. The first form is the name
+// and the address as the caller wrote them, which is taken whatever name it
+// parses to, so a name already encoded as an RFC 2047 word is decoded by mail
+// clients. The second is the name quoted or RFC 2047 encoded by
+// mail.Address.String and the third the name B-encoded by mime.BEncoding, and
+// each is taken only when it parses back to exactly the sender name. When no
+// form qualifies, the second is returned.
 func (c *Client) getSenderAddress() string {
 	if c.SenderName == "" {
 		return c.EmailSender
 	}
-	return fmt.Sprintf("%s <%s>", c.SenderName, c.EmailSender)
+
+	// mail.Address.String quotes a local part that needs quoting, so the
+	// written forms are given the parsed address, whose quotes are removed
+	address := c.EmailSender
+	parsed, err := mail.ParseAddress(c.EmailSender)
+	if err == nil {
+		address = parsed.Address
+	}
+
+	asWritten := c.SenderName + " <" + c.EmailSender + ">"
+	parsed, ok := parseHeaderAddress(asWritten)
+	if ok && parsed.Address == address {
+		return asWritten
+	}
+
+	quoted := (&mail.Address{Name: c.SenderName, Address: address}).String()
+	encoded := mime.BEncoding.Encode("utf-8", c.SenderName) + " " + (&mail.Address{Address: address}).String()
+	for _, candidate := range []string{quoted, encoded} {
+		parsed, ok = parseHeaderAddress(candidate)
+		if ok && parsed.Name == c.SenderName && parsed.Address == address {
+			return candidate
+		}
+	}
+
+	return quoted
+}
+
+// parseHeaderAddress parses s with mail.ParseAddress when s is made only of
+// bytes gomail's header encoder leaves unchanged.
+func parseHeaderAddress(s string) (*mail.Address, bool) {
+	if !isUnencodedHeaderText(s) {
+		return nil, false
+	}
+
+	parsed, err := mail.ParseAddress(s)
+	if err != nil {
+		return nil, false
+	}
+
+	return parsed, true
 }
