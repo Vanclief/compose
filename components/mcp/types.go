@@ -144,10 +144,15 @@ type Concept struct {
 // Memory: the embedded quickjs.wasm declares a 64 MiB maximum for its
 // linear memory and the glue's allocator refuses past 48 MiB, so a script
 // that allocates without end fails with a JavaScript out-of-memory error
-// instead of growing the process. A script that catches that error and
+// instead of growing the process. try/catch, finally and async functions
+// cannot catch that error, so it ends the script, except where QuickJS's
+// Promise code, such as a Promise executor, turns it into a rejection,
+// which only a handler attached to that promise receives: awaiting or
+// rethrowing it ends the script too. A script that handles it that way and
 // goes on allocating without freeing gets a few more such errors, then
-// null, since QuickJS cannot build an error with no memory at all; an
-// uncaught one is always reported as out of memory. On unix each run's
+// null, which try/catch does catch, since QuickJS cannot build an error
+// with no memory at all; a null that ends the script is reported as out of
+// memory. On unix each run's
 // memory is an anonymous mapping outside the Go heap, committed as the
 // script touches it and released when the run ends, and a run whose
 // memory cannot be mapped is refused with ERESOURCEEXHAUSTED and reported

@@ -47,7 +47,7 @@
  *       Calls a catalog function. The host allocates the reply with malloc,
  *       writes its length at reply_len_ptr and returns its address; this
  *       side frees it. 0 means the host could not allocate it: the call
- *       throws "InternalError: the script ran out of memory".
+ *       returns undefined, and the shim throws an Error a script can catch.
  *
  *   host_log(ptr, len)
  *       Records one console.log line.
@@ -228,8 +228,12 @@ static int finish(JSContext *ctx, int kind, JSValue str, int fallback_kind, cons
  * the grace stops at HEAP_GRACE_MAX over the limit, and ends once frees
  * bring the heap HEAP_SETTLE under the limit, so a script cannot ratchet
  * the limit up. thrown() reports the two fallbacks as out of memory when
- * the allocator refused. A script that catches an out-of-memory error and
- * later throws null on purpose is reported as out of memory too.
+ * the allocator refused. The error QuickJS builds is uncatchable, but null
+ * is not an object and stays catchable, so the grace is also what lets
+ * try/catch not swallow an out-of-memory. A script that survives a refusal,
+ * through a rejection, such as a Promise executor's throw, or a reply it
+ * could not read, and later throws null on purpose is reported as out of
+ * memory too.
  */
 #define HEAP_GRACE (64 * 1024)
 #define HEAP_GRACE_MAX (512 * 1024)
