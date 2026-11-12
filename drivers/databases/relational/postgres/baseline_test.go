@@ -41,7 +41,16 @@ func newBaselineDB(t *testing.T) (*relational.DB, ConnectionConfig) {
 
 // connectTestDB - Like newBaselineDB, for a test that changes the config first
 func connectTestDB(t *testing.T, cfg ConnectionConfig) (*relational.DB, ConnectionConfig) {
-	err := CreateDatabase(cfg)
+	// The database is created and dropped with the default timeouts: a test's
+	// short ones are for its own queries, and CREATE and DROP DATABASE can
+	// outlast them on a busy server
+	adminCfg := cfg
+	adminCfg.DialTimeout = 0
+	adminCfg.ReadTimeout = 0
+	adminCfg.WriteTimeout = 0
+	adminCfg.StatementTimeout = 0
+
+	err := CreateDatabase(adminCfg)
 	if err != nil {
 		if os.Getenv("COMPOSE_TEST_POSTGRES") != "" {
 			t.Fatalf("PostgreSQL testing is enabled but the database is unavailable: %v", err)
@@ -52,13 +61,13 @@ func connectTestDB(t *testing.T, cfg ConnectionConfig) (*relational.DB, Connecti
 
 	db, err := ConnectToDatabase(&cfg)
 	if err != nil {
-		DeleteDatabase(cfg) // nolint:errcheck // The connection error is the one that matters
+		DeleteDatabase(adminCfg) // nolint:errcheck // The connection error is the one that matters
 		t.Fatalf("Could not connect to %s: %v", cfg.Database, err)
 	}
 
 	t.Cleanup(func() {
 		db.Close() // nolint:errcheck
-		err := DeleteDatabase(cfg)
+		err := DeleteDatabase(adminCfg)
 		assert.NoError(t, err)
 	})
 
