@@ -725,3 +725,140 @@ components:
 	require.Len(t, root.OneOf, 2, "Root is not one of them")
 	require.Equal(t, []string{"v", "s"}, root.Properties.Keys)
 }
+
+// TestFlattenAllOfKeepsTightestBounds checks that every member of an allOf
+// applies: of two bounds the tightest is kept whichever member sets it,
+// while pattern and multipleOf, which cannot be combined, keep the first.
+func TestFlattenAllOfKeepsTightestBounds(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Loose: {minimum: 1, maximum: 10, exclusiveMinimum: 2, exclusiveMaximum: 9, minLength: 1, maxLength: 50, minItems: 1, maxItems: 9, minProperties: 1, maxProperties: 9, pattern: "^a", multipleOf: 2}
+    Tight: {minimum: 5, maximum: 7, exclusiveMinimum: 4, exclusiveMaximum: 8, minLength: 3, maxLength: 10, minItems: 2, maxItems: 5, minProperties: 2, maxProperties: 5, pattern: "^b", multipleOf: 3}
+    LooseFirst: {allOf: [{$ref: '#/components/schemas/Loose'}, {$ref: '#/components/schemas/Tight'}]}
+    TightFirst: {allOf: [{$ref: '#/components/schemas/Tight'}, {$ref: '#/components/schemas/Loose'}]}
+`)
+	for _, name := range []string{"LooseFirst", "TightFirst"} {
+		f := doc.Flatten(&Schema{Ref: refSchemas + name})
+		require.Equal(t, 5.0, *f.Minimum, name)
+		require.Equal(t, 7.0, *f.Maximum, name)
+		require.Nil(t, f.ExclusiveMinimum, "minimum 5 is tighter than exclusiveMinimum 4")
+		require.Nil(t, f.ExclusiveMaximum, "maximum 7 is tighter than exclusiveMaximum 8")
+		require.Equal(t, 3, *f.MinLength, name)
+		require.Equal(t, 10, *f.MaxLength, name)
+		require.Equal(t, 2, *f.MinItems, name)
+		require.Equal(t, 5, *f.MaxItems, name)
+		require.Equal(t, 2, *f.MinProperties, name)
+		require.Equal(t, 5, *f.MaxProperties, name)
+	}
+	loose := doc.Flatten(&Schema{Ref: refSchemas + "LooseFirst"})
+	require.Equal(t, "^a", loose.Pattern)
+	require.Equal(t, 2.0, *loose.MultipleOf)
+	tight := doc.Flatten(&Schema{Ref: refSchemas + "TightFirst"})
+	require.Equal(t, "^b", tight.Pattern)
+	require.Equal(t, 3.0, *tight.MultipleOf)
+	require.Equal(t, 1.0, *doc.Components.Schemas.Map["Loose"].Minimum, "the members are not changed")
+
+	// Parse has made the 3.0 boolean bounds numeric, so the effective bound
+	// of the merge is the tightest of the members'.
+	doc = parseYAML(t, `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Same: {allOf: [{minimum: 5, exclusiveMinimum: true}, {minimum: 5}]}
+    Looser: {allOf: [{minimum: 1, exclusiveMinimum: true}, {minimum: 5}]}
+    Upper: {allOf: [{maximum: 5}, {maximum: 5, exclusiveMaximum: true}]}
+`)
+	require.Equal(t, &numBound{value: 5, exclusive: true}, lowerBound(doc.Flatten(&Schema{Ref: refSchemas + "Same"})))
+	require.Equal(t, &numBound{value: 5}, lowerBound(doc.Flatten(&Schema{Ref: refSchemas + "Looser"})))
+	require.Equal(t, &numBound{value: 5, exclusive: true}, upperBound(doc.Flatten(&Schema{Ref: refSchemas + "Upper"})))
+}
+
+// TestFlattenOneBoundForm checks that a flattened schema holds each bound in
+// one keyword, the tighter of minimum and exclusiveMinimum (or maximum and
+// exclusiveMaximum) and the exclusive one at equal values, so the page and
+// the example both show the bound that holds; that a 3.0 boolean, held by a
+// document built without Parse, qualifies only its own schema's bound; and
+// that the example meets an upper bound too.
+func TestFlattenOneBoundForm(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Inclusive: {allOf: [{type: integer, minimum: 5}, {exclusiveMinimum: 3}]}
+    Exclusive: {allOf: [{type: integer, exclusiveMinimum: 5}, {minimum: 5}]}
+    Single: {type: integer, minimum: 5, exclusiveMinimum: 3}
+    Equal: {type: number, minimum: 3, exclusiveMinimum: 3, maximum: 9, exclusiveMaximum: 9}
+    Below: {type: integer, maximum: -3}
+    BelowZero: {type: number, exclusiveMaximum: 0}
+    UpToOne: {type: number, exclusiveMinimum: 0, maximum: 1, multipleOf: 1}
+    BelowOne: {type: number, exclusiveMinimum: 0, exclusiveMaximum: 1}
+`)
+	tests := []struct {
+		name       string
+		constraint string
+		example    any
+	}{
+		{"Inclusive", ">= 5", int64(5)},
+		{"Exclusive", "> 5", int64(6)},
+		{"Single", ">= 5", int64(5)},
+		{"Equal", "(3 .. 9)", 4.0},
+		{"Below", "<= -3", int64(-3)},
+		{"BelowZero", "< 0", -1.0},
+		{"UpToOne", "(0 .. 1], multiple of 1", 1.0},
+		{"BelowOne", "(0 .. 1)", 0.5},
+	}
+	for _, tt := range tests {
+		ref := &Schema{Ref: refSchemas + tt.name}
+		f := doc.Flatten(ref)
+		require.False(t, f.Minimum != nil && f.ExclusiveMinimum != nil, tt.name)
+		require.False(t, f.Maximum != nil && f.ExclusiveMaximum != nil, tt.name)
+		require.Equal(t, tt.constraint, strings.Join(constraints(f), ", "), tt.name)
+		require.Equal(t, tt.example, doc.ExampleValue(ref, ForRequest), tt.name)
+	}
+	single := doc.Components.Schemas.Map["Single"]
+	require.Equal(t, 5.0, *single.Minimum, "the document is not changed")
+	require.Equal(t, 3.0, *single.ExclusiveMinimum.Value, "the document is not changed")
+
+	five := 5.0
+	nine := 9.0
+	built := &Document{Components: Components{Schemas: Ordered[*Schema]{}}}
+	built.Components.Schemas.Set("Own", &Schema{AllOf: []*Schema{{Minimum: &five, ExclusiveMinimum: &Bound{Flag: true}}, {Maximum: &nine}}})
+	built.Components.Schemas.Set("Other", &Schema{AllOf: []*Schema{{ExclusiveMinimum: &Bound{Flag: true}}, {Minimum: &five}}})
+	built.Components.Schemas.Set("Alone", &Schema{Minimum: &five, ExclusiveMinimum: &Bound{Flag: true}})
+	require.Equal(t, []string{"(5 .. 9]"}, constraints(built.Flatten(&Schema{Ref: refSchemas + "Own"})))
+	require.Equal(t, []string{">= 5"}, constraints(built.Flatten(&Schema{Ref: refSchemas + "Other"})), "a boolean qualifies its own schema's minimum only")
+	require.Equal(t, []string{"> 5"}, constraints(built.Flatten(&Schema{Ref: refSchemas + "Alone"})))
+}
+
+// TestIntegerExampleLargeExclusiveBound checks that the example of an
+// integer with an excluded bound of magnitude 2^53 or more, where a float64
+// has no next integer, is the integer past the bound and not the bound
+// itself, in the 3.1 and the 3.0 spelling.
+func TestIntegerExampleLargeExclusiveBound(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Above: {type: integer, exclusiveMinimum: 9007199254740992}
+    AboveNegative: {type: integer, exclusiveMinimum: -1e17}
+    Below: {type: integer, exclusiveMaximum: -9007199254740992}
+`)
+	require.Equal(t, int64(9007199254740993), doc.ExampleValue(schemaRef("Above"), ForRequest))
+	require.Equal(t, int64(-99999999999999999), doc.ExampleValue(schemaRef("AboveNegative"), ForRequest))
+	require.Equal(t, int64(-9007199254740993), doc.ExampleValue(schemaRef("Below"), ForRequest))
+
+	old := parseYAML(t, `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Above: {type: integer, minimum: 9007199254740992, exclusiveMinimum: true}
+`)
+	require.Equal(t, int64(9007199254740993), old.ExampleValue(schemaRef("Above"), ForRequest))
+}

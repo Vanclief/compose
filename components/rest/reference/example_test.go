@@ -3,6 +3,7 @@ package reference
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -715,4 +716,59 @@ components:
 		"meta": map[string]any{"plan": "pro", "seats": float64(3)},
 		"note": strings.Repeat("n", 4096),
 	}, decode(t, doc.ExampleJSON(schemaRef("Small"), ForResponse)))
+}
+
+// TestExampleValueHugeBounds checks the number and integer examples of
+// bounds where adding one to a float64 changes nothing or an int64 cannot
+// hold the bound.
+func TestExampleValueHugeBounds(t *testing.T) {
+	doc := &Document{}
+	num := func(v float64) *float64 {
+		return &v
+	}
+	excl := func(v float64) *Bound {
+		return &Bound{Value: &v}
+	}
+	example := func(s Schema) any {
+		return doc.ExampleValue(&s, ForRequest)
+	}
+
+	require.Equal(t, math.Nextafter(1e20, math.Inf(1)), example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1e20)}))
+	require.Equal(t, math.Nextafter(-1e20, math.Inf(-1)), example(Schema{Type: TypeList{"number"}, ExclusiveMaximum: excl(-1e20)}))
+	require.Equal(t, 2.5, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1.5)}))
+
+	// No int64 meets these: the nearest one is given.
+	require.Equal(t, int64(math.MaxInt64), example(Schema{Type: TypeList{"integer"}, ExclusiveMinimum: excl(math.MaxInt64)}))
+	require.Equal(t, int64(math.MaxInt64), example(Schema{Type: TypeList{"integer"}, Minimum: num(1e19)}))
+	require.Equal(t, int64(math.MinInt64), example(Schema{Type: TypeList{"integer"}, Maximum: num(-1e19)}))
+	require.Equal(t, int64(math.MinInt64), example(Schema{Type: TypeList{"integer"}, ExclusiveMaximum: excl(math.MinInt64)}))
+	// These are met.
+	require.Equal(t, int64(math.MinInt64), example(Schema{Type: TypeList{"integer"}, Minimum: num(-1e19)}))
+	require.Equal(t, int64(math.MinInt64+1), example(Schema{Type: TypeList{"integer"}, ExclusiveMinimum: excl(math.MinInt64)}))
+	require.Equal(t, int64(1<<62+1), example(Schema{Type: TypeList{"integer"}, ExclusiveMinimum: excl(1 << 62)}))
+}
+
+func TestExampleValueTightNumberBounds(t *testing.T) {
+	doc := &Document{}
+	num := func(v float64) *float64 {
+		return &v
+	}
+	excl := func(v float64) *Bound {
+		return &Bound{Value: &v}
+	}
+	example := func(s Schema) any {
+		return doc.ExampleValue(&s, ForRequest)
+	}
+
+	// Nothing past the largest float64 is finite: the nearest finite number is given.
+	require.Equal(t, math.MaxFloat64, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(math.MaxFloat64)}))
+	require.Equal(t, -math.MaxFloat64, example(Schema{Type: TypeList{"number"}, ExclusiveMaximum: excl(-math.MaxFloat64)}))
+	require.Equal(t, math.MaxFloat64, example(Schema{Type: TypeList{"number"}, Minimum: num(math.Inf(1))}))
+
+	// Halfway between the bounds rounds onto the excluded one: the inclusive one is met.
+	require.Equal(t, 5e-324, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(0), Maximum: num(5e-324)}))
+	require.Equal(t, 1.0000000000000002, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1), Maximum: num(1.0000000000000002)}))
+	require.Equal(t, 1.0000000000000002, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1), ExclusiveMaximum: excl(1.0000000000000004)}))
+	require.Equal(t, 1.25, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1), Maximum: num(1.5)}))
+	require.Equal(t, math.Nextafter(math.MaxFloat64/2, math.Inf(1)), example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(math.MaxFloat64 / 2), Maximum: num(math.MaxFloat64)}))
 }

@@ -144,18 +144,26 @@ func (d *Document) Example(e *Example) *Example {
 
 // Flatten resolves s and merges its allOf members into a single schema, the
 // way Redoc presents composed objects. The document is never mutated: a schema
-// without allOf is returned as resolved, otherwise the result is a fresh
+// without allOf is returned as resolved, unless it holds its lower or upper
+// bound in two keywords, see below, and otherwise the result is a fresh
 // shallow copy. Treat the result as read-only either way. Members are resolved
 // and flattened recursively; a member seen earlier in the same chain is not
-// expanded again, so cyclic allOf definitions terminate.
+// expanded again, so cyclic allOf definitions terminate. A $ref is followed
+// and the keywords beside it are dropped.
 //
 // Merge rules: properties are unioned in order, parent first then members in
 // order, and a later definition of the same property replaces the earlier one
-// while keeping its position. Required is unioned. Scalar keywords take the
-// first non-empty value walking parent first then members in order; boolean
-// flags (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when
-// any of them sets it. oneOf, anyOf, discriminator and additionalProperties of
-// members are kept only when the parent has none of its own.
+// while keeping its position. Required is unioned. Every member applies, so
+// of the numeric bounds the tightest is kept: of minLength, maxLength,
+// minItems, maxItems, minProperties and maxProperties each, and of the lower
+// bound minimum and exclusiveMinimum (and the upper bound maximum and
+// exclusiveMaximum) together, kept in the one keyword that holds it, the
+// exclusive one at equal values, in its numeric form. Other scalar keywords
+// take the first non-empty value walking parent first then members in
+// order; boolean flags (nullable, deprecated, readOnly, writeOnly,
+// uniqueItems) are true when any of them sets it. oneOf, anyOf,
+// discriminator and additionalProperties of members are kept only when the
+// parent has none of its own.
 //
 // A member's oneOf, anyOf and discriminator are dropped when they point back
 // at the schema being flattened or at any schema in the current allOf chain.
@@ -164,8 +172,11 @@ func (d *Document) Example(e *Example) *Example {
 // not another "one of Cat or Dog".
 func (d *Document) Flatten(s *Schema) *Schema {
 	resolved, _ := d.Schema(s)
-	if resolved == nil || len(resolved.AllOf) == 0 {
-		return resolved
+	if resolved == nil {
+		return nil
+	}
+	if len(resolved.AllOf) == 0 {
+		return oneBoundForm(resolved)
 	}
 	f := &flattener{doc: d, visiting: map[*Schema]bool{}, done: map[*Schema]flattened{}}
 	out, _ := f.flatten(resolved)
@@ -369,45 +380,70 @@ func mergeInto(out, m *Schema) {
 		out.WriteOnly = true
 	}
 
-	if out.Minimum == nil {
-		out.Minimum = m.Minimum
-	}
-	if out.Maximum == nil {
-		out.Maximum = m.Maximum
-	}
-	if out.ExclusiveMinimum == nil {
-		out.ExclusiveMinimum = m.ExclusiveMinimum
-	}
-	if out.ExclusiveMaximum == nil {
-		out.ExclusiveMaximum = m.ExclusiveMaximum
-	}
+	// Every member applies, so the bound that holds is the tightest one,
+	// whichever keyword sets it. It is kept in one keyword, so a reader that
+	// looks at one of the two first cannot see a looser one.
+	out.Minimum, out.ExclusiveMinimum = boundKeywords(tighterBound(lowerBound(out), lowerBound(m), true))
+	out.Maximum, out.ExclusiveMaximum = boundKeywords(tighterBound(upperBound(out), upperBound(m), false))
+	out.MinLength = tightest(out.MinLength, m.MinLength, true)
+	out.MaxLength = tightest(out.MaxLength, m.MaxLength, false)
+	out.MinItems = tightest(out.MinItems, m.MinItems, true)
+	out.MaxItems = tightest(out.MaxItems, m.MaxItems, false)
+	out.MinProperties = tightest(out.MinProperties, m.MinProperties, true)
+	out.MaxProperties = tightest(out.MaxProperties, m.MaxProperties, false)
 	if out.MultipleOf == nil {
 		out.MultipleOf = m.MultipleOf
-	}
-	if out.MinLength == nil {
-		out.MinLength = m.MinLength
-	}
-	if out.MaxLength == nil {
-		out.MaxLength = m.MaxLength
 	}
 	if out.Pattern == "" {
 		out.Pattern = m.Pattern
 	}
-	if out.MinItems == nil {
-		out.MinItems = m.MinItems
-	}
-	if out.MaxItems == nil {
-		out.MaxItems = m.MaxItems
-	}
-	if out.MinProperties == nil {
-		out.MinProperties = m.MinProperties
-	}
-	if out.MaxProperties == nil {
-		out.MaxProperties = m.MaxProperties
-	}
 	if m.UniqueItems {
 		out.UniqueItems = true
 	}
+}
+
+// tightest returns the tighter of two limits, either of which may be unset:
+// the larger of two lower limits (lower set) or the smaller of two upper
+// limits.
+func tightest[T int | float64](a, b *T, lower bool) *T {
+	if a == nil {
+		return b
+	}
+	if b == nil || *a == *b || (*b > *a) != lower {
+		return a
+	}
+	return b
+}
+
+// boundKeywords writes an effective bound as the keywords that hold it: an
+// inclusive bound as minimum or maximum, an exclusive one as the numeric
+// exclusiveMinimum or exclusiveMaximum, the other nil.
+func boundKeywords(nb *numBound) (*float64, *Bound) {
+	if nb == nil {
+		return nil, nil
+	}
+	v := nb.value
+	if nb.exclusive {
+		return nil, &Bound{Value: &v}
+	}
+	return &v, nil
+}
+
+// oneBoundForm returns s, or, when s holds its lower or upper bound in two
+// keywords, such as minimum beside exclusiveMinimum, or in the 3.0 boolean
+// form a document built without Parse can hold, a copy of s with each bound
+// in the one keyword mergeInto would leave it in.
+func oneBoundForm(s *Schema) *Schema {
+	twoForms := func(limit *float64, excl *Bound) bool {
+		return excl != nil && (limit != nil || excl.Value == nil)
+	}
+	if !twoForms(s.Minimum, s.ExclusiveMinimum) && !twoForms(s.Maximum, s.ExclusiveMaximum) {
+		return s
+	}
+	out := *s
+	out.Minimum, out.ExclusiveMinimum = boundKeywords(lowerBound(s))
+	out.Maximum, out.ExclusiveMaximum = boundKeywords(upperBound(s))
+	return &out
 }
 
 // OperationSecurity returns the security requirements that apply to op: its
