@@ -65,15 +65,30 @@ func WithJobTimeout(d time.Duration) Option {
 // The claim's lease is the job timeout plus one minute (capped at the largest
 // Duration), counted from the claim, while the job timeout starts when the
 // job body is about to run. A run outlives its lease, and can overlap a run
-// of a later boundary on another instance, when the claim's answer, the wait
-// for a WithLimit permit and the time the job takes to return once its job
-// timeout cancels it add up to more than that minute, when the job ignores
+// of a later boundary on another instance, when the claim's answer, the
+// lease's answer when a Leaser is set, the wait for a WithLimit permit and the
+// time the job takes to return once its job timeout cancels it add up to more
+// than that minute, when the job ignores
 // its context, or when it runs under a Start ctx with a deadline, which
 // replaces the job timeout. Nil => no claims, every instance runs every due
 // boundary.
 func WithClaimer(c Claimer) Option {
 	return func(s *Scheduler) {
 		s.claimer = c
+	}
+}
+
+// WithLeaser makes every run of a keyed id hold the id's lease from l while it
+// runs (see Leaser), so that across the instances that share l's store at most
+// one run of an id is going, and Supersede on one instance cancels the run on
+// another. Set it on every instance, together with WithClaimer: the lease
+// stops two runs of a recurring job from overlapping, but without a Claimer a
+// boundary still runs on every instance that asks for the lease after the
+// run before it returned. Nil leaves the Scheduler as without this option:
+// ids exclude each other in this process only.
+func WithLeaser(l Leaser) Option {
+	return func(s *Scheduler) {
+		s.leaser = l
 	}
 }
 

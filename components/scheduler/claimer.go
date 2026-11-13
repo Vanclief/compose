@@ -36,7 +36,8 @@ const (
 // every instance running it. After a late wake the Scheduler claims, once,
 // the latest boundary of the caught-up range that the job's schedule matches.
 // RunOnce, Supersede and RunNext run on the instance they are called on and
-// are never claimed.
+// are never claimed; with a Leaser they, and claimed runs too, also hold the
+// lease of their id (see Leaser).
 //
 // During shutdown the claim is released when the job returns and its release
 // finishes within the shutdown timeout, and the process waits for Start to
