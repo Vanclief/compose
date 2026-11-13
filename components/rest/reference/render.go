@@ -815,11 +815,16 @@ func jsonValue(v any) string {
 	if err != nil {
 		out = ParamString(v)
 	}
-	runes := []rune(out)
+	return clip(out)
+}
+
+// clip truncates spec text echoed inline to 160 characters.
+func clip(s string) string {
+	runes := []rune(s)
 	if len(runes) > 160 {
-		out = string(runes[:160]) + "…"
+		return string(runes[:160]) + "…"
 	}
-	return out
+	return s
 }
 
 func formatNumber(f float64) string {
