@@ -1,3 +1,9 @@
+// Package ratelimit limits requests per key with a counter kept in memory.
+//
+// The counters live in the process, so each instance of an app counts alone:
+// behind a load balancer a client can get the limit once per instance, up to
+// N times the limit with N instances. A limit that has to hold across
+// instances belongs in the database.
 package ratelimit
 
 import (
