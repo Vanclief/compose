@@ -1,6 +1,7 @@
 package reference
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -1315,4 +1316,80 @@ func markdownChange(c Change) string {
 		}
 	}
 	return out + ": " + detail
+}
+
+// numBound is an effective numeric bound: its value and whether the value
+// itself is excluded.
+type numBound struct {
+	value     float64
+	exclusive bool
+}
+
+// tighter reports whether nb admits fewer values than other, both lower
+// bounds when lower is set and upper bounds otherwise.
+func (nb numBound) tighter(other numBound, lower bool) bool {
+	if nb.value != other.value {
+		return (nb.value > other.value) == lower
+	}
+	return nb.exclusive && !other.exclusive
+}
+
+func lowerBound(s *Schema) *numBound {
+	return effectiveBound(s.Minimum, s.ExclusiveMinimum, true)
+}
+
+func upperBound(s *Schema) *numBound {
+	return effectiveBound(s.Maximum, s.ExclusiveMaximum, false)
+}
+
+// knownLower is lowerBound with a bound that restricts nothing read as no
+// bound: NaN, which no number can be compared with, and minus infinity.
+func knownLower(s *Schema) *numBound {
+	return effectiveBound(knownValue(s.Minimum, -1), knownExclusive(s.ExclusiveMinimum, -1), true)
+}
+
+// knownUpper is upperBound with NaN and plus infinity read as no bound.
+func knownUpper(s *Schema) *numBound {
+	return effectiveBound(knownValue(s.Maximum, 1), knownExclusive(s.ExclusiveMaximum, 1), false)
+}
+
+// knownValue returns v, or nil when it is NaN or the infinity of sign,
+// which restricts nothing.
+func knownValue(v *float64, sign int) *float64 {
+	if v != nil && (math.IsNaN(*v) || math.IsInf(*v, sign)) {
+		return nil
+	}
+	return v
+}
+
+func knownExclusive(b *Bound, sign int) *Bound {
+	if b != nil && b.Value != nil && (math.IsNaN(*b.Value) || math.IsInf(*b.Value, sign)) {
+		return nil
+	}
+	return b
+}
+
+// effectiveBound folds minimum and exclusiveMinimum, or maximum and
+// exclusiveMaximum, into one bound, nil when there is none. Parse turns the
+// 3.0 form, a boolean that makes minimum exclusive, into the 3.1 number; a
+// document built without Parse may still hold the boolean and is read the
+// same way. When both keywords hold a number the tighter one applies.
+func effectiveBound(limit *float64, excl *Bound, lower bool) *numBound {
+	var inclusive, exclusive *numBound
+	if limit != nil {
+		inclusive = &numBound{value: *limit, exclusive: excl != nil && excl.Value == nil && excl.Flag}
+	}
+	if excl != nil && excl.Value != nil {
+		exclusive = &numBound{value: *excl.Value, exclusive: true}
+	}
+	return tighterBound(inclusive, exclusive, lower)
+}
+
+// tighterBound returns the tighter of two lower bounds (lower set) or upper
+// bounds, either of which may be nil, and a at equal ones.
+func tighterBound(a, b *numBound, lower bool) *numBound {
+	if a == nil || b != nil && b.tighter(*a, lower) {
+		return b
+	}
+	return a
 }

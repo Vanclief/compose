@@ -810,22 +810,87 @@ func stringExample(s *Schema) string {
 	return v
 }
 
+// integerExample is the smallest integer the lower bound allows, or, with
+// none, 0 unless the upper bound refuses it, then the largest the upper
+// bound allows. The step past an excluded bound is taken in int64, as a
+// float64 of magnitude 2^53 or more has no next integer to step to. A
+// lower bound below -2^63 gives MinInt64, which meets it; one no int64
+// meets, a lower bound at 2^63 or above or an upper bound below -2^63 or
+// excluding it, gives the int64 nearest to it, MaxInt64 or MinInt64.
 func integerExample(s *Schema) int64 {
-	if s.Minimum != nil {
-		return int64(math.Ceil(*s.Minimum))
+	const two63 = 1 << 63
+	lo := knownLower(s)
+	if lo != nil {
+		v := math.Ceil(lo.value)
+		switch {
+		case v >= two63:
+			return math.MaxInt64
+		case v < -two63:
+			return math.MinInt64
+		case lo.exclusive && v == lo.value:
+			return int64(v) + 1
+		}
+		return int64(v)
 	}
-	if s.ExclusiveMinimum != nil && s.ExclusiveMinimum.Value != nil {
-		return int64(math.Floor(*s.ExclusiveMinimum.Value)) + 1
+	hi := knownUpper(s)
+	if hi != nil && (hi.value < 0 || hi.value == 0 && hi.exclusive) {
+		v := math.Floor(hi.value)
+		switch {
+		case v < -two63 || v == -two63 && hi.exclusive:
+			return math.MinInt64
+		case hi.exclusive && v == hi.value:
+			return int64(v) - 1
+		}
+		return int64(v)
 	}
 	return 0
 }
 
+// numberExample is the lower bound, or the next number past it when it is
+// exclusive and the upper bound allows that, else halfway to the upper
+// bound, else the float64 just past the lower bound, else the upper bound
+// itself when it is inclusive; with no lower bound it is 0 unless the upper
+// bound refuses it, then the upper bound or the next number below it when
+// it is exclusive. The next number is one past the bound, or, where adding
+// one leaves a bound of magnitude 2^53 or more as it is, the next float64.
+// For bounds that are exact float64 values, as Parse rounds the bound
+// written to the nearest one, the example meets them whenever a float64
+// does. It is never infinite: past the largest float64 it is that number.
 func numberExample(s *Schema) float64 {
-	if s.Minimum != nil {
-		return *s.Minimum
+	lo := knownLower(s)
+	hi := knownUpper(s)
+	below := func(v float64) bool {
+		return hi == nil || v < hi.value || v == hi.value && !hi.exclusive
 	}
-	if s.ExclusiveMinimum != nil && s.ExclusiveMinimum.Value != nil {
-		return *s.ExclusiveMinimum.Value + 1
+	var v float64
+	switch {
+	case lo != nil && !lo.exclusive:
+		v = lo.value
+	case lo != nil:
+		v = stepPast(lo.value, 1)
+		if !below(v) {
+			v = lo.value/2 + hi.value/2
+		}
+		if v <= lo.value || !below(v) {
+			v = math.Nextafter(lo.value, math.Inf(1))
+		}
+		if !below(v) && !hi.exclusive {
+			v = hi.value
+		}
+	case hi != nil && hi.exclusive && hi.value <= 0:
+		v = stepPast(hi.value, -1)
+	case hi != nil && hi.value < 0:
+		v = hi.value
 	}
-	return 0
+	return math.Max(-math.MaxFloat64, math.Min(v, math.MaxFloat64))
+}
+
+// stepPast returns v plus step, one or minus one, or, when adding it leaves
+// v as it is, the next float64 from v in that direction.
+func stepPast(v, step float64) float64 {
+	out := v + step
+	if out == v {
+		return math.Nextafter(v, math.Inf(int(step)))
+	}
+	return out
 }

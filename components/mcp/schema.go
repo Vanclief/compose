@@ -145,7 +145,8 @@ type schemaBuilder struct {
 // grug: the schema is built from the flattened document schema, which is
 // what describe_function shows, so a few JSON Schema shapes are advertised
 // more loosely or more strictly than written: allOf is merged by
-// Document.Flatten, which keeps the first value of a scalar bound and drops
+// Document.Flatten, which keeps the tightest bounds, ORs flags such as
+// uniqueItems, keeps the first value of any other scalar keyword and drops
 // a member's not; keywords beside a $ref other than description and nullable
 // are dropped (OpenAPI 3.0 forbids them); const: null reads as no const; a
 // schema that only lists properties is typed object; and a nullable schema
