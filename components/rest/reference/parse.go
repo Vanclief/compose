@@ -237,6 +237,7 @@ func normalizeSchema(s *Schema, seen map[*Schema]bool) {
 			}
 		}
 		s.Type = types
+		s.NullOnly = len(types) == 0
 	}
 
 	if s.ExclusiveMinimum != nil && s.ExclusiveMinimum.Value == nil {
@@ -295,6 +296,9 @@ func normalizeNullMembers(s *Schema) {
 	s.NullMember = true
 	s.OneOf = oneOf
 	s.AnyOf = anyOf
+	// Only null members and no type, reference or allOf: only null, as
+	// {type: "null"} says, see NullOnly.
+	s.NullOnly = s.NullOnly || len(oneOf)+len(anyOf) == 0 && len(s.Type) == 0 && s.Ref == "" && len(s.AllOf) == 0
 
 	members := append(append([]*Schema(nil), oneOf...), anyOf...)
 	if len(members) != 1 || len(s.Type) > 0 || s.Properties.Len() > 0 || s.Items != nil || s.Ref != "" || len(s.AllOf) > 0 {
@@ -334,6 +338,7 @@ func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
 // normalizeNullMembers has already folded into Nullable and NullMember.
 func onlyNull(s Schema) bool {
 	s.NullMember = false
+	s.NullOnly = false
 	return reflect.DeepEqual(s, Schema{Nullable: true})
 }
 

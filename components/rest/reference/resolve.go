@@ -2,6 +2,7 @@ package reference
 
 import (
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -171,15 +172,32 @@ func (d *Document) Example(e *Example) *Example {
 // discriminator} with Cat: {allOf: [Pet, {...}]}: Cat is one concrete variant,
 // not another "one of Cat or Dog".
 func (d *Document) Flatten(s *Schema) *Schema {
-	resolved, _ := d.Schema(s)
-	if resolved == nil {
+	return flattenSchema(d, s, false)
+}
+
+// flattenSchema is Flatten. With siblings set, a $ref with other keywords
+// beside it, at the top, as an allOf member at any depth or as a link in a
+// chain of references, flattens as an allOf of the bare reference with those
+// keywords on the parent, so they apply together with the model it names, as
+// OpenAPI 3.1 says; Flatten follows the reference and drops them. Also with
+// siblings set, an allOf of two or more members is nullable from its members
+// only when every member admits null, see admitsNull, since null must pass
+// each of them; its own nullable holds as written, and the only member of a
+// single-member allOf passes its nullable on, as in the 3.0 spelling of a
+// nullable reference. A not is kept too, the first one found, parent first
+// then members in order, where Flatten drops the not of a member.
+func flattenSchema(d *Document, s *Schema, siblings bool) *Schema {
+	f := &flattener{doc: d, siblings: siblings}
+	_, src := f.resolve(s)
+	if src == nil {
 		return nil
 	}
-	if len(resolved.AllOf) == 0 {
-		return oneBoundForm(resolved)
+	if len(src.AllOf) == 0 {
+		return oneBoundForm(src)
 	}
-	f := &flattener{doc: d, visiting: map[*Schema]bool{}, done: map[*Schema]flattened{}}
-	out, _ := f.flatten(resolved)
+	f.visiting = map[*Schema]bool{}
+	f.done = map[*Schema]flattened{}
+	out, _ := f.flatten(s)
 	return out
 }
 
@@ -197,6 +215,7 @@ type flattener struct {
 	doc      *Document
 	visiting map[*Schema]bool
 	done     map[*Schema]flattened
+	siblings bool
 }
 
 type flattened struct {
@@ -207,36 +226,37 @@ type flattened struct {
 // flatten returns the flattened s and its deps, nil for a schema without
 // allOf, whose result never depends on the chain.
 func (f *flattener) flatten(s *Schema) (*Schema, map[*Schema]bool) {
-	resolved, _ := f.doc.Schema(s)
-	if resolved == nil {
+	key, src := f.resolve(s)
+	if src == nil {
 		return nil, nil
 	}
-	if len(resolved.AllOf) == 0 {
-		return resolved, nil
+	if len(src.AllOf) == 0 {
+		return src, nil
 	}
-	if f.visiting[resolved] {
-		return resolved, map[*Schema]bool{resolved: true}
+	if f.visiting[key] {
+		return key, map[*Schema]bool{key: true}
 	}
-	memo, ok := f.done[resolved]
+	memo, ok := f.done[key]
 	if ok && !f.inChain(memo.deps) {
 		return memo.out, memo.deps
 	}
-	f.visiting[resolved] = true
+	f.visiting[key] = true
 
-	out := *resolved
+	out := *src
 	out.AllOf = nil
 	out.Properties = Ordered[*Schema]{}
 	out.Required = nil
 	out.Ref = ""
 
-	for _, key := range resolved.Properties.Keys {
-		out.Properties.Set(key, resolved.Properties.Map[key])
+	for _, name := range src.Properties.Keys {
+		out.Properties.Set(name, src.Properties.Map[name])
 	}
-	out.Required = append(out.Required, resolved.Required...)
+	out.Required = append(out.Required, src.Required...)
 
-	// The result depends on whether resolved itself is in the chain.
-	deps := map[*Schema]bool{resolved: true}
-	for _, member := range resolved.AllOf {
+	// The result depends on whether key itself is in the chain.
+	deps := map[*Schema]bool{key: true}
+	allNull := true
+	for _, member := range src.AllOf {
 		m, memberDeps := f.flatten(member)
 		for dep := range memberDeps {
 			deps[dep] = true
@@ -255,14 +275,91 @@ func (f *flattener) flatten(s *Schema) (*Schema, map[*Schema]bool) {
 			concrete.Discriminator = nil
 			m = &concrete
 		}
+		allNull = allNull && admitsNull(m)
 		mergeInto(&out, m)
+		if f.siblings && out.Not == nil {
+			out.Not = m.Not
+		}
+	}
+	if f.siblings && len(src.AllOf) > 1 && !allNull {
+		out.Nullable = src.Nullable
+		out.NullMember = src.NullMember
 	}
 
-	delete(f.visiting, resolved)
+	delete(f.visiting, key)
 	if !f.inChain(deps) {
-		f.done[resolved] = flattened{out: &out, deps: deps}
+		f.done[key] = flattened{out: &out, deps: deps}
 	}
 	return &out, deps
+}
+
+// resolve follows s through its $ref chain and returns the schema reached,
+// which the chain and the results are kept by, and the schema to flatten.
+// They are the same schema except with siblings set, where the chain stops
+// at the first schema with keywords beside its $ref and the schema to
+// flatten is that one as an allOf of its bare reference with the keywords
+// on the parent. The bare reference resolves to the next schema in the
+// chain, so every keyword along it applies, and a chain that comes back to
+// a schema it passed stops there as any allOf cycle does.
+func (f *flattener) resolve(s *Schema) (*Schema, *Schema) {
+	if !f.siblings {
+		resolved, _ := f.doc.Schema(s)
+		return resolved, resolved
+	}
+	for hops := 0; s != nil && s.Ref != "" && hops < 32; hops++ {
+		if hasSiblings(s) {
+			return s, refAllOf(s)
+		}
+		target := RefName(s.Ref, refSchemas)
+		next, ok := f.doc.Components.Schemas.Get(target)
+		if target == "" || !ok || next == nil {
+			return s, s
+		}
+		s = next
+	}
+	return s, s
+}
+
+// hasSiblings reports whether s has keywords beside its $ref. Extensions
+// are not keywords and are left out of the test.
+func hasSiblings(s *Schema) bool {
+	return len(s.AllOf) > 0 || hasKeywords(s)
+}
+
+// keywordFields holds the index of each field of Schema that is a keyword
+// other than $ref and allOf, so every field but Ref, AllOf and Extensions.
+var keywordFields = func() []int {
+	var out []int
+	t := reflect.TypeOf(Schema{})
+	for i := range t.NumField() {
+		switch t.Field(i).Name {
+		case "Ref", "AllOf", "Extensions":
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}()
+
+// hasKeywords reports whether s sets a keyword other than $ref and allOf.
+func hasKeywords(s *Schema) bool {
+	v := reflect.ValueOf(s).Elem()
+	for _, i := range keywordFields {
+		if !v.Field(i).IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+// refAllOf is s, a $ref with keywords beside it, as an allOf of the bare
+// reference, first, and the members s already has, with the keywords on the
+// parent.
+func refAllOf(s *Schema) *Schema {
+	out := *s
+	out.Ref = ""
+	out.AllOf = append([]*Schema{{Ref: s.Ref}}, s.AllOf...)
+	return &out
 }
 
 func (f *flattener) inChain(deps map[*Schema]bool) bool {

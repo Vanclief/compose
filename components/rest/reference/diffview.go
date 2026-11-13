@@ -413,7 +413,7 @@ func (b *builder) changeLines(changes []Change) []changeLineView {
 				for _, name := range c.via {
 					links = append(links, b.modelLink(name))
 				}
-				detail += " (through " + strings.Join(links, ", ") + ")"
+				detail += " (through " + strings.Join(links, ", ") + esc(moreText(c.more)) + ")"
 			}
 			line.Detail = template.HTML(detail)
 		}
@@ -655,7 +655,11 @@ func (b *builder) sampleDiffs(ov *opView, ref OperationRef, od *OperationDiff) {
 }
 
 // responseChanges are the changes of od below its response code, with paths
-// relative to the response's content of type ct.
+// relative to the response's content of type ct. A header has no row in the
+// sample, so a header change goes to the response itself as a plain note
+// with the header named in its text: "header X-Rate-Limit removed", or
+// "header X-Rate-Limit: model Code changed" for a header whose model
+// changed.
 func (b *builder) responseChanges(od *OperationDiff, code, ct string) []modelChangeView {
 	prefix := od.Key() + pathSep + "response " + code
 	var out []modelChangeView
@@ -668,6 +672,10 @@ func (b *builder) responseChanges(od *OperationDiff, code, ct string) []modelCha
 		default:
 			continue
 		}
+		if strings.HasPrefix(rel, "header ") {
+			out = append(out, modelChangeView{Kind: c.Kind.String(), Detail: headerChangeText(rel, c.Detail), Breaking: c.Breaking})
+			continue
+		}
 		// A response with several content types puts the type first.
 		if rel == ct {
 			rel = ""
@@ -676,6 +684,18 @@ func (b *builder) responseChanges(od *OperationDiff, code, ct string) []modelCha
 		out = append(out, b.changeView(c, rel))
 	}
 	return out
+}
+
+// headerChangeText names the header in the detail of a change at rel, the
+// path below the response that starts with the header: "header removed" at
+// "header X-Rate-Limit" reads "header X-Rate-Limit removed", and a schema
+// change reads "header X-Count: maxLength lowered from 50 to 10".
+func headerChangeText(rel, detail string) string {
+	rest, ok := strings.CutPrefix(detail, "header ")
+	if ok && !strings.Contains(rel, pathSep) {
+		return rel + " " + rest
+	}
+	return rel + ": " + detail
 }
 
 // baseMediaSample is the sample of the base response r for content type ct,

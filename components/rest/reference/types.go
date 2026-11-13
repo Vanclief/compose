@@ -231,7 +231,10 @@ type Discriminator struct {
 // nullable: true, when 3.1 listed "null" in the type array, or when a oneOf
 // or anyOf member was {type: "null"}. NullMember is true in the last case
 // only: null is then valid whatever the enum or const say, while the other
-// two add null to the type and leave the enum and const deciding. Exclusive
+// two add null to the type and leave the enum and const deciding. NullOnly
+// is true when 3.1 listed "null" as the only type, or when the oneOf and
+// anyOf members were all {type: "null"} beside no type, $ref or allOf,
+// which leaves Type empty as for a schema that states no type. Exclusive
 // bounds always hold the numeric form.
 type Schema struct {
 	Ref           string           `json:"$ref" yaml:"$ref"`
@@ -241,6 +244,7 @@ type Schema struct {
 	Format        string           `json:"format" yaml:"format"`
 	Nullable      bool             `json:"nullable" yaml:"nullable"`
 	NullMember    bool             `json:"-" yaml:"-"`
+	NullOnly      bool             `json:"-" yaml:"-"`
 	Enum          []any            `json:"enum" yaml:"enum"`
 	Const         any              `json:"const" yaml:"const"`
 	Default       any              `json:"default" yaml:"default"`
