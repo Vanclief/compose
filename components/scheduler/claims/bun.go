@@ -1,9 +1,11 @@
-// Package claims keeps the claims of a scheduler.Scheduler in a PostgreSQL
-// table, so that an app running several instances runs each minute boundary
-// of a recurring job on one of them. It works on PostgreSQL only.
+// Package claims keeps the claims and the leases of a scheduler.Scheduler in
+// PostgreSQL tables, so that an app running several instances runs each
+// minute boundary of a recurring job on one of them (NewBunStore), and runs
+// at most one run of a keyed job id at a time across them (NewBunLeaser). It
+// works on PostgreSQL only.
 //
-// The table has one row per job id, so it does not grow with time and needs
-// no cleanup. A claim is one statement: an upsert that takes the row only
+// The claims table has one row per job id, so it does not grow with time and
+// needs no cleanup. A claim is one statement: an upsert that takes the row only
 // when its stored tick is older than the claimed one and its job is not busy.
 // "Now" and the busy deadline are computed by the database, so instances
 // whose clocks disagree still agree on whether a claim is busy, and a tick
@@ -25,8 +27,9 @@ import (
 // refused.
 const maxTickAhead = time.Minute
 
-// createTableLock names the transaction-level advisory lock CreateTable takes,
-// so instances booting together create the table one at a time.
+// createTableLock names the transaction-level advisory lock CreateTable and
+// CreateLeaseTable take, so instances booting together create their tables
+// one at a time.
 const createTableLock = "compose/scheduler/claims.CreateTable"
 
 // bunStore keeps claims in one table of a PostgreSQL bun database.

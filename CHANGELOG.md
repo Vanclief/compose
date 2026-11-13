@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.36.0
+
+### Highlights
+
+- **Keyed jobs can exclude each other across instances**, opt-in with `scheduler.WithLeaser(l)`. Without it a job id excludes other runs of the id in one process only, as before. With it every run of an id, `RunOnce`, `RunNext`, `Supersede` and recurring runs alike, holds the id's lease in a shared store while it runs, so at most one run of an id is going across the instances. A `RunOnce` or recurring run is skipped while another instance holds the id; `RunNext` and `Supersede` wait for it, for up to their job timeout plus 30 seconds. `Supersede` marks the lease on every attempt until its job gets it or gives up (its context ends, the Scheduler stops, or its bound passes), and the instance holding a marked lease cancels the run on it with `ErrSuperseded` at its next successful renewal, which it attempts every 2 seconds, so every run holding the id meanwhile is cancelled, also one that started after the call, such as the holder's own pending job or the job of another `Supersede`; of two `Supersede` calls on different instances at the same time, one job runs to completion and the other is cancelled, runs after it or gives up at its bound, in no guaranteed order. A mark left by a `Supersede` that gave up stays on the lease while its holder keeps it, so it can still cancel the run then holding the lease at that renewal, with no job replacing it. A run whose lease was taken from it is cancelled with the new `scheduler.ErrLeaseLost`, and so is a run that can no longer renew its lease, 10 seconds before another instance could take the id. The bools those methods return still mean "accepted on this instance". `components/scheduler/claims` implements it on PostgreSQL with `claims.CreateLeaseTable(ctx, db, table)` and `claims.NewBunLeaser(db, table)`, one autocommit statement per operation on the database clock, so it works through PgBouncer in transaction mode. Set it on every instance, on the same table, together with `WithClaimer`; [docs/scheduler.md](docs/scheduler.md) lists what it does not guarantee.
+
 ## v1.35.0
 
 ### Breaking

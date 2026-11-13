@@ -3,7 +3,10 @@
 //
 // Every instance of an app runs every recurring job at every boundary unless
 // the Scheduler has a Claimer (WithClaimer), which lets one instance run each
-// boundary of a recurring job. The claims subpackage has one on PostgreSQL.
+// boundary of a recurring job. A keyed id excludes other runs of the id only
+// in its own process unless the Scheduler has a Leaser (WithLeaser), which
+// lets at most one run of an id go across the instances that share it. The
+// claims subpackage has both on PostgreSQL.
 package scheduler
 
 import (
@@ -13,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vanclief/compose/components/logger"
@@ -40,8 +44,9 @@ type runningJob struct {
 }
 
 type pendingJob struct {
-	ctx context.Context
-	job Job
+	ctx  context.Context
+	job  Job
+	mode admitMode // of the call that queued it; it acquires the lease in this mode
 }
 
 type limit struct {
@@ -75,6 +80,21 @@ type Scheduler struct {
 	jobTimeout      time.Duration
 	claimer         Claimer          // nil: every due boundary runs here
 	now             func() time.Time // time.Now by default; tests override to steer the minute loop
+
+	leaser     Leaser        // nil: ids exclude each other in this process only
+	leaseToken string        // random, prefixes the owner of every lease acquired here
+	leaseSeq   atomic.Uint64 // numbers the acquisitions after leaseToken
+
+	// Lease intervals, the defaults from leaser.go; tests shorten them.
+	leaseTTL     time.Duration
+	renewEvery   time.Duration
+	renewTimeout time.Duration
+	cancelMargin time.Duration
+	leasePoll    time.Duration
+
+	holdsMu      sync.Mutex       // protects holds, heartbeating and every hold's mutable fields; taken after runMu
+	holds        map[string]*hold // by owner
+	heartbeating bool
 }
 
 // New creates a Scheduler with the given options. It returns an ez.EINVALID
@@ -88,6 +108,13 @@ func New(opts ...Option) (*Scheduler, error) {
 		shutdownTimeout: DefaultShutdownTimeout,
 		jobTimeout:      DefaultJobTimeout,
 		now:             time.Now,
+		leaseToken:      newLeaseToken(),
+		leaseTTL:        defaultLeaseTTL,
+		renewEvery:      defaultRenewEvery,
+		renewTimeout:    defaultRenewTimeout,
+		cancelMargin:    defaultCancelMargin,
+		leasePoll:       defaultLeasePoll,
+		holds:           make(map[string]*hold),
 	}
 
 	for _, o := range opts {
@@ -255,41 +282,45 @@ func (s *Scheduler) runDue(ctx context.Context, first, last time.Time) {
 	}
 }
 
-// invokeClaimed claims tick for id and, when the claim is won, invokes job and
-// releases the claim once job returns. A lost claim or a claim error skips the
-// invocation. A claim error is logged at error level, since missing a tick is
-// safer than every instance running it, unless ctx was cancelled, by shutdown
-// or Supersede, which is no failure of the store. A claim won after ctx was
-// cancelled, from a store that does not stop on cancellation, is released
-// without running job. A claim error is never released: Release matches by
-// tick only, so it could free the same tick won by another instance.
-func (s *Scheduler) invokeClaimed(ctx context.Context, id string, job Job, tick time.Time) {
+// invokeClaimed claims tick for id and, when the claim is won, invokes job
+// under its lease (invokeLeased) and releases the claim once job returns; it
+// returns the hold of the lease, or nil. A lost claim or a claim error skips
+// the invocation, and so does a lease that is refused or fails, after which
+// the claim is released too. A claim error is logged at error level, since
+// missing a tick is safer than every instance running it, unless ctx was
+// cancelled, by shutdown or Supersede, which is no failure of the store. A
+// claim won after ctx was cancelled, from a store that does not stop on
+// cancellation, is released without running job. A claim error is never
+// released: Release matches by tick only, so it could free the same tick won
+// by another instance.
+func (s *Scheduler) invokeClaimed(ctx context.Context, id string, cancel context.CancelCauseFunc, job Job, mode admitMode, tick time.Time) *hold {
 	if ctx.Err() != nil {
 		s.log.Debug().Str("job_id", id).Msg("Scheduler job cancelled before claim")
-		return
+		return nil
 	}
 
 	won, err := s.claim(ctx, id, tick)
 	if err != nil && ctx.Err() != nil {
 		s.log.Debug().Str("job_id", id).Time("tick", tick).Err(err).Msg("Scheduler job cancelled during claim")
-		return
+		return nil
 	}
 	if err != nil {
 		s.log.Error().Str("job_id", id).Time("tick", tick).Err(err).Msg("Scheduler claim failed, skipping")
-		return
+		return nil
 	}
 	if !won {
 		s.log.Debug().Str("job_id", id).Time("tick", tick).Msg("Job claim refused, skipping")
-		return
+		return nil
 	}
 	if ctx.Err() != nil {
 		s.log.Debug().Str("job_id", id).Time("tick", tick).Msg("Scheduler job cancelled during claim, releasing")
 		s.release(ctx, id, tick)
-		return
+		return nil
 	}
 
-	s.invoke(ctx, id, job)
+	h := s.invokeLeased(ctx, id, cancel, job, mode, nil)
 	s.release(ctx, id, tick)
+	return h
 }
 
 // claim asks the Claimer for tick, bounded by claimTimeout, with the lease
@@ -338,6 +369,10 @@ func latestDue(when Schedule, first, last time.Time) (time.Time, bool) {
 // RunOnce starts job under id now. It returns false without running anything
 // when id is empty, job is nil, ctx is already done, the Scheduler is
 // stopping, or id is busy; a busy id's pending job is left untouched.
+//
+// With a Leaser, true means job was accepted on this instance: the run asks
+// for the lease of id once, and job is skipped when a run on another
+// instance holds it or the acquire fails.
 func (s *Scheduler) RunOnce(ctx context.Context, id string, job Job) bool {
 	return s.admit(ctx, id, job, admitSkip, time.Time{})
 }
@@ -347,6 +382,25 @@ func (s *Scheduler) RunOnce(ctx context.Context, id string, job Job) bool {
 // cause ErrSuperseded and returns true without waiting; job starts after the
 // current invocation returns. It returns false when id is empty, job is nil,
 // ctx is already done, or the Scheduler is stopping.
+//
+// With a Leaser, true means job was accepted on this instance. Unless job
+// runs on the lease this instance already holds for id, it asks for the
+// lease of id every second until it gets it, and each refused attempt
+// marks the lease superseded: the run holding a marked lease is cancelled
+// with ErrSuperseded at its instance's next successful renewal of the lease,
+// which that instance attempts every 2 seconds. So until job gets the lease
+// or gives up, every run that holds the id is cancelled, also one that
+// started after this call, such as the holder's own pending job or the job of
+// another Supersede. Of two Supersede calls on different instances at the
+// same time, one job runs to completion and the other is cancelled, runs
+// after it or gives up, in no guaranteed order. job gives up, and is skipped,
+// when its ctx ends first, the Scheduler stops, or its job timeout plus 30
+// seconds passes.
+// A mark it left stays on the lease while the holder keeps it, so at the
+// holder's next successful renewal it can cancel the run then holding the
+// lease, even one queued after job gave up, with no job replacing it. In one
+// process, likewise, a job queued as pending whose ctx is done by the time it
+// would run is dropped after this call already cancelled the run.
 func (s *Scheduler) Supersede(ctx context.Context, id string, job Job) bool {
 	return s.admit(ctx, id, job, admitSupersede, time.Time{})
 }
@@ -356,6 +410,11 @@ func (s *Scheduler) Supersede(ctx context.Context, id string, job Job) bool {
 // current invocation; job starts after the current invocation returns. It
 // returns false when id is empty, job is nil, ctx is already done, or the
 // Scheduler is stopping. A pending job whose ctx is done by then is dropped.
+//
+// With a Leaser, true means job was accepted on this instance. While a run on
+// another instance holds the lease of id, job waits for it, asking every
+// second, and is skipped when its ctx ends first, the Scheduler stops, or its
+// job timeout plus 30 seconds passes.
 func (s *Scheduler) RunNext(ctx context.Context, id string, job Job) bool {
 	return s.admit(ctx, id, job, admitNext, time.Time{})
 }
@@ -382,7 +441,7 @@ func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMod
 		s.running[id] = &runningJob{cancel: cancel}
 		s.wg.Add(1)
 		s.runMu.Unlock()
-		go s.own(jobCtx, id, cancel, job, claimTick)
+		go s.own(jobCtx, id, cancel, job, mode, claimTick)
 		return true
 	}
 
@@ -391,7 +450,7 @@ func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMod
 		return false
 	}
 
-	rj.pending = &pendingJob{ctx: ctx, job: job}
+	rj.pending = &pendingJob{ctx: ctx, job: job, mode: mode}
 	if mode == admitSupersede {
 		rj.cancel(ErrSuperseded)
 	}
@@ -404,18 +463,48 @@ func (s *Scheduler) admit(ctx context.Context, id string, job Job, mode admitMod
 // When claimTick is set the first invocation runs only if its claim is won,
 // and the claim is released once it returns, panic and shutdown included,
 // before any pending job runs; pending jobs are not claimed.
-func (s *Scheduler) own(ctx context.Context, id string, cancel context.CancelCauseFunc, job Job, claimTick time.Time) {
+//
+// With a Leaser each invocation runs under the lease of id, acquired in the
+// mode of the call that admitted or queued it. A pending job promoted while
+// the lease is healthy runs on the same lease. Otherwise the lease is released
+// while the id is still busy, so a job admitted meanwhile queues as pending
+// and acquires its own lease after the release.
+func (s *Scheduler) own(ctx context.Context, id string, cancel context.CancelCauseFunc, job Job, mode admitMode, claimTick time.Time) {
+	var h *hold
 	for {
 		if claimTick.IsZero() {
-			s.invoke(ctx, id, job)
+			h = s.invokeLeased(ctx, id, cancel, job, mode, h)
 		} else {
-			s.invokeClaimed(ctx, id, job, claimTick)
+			h = s.invokeClaimed(ctx, id, cancel, job, mode, claimTick)
 			claimTick = time.Time{}
 		}
 		cancel(nil)
 
 		s.runMu.Lock()
 		rj := s.running[id]
+		if h != nil {
+			next := rj.pending
+			if next != nil && next.ctx.Err() == nil && !s.stopping {
+				nextCtx, nextCancel := context.WithCancelCause(next.ctx)
+				if s.pointHold(h, nextCancel) {
+					rj.pending = nil
+					rj.cancel = nextCancel
+					ctx = nextCtx
+					cancel = nextCancel
+					job = next.job
+					mode = next.mode
+					s.runMu.Unlock()
+					continue
+				}
+				nextCancel(nil)
+			}
+
+			s.runMu.Unlock()
+			s.dropHold(ctx, h)
+			h = nil
+			s.runMu.Lock()
+		}
+
 		p := rj.pending
 		rj.pending = nil
 
@@ -438,6 +527,7 @@ func (s *Scheduler) own(ctx context.Context, id string, cancel context.CancelCau
 		ctx, cancel = context.WithCancelCause(p.ctx)
 		rj.cancel = cancel
 		job = p.job
+		mode = p.mode
 		s.runMu.Unlock()
 	}
 }
@@ -562,8 +652,9 @@ func (s *Scheduler) Idled() <-chan struct{} {
 }
 
 // Active returns the number of ids with admitted work: running, waiting for a
-// permit from a WithLimit option, or claiming their boundary from a Claimer.
-// A pending job adds nothing to the count.
+// permit from a WithLimit option, claiming their boundary from a Claimer, or
+// acquiring, waiting for or releasing their lease from a Leaser. A pending job
+// adds nothing to the count.
 func (s *Scheduler) Active() int64 {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
