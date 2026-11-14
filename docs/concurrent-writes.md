@@ -108,6 +108,10 @@ if err != nil {
 - **`Update`** calls the model's `Validate()` and then runs one `UPDATE` of the recorded columns
   by primary key. With no column recorded it returns nil and does neither. A row that was deleted
   since the load is `ENOTFOUND`.
+- **The primary key is not patchable.** The `UPDATE` finds the row by the key in the model, so a
+  key changed there would write another row. A recorded primary-key column, any column of a
+  composite key included, is an `EINTERNAL` error whose data names the column, and nothing is
+  written. To change a key, run an `UPDATE` that sets it and finds the row by the old key.
 
 The model's own `Update` method is not called, so anything it does besides the write, such as
 setting `UpdatedAt`, is the handler's job, as in the example.

@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.38.0
+
+### Breaking
+
+- **`relational.Patch` refuses a primary-key column instead of writing another row.** `patch.Update` ran `UPDATE … SET <columns> WHERE <primary key>`, but bun leaves key columns out of `SET` and reads the `WHERE` key from the model, which already held the new value, so a patch that recorded a key column, such as `relational.SetColumn(&patch, "code", &item.Code, body.Code)` on a table keyed by `(org_id, code)`, wrote the other columns to the row that had the new key, or to no row (`ENOTFOUND`), and left the patched row unchanged. `Update` now returns `ez.EINTERNAL`, `The record's identifier cannot be changed`, with the column in the error's data, before it writes anything, for any recorded column of a single or composite primary key. A handler that put a key column in a patch must leave it out; to change a key, run an `UPDATE` that sets it and finds the row by the old key.
+
 ## v1.37.0
 
 ### Breaking
