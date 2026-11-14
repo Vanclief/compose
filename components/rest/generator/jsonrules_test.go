@@ -418,3 +418,40 @@ type Holder struct {
 		}
 	}
 }
+
+type zeroTags []string
+
+func (zeroTags) IsZero(strict bool) bool { return false }
+
+type zeroGood []string
+
+func (zeroGood) IsZero() bool { return false }
+
+type zeroHolder struct {
+	T zeroTags `json:"t,omitzero"`
+	G zeroGood `json:"g,omitzero"`
+}
+
+// encoding/json calls IsZero for omitzero only as IsZero() bool: with another signature a nil
+// slice is left out, so its field is not nullable, and a platform-limited one is not refused.
+func TestIsZeroNeedsItsSignature(t *testing.T) {
+	written := marshalled(t, zeroHolder{})
+	if !reflect.DeepEqual(written, map[string]any{"g": nil}) {
+		t.Fatalf("expected encoding/json to write only g, got %v", written)
+	}
+	files := map[string]string{
+		"things.go":         "package things\n\ntype Tags []string\n\nfunc (Tags) IsZero(strict bool) bool { return false }\n\ntype Good []string\n\nfunc (Good) IsZero() bool { return false }\n\ntype Platform []string\n\ntype Holder struct {\n\tT Tags `json:\"t,omitzero\"`\n\tG Good `json:\"g,omitzero\"`\n\tP Platform `json:\"p,omitzero\"`\n}\n",
+		"platform_linux.go": "package things\n\nfunc (Platform) IsZero(strict bool) bool { return false }\n",
+	}
+	builder := buildThingsFiles(t, files, nil, "Holder")
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties := builder.schemas["things_Holder"]["properties"].(map[string]any)
+	for name, nullable := range map[string]bool{"t": false, "g": true, "p": false} {
+		if (properties[name].(map[string]any)["nullable"] == true) != nullable {
+			t.Errorf("expected %s nullable %v, got %v", name, nullable, properties[name])
+		}
+	}
+}

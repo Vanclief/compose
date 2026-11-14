@@ -53,7 +53,8 @@ type packageInfo struct {
 	// EnumNames holds, per type in Enums, the name of each value's constant.
 	EnumNames map[string][]string
 	// Methods holds, per receiver type name, the names of its methods (value or pointer
-	// receiver).
+	// receiver), false for a MarshalJSONTo, AppendText or IsZero encoding/json does not call, which
+	// still hides a method of its name promoted from an embedded type.
 	Methods map[string]map[string]bool
 	// RefusedMethods holds, per type of a module package and per method, why generation fails
 	// where the method is read (typeMethods): a marshal method or IsZero declared on fewer
@@ -2884,16 +2885,51 @@ func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
 }
 
 // fieldSchema is a struct field's schema. The `,string` option puts a boolean, number or string
-// (or a pointer to one) inside a JSON string. A slice or map field without omitempty or
-// omitzero is nullable: encoding/json writes a nil one as null (with either option it leaves a
-// nil one out).
+// (or a pointer to one) inside a JSON string. A slice or map field is nullable unless
+// encoding/json leaves a nil one out (omitsNil): it writes a nil one as null.
 func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
 	schema := b.valueFieldSchema(field, imports, pkgPath)
-	if !jsonFieldOmitsEmpty(field) && b.isNilCollection(field.Type, imports, pkgPath, 0) {
+	if b.isNilCollection(field.Type, imports, pkgPath, 0) && !b.omitsNil(field, imports, pkgPath) {
 		return nullableSchema(schema)
 	}
 
 	return schema
+}
+
+// omitsNil reports a field encoding/json leaves out when it holds nil: one with omitempty, or
+// with omitzero unless its type declares IsZero (hasIsZero), which omitzero then asks alone, so a
+// nil slice or map whose IsZero reports false is written as null.
+func (b *schemaBuilder) omitsNil(field *ast.Field, imports map[string]string, pkgPath string) bool {
+	options := jsonTagOptions(field)
+	if slices.Contains(options, "omitempty") {
+		return true
+	}
+	if !slices.Contains(options, "omitzero") {
+		return false
+	}
+
+	return !b.hasIsZero(field.Type, imports, pkgPath)
+}
+
+// hasIsZero reports a named type, its aliases resolved, that declares IsZero() bool with a value
+// or a pointer receiver (isZeroSignature), which encoding/json calls for omitzero in place of comparing with the zero
+// value. A type declared from one does not get the method. A standard-library type the generator
+// lists has none that matters here, and one whose declaration cannot be read is not reported.
+func (b *schemaBuilder) hasIsZero(expr ast.Expr, imports map[string]string, pkgPath string) bool {
+	ref, ok := namedTypeRef(expr, imports, pkgPath)
+	if !ok {
+		return false
+	}
+	ref = b.aliasTarget(ref)
+	if b.isListedStandardLibrary(ref) {
+		return false
+	}
+	_, pkg, found, err := b.declarationOf(ref)
+	if err != nil || !found {
+		return false
+	}
+
+	return b.typeMethods(pkg, ref.Name, []string{"IsZero"})["IsZero"]
 }
 
 func (b *schemaBuilder) valueFieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
@@ -3654,6 +3690,8 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 				coder := fn.Name.Name == "MarshalJSONTo" || fn.Name.Name == "AppendText"
 				if receiver != "" && coder && !standardLibrary {
 					coders = append(coders, coderDecl{receiver: receiver, fn: funcInfo{Decl: fn, Imports: imports}, platforms: platforms, file: filepath.Base(filePath)})
+				} else if receiver != "" && fn.Name.Name == "IsZero" && !isZeroSignature(fn.Type) {
+					declare(receiver, fn.Name.Name)
 				} else if receiver != "" {
 					record(receiver, fn.Name.Name, platforms, filepath.Base(filePath))
 				}
@@ -3980,6 +4018,18 @@ func receiverTypeName(fn *ast.FuncDecl) string {
 	}
 
 	return ident.Name
+}
+
+// isZeroSignature reports IsZero() bool, the only IsZero encoding/json calls for omitzero. A bool
+// named through an alias is not read, and the method does not count then.
+func isZeroSignature(fn *ast.FuncType) bool {
+	results := fieldTypes(fn.Results)
+	if len(fieldTypes(fn.Params)) != 0 || len(results) != 1 {
+		return false
+	}
+	ident, ok := ast.Unparen(results[0]).(*ast.Ident)
+
+	return ok && ident.Name == "bool"
 }
 
 // receiverBase is expr without the parentheses and pointers around it: T for *T, (T) and (*T).
