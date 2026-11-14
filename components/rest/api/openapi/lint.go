@@ -416,8 +416,8 @@ func lostMarshalers(t reflect.Type, addressable bool, seen map[marshalVisit]bool
 	seen[visit] = true
 
 	ptr := reflect.PointerTo(t)
-	byValue := t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType)
-	byPointer := ptr.Implements(jsonMarshalerType) || ptr.Implements(textMarshalerType)
+	byValue := encodesOwnJSON(t)
+	byPointer := encodesOwnJSON(ptr)
 	if byPointer && !byValue && !addressable {
 		*problems = append(*problems, fmt.Sprintf("%s is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; hold *%s", t, t))
 	}
@@ -850,8 +850,8 @@ func refusesEmptyText(t reflect.Type) bool {
 }
 
 // decodesOwnText reports whether t, or a pointer to it, implements
-// encoding.TextUnmarshaler or json.Unmarshaler.
+// encoding.TextUnmarshaler or decodes its own JSON (decodesOwnJSON).
 func decodesOwnText(t reflect.Type) bool {
 	ptr := reflect.PointerTo(t)
-	return ptr.Implements(textUnmarshalerType) || ptr.Implements(jsonUnmarshalerType)
+	return ptr.Implements(textUnmarshalerType) || decodesOwnJSON(ptr)
 }

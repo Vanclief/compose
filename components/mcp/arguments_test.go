@@ -208,10 +208,13 @@ func TestCallFunctionOtherNumbersAsBefore(t *testing.T) {
 	require.Error(t, err)
 
 	huge := map[string]any{"id": json.Number("1e400")}
-	text, failed, err = srv.CallTool(ctx, nil, "call_function", map[string]any{"name": "numbers.send", "args": huge})
+	call := map[string]any{"name": "numbers.send", "args": huge}
+	text, failed, err = srv.CallTool(ctx, nil, "call_function", call)
 	require.NoError(t, err)
 	assert.True(t, failed)
-	assert.Equal(t, `validating "arguments": unmarshaling arguments: json: cannot unmarshal number 1e400 into Go value of type float64`, text)
+	raw, err := json.Marshal(call)
+	require.NoError(t, err)
+	assert.Equal(t, `validating "arguments": unmarshaling arguments: `+objectRefusal(t, string(raw)), text)
 
 	text, failed, err = srv.CallTool(ctx, nil, "numbers-send", huge)
 	require.NoError(t, err)
@@ -222,8 +225,7 @@ func TestCallFunctionOtherNumbersAsBefore(t *testing.T) {
 // TestApplyInputSchemaMatchesSDK: applyInputSchema gives the answers of the
 // SDK's typed tools, except that it keeps the digits of an integer of
 // magnitude 2^53 or more and words two refusals as encoding/json does:
-// arguments that are not a JSON object, and a number no float64 holds,
-// whose refusal no longer names the argument.
+// arguments that are not a JSON object, and a number no float64 holds.
 func TestApplyInputSchemaMatchesSDK(t *testing.T) {
 	schema := &jsonschema.Schema{
 		Type: "object",
@@ -261,10 +263,10 @@ func TestApplyInputSchemaMatchesSDK(t *testing.T) {
 		// exact is what applyInputSchema returns where it differs from the
 		// SDK's input.
 		exact string
-		// sdk and ours are set where both refuse the arguments in other
-		// words: the SDK's decoder is not encoding/json.
-		sdk  string
-		ours string
+		// sdk is set where both refuse the arguments in other words: the
+		// SDK's decoder is not encoding/json, whose words applyInputSchema
+		// answers with.
+		sdk string
 	}{
 		{args: `{"count": 3, "ratio": 1.5, "size": 2, "name": "a"}`},
 		{args: `{}`},
@@ -276,15 +278,11 @@ func TestApplyInputSchemaMatchesSDK(t *testing.T) {
 		{args: `{"size": 3}`},
 		{args: `{"name": 5}`},
 		{args: `{"name": "a", "extra": 1}`},
-		{
-			args: `{"ratio": 1e400}`,
-			sdk:  `json: cannot unmarshal "1e400" into Go struct field map[string]interface {}.ratio of type float64`,
-			ours: `json: cannot unmarshal number 1e400 into Go value of type float64`,
-		},
-		{args: `[]`, sdk: `json: cannot unmarshal "[]" into Go value of type map[string]interface {}`, ours: `json: cannot unmarshal array into Go value of type map[string]interface {}`},
-		{args: `"x"`, sdk: `json: cannot unmarshal "\"x\"" into Go value of type map[string]interface {}`, ours: `json: cannot unmarshal string into Go value of type map[string]interface {}`},
-		{args: `5`, sdk: `json: cannot unmarshal "5" into Go value of type map[string]interface {}`, ours: `json: cannot unmarshal number into Go value of type map[string]interface {}`},
-		{args: `true`, sdk: `json: cannot unmarshal "true" into Go value of type map[string]interface {}`, ours: `json: cannot unmarshal bool into Go value of type map[string]interface {}`},
+		{args: `{"ratio": 1e400}`, sdk: `json: cannot unmarshal "1e400" into Go struct field map[string]interface {}.ratio of type float64`},
+		{args: `[]`, sdk: `json: cannot unmarshal "[]" into Go value of type map[string]interface {}`},
+		{args: `"x"`, sdk: `json: cannot unmarshal "\"x\"" into Go value of type map[string]interface {}`},
+		{args: `5`, sdk: `json: cannot unmarshal "5" into Go value of type map[string]interface {}`},
+		{args: `true`, sdk: `json: cannot unmarshal "true" into Go value of type map[string]interface {}`},
 	}
 	for _, tc := range cases {
 		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "typed", Arguments: json.RawMessage(tc.args)})
@@ -296,7 +294,7 @@ func TestApplyInputSchemaMatchesSDK(t *testing.T) {
 		if tc.sdk != "" {
 			assert.True(t, res.IsError, tc.args)
 			assert.Equal(t, `validating "arguments": unmarshaling arguments: `+tc.sdk, want, tc.args)
-			assert.Equal(t, `validating "arguments": unmarshaling arguments: `+tc.ours, invalid, tc.args)
+			assert.Equal(t, `validating "arguments": unmarshaling arguments: `+objectRefusal(t, tc.args), invalid, tc.args)
 			continue
 		}
 		if res.IsError {
@@ -310,6 +308,16 @@ func TestApplyInputSchemaMatchesSDK(t *testing.T) {
 		}
 		assert.Equal(t, tc.exact, string(input), tc.args)
 	}
+}
+
+// objectRefusal is the error encoding/json gives decoding args into a JSON
+// object's map.
+func objectRefusal(t *testing.T, args string) string {
+	t.Helper()
+	object := map[string]any{}
+	err := json.Unmarshal([]byte(args), &object)
+	require.Error(t, err)
+	return err.Error()
 }
 
 // TestApplyInputSchemaIntegerInput: a typed input with an int field takes

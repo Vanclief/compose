@@ -3,6 +3,15 @@
 // type checking): route files give the operations, handler bodies give the request type, the
 // path and query parameters and the content types, and the request type's module function
 // gives the response type. Everything application-specific comes in through Config.
+//
+// The document follows the encoding/json of the toolchain that builds the generator, which is the
+// app's own when it runs with `go run` inside the app's module. With the jsonv2 experiment, on by
+// default from Go 1.27 (build tag goexperiment.jsonv2), encoding/json runs on encoding/json/v2: it
+// also writes a value with MarshalJSONTo, before MarshalJSON, and with AppendText, before
+// MarshalText, and json.Number has a MarshalJSONTo, which a struct embedding one gets. Without it,
+// as on Go 1.26 or with GOEXPERIMENT=nojsonv2, encoding/json writes with MarshalJSON and
+// MarshalText alone. jsonrules_v1.go and jsonrules_v2.go hold the two rule sets. The v2 rules are
+// Go 1.27's; Go 1.25 and 1.26 with GOEXPERIMENT=jsonv2 run an earlier encoding/json/v2.
 package generator
 
 import (
@@ -60,8 +69,9 @@ type Config struct {
 	// TypeSchemas replaces the schema of a Go type, keyed by "importpath.TypeName", e.g.
 	// {"github.com/shopspring/decimal.Decimal": {"type": "string", "format": "decimal"}}. The
 	// type keeps its component, named as usual; the entry wins over the generator's mappings.
-	// A struct that defines MarshalJSON, a struct into whose method set Go promotes the
-	// MarshalJSON or MarshalText of an embedded type, described here or not, and a generic type
+	// A struct that defines MarshalJSON (or MarshalJSONTo, see the package doc), a struct into
+	// whose method set Go promotes a marshal method of an embedded type (MarshalJSON or
+	// MarshalText, and MarshalJSONTo or AppendText), described here or not, and a generic type
 	// other than sql.Null[T] must be described here, generation fails otherwise. The generator
 	// does not substitute a generic type's arguments into its fields, so this holds too for a
 	// type declared from an instantiation of a generic type with either method, which it does
@@ -76,8 +86,8 @@ type Config struct {
 	// where that type could promote one. A standard-library type the generator does not list is
 	// read from GOROOT's source, from the files selected for the platform the generator runs on,
 	// and generation fails wherever one is needed, as a field or embedded, when that source or
-	// one of its files cannot be read. A type with MarshalText and without MarshalJSON is a
-	// string unless described here.
+	// one of its files cannot be read. A type with MarshalText (or AppendText) and without
+	// MarshalJSON (or MarshalJSONTo) is a string unless described here.
 	// ExtendGenerated builds an entry from the derived schema.
 	TypeSchemas map[string]map[string]any
 	// SchemaPrefixCollapse maps a module-relative package path prefix to the path every package

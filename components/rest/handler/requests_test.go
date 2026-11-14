@@ -120,10 +120,15 @@ func TestBindedJSONResponseLogsWrongTypedEnumField(t *testing.T) {
 	require.Equal(t, ez.EINVALID, response.Error.Code)
 	require.Equal(t, "Invalid request body", response.Error.Message)
 
-	// enums.Unmarshal returns the json error bare, so encoding/json names the field in the log
+	// enums.Unmarshal returns the json error bare, so the log holds encoding/json's own words,
+	// which name the field on encoding/json's own implementation and not on encoding/json/v2
 	output := buf.String()
 	require.Contains(t, output, "Request Bind Error")
-	require.Contains(t, output, "field colorBody.color")
+	err = json.Unmarshal([]byte(`{"color":42}`), &colorBody{})
+	require.Error(t, err)
+	logged, err := json.Marshal(err.Error())
+	require.NoError(t, err)
+	require.Contains(t, output, `"bind_error":`+string(logged))
 }
 
 // email mirrors emma's types.Email: a translation key with the value as data,

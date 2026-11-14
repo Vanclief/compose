@@ -2,6 +2,17 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.38.0
+
+### Breaking
+
+- **The OpenAPI generator follows `encoding/json` on Go 1.27, so a document generated with Go 1.27 can differ from one generated with Go 1.26, or generation can fail.** From Go 1.27, `encoding/json` runs on `encoding/json/v2` (the `jsonv2` experiment is on by default), which also writes a value with `MarshalJSONTo` before `MarshalJSON` and with `AppendText` before `MarshalText`, and gives `json.Number` a `MarshalJSONTo`. `components/rest/generator` follows the toolchain it is built with, the app's when it runs with `go run` in the app's module; built with Go 1.26, or with `GOEXPERIMENT=nojsonv2`, it writes the same document as before. Built with Go 1.27, a type with `AppendText` and without a JSON method is a string, not its kind or an object of its fields; a struct with `MarshalJSONTo` fails generation as one with `MarshalJSON` does; and generation fails for a struct into which an embedded type promotes `MarshalJSONTo` or `AppendText`, as it does for `MarshalJSON` and `MarshalText`. That is a struct embedding `json.Number`, which Go 1.27 writes as the number alone and Go 1.26 as a field named `Number`; one embedding `netip.Addr`, `net.IP`, `big.Float` or `regexp.Regexp` beside another type with `MarshalText`, which ties `MarshalText` and leaves the standard type's `AppendText` promoted; and one with its own `MarshalText` that gets an `AppendText`, which Go 1.27 writes with the `AppendText`. Describe such a type with `Config.TypeSchemas`.
+- **The route registry refuses on Go 1.27 the shapes Go 1.27's `encoding/json` hands to a method.** `components/rest/api` refused a request struct that gets `UnmarshalJSON` from an embedded field, a response struct that gets `MarshalJSON` or `MarshalText`, and a response holding by value in a map a type whose marshaler has a pointer receiver. Built with Go 1.27 it refuses them also for `UnmarshalJSONFrom`, `MarshalJSONTo` and `AppendText`, which `encoding/json` now calls, and does not look into the keys of a type with one of them. Built with Go 1.26 nothing changes.
+
+### Highlights
+
+- **Go 1.27 support**: the test suite passes on Go 1.26.11 and on Go 1.27.2. The route registry asks `encoding/json` which key a json tag's name gives, as Go 1.27 reads a name with a backslash or a quote otherwise, so a mismatch between the document and what is sent names the key `encoding/json` really uses. Tests that compared the error text of `encoding/json`, which Go 1.27 words differently, take it from `encoding/json`. On Go 1.27 the `Request Bind Error` log line of a body field of the wrong type no longer names the field: `encoding/json` on `encoding/json/v2` does not add it to the error an `UnmarshalJSON` method returns.
+
 ## v1.37.0
 
 ### Breaking
