@@ -31,13 +31,20 @@ var registry = struct {
 // (for example a full set and a request-only subset) records the union in
 // first-seen order, so the published enum component always lists every value
 // the type can carry. Narrow a single field with the `enum:"a,b"` struct tag.
+//
+// Enum must be a type declared in a package: Set panics with an ez.EINVALID
+// error for string itself, which would make every string field of every
+// operation that enum.
 func Set[Enum ~string](vals []Enum) map[Enum]struct{} {
+	t := reflect.TypeFor[Enum]()
+	if t.PkgPath() == "" {
+		panic(ez.New(ez.EINVALID, "enums: Set needs a declared string type, not "+t.String(), nil))
+	}
+
 	set := make(map[Enum]struct{}, len(vals))
 	for _, value := range vals {
 		set[value] = struct{}{}
 	}
-
-	t := reflect.TypeFor[Enum]()
 
 	registry.Lock()
 	defer registry.Unlock()

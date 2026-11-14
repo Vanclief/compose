@@ -695,7 +695,10 @@ lint, key check and variants.
   which is the way out when its wire form is a string.
 - **Enums as named components**: `enums.Set[T]` records the values by `reflect.Type`
   (`enums.Values`); repeated `Set` calls for one type record the union in first-seen order,
-  and a field narrows with the `enum:"a,b"` tag. For a recorded type the registry registers a
+  and a field narrows with the `enum:"a,b"` tag. `Set` panics for `string` itself (or an
+  alias of it), and the reflector ignores a recorded type without a package path, since an
+  entry for `string` would make every string field of every operation that enum. For a
+  recorded type the registry registers a
   `<pkg>.<T>` component with the values and returns a fresh `&Schema{Ref: ...}` on every call.
   Two conditions verified in source: the registry must return a fresh pointer because
   `SchemaFromField` (`schema.go:572`) applies the field-level `enum` tag to it

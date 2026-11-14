@@ -13,7 +13,6 @@ import (
 	"github.com/vanclief/ez"
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
-	"github.com/vanclief/compose/primitives/enums"
 )
 
 var (
@@ -218,7 +217,7 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 			return
 		}
 		_, aliased := r.aliases[t]
-		_, isEnum := enums.Values(t)
+		_, isEnum := enumValues(t)
 		if aliased || isEnum || isOpaque(t) {
 			return
 		}
