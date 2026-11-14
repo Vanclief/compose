@@ -2683,7 +2683,7 @@ var textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 
 // promotesMarshaler reports what Go's method sets say: a value of value's type, or a pointer to
-// one, has MarshalJSON or MarshalText.
+// one, has a method encoding/json writes it with (marshalMethods).
 func promotesMarshaler(value any) bool {
 	typ := reflect.TypeOf(value)
 	if typ.Kind() == reflect.Pointer {
@@ -2691,8 +2691,16 @@ func promotesMarshaler(value any) bool {
 	}
 	pointer := reflect.PointerTo(typ)
 
-	return typ.Implements(textMarshalerType) || typ.Implements(jsonMarshalerType) || pointer.Implements(textMarshalerType) || pointer.Implements(jsonMarshalerType)
+	return slices.ContainsFunc(marshalMethods(), func(method string) bool {
+		_, byValue := typ.MethodByName(method)
+		_, byPointer := pointer.MethodByName(method)
+		return byValue || byPointer
+	})
 }
+
+// stdText is the text method encoding/json writes the standard library's text types with, which
+// have AppendText and MarshalText.
+var stdText = textMethods[0]
 
 type PathText struct {
 	A int
@@ -2984,7 +2992,8 @@ type skipIfaceTie struct {
 }
 
 // An embedded type the walk does not expand still counts as a declaring type at its depth: a
-// standard-library type knownMarshalers lists, a described one, and an interface.
+// standard-library type knownMarshalers lists, a described one, and an interface. On
+// encoding/json/v2, netip.Addr's AppendText, which SkipTextStruct does not tie, is promoted.
 func TestSkippedEmbeddedTypesTie(t *testing.T) {
 	source := `package things
 
@@ -3028,18 +3037,27 @@ type IfaceTie struct {
 	described := map[string]map[string]any{
 		"example.com/app/things.SkipDescribed": {"type": "string"},
 	}
+	netipTie := struct {
+		writes  any
+		refused string
+	}{map[string]any{"A": float64(7), "B": "s", "x": float64(7)}, ""}
+	if encodingJSONV2 {
+		netipTie.writes = ""
+		netipTie.refused = "type NetipTie embeds Addr, which defines AppendText, so it marshals as Addr's text alone"
+	}
 	cases := []struct {
-		name   string
-		value  any
-		writes any
+		name    string
+		value   any
+		writes  any
+		refused string
 	}{
-		{"NetipTie", &skipNetipTie{SkipTextStruct: SkipTextStruct{A: 7, B: "s"}, X: 7}, map[string]any{"A": float64(7), "B": "s", "x": float64(7)}},
-		{"DescribedTie", &skipDescribedTie{SkipDescribed: SkipDescribed{C: 1}, X: 7}, map[string]any{"A": float64(0), "B": "", "C": float64(1), "x": float64(7)}},
-		{"IfaceTie", &skipIfaceTie{SkipTextIface: SkipTextStruct{}, X: 7}, map[string]any{"A": float64(0), "B": "", "SkipTextIface": "s", "x": float64(7)}},
+		{"NetipTie", &skipNetipTie{SkipTextStruct: SkipTextStruct{A: 7, B: "s"}, X: 7}, netipTie.writes, netipTie.refused},
+		{"DescribedTie", &skipDescribedTie{SkipDescribed: SkipDescribed{C: 1}, X: 7}, map[string]any{"A": float64(0), "B": "", "C": float64(1), "x": float64(7)}, ""},
+		{"IfaceTie", &skipIfaceTie{SkipTextIface: SkipTextStruct{}, X: 7}, map[string]any{"A": float64(0), "B": "", "SkipTextIface": "s", "x": float64(7)}, ""},
 	}
 	for _, c := range cases {
-		if promotesMarshaler(c.value) {
-			t.Fatalf("%s: expected Go to promote no marshaler", c.name)
+		if promotesMarshaler(c.value) != (c.refused != "") {
+			t.Fatalf("%s: expected Go to promote a marshaler: %v", c.name, c.refused != "")
 		}
 		value := marshalled(t, c.value)
 		if !reflect.DeepEqual(value, c.writes) {
@@ -3048,6 +3066,12 @@ type IfaceTie struct {
 
 		builder := buildDescribed(t, source, described, c.name)
 		err := builder.unresolvedError()
+		if c.refused != "" {
+			if err == nil || !strings.Contains(err.Error(), c.refused) {
+				t.Errorf("%s: expected %q, got %v", c.name, c.refused, err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Errorf("%s: expected its fields, got %v", c.name, err)
 			continue
@@ -3180,8 +3204,8 @@ type JSONIface struct {
 		reason string
 	}{
 		{"Described", &seenDescribed{X: 7}, map[string]any{"custom": float64(1)}, "type Described embeds SeenDescribedObj, which defines MarshalJSON, so it marshals as SeenDescribedObj alone; Config.TypeSchemas describes SeenDescribedObj, not the types that embed it; describe it with Config.TypeSchemas"},
-		{"Netip", &seenNetip{X: 7}, "", "type Netip embeds Addr, which defines MarshalText"},
-		{"BigFloat", bigFloat, "1.5", "type BigFloat embeds Float, which defines MarshalText"},
+		{"Netip", &seenNetip{X: 7}, "", "type Netip embeds Addr, which defines " + stdText},
+		{"BigFloat", bigFloat, "1.5", "type BigFloat embeds Float, which defines " + stdText},
 		{"JSONMarshaler", &seenJSONMarshaler{Marshaler: SeenDescribedObj{}}, map[string]any{"custom": float64(1)}, "type JSONMarshaler embeds Marshaler, which defines MarshalJSON"},
 		{"TextMarshaler", &seenTextMarshaler{TextMarshaler: SkipTextStruct{}}, "s", "type TextMarshaler embeds TextMarshaler, which defines MarshalText"},
 		{"Iface", &seenIface{SeenTextIface: SkipTextStruct{}}, "s", "type Iface embeds SeenTextIface, which defines MarshalText"},
@@ -3539,7 +3563,9 @@ type numberField struct {
 	Q json.Number `json:"q,string"`
 }
 
-// encoding/json writes a json.Number as a JSON number, also as the field an embedded one is.
+// encoding/json writes a json.Number as a JSON number. An embedded one is a field named Number,
+// except on encoding/json/v2, where the struct gets Number's MarshalJSONTo and is written as that
+// number alone.
 func TestJSONNumberIsANumber(t *testing.T) {
 	builder := buildThings(t, `package things
 
@@ -3556,18 +3582,26 @@ type Field struct {
 }
 `, "Embed", "Field")
 	err := builder.unresolvedError()
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	embed := marshalled(t, &numberEmbed{Number: "7.5"})
-	if !reflect.DeepEqual(embed, map[string]any{"Number": 7.5, "x": float64(0)}) {
-		t.Fatalf("expected encoding/json to write the Number field, got %v", embed)
-	}
-	assertConforms(t, builder, builder.schemas["things_Embed"], embed)
-	assertConforms(t, builder, builder.schemas["things_Embed"], marshalled(t, &numberEmbed{}))
-	if len(nonConformities(builder.schemas, builder.schemas["things_Embed"], map[string]any{"x": float64(0)}, "$")) == 0 {
-		t.Errorf("expected Number required, got %v", builder.schemas["things_Embed"])
+	if encodingJSONV2 {
+		if embed != 7.5 {
+			t.Fatalf("expected encoding/json to write the number alone, got %v", embed)
+		}
+		if err == nil || !strings.Contains(err.Error(), "type Embed embeds Number, which defines MarshalJSONTo, so it marshals as Number alone") || strings.Contains(err.Error(), "Field") {
+			t.Fatalf("expected Embed refused, got %v", err)
+		}
+	} else {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(embed, map[string]any{"Number": 7.5, "x": float64(0)}) {
+			t.Fatalf("expected encoding/json to write the Number field, got %v", embed)
+		}
+		assertConforms(t, builder, builder.schemas["things_Embed"], embed)
+		assertConforms(t, builder, builder.schemas["things_Embed"], marshalled(t, &numberEmbed{}))
+		if len(nonConformities(builder.schemas, builder.schemas["things_Embed"], map[string]any{"x": float64(0)}, "$")) == 0 {
+			t.Errorf("expected Number required, got %v", builder.schemas["things_Embed"])
+		}
 	}
 
 	field := marshalled(t, &numberField{N: "1.5", Q: "2"})
@@ -3767,7 +3801,8 @@ type ifaceUUID struct {
 
 // An embedded interface or non-struct whose marshal method Go does not promote, as another type
 // at its depth declares it too, is a field named after its type: an interface one written as the
-// value it holds or null, slog.Level as its name and uuid.UUID, a [16]byte, as its text.
+// value it holds or null, slog.Level as its name and uuid.UUID, a [16]byte, as its text. On
+// encoding/json/v2, slog.Level's AppendText, which no interface ties, is promoted.
 func TestEmbeddedNonStructsInATieAreFields(t *testing.T) {
 	source := `package things
 
@@ -3812,20 +3847,29 @@ type UUID struct {
 	Name string ` + "`json:\"name\"`" + `
 }
 `
+	level := struct {
+		writes  any
+		refused string
+	}{map[string]any{"Level": "INFO", "IfaceJM": nil, "IfaceTM": nil, "name": ""}, ""}
+	if encodingJSONV2 {
+		level.writes = "INFO"
+		level.refused = "type Level embeds Level, which defines AppendText, so it marshals as Level's text alone"
+	}
 	cases := []struct {
 		name     string
 		values   []any
 		writes   any
 		required string
+		refused  string
 	}{
-		{"Marshalers", []any{&ifaceMarshalers{}, &ifaceMarshalers{Marshaler: SeenDescribedObj{}, IfaceJM: SeenDescribedObj{}}}, map[string]any{"Marshaler": nil, "IfaceJM": nil, "name": ""}, ""},
-		{"Texts", []any{&ifaceTexts{}, &ifaceTexts{TextMarshaler: SkipTextStruct{}, IfaceTM: SkipTextStruct{}}}, map[string]any{"TextMarshaler": nil, "IfaceTM": nil, "name": ""}, ""},
-		{"Level", []any{&ifaceLevel{}, &ifaceLevel{Level: slog.LevelWarn, IfaceTM: SkipTextStruct{}}}, map[string]any{"Level": "INFO", "IfaceJM": nil, "IfaceTM": nil, "name": ""}, "Level"},
-		{"UUID", []any{&ifaceUUID{}, &ifaceUUID{UUID: uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")}}, map[string]any{"UUID": "00000000-0000-0000-0000-000000000000", "IfaceTM": nil, "name": ""}, "UUID"},
+		{"Marshalers", []any{&ifaceMarshalers{}, &ifaceMarshalers{Marshaler: SeenDescribedObj{}, IfaceJM: SeenDescribedObj{}}}, map[string]any{"Marshaler": nil, "IfaceJM": nil, "name": ""}, "", ""},
+		{"Texts", []any{&ifaceTexts{}, &ifaceTexts{TextMarshaler: SkipTextStruct{}, IfaceTM: SkipTextStruct{}}}, map[string]any{"TextMarshaler": nil, "IfaceTM": nil, "name": ""}, "", ""},
+		{"Level", []any{&ifaceLevel{}, &ifaceLevel{Level: slog.LevelWarn, IfaceTM: SkipTextStruct{}}}, level.writes, "Level", level.refused},
+		{"UUID", []any{&ifaceUUID{}, &ifaceUUID{UUID: uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")}}, map[string]any{"UUID": "00000000-0000-0000-0000-000000000000", "IfaceTM": nil, "name": ""}, "UUID", ""},
 	}
 	for _, c := range cases {
-		if promotesMarshaler(c.values[0]) {
-			t.Fatalf("%s: expected Go to promote no marshaler", c.name)
+		if promotesMarshaler(c.values[0]) != (c.refused != "") {
+			t.Fatalf("%s: expected Go to promote a marshaler: %v", c.name, c.refused != "")
 		}
 		zero := marshalled(t, c.values[0])
 		if !reflect.DeepEqual(zero, c.writes) {
@@ -3834,6 +3878,12 @@ type UUID struct {
 
 		builder := buildThings(t, source, c.name)
 		err := builder.unresolvedError()
+		if c.refused != "" {
+			if err == nil || !strings.Contains(err.Error(), c.refused) {
+				t.Errorf("%s: expected %q, got %v", c.name, c.refused, err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Errorf("%s: expected its fields, got %v", c.name, err)
 			continue
@@ -4420,11 +4470,11 @@ type Regexp struct {
 
 	promoted := &stdRegexp{Regexp: regexp.MustCompile("a+")}
 	if !promotesMarshaler(promoted) || marshalled(t, promoted) != "a+" {
-		t.Fatalf("expected Go to promote Regexp's MarshalText, got %v", marshalled(t, promoted))
+		t.Fatalf("expected Go to promote Regexp's %s, got %v", stdText, marshalled(t, promoted))
 	}
 	builder := buildThings(t, source, "Regexp")
 	err := builder.unresolvedError()
-	if err == nil || !strings.Contains(err.Error(), "type Regexp embeds Regexp, which defines MarshalText") {
+	if err == nil || !strings.Contains(err.Error(), "type Regexp embeds Regexp, which defines "+stdText) {
 		t.Errorf("expected Regexp refused, got %v", err)
 	}
 }

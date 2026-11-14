@@ -270,3 +270,33 @@ func Get(ctx context.Context, request *GetRequest) (*Wrapper, error) { return ni
 		t.Fatal("expected the extension marker left out of the document")
 	}
 }
+
+// A struct with its own MarshalJSON that ExtendGenerated describes keeps the allOf of the struct
+// it embeds, whose MarshalJSON its own outranks, beside its fields.
+func TestExtendedMarshalerKeepsItsEmbeddedComponent(t *testing.T) {
+	source := `package things
+
+type Inner struct{ A int }
+
+func (Inner) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+
+type Outer struct {
+	*Inner
+	B int ` + "`json:\"b\"`" + `
+}
+
+func (Outer) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+`
+	described := map[string]map[string]any{
+		"example.com/app/things.Inner": {"type": "object"},
+		"example.com/app/things.Outer": ExtendGenerated(map[string]any{}),
+	}
+	builder := buildDescribed(t, source, described, "Outer")
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.schemas["things_Outer"]["allOf"] == nil {
+		t.Errorf("expected Outer to be allOf Inner and its fields, got %v", builder.schemas["things_Outer"])
+	}
+}
