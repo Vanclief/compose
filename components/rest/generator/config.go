@@ -17,12 +17,14 @@
 // jsonrules_v2.go hold the two rule sets. The v2 rules are Go 1.27's; Go 1.25 and 1.26 with
 // GOEXPERIMENT=jsonv2 run an earlier encoding/json/v2.
 //
-// The document is the same on every platform: of the app's own packages and its dependencies, the
+// Of the packages it reads types and module functions from, the app's and its dependencies', the
 // generator reads every file that some GOOS/GOARCH, with cgo on or off, builds, and leaves out one
-// that none builds, such as one marked //go:build ignore or needing a custom build tag. A marshal
-// method or IsZero declared on fewer platforms than its type, through a file-name suffix such as
+// that none builds, such as one marked //go:build ignore or needing a custom build tag; the files
+// RoutesGlob and HandlerGlob match are read whatever their build constraints. A marshal method or
+// IsZero declared on fewer platforms than its type, through a file-name suffix such as
 // _windows.go, a //go:build line or an import of "C", fails generation unless Config.TypeSchemas
-// describes the type.
+// describes the type, as encoding/json would write the type differently by platform. The standard
+// library is read for the platform the generator runs on.
 package generator
 
 import (
