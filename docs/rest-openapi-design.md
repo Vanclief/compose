@@ -711,7 +711,9 @@ lint, key check and variants.
   `OpenAPI.MarshalJSON` prunes components no path references. Both files are re-encoded with
   sorted keys, and the 3.0.3 one gets what `Downgrade` leaves invalid rewritten:
   `anyOf [X, {type: null}]` becomes `nullable: true` (beside `allOf [{$ref}]` for a ref)
-  (`api/spec.go`, `canonical`).
+  (`api/spec.go`, `canonical`). Where a schema holds both `minimum` and a numeric
+  `exclusiveMinimum`, the copy's `Downgrade` keeps the tighter of the two, the exclusive one
+  at equal values, as the boolean form can carry only one; the same for the maximum.
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
   `default` response pointing at the `handler.ErrorResponse` component, under the name the
   namer gives it. The `api.APIKeyHeader` security
