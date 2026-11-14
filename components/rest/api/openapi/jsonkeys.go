@@ -285,9 +285,10 @@ func promotedCoder(t reflect.Type, request bool) (string, bool) {
 }
 
 // compareKeys reports keys bound (request) or sent (response) by
-// encoding/json but missing from schema, schema properties encoding/json
-// would not bind or send, and JSON names declared by several fields where
-// huma and encoding/json may pick different ones.
+// encoding/json but missing from schema, a json tag name encoding/json does
+// not take as written, which huma lists as written, schema properties
+// encoding/json would not bind or send, and JSON names declared by several
+// fields where huma and encoding/json may pick different ones.
 func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jsonField, schema *huma.Schema, hidden map[string]bool, request bool) []string {
 	missing := "is bound by encoding/json but missing from the schema"
 	unused := "is not bound by encoding/json"
@@ -306,6 +307,14 @@ func compareKeys(t reflect.Type, fields []jsonField, candidates map[string][]jso
 	for _, f := range fields {
 		bound[f.name] = true
 		if hidden[f.path] {
+			continue
+		}
+		// The schema names a property by its json tag's name as written;
+		// encoding/json names the key by its own rules (jsonTagKey).
+		written, _, _ := strings.Cut(t.FieldByIndex(f.index).Tag.Get("json"), ",")
+		if written != "" && jsonTagKey(written) != written {
+			bound[written] = true
+			problems = append(problems, fmt.Sprintf("%s.%s: encoding/json does not take the json tag name %q as it is written and uses the key %q, which the schema would not list; name the key with letters, digits, spaces and ASCII punctuation other than a backslash, a quote, a backtick or a comma", t, f.path, written, f.name))
 			continue
 		}
 		if !props[f.name] {
