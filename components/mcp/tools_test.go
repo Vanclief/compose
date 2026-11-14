@@ -519,7 +519,7 @@ func TestFunctionInputSchemaNullableRefs(t *testing.T) {
 	for _, a := range f.Args {
 		types = append(types, c.typeName(a.Schema))
 	}
-	assert.Equal(t, []string{"Address?", "Address?", "Address|string?", "object"}, types)
+	assert.Equal(t, []string{"Address?", "Address?", "(Address|string)?", "object"}, types)
 }
 
 func TestFunctionInputSchemaNullableParams(t *testing.T) {

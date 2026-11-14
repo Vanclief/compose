@@ -504,7 +504,7 @@
         },
         {
           "name": "status",
-          "type": "string enum: open|shipped"
+          "type": "string enum: \"open\"|\"shipped\""
         },
         {
           "name": "lines",
