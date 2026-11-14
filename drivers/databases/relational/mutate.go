@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
+	"github.com/uptrace/bun/schema"
 	"github.com/vanclief/ez"
 )
 
@@ -48,6 +50,12 @@ func LockRow(ctx context.Context, tx bun.Tx, model any) error {
 // returned with its code. When db is already a bun.Tx, Mutate runs inside a
 // savepoint of it, and the caller's commit or rollback decides the outcome.
 //
+// fn must not change model's primary key: Update finds the row by the key in
+// model, so it would write a row that was never locked. A key that differs
+// after fn from the one locked, in any column of a composite key, is
+// EINTERNAL, returned before Update is called and rolled back like any other
+// error.
+//
 // fn should write through tx, so its writes roll back with the rest. Side
 // effects that cannot be rolled back, such as sending an email or calling
 // another service, belong after Mutate returns, not inside fn: fn may have
@@ -66,9 +74,23 @@ func Mutate(ctx context.Context, db bun.IDB, model DBModel, fn func(ctx context.
 			return ez.Wrap(err)
 		}
 
+		table, err := rowTable(tx, model)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+
+		locked := primaryKey(tx, table, model)
+
 		err = fn(ctx, tx)
 		if err != nil {
 			return ez.Wrap(err)
+		}
+
+		current := primaryKey(tx, table, model)
+		for i, field := range table.PKs {
+			if current[i] != locked[i] {
+				return ez.New(ez.EINTERNAL, "The record's identifier cannot be changed", nil).AddData("column", field.Name)
+			}
 		}
 
 		err = model.Update(ctx, tx)
@@ -83,4 +105,18 @@ func Mutate(ctx context.Context, db bun.IDB, model DBModel, fn func(ctx context.
 	}
 
 	return nil
+}
+
+// primaryKey returns the SQL text of each primary-key value of model, in the
+// order of table.PKs: what a write by primary key puts in its WHERE clause.
+func primaryKey(db bun.IDB, table *schema.Table, model any) []string {
+	gen := schema.NewQueryGen(db.Dialect())
+	row := reflect.ValueOf(model).Elem()
+
+	values := make([]string, len(table.PKs))
+	for i, field := range table.PKs {
+		values[i] = string(field.AppendValue(gen, nil, row))
+	}
+
+	return values
 }
