@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/types"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -90,7 +91,8 @@ type embeddedStruct struct {
 // the name, and the fields reached through an embedded pointer are not required, as a nil
 // pointer leaves them out. ok is false for any other struct, whose allOf schema already says
 // what Go writes, and for one into which an embedded type promotes MarshalJSON or MarshalText,
-// which Go writes as that type alone, or for which the generator cannot tell whether one does
+// unless a method of own, the struct's type's, that encoding/json does not call hides it, which
+// Go writes as that type alone, or for which the generator cannot tell whether one does
 // (promotedMarshaler). Such a struct is refused before it gets here: a named one when its
 // component is built (customMarshalReason), an anonymous one in schemaForExpr. Only a named one
 // that Config.TypeSchemas extends reaches here, and it keeps its allOf.
@@ -108,13 +110,18 @@ type embeddedStruct struct {
 // stay required behind an embedded pointer. It reads database/sql's Null types as the structs
 // they are, a described type with a marshaler from source, and a standard-library or well-known
 // struct with a marshal method as a struct without fields.
-func (b *schemaBuilder) mergedStructSchema(st *ast.StructType, imports map[string]string, pkgPath string) (map[string]any, bool, string) {
+func (b *schemaBuilder) mergedStructSchema(st *ast.StructType, imports map[string]string, pkgPath string, own map[string]bool) (map[string]any, bool, string) {
 	walk := b.walkEmbedding(st, imports, pkgPath)
 	collision := collides(walk.fields)
 	if !walk.pointer && !walk.marshals && !collision {
 		return nil, false, ""
 	}
-	if b.promotedMarshaler(st, imports, pkgPath, false) != "" {
+	// The caller dealt with the marshal methods own calls; one it does not still hides another.
+	hiding := maps.Clone(own)
+	maps.DeleteFunc(hiding, func(_ string, calls bool) bool {
+		return calls
+	})
+	if b.promotedMarshaler(st, imports, pkgPath, hiding) != "" {
 		return nil, false, ""
 	}
 	for _, generic := range walk.generics {
@@ -366,17 +373,17 @@ func (b *schemaBuilder) embeddedStructDecl(expr ast.Expr, imports map[string]str
 }
 
 // marshalsItself reports an embedded struct type whose component is not its fields: it declares
-// MarshalJSON or MarshalText (methodsOf, a described or standard-library type included), or
+// a marshal method (marshalMethod; methodsOf, a described or standard-library type included), or
 // promotedMarshaler finds one promoted into it or cannot tell whether one is. Its component is
 // then a string, a description of the method's output, or fails generation, while a struct that
 // embeds it without getting the method still gets its fields.
 func (b *schemaBuilder) marshalsItself(decl sourceStruct) bool {
 	methods, _ := b.methodsOf(decl.ref)
-	if methods["MarshalJSON"] || methods["MarshalText"] {
+	if marshalMethod(methods) != "" {
 		return true
 	}
 
-	return b.promotedMarshaler(decl.st, decl.imports, decl.pkgPath, false) != ""
+	return b.promotedMarshaler(decl.st, decl.imports, decl.pkgPath, methods) != ""
 }
 
 // sqlNullGoTypes are the value fields' Go types of database/sql's Null types.
@@ -462,11 +469,9 @@ func (b *schemaBuilder) genericEmbedReason(generic genericEmbed, fields []promot
 		why = append(why, "its field "+strconv.Quote(shared)+" shares its name with another field of the struct, so encoding/json writes that other field or neither")
 	}
 	methods, _ := b.methodsOf(generic.decl.ref)
-	for _, method := range []string{"MarshalJSON", "MarshalText"} {
-		if methods[method] {
-			why = append(why, "it has "+method+", which is not promoted here, so encoding/json writes its fields while its description is of "+method+"'s output")
-			break
-		}
+	method := marshalMethod(methods)
+	if method != "" {
+		why = append(why, "it has "+method+", which is not promoted here, so encoding/json writes its fields while its description is of "+method+"'s output")
 	}
 	for _, field := range generic.decl.st.Fields.List {
 		_, skipped := jsonTagName(field)
