@@ -49,6 +49,13 @@ func (e *fieldsError) Error() string {
 // ends with "; and <n> more", and Fields returns the ones kept. Returns nil
 // when fields is empty.
 func NewFieldsError(fields []FieldError) error {
+	return newFieldsError(fields, false)
+}
+
+// newFieldsError is NewFieldsError for a list that stopped at the cap, when
+// truncated is true: more fields failed than it holds, and the message ends
+// with "; and more", as it has no count of them.
+func newFieldsError(fields []FieldError, truncated bool) error {
 	fields = normalize(fields)
 	if len(fields) == 0 {
 		return nil
@@ -64,7 +71,10 @@ func NewFieldsError(fields []FieldError) error {
 		parts[i] = displayName(f) + " " + f.Message
 	}
 	message := strings.Join(parts, "; ")
-	if more > 0 {
+	switch {
+	case truncated:
+		message += "; and more"
+	case more > 0:
 		message += "; and " + strconv.Itoa(more) + " more"
 	}
 
@@ -168,38 +178,264 @@ func digitRun(s string) int {
 	return n
 }
 
-// collect walks the santhosh error tree and maps every leaf to FieldErrors.
-// root is the compiled schema the instance was validated against; it tells
-// declared property names apart from client-chosen map keys.
-func collect(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
-	switch verr.ErrorKind.(type) {
-	case *kind.AnyOf, *kind.OneOf:
-		return collectAlternatives(root, verr)
-	}
-
-	if len(verr.Causes) == 0 {
-		return mapLeaf(root, verr)
-	}
-
-	var fields []FieldError
-	for _, cause := range verr.Causes {
-		fields = append(fields, collect(root, cause)...)
-	}
-	return fields
+// collector gathers the FieldErrors of a santhosh error tree in the order
+// NewFieldsError sorts them by, at most MaxFields distinct ones.
+type collector struct {
+	seen   map[FieldError]bool
+	fields []FieldError
+	// full is set at the first distinct field past MaxFields, where the walk
+	// stops, so its cost is bounded by the cap and not by how many values
+	// failed.
+	full bool
 }
 
-// collectAlternatives handles anyOf/oneOf. When every branch failed only on
-// type at this location the wanted types are merged into one message
-// ("must be string or null"). Otherwise branches that failed on type are
-// dropped and the remaining, more specific errors are reported.
-func collectAlternatives(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
-	if len(verr.Causes) == 0 {
-		return mapLeaf(root, verr)
+// collect walks the santhosh error tree and maps its leaves to FieldErrors
+// until more than MaxFields distinct fields failed. It returns the fields
+// found, and true when it stopped at the cap. root is the compiled schema
+// the instance was validated against; it tells declared property names
+// apart from client-chosen map keys.
+func collect(root *jsonschema.Schema, verr *jsonschema.ValidationError) ([]FieldError, bool) {
+	c := &collector{seen: map[FieldError]bool{}}
+	c.location([]*jsonschema.ValidationError{verr}, nil, expand([]*jsonschema.Schema{root}))
+	return c.fields, c.full
+}
+
+func (c *collector) add(f FieldError) {
+	if c.full || c.seen[f] {
+		return
+	}
+	if len(c.fields) == MaxFields {
+		c.full = true
+		return
+	}
+	c.seen[f] = true
+	c.fields = append(c.fields, f)
+}
+
+// entry is what failed at a location or under it: a field of the location
+// itself (name ""), a field named after one of its keys (a missing required
+// property, an unknown key), or an error node at or under a key. A node is
+// named as fields show its key: followed by a dot when the fields it leads
+// to are under the key, as their names continue so.
+type entry struct {
+	rank  int32
+	index int32
+	name  string
+	field *FieldError
+	node  *jsonschema.ValidationError
+}
+
+// compareEntries orders the entries of one location as NewFieldsError
+// orders the fields they lead to: by request location at the top, then by
+// name with a run of digits compared as a number, fields of one name by
+// message and before the nodes of that name. With the dot, the fields of a
+// key "a" itself come before a sibling "a-b" and those under it after,
+// where "a.x" sorts. Two cases differ, both on declared property names: a
+// name holding a dot ("a.b") comes after the nodes under the key it
+// starts with ("a"), where its field sorts among theirs, and the nodes of
+// names equal as numbers ("01" and "1") are ordered as the names, where
+// their fields are ordered by the rest of their names.
+func compareEntries(a, b entry) int {
+	if a.rank != b.rank {
+		return cmp.Compare(a.rank, b.rank)
+	}
+	// Equal names are usually one string, made once from the client's key,
+	// which can be long: == compares it at once where compareNames walks
+	// it.
+	if a.name != b.name {
+		return compareNames(a.name, b.name)
+	}
+	// A field named with a dot ("x.", a declared name) can meet the nodes
+	// under a key "x": the field comes first.
+	if (a.field == nil) != (b.field == nil) {
+		if a.field != nil {
+			return -1
+		}
+		return 1
+	}
+	if a.field != nil && a.field.Message != b.field.Message {
+		return strings.Compare(a.field.Message, b.field.Message)
+	}
+	return cmp.Compare(a.index, b.index)
+}
+
+// location reports the fields of nodes, the error nodes at one instance
+// location, in order: display is the location as fields show it, schemas
+// the schemas describing its value. It gathers what failed at the location
+// and the nodes at or under each of its keys, sorts them, and walks the
+// names one after the other, until the cap. The map keys all show as "*",
+// so the nodes of all of them are walked as one.
+func (c *collector) location(nodes []*jsonschema.ValidationError, display []string, schemas []*jsonschema.Schema) {
+	g := gathering{display: display, schemas: schemas, entries: make([]entry, 0, len(nodes))}
+	for _, n := range nodes {
+		g.gather(n)
+	}
+	entries := g.entries
+	if !slices.IsSortedFunc(entries, compareEntries) {
+		slices.SortFunc(entries, compareEntries)
 	}
 
+	depth := len(display)
+	for i := 0; i < len(entries) && !c.full; {
+		if entries[i].field != nil {
+			c.add(*entries[i].field)
+			i++
+			continue
+		}
+
+		name := entries[i].name
+		var under []*jsonschema.ValidationError
+		var next []*jsonschema.Schema
+		shown := mapKeySegment
+		last := ""
+		for i < len(entries) && entries[i].field == nil && entries[i].name == name {
+			n := entries[i].node
+			under = append(under, n)
+			i++
+			key := n.InstanceLocation[depth]
+			if len(under) > 1 && key == last {
+				continue
+			}
+			last = key
+			more, keep := step(schemas, key)
+			if keep {
+				shown = key
+			}
+			for _, s := range more {
+				if !slices.Contains(next, s) {
+					next = append(next, s)
+				}
+			}
+		}
+		c.location(under, append(display[:depth:depth], shown), expand(next))
+	}
+}
+
+// gathering collects the entries of one location.
+type gathering struct {
+	display []string
+	schemas []*jsonschema.Schema
+	entries []entry
+	// key and name are the last key met and the name, with the dot, of the
+	// nodes under it: the nodes of one key usually come one after the
+	// other, and the key can be long to look up.
+	key  string
+	name string
+}
+
+func (g *gathering) push(e entry) {
+	// Only the first segment is the request location; deeper ones rank
+	// alike.
+	if len(g.display) == 0 {
+		e.rank = int32(locationRank(strings.TrimSuffix(e.name, ".")))
+	}
+	e.index = int32(len(g.entries))
+	g.entries = append(g.entries, e)
+}
+
+func (g *gathering) pushField(name string, f FieldError) {
+	g.push(entry{name: name, field: &f})
+}
+
+// gather adds n: a node at or under one of the location's keys, or what n
+// and the nodes under it at the location failed on.
+func (g *gathering) gather(n *jsonschema.ValidationError) {
+	depth := len(g.display)
+	if len(n.InstanceLocation) > depth {
+		key := n.InstanceLocation[depth]
+		if g.name == "" || key != g.key {
+			g.key = key
+			g.name = mapKeySegment + "."
+			_, keep := step(g.schemas, key)
+			if keep {
+				g.name = key + "."
+			}
+		}
+		g.atKey(n)
+		return
+	}
+	switch n.ErrorKind.(type) {
+	case *kind.AnyOf, *kind.OneOf:
+		if len(n.Causes) > 0 {
+			want, rest := alternatives(n)
+			if len(rest) == 0 {
+				g.pushField("", newField(g.display, "", "must be "+typeList(want)))
+			}
+			for _, leaf := range rest {
+				g.gather(leaf)
+			}
+			return
+		}
+	}
+	if len(n.Causes) > 0 {
+		for _, cause := range n.Causes {
+			g.gather(cause)
+		}
+		return
+	}
+
+	switch k := n.ErrorKind.(type) {
+	case *kind.Required:
+		for _, name := range k.Missing {
+			g.pushField(name, newField(g.display, name, "is required"))
+		}
+	case *kind.AdditionalProperties:
+		for _, name := range k.Properties {
+			shown := unknownName(name)
+			g.pushField(shown, newField(g.display, shown, "is not a known field"))
+		}
+	default:
+		g.pushField("", newField(g.display, "", message(n.ErrorKind)))
+	}
+}
+
+// atKey adds n, a node at or under the key of g.name, split as gather
+// splits the nodes at the key: what fails at the key itself goes under the
+// key's name, what fails under it under the name with the dot.
+func (g *gathering) atKey(n *jsonschema.ValidationError) {
+	under := entry{name: g.name, node: n}
+	at := entry{name: g.name[:len(g.name)-1], node: n}
+	if len(n.InstanceLocation) > len(g.display)+1 {
+		g.push(under)
+		return
+	}
+	switch n.ErrorKind.(type) {
+	case *kind.AnyOf, *kind.OneOf:
+		if len(n.Causes) > 0 {
+			_, rest := alternatives(n)
+			if len(rest) == 0 {
+				g.push(at)
+				return
+			}
+			for _, leaf := range rest {
+				g.atKey(leaf)
+			}
+			return
+		}
+	}
+	if len(n.Causes) > 0 {
+		for _, cause := range n.Causes {
+			g.atKey(cause)
+		}
+		return
+	}
+
+	switch n.ErrorKind.(type) {
+	case *kind.Required, *kind.AdditionalProperties:
+		g.push(under)
+	default:
+		g.push(at)
+	}
+}
+
+// alternatives splits the leaves under an anyOf or oneOf node: the types
+// wanted where a branch failed only on type at the node's location, and
+// the other, more specific failures. When there are none of those the
+// wanted types make one message ("must be string or null").
+func alternatives(verr *jsonschema.ValidationError) ([]string, []*jsonschema.ValidationError) {
 	var leaves []*jsonschema.ValidationError
 	for _, cause := range verr.Causes {
-		leaves = append(leaves, flatten(cause)...)
+		leaves = appendLeaves(leaves, cause)
 	}
 
 	var want []string
@@ -212,48 +448,18 @@ func collectAlternatives(root *jsonschema.Schema, verr *jsonschema.ValidationErr
 		}
 		rest = append(rest, leaf)
 	}
-
-	if len(rest) == 0 {
-		return []FieldError{newField(root, verr.InstanceLocation, "", "must be "+typeList(want))}
-	}
-
-	var fields []FieldError
-	for _, leaf := range rest {
-		fields = append(fields, collect(root, leaf)...)
-	}
-	return fields
+	return want, rest
 }
 
-func flatten(verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
+// appendLeaves appends the nodes without causes under verr to leaves.
+func appendLeaves(leaves []*jsonschema.ValidationError, verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
 	if len(verr.Causes) == 0 {
-		return []*jsonschema.ValidationError{verr}
+		return append(leaves, verr)
 	}
-	var leaves []*jsonschema.ValidationError
 	for _, cause := range verr.Causes {
-		leaves = append(leaves, flatten(cause)...)
+		leaves = appendLeaves(leaves, cause)
 	}
 	return leaves
-}
-
-func mapLeaf(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
-	loc := verr.InstanceLocation
-
-	switch k := verr.ErrorKind.(type) {
-	case *kind.Required:
-		fields := make([]FieldError, len(k.Missing))
-		for i, name := range k.Missing {
-			fields[i] = newField(root, loc, name, "is required")
-		}
-		return fields
-	case *kind.AdditionalProperties:
-		fields := make([]FieldError, len(k.Properties))
-		for i, name := range k.Properties {
-			fields[i] = newField(root, loc, unknownName(name), "is not a known field")
-		}
-		return fields
-	}
-
-	return []FieldError{newField(root, loc, "", message(verr.ErrorKind))}
 }
 
 func message(errKind jsonschema.ErrorKind) string {
@@ -300,13 +506,12 @@ func message(errKind jsonschema.ErrorKind) string {
 	return "is invalid"
 }
 
-// newField splits an instance location into its request location and the
-// dotted name inside it, appending child when set. child must come from the
-// schema or be sanitised by the caller.
-func newField(root *jsonschema.Schema, loc []string, child string, msg string) FieldError {
-	segments := displayPath(root, loc)
+// newField splits the display path of an instance location into its
+// request location and the dotted name inside it, appending child when set.
+// child must come from the schema or be sanitised by the caller.
+func newField(segments []string, child string, msg string) FieldError {
 	if child != "" {
-		segments = append(segments, child)
+		segments = append(segments[:len(segments):len(segments)], child)
 	}
 	if len(segments) == 0 {
 		return FieldError{Message: msg}
@@ -316,25 +521,6 @@ func newField(root *jsonschema.Schema, loc []string, child string, msg string) F
 
 // mapKeySegment replaces client-chosen map keys in field names.
 const mapKeySegment = "*"
-
-// displayPath renders an instance location for messages by walking it
-// through the schema. Declared property names and array indices are kept;
-// any other segment is a client-chosen map key (additionalProperties or
-// patternProperties) and becomes "*", so names stay bounded and never echo
-// submitted text.
-func displayPath(root *jsonschema.Schema, loc []string) []string {
-	out := make([]string, len(loc))
-	current := expand([]*jsonschema.Schema{root})
-	for i, segment := range loc {
-		next, keep := step(current, segment)
-		out[i] = mapKeySegment
-		if keep {
-			out[i] = segment
-		}
-		current = expand(next)
-	}
-	return out
-}
 
 // step returns the schemas describing the child segment of a value
 // described by schemas, and whether segment may be shown verbatim: a
@@ -385,14 +571,14 @@ func itemSchema(s *jsonschema.Schema, n int) []*jsonschema.Schema {
 // expand adds every schema reachable through $ref, allOf, anyOf and oneOf.
 func expand(schemas []*jsonschema.Schema) []*jsonschema.Schema {
 	var out []*jsonschema.Schema
-	seen := map[*jsonschema.Schema]bool{}
 
+	// The schemas of a value are a handful: a linear search is cheaper
+	// than a map.
 	var visit func(s *jsonschema.Schema)
 	visit = func(s *jsonschema.Schema) {
-		if s == nil || seen[s] {
+		if s == nil || slices.Contains(out, s) {
 			return
 		}
-		seen[s] = true
 		out = append(out, s)
 		visit(s.Ref)
 		for _, list := range [][]*jsonschema.Schema{s.AllOf, s.AnyOf, s.OneOf} {

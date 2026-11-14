@@ -3,9 +3,11 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -305,7 +307,8 @@ func TestManyFailingFieldsAreCapped(t *testing.T) {
 	s := newServer(t)
 
 	// 150 array items break the schema: the answer lists the first 100 of
-	// them, in index order, and counts the rest, whatever the request held.
+	// them, in index order, and says there are more, whatever the request
+	// held. The validator stops at the cap, so it has no count of the rest.
 	body := `{"name":"x","steps":[1` + strings.Repeat(",1", 149) + `]}`
 	rec := s.do(http.MethodPost, "/runs", body)
 	resp := requireError(t, rec, http.StatusBadRequest, "steps.0 must be object")
@@ -313,8 +316,256 @@ func TestManyFailingFieldsAreCapped(t *testing.T) {
 	for i, field := range resp.Error.Fields {
 		require.Equal(t, handler.FieldError{In: "body", Name: "steps." + strconv.Itoa(i), Message: "must be object"}, field)
 	}
-	require.True(t, strings.HasSuffix(resp.Error.Message, "; and 50 more"), resp.Error.Message)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; steps.99 must be object; and more"), resp.Error.Message)
 	require.Nil(t, s.app.Last())
+
+	// Exactly 100 failing items are all listed, with nothing appended.
+	body = `{"name":"x","steps":[1` + strings.Repeat(",1", 99) + `]}`
+	rec = s.do(http.MethodPost, "/runs", body)
+	resp = requireError(t, rec, http.StatusBadRequest, "steps.0 must be object")
+	require.Len(t, resp.Error.Fields, 100)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; steps.99 must be object"), resp.Error.Message)
+}
+
+type longKeyRequest struct {
+	requests.NoRules
+	Counts map[string]map[string]int `json:"counts"`
+}
+
+// A client-chosen key does not make the walk of the violations under it
+// slower: 20,000 failing values under a 200 KB key cost about what they
+// cost under a short one, where every comparison of two of them once
+// walked the key.
+func TestLongKeyDoesNotSlowTheWalk(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/counts"), "", "create", func(ctx context.Context, body *longKeyRequest) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	values := make([]string, 20000)
+	for i := range values {
+		values[i] = fmt.Sprintf(`"v%d":""`, i)
+	}
+	timed := func(key string) time.Duration {
+		body := `{"counts":{"` + key + `":{` + strings.Join(values, ",") + `}}}`
+		start := time.Now()
+		rec := s.do(http.MethodPost, "/counts", body)
+		elapsed := time.Since(start)
+		resp := requireError(t, rec, http.StatusBadRequest, "counts.*.* must be integer")
+		require.Equal(t, "counts.*.* must be integer", resp.Error.Message)
+		return elapsed
+	}
+	short := timed("k")
+	long := timed(strings.Repeat("k", 200*1024))
+	require.Less(t, long, 5*short+200*time.Millisecond, "long key %v, short key %v", long, short)
+}
+
+// capItem declares zeta before alpha, both required.
+type capItem struct {
+	Zeta  string `json:"zeta" required:"true"`
+	Alpha string `json:"alpha" required:"true"`
+}
+
+type capItems struct {
+	requests.NoRules
+	Items []capItem `json:"items"`
+	One   string    `json:"one" required:"true"`
+}
+
+// TestCapKeepsTheFirstFieldsByName: past the cap the fields listed are the
+// first 100 by name, as NewFieldsError orders them, wherever the validator
+// reports them: a missing property of the body comes after the items before
+// it in name, and an item's own missing names come in name order, not in
+// the order the type declares them.
+func TestCapKeepsTheFirstFieldsByName(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/items"), "", "create", func(ctx context.Context, body *capItems) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/items", `{"items":[{}`+strings.Repeat(",{}", 49)+`]}`)
+	resp := requireError(t, rec, http.StatusBadRequest, "items.0.alpha is required; items.0.zeta is required; items.1.alpha is required")
+	require.Len(t, resp.Error.Fields, 100)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; items.49.alpha is required; items.49.zeta is required; and more"), resp.Error.Message)
+}
+
+type capPairSub struct {
+	X string `json:"x" required:"true"`
+}
+
+// capPair has a key "a" that "a-b" continues with a character that sorts
+// before a dot.
+type capPair struct {
+	A  *capPairSub `json:"a"`
+	AB string      `json:"a-b"`
+	B  string      `json:"b"`
+}
+
+type capPairs struct {
+	requests.NoRules
+	Pairs []capPair        `json:"pairs"`
+	M     map[string][]int `json:"m"`
+}
+
+// TestCapListsTheFieldsOfKeysInMessageOrder: past the cap the fields of
+// map keys, all shown as "*", are the first 100 by name whichever key they
+// come from, and a key's own fields come before a sibling "a-b" while the
+// fields under it come after, as "a.x" sorts.
+func TestCapListsTheFieldsOfKeysInMessageOrder(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/pairs"), "", "create", func(ctx context.Context, body *capPairs) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	items := func(item string) string {
+		return `{"pairs":[` + item + strings.Repeat(","+item, 33) + `]}`
+	}
+	rec := s.do(http.MethodPost, "/pairs", items(`{"a":{},"a-b":1,"b":1}`))
+	resp := requireError(t, rec, http.StatusBadRequest, "pairs.0.a-b must be string; pairs.0.a.x is required; pairs.0.b must be string")
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; pairs.32.b must be string; pairs.33.a-b must be string; and more"), resp.Error.Message)
+
+	rec = s.do(http.MethodPost, "/pairs", items(`{"a":1,"a-b":1,"b":1}`))
+	resp = requireError(t, rec, http.StatusBadRequest, "pairs.0.a must be object or null; pairs.0.a-b must be string; pairs.0.b must be string")
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; pairs.32.b must be string; pairs.33.a must be object or null; and more"), resp.Error.Message)
+
+	// Key "a" fails at indices 60 to 119 and key "b" at 0 to 59: the
+	// fields listed are m.*.0 to m.*.99.
+	bad := func(from, to int) string {
+		parts := make([]string, to)
+		for i := range parts {
+			parts[i] = "1"
+			if i >= from {
+				parts[i] = `"x"`
+			}
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	for range 10 {
+		rec = s.do(http.MethodPost, "/pairs", `{"m":{"a":`+bad(60, 120)+`,"b":`+bad(0, 60)+`}}`)
+		resp = requireError(t, rec, http.StatusBadRequest, "m.*.0 must be integer; m.*.1 must be integer; m.*.2 must be integer")
+		require.Len(t, resp.Error.Fields, 100)
+		require.True(t, strings.HasSuffix(resp.Error.Message, "; m.*.98 must be integer; m.*.99 must be integer; and more"), resp.Error.Message)
+	}
+}
+
+type capParams struct {
+	requests.NoRules
+	Q     int       `json:"-" query:"q" maximum:"5"`
+	H     int       `json:"-" header:"X-H" minimum:"1"`
+	Items []capItem `json:"items"`
+}
+
+// TestCapKeepsTheParametersFirst: the fields of the query and the headers
+// come before those of the body, also when the body alone fails on more
+// than the cap.
+func TestCapKeepsTheParametersFirst(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/params"), "", "create", func(ctx context.Context, body *capParams) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	want := []string{"query q must be <= 5", "header x-h must be >= 1"}
+	for i := range 49 {
+		want = append(want, fmt.Sprintf("items.%d.alpha is required", i), fmt.Sprintf("items.%d.zeta is required", i))
+	}
+	rec := s.do(http.MethodPost, "/params?q=9", `{"items":[{}`+strings.Repeat(",{}", 59)+`]}`, "X-H", "0")
+	resp := requireError(t, rec, http.StatusBadRequest, "query q must be <= 5")
+	require.Equal(t, strings.Join(want, "; ")+"; and more", resp.Error.Message)
+	require.Len(t, resp.Error.Fields, 100)
+}
+
+type capDuplicates struct {
+	requests.NoRules
+	A string         `json:"a"`
+	M map[string]int `json:"m"`
+	Z string         `json:"z"`
+}
+
+// TestCapCountsDistinctFields: 300 map values failing alike are one field,
+// m.*, so the fields after it are listed and the message has no "and
+// more".
+func TestCapCountsDistinctFields(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/dups"), "", "create", func(ctx context.Context, body *capDuplicates) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	values := make([]string, 300)
+	for i := range values {
+		values[i] = fmt.Sprintf(`"k%d":"x"`, i)
+	}
+	rec := s.do(http.MethodPost, "/dups", `{"a":1,"m":{`+strings.Join(values, ",")+`},"z":1}`)
+	resp := requireError(t, rec, http.StatusBadRequest, "m.* must be integer")
+	require.Equal(t, "a must be string; m.* must be integer; z must be string", resp.Error.Message)
+	require.Len(t, resp.Error.Fields, 3)
+}
+
+// capRow has eight required fields, so each {} item of capRows fails on
+// eight of them.
+type capRow struct {
+	A string `json:"a" required:"true"`
+	B string `json:"b" required:"true"`
+	C string `json:"c" required:"true"`
+	D string `json:"d" required:"true"`
+	E string `json:"e" required:"true"`
+	F string `json:"f" required:"true"`
+	G string `json:"g" required:"true"`
+	H string `json:"h" required:"true"`
+}
+
+type capRows struct {
+	requests.NoRules
+	Rows []capRow `json:"rows"`
+}
+
+func TestFailingBodyCostStopsAtTheCap(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/cap"), "", "rows", func(ctx context.Context, body *capRows) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	// A body just under the default limit of {} items fails on about 2.6
+	// million fields. Mapping every one of them to a field, before the cap
+	// kept 100, allocated about 2.5 GB; the whole request now allocates
+	// about 0.5 GB, most of it the validator's own errors.
+	var b strings.Builder
+	b.WriteString(`{"rows":[{}`)
+	for b.Len() < 975*1024 {
+		b.WriteString(",{}")
+	}
+	b.WriteString("]}")
+	body := b.String()
+
+	var rec *httptest.ResponseRecorder
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	rec = s.do(http.MethodPost, "/cap", body)
+	runtime.ReadMemStats(&after)
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	require.Less(t, allocated, uint64(1<<30), "validating a %d-byte body allocated %d bytes", len(body), allocated)
+	resp := requireError(t, rec, http.StatusBadRequest, "rows.0.a is required; rows.0.b is required")
+	require.Len(t, resp.Error.Fields, 100)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; rows.12.d is required; and more"), resp.Error.Message)
 }
 
 func TestContractHandlerNotInvokedOnFailure(t *testing.T) {
