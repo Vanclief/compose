@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -110,8 +112,8 @@ e.PATCH("/raw-string/:id", h.UpdateThing)
 	}
 }
 
-// Groups nest and their variables are known for the rest of the file, in any function; the
-// handler is the first h.Namespace.Method in the arguments, wherever they are wrapped, and
+// Groups nest, as variables or chained calls, and the root groups are known in every function;
+// the handler is the first h.Namespace.Method in the arguments, wherever they are wrapped, and
 // neither comments nor the body of a function literal handler count.
 func TestParseRoutesReadsNestedGroupsAndHandlers(t *testing.T) {
 	root := writeFixture(t, map[string]string{
@@ -129,7 +131,7 @@ func addWidgetRoutes(e *echo.Echo, h *Handlers) {
 }
 
 func addMoreWidgetRoutes(h *Handlers) {
-	widgets.PUT("/:id", h.Widgets.Replace)
+	e.Group("/v1").Group("/widgets").PUT("/:id", h.Widgets.Replace)
 	e.GET("/internal/docs", func(c echo.Context) error {
 		return h.App.Authenticate(c)
 	})
@@ -571,6 +573,818 @@ func addRoutes(e *echo.Echo, h *Handler, cfg Config) {
 	}
 	if !reflect.DeepEqual(skipped, wantSkipped) {
 		t.Fatalf("SkipUnresolved received:\n got %+v\nwant %+v", skipped, wantSkipped)
+	}
+}
+
+// lineOf is the line number of the first line of src containing marker.
+func lineOf(t *testing.T, src string, marker string) int {
+	t.Helper()
+
+	for i, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, marker) {
+			return i + 1
+		}
+	}
+	t.Fatalf("no line contains %q", marker)
+
+	return 0
+}
+
+// Group variables follow Go's scopes: a declaration in a block, an if, a loop or another
+// function is not seen outside it, an inner scope sees the outer ones, and `=` in straight-line
+// code changes the prefix from that statement on. A function constant shadows a package one.
+func TestParseRoutesTracksGroupsPerScope(t *testing.T) {
+	src := `package api
+
+const local = "/package"
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	{
+		g := g.Group("/b")
+		g.GET("/x", h.GetThing)
+	}
+	g.GET("/y", h.GetThing)
+	if g := e.Group("/if"); g != nil {
+		g.GET("/x", h.GetThing)
+	}
+	g.GET("/after-if", h.GetThing)
+	for _, v := range []string{"/b"} {
+		g := g.Group("/loop")
+		g.GET("/x", h.GetThing)
+		_ = v
+	}
+	g.GET("/after-loop", h.GetThing)
+
+	v := e.Group("/v1")
+	v.GET("/one", h.GetThing)
+	v = e.Group("/v2")
+	v.GET("/two", h.GetThing)
+	v = v.Group("/sub")
+	v.GET("/three", h.GetThing)
+
+	const local = "/local"
+	v.GET(local, h.GetThing)
+
+	if true {
+		x := e.Group("/branch-local")
+		x = x.Group("/more")
+		x.GET("/x", h.GetThing)
+	}
+	func() {
+		g.GET("/closure", h.GetThing)
+	}()
+	e = echo.New()
+	e.GET("/root", h.GetThing)
+}
+
+func other(e *echo.Echo, h *Handler, admin bool) {
+	g := e.Group("/other")
+	g.GET("/z", h.GetThing)
+	g.GET(local, h.GetThing)
+	if admin {
+		g = e.Group("/admin")
+		g.GET("/in-branch", h.GetThing)
+	} else {
+		g.GET("/in-else", h.GetThing)
+	}
+	same := e.Group("/same")
+	if admin {
+		same = e.Group("/same")
+	}
+	same.GET("/after", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+
+	routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Method+" "+r.Path)
+	}
+	want := []string{
+		"GET /a/after-if",
+		"GET /a/after-loop",
+		"GET /a/b/x",
+		"GET /a/closure",
+		"GET /a/loop/x",
+		"GET /a/y",
+		"GET /admin/in-branch",
+		"GET /branch-local/more/x",
+		"GET /if/x",
+		"GET /other/in-else",
+		"GET /other/package",
+		"GET /other/z",
+		"GET /root",
+		"GET /same/after",
+		"GET /v1/one",
+		"GET /v2/sub/local",
+		"GET /v2/sub/three",
+		"GET /v2/two",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A group variable whose group the finder cannot know at the route fails generation: one
+// reassigned in a branch and used after it, one reassigned in a loop it is used in, one a
+// function literal uses while its function reassigns it, a parameter not named in RootGroups,
+// one set from a call, and one declared in another function.
+func TestParseRoutesReportsGroupsOfUnknownValue(t *testing.T) {
+	src := `package api
+
+func branch(e *echo.Echo, h *Handler, admin bool) {
+	g := e.Group("/a")
+	if admin {
+		g = g.Group("/b") // branch assignment
+	}
+	g.GET("/after-branch", h.GetThing)
+}
+
+func loop(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	for i := 0; i < 2; i++ {
+		g.GET("/in-loop", h.GetThing)
+		g = g.Group("/b") // loop assignment
+	}
+	g.GET("/after-loop", h.GetThing)
+}
+
+func closure(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	register := func() {
+		g.GET("/closure", h.GetThing)
+	}
+	g = e.Group("/b")
+	register()
+}
+
+func param(g *echo.Group, h *Handler) {
+	g.GET("/param", h.GetThing)
+}
+
+func fromCall(e *echo.Echo, h *Handler) {
+	g := newGroup(e)
+	g.GET("/call", h.GetThing)
+}
+
+func leak(h *Handler) {
+	g.GET("/leak", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"}
+
+	_, err := ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("expected an invalid error, got %v", err)
+	}
+
+	got := map[string]string{}
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		got[route.Path] = route.Reason
+		return true
+	}
+	_, err = ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.ENOTFOUND {
+		t.Fatalf("expected no routes once every unresolved one is skipped, got %v", err)
+	}
+
+	// A reason names the file relative to Root, so it does not depend on the machine.
+	file := "routes.go"
+	branchLine := strconv.Itoa(lineOf(t, src, "branch assignment"))
+	loopLine := strconv.Itoa(lineOf(t, src, "loop assignment"))
+	want := map[string]string{
+		`"/after-branch"`: `"g" is reassigned at ` + file + ":" + branchLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/in-loop"`:      `"g" is reassigned at ` + file + ":" + loopLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/after-loop"`:   `"g" is reassigned at ` + file + ":" + loopLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/closure"`:      `"g" is used in a function literal and reassigned in its function, so the group it holds when the literal runs is not known`,
+		`"/param"`:        `unknown route group "g", a function parameter not named in RootGroups`,
+		`"/call"`:         `newGroup(e) is not a group the route finder can follow`,
+		`"/leak"`:         `unknown route group "g"`,
+	}
+	for path, reason := range got {
+		got[path] = filepath.ToSlash(reason)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolved routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// The finder never documents a group a variable may not hold at the route: a body left early
+// by break, continue, return or fallthrough, a goto, a pointer to the variable and a route
+// method used as a value make the route unresolved. Right-hand sides are read before any
+// variable is set, and a RootGroups name set to a Group call or a variable the finder cannot
+// resolve is not taken for its root group.
+func TestParseRoutesKnowsNoGroupAVariableMayNotHold(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		rootGroups map[string]string
+		routes     []string
+		unresolved []string
+	}{
+		{
+			name: "break",
+			body: `func f(e *echo.Echo, h *Handler, xs []bool) {
+	g := e.Group("/v1")
+	for _, x := range xs {
+		g = e.Group("/v2")
+		if x {
+			break
+		}
+		g = e.Group("/v1")
+	}
+	g.GET("/after", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/after")`},
+		},
+		{
+			name: "continue",
+			body: `func f(e *echo.Echo, h *Handler, xs []bool) {
+	g := e.Group("/v1")
+	for _, x := range xs {
+		g.GET("/in-loop", h.GetThing)
+		g = e.Group("/v2")
+		if x {
+			continue
+		}
+		g = e.Group("/v1")
+	}
+}`,
+			unresolved: []string{`g.GET("/in-loop")`},
+		},
+		{
+			name: "return from a function literal",
+			body: `func f(e *echo.Echo, h *Handler, c bool) {
+	g := e.Group("/v1")
+	func() {
+		g = e.Group("/v2")
+		if c {
+			return
+		}
+		g = e.Group("/v1")
+	}()
+	g.GET("/after-literal", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/after-literal")`},
+		},
+		{
+			name: "break out of a switch",
+			body: `func f(e *echo.Echo, h *Handler, a bool, b bool) {
+	g := e.Group("/v1")
+	switch {
+	case a:
+		g = e.Group("/v2")
+		if b {
+			break
+		}
+		g = e.Group("/v1")
+	}
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "fallthrough",
+			body: `func f(e *echo.Echo, h *Handler, x int) {
+	g := e.Group("/v1")
+	switch x {
+	case 1:
+		g = e.Group("/v2")
+		fallthrough
+	case 2:
+		g.GET("/ft", h.GetThing)
+	}
+}`,
+			unresolved: []string{`g.GET("/ft")`},
+		},
+		{
+			name: "goto forward",
+			body: `func f(e *echo.Echo, h *Handler, skip bool) {
+	g := e.Group("/v1")
+	if skip {
+		goto L
+	}
+	g = e.Group("/v2")
+L:
+	g.GET("/goto", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/goto")`},
+		},
+		{
+			name: "goto backward",
+			body: `func f(e *echo.Echo, h *Handler, more bool) {
+	g := e.Group("/v1")
+again:
+	g.GET("/again", h.GetThing)
+	if more {
+		g = e.Group("/v2")
+		goto again
+	}
+}`,
+			unresolved: []string{`g.GET("/again")`},
+		},
+		{
+			name: "swap",
+			body: `func f(e *echo.Echo, h *Handler) {
+	a := e.Group("/a")
+	b := e.Group("/b")
+	a, b = b, a
+	b.GET("/x", h.GetThing)
+}`,
+			routes: []string{"GET /a/x"},
+		},
+		{
+			name: "define reads the outer variable",
+			body: `func f(e *echo.Echo, h *Handler) {
+	a := e.Group("/outer")
+	{
+		a, b := e.Group("/inner"), a.Group("/b")
+		b.GET("/x", h.GetThing)
+		a.GET("/y", h.GetThing)
+	}
+}`,
+			routes: []string{"GET /inner/y", "GET /outer/b/x"},
+		},
+		{
+			name: "root name set to a group of an unknown prefix",
+			body: `func f(e *echo.Echo, h *Handler, prefix string) {
+	api := e.Group(prefix)
+	api.GET("/p", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/p")`},
+		},
+		{
+			name: "root name set to a group of an unknown parent",
+			body: `func f(srv *echo.Echo, h *Handler) {
+	api := srv.Group("/v9")
+	api.GET("/rn2", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/rn2")`},
+		},
+		{
+			name: "root name set to a variable of an unknown group",
+			body: `func f(e *echo.Echo, h *Handler, c bool) {
+	g := e.Group("/a")
+	if c {
+		g = e.Group("/b")
+	}
+	{
+		api := g
+		api.GET("/alias", h.GetThing)
+	}
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/alias")`},
+		},
+		{
+			name: "root name set in a branch to a group of an unknown prefix",
+			body: `func f(e *echo.Echo, api *echo.Group, h *Handler, c bool, prefix string) {
+	if c {
+		api = e.Group(prefix)
+	}
+	api.GET("/cond", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/cond")`},
+		},
+		{
+			name: "pointer",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/v1")
+	p := &g
+	*p = e.Group("/v2")
+	g.GET("/ptr", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/ptr")`},
+		},
+		{
+			name: "pointer passed to a function",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/v1")
+	register := func() {
+		g.GET("/ptr-literal", h.GetThing)
+	}
+	setV2(e, &g)
+	g.GET("/ptr-call", h.GetThing)
+	register()
+}`,
+			unresolved: []string{`g.GET("/ptr-call")`, `g.GET("/ptr-literal")`},
+		},
+		{
+			name: "method value",
+			body: `func f(e *echo.Echo, h *Handler) {
+	get := e.GET
+	get("/mv", h.GetThing)
+	register(e.POST, "/mv2", h.GetThing)
+	e.Add(echo.GET, "/constant", h.GetThing)
+	e.GET("/called", h.GetThing)
+}`,
+			routes:     []string{"GET /called"},
+			unresolved: []string{`e.GET()`, `e.POST()`},
+		},
+		{
+			name: "method value on a variable shadowing an import",
+			body: `func f(e *echo.Echo, h *Handler) {
+	echo := e
+	get := echo.GET
+	get("/mv", h.GetThing)
+}`,
+			unresolved: []string{`echo.GET()`},
+		},
+		{
+			name: "parenthesised route method called",
+			body: `func f(e *echo.Echo, h *Handler) {
+	(e.GET)("/paren-call", h.GetThing)
+}`,
+			routes: []string{"GET /paren-call"},
+		},
+		{
+			name: "group set by a function literal called later",
+			body: `func f(e *echo.Echo, h *Handler) {
+	var cur *echo.Group
+	section := func() {
+		cur = e.Group("/v2")
+	}
+	cur = e.Group("/v1")
+	section()
+	cur.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`cur.GET("/x")`},
+		},
+		{
+			name: "group set in a branch of a function literal called later",
+			body: `func f(e *echo.Echo, h *Handler, admin bool) {
+	g := e.Group("/a")
+	pick := func() {
+		if admin {
+			g = e.Group("/admin")
+		}
+	}
+	g = e.Group("/b")
+	pick()
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "group reset by a function literal called later",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	reset := func() {
+		g = e.Group("/a")
+	}
+	g = e.Group("/b")
+	reset()
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "root name set to a field",
+			body: `func f(e *echo.Echo, h *Handler, s *Server) {
+	api := s.v2
+	api.GET("/x", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name set to an element",
+			body: `func f(e *echo.Echo, h *Handler, gs []*echo.Group) {
+	api := (gs[1])
+	api.GET("/x", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name as a range value",
+			body: `func f(e *echo.Echo, h *Handler) {
+	for _, api := range []*echo.Group{e.Group("/v1"), e.Group("/v2")} {
+		api.GET("/x", h.GetThing)
+	}
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name bound by a type switch",
+			body: `func f(e *echo.Echo, h *Handler, v any) {
+	switch api := v.(type) {
+	case *echo.Group:
+		api.GET("/x", h.GetThing)
+	}
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name set from a call with two results",
+			body: `func f(e *echo.Echo, h *Handler) {
+	var api, other = two(e)
+	_ = other
+	api.GET("/x", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name as a named result",
+			body: `func f(e *echo.Echo, h *Handler) (api *echo.Group) {
+	defer func() {
+		api.GET("/x", h.GetThing)
+	}()
+	return e.Group("/b")
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "root name declared without a value or set from another call",
+			body: `func f(h *Handler) {
+	e := echo.New()
+	var api *echo.Group
+	e.GET("/root", h.GetThing)
+	api.GET("/declared", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			routes:     []string{"GET /api/declared", "GET /root"},
+		},
+		{
+			name: "parenthesised assignment",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	(g) = e.Group("/b")
+	g.GET("/x", h.GetThing)
+}`,
+			routes: []string{"GET /b/x"},
+		},
+		{
+			name: "parenthesised range variable",
+			body: `func f(e *echo.Echo, h *Handler, gs []*echo.Group) {
+	g := e.Group("/a")
+	for _, (g) = range gs {
+	}
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "parenthesised select assignment",
+			body: `func f(e *echo.Echo, h *Handler, ch chan *echo.Group) {
+	g := e.Group("/a")
+	select {
+	case (g) = <-ch:
+	}
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "write through the group pointer",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	*g = *e.Group("/b")
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "pointer written after a reassignment",
+			body: `func f(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	p := &g
+	g = e.Group("/c")
+	*p = e.Group("/d")
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "every branch sets the same group",
+			body: `func f(e *echo.Echo, h *Handler, auth bool, a bool, b bool) {
+	var api2 *echo.Group
+	if auth {
+		api2 = e.Group("/v1", mw)
+	} else {
+		api2 = e.Group("/v1")
+	}
+	api2.GET("/x", h.GetThing)
+
+	var s *echo.Group
+	switch {
+	case a:
+		s = e.Group("/s", mw)
+	default:
+		s = e.Group("/s")
+	}
+	s.GET("/y", h.GetThing)
+
+	var chain *echo.Group
+	if a {
+		chain = e.Group("/c")
+	} else if b {
+		chain = e.Group("/c")
+	} else {
+		chain = e.Group("/c", mw)
+	}
+	chain.GET("/z", h.GetThing)
+}`,
+			routes: []string{"GET /c/z", "GET /s/y", "GET /v1/x"},
+		},
+		{
+			name: "branches that do not cover every case",
+			body: `func f(e *echo.Echo, h *Handler, a bool, b bool) {
+	var g *echo.Group
+	if a {
+		g = e.Group("/v1")
+	} else if b {
+		g = e.Group("/v1")
+	}
+	g.GET("/x", h.GetThing)
+
+	var s *echo.Group
+	switch {
+	case a:
+		s = e.Group("/s")
+	case b:
+		s = e.Group("/s")
+	}
+	s.GET("/y", h.GetThing)
+
+	var d *echo.Group
+	if a {
+		d = e.Group("/d")
+	} else {
+		d = e.Group("/other")
+	}
+	d.GET("/z", h.GetThing)
+}`,
+			unresolved: []string{`d.GET("/z")`, `g.GET("/x")`, `s.GET("/y")`},
+		},
+		{
+			name: "loop that changes a group on a later iteration",
+			body: `func f(e *echo.Echo, h *Handler, n int) {
+	x, y := e.Group("/a"), e.Group("/a")
+	for i := 0; i < n; i++ {
+		x = y
+		y = e.Group("/b")
+	}
+	x.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`x.GET("/x")`},
+		},
+		{
+			name: "loop that passes a group through three variables",
+			body: `func f(e *echo.Echo, h *Handler, n int) {
+	x, y, z := e.Group("/a"), e.Group("/a"), e.Group("/a")
+	for i := 0; i < n; i++ {
+		x.GET("/in-loop", h.GetThing)
+		x = y
+		y = z
+		z = e.Group("/b")
+	}
+	x.GET("/after", h.GetThing)
+}`,
+			unresolved: []string{`x.GET("/after")`, `x.GET("/in-loop")`},
+		},
+		{
+			name: "break out of a switch with a default",
+			body: `func f(e *echo.Echo, h *Handler, a bool, b bool) {
+	g := e.Group("/v1")
+	switch {
+	case a:
+		g = e.Group("/v2")
+		if b {
+			break
+		}
+		g = e.Group("/v1")
+	default:
+	}
+	g.GET("/x", h.GetThing)
+}`,
+			unresolved: []string{`g.GET("/x")`},
+		},
+		{
+			name: "root name used in a function literal and reassigned",
+			body: `func f(e *echo.Echo, api *echo.Group, h *Handler) {
+	register := func() {
+		api.GET("/x", h.GetThing)
+	}
+	api = e.Group("/v2")
+	register()
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/x")`},
+		},
+		{
+			name: "path and handler from one call",
+			body: `func f(e *echo.Echo, h *Handler) {
+	e.GET(route(h))
+	e.GET("/known", h.GetThing)
+}
+
+func route(h *Handler) (string, echo.HandlerFunc) {
+	return "/spread", h.GetThing
+}`,
+			routes:     []string{"GET /known"},
+			unresolved: []string{`e.GET(route(h))`},
+		},
+		{
+			name: "variable shadowing a package constant",
+			body: `const p = "/pkg"
+
+func f(e *echo.Echo, h *Handler) {
+	p := "/var"
+	e.GET(p, h.GetThing)
+}`,
+			unresolved: []string{`e.GET(p)`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package api\n\nimport \"github.com/labstack/echo/v5\"\n\n" + tc.body + "\n"
+			root := writeFixture(t, map[string]string{"routes.go": src})
+			cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go", RootGroups: tc.rootGroups}
+
+			_, err := ParseRoutes(cfg)
+			if len(tc.unresolved) > 0 && (err == nil || !strings.Contains(err.Error(), "SkipUnresolved")) {
+				t.Fatalf("expected an unresolved route error, got %v", err)
+			}
+
+			var unresolved []string
+			cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+				unresolved = append(unresolved, route.Receiver+"."+route.Method+"("+route.Path+")")
+				return true
+			}
+			routes, err := ParseRoutes(cfg)
+			if err != nil && len(tc.routes) > 0 {
+				t.Fatal(err)
+			}
+
+			var got []string
+			for _, r := range routes {
+				got = append(got, r.Method+" "+r.Path)
+			}
+			sort.Strings(unresolved)
+			if !reflect.DeepEqual(got, tc.routes) || !reflect.DeepEqual(unresolved, tc.unresolved) {
+				t.Fatalf("routes %q, unresolved %q\nwant routes %q, unresolved %q", got, unresolved, tc.routes, tc.unresolved)
+			}
+		})
+	}
+}
+
+// A handler is read through a receiver variable that is a field, s.h.Method and
+// s.h.Namespace.Method, as well as through the variable itself.
+func TestParseRoutesReadsHandlersOnAReceiverField(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		cfg  Config
+		want []string
+	}{
+		{
+			name: "flat",
+			src:  "package api\n\nfunc (s *Server) addRoutes(e *echo.Echo) {\n\te.GET(\"/field\", s.h.GetThing)\n\te.GET(\"/deep\", s.api.h.ListThings)\n}\n",
+			cfg:  Config{RoutesGlob: "routes.go", HandlerGlob: "*.go"},
+			want: []string{"GET /deep ListThings", "GET /field GetThing"},
+		},
+		{
+			name: "nested",
+			src:  "package api\n\nfunc (s *Server) addRoutes(e *echo.Echo) {\n\te.GET(\"/nested\", s.h.Things.Get)\n}\n",
+			cfg:  Config{RoutesGlob: "routes.go", HandlersFile: "handlers.go", HandlerGlob: "*.go"},
+			want: []string{"GET /nested things.Get"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			cfg.Root = writeFixture(t, map[string]string{"routes.go": tc.src})
+
+			routes, err := ParseRoutes(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var got []string
+			for _, r := range routes {
+				got = append(got, r.Method+" "+r.Path+" "+r.HandlerKey())
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("routes:\n got %q\nwant %q", got, tc.want)
+			}
+		})
 	}
 }
 
