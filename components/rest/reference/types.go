@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -332,7 +333,11 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema.
+// UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema. It
+// refuses a NaN, which YAML writes .nan, as the value of minimum, maximum,
+// exclusiveMinimum, exclusiveMaximum or multipleOf: no number compares with
+// it, so it bounds nothing and would hide the bound of another allOf member
+// where Flatten keeps the tightest. JSON has no NaN.
 func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!bool" {
 		var allowed bool
@@ -349,6 +354,10 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	}
 	if node.Kind != yaml.MappingNode {
 		return nil
+	}
+	err = refuseNaN(s, node)
+	if err != nil {
+		return ez.Wrap(err)
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i].Value
@@ -367,6 +376,50 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 			s.Extensions = map[string]any{}
 		}
 		s.Extensions[key] = v
+	}
+	return nil
+}
+
+// refuseNaN returns an error when s, decoded from the mapping node, holds a
+// NaN in one of the numeric keywords, naming the line of the keyword in the
+// mapping, or, where a merge key brought the keyword in, of the mapping:
+// the line of its first key, or of its opening brace in flow style.
+func refuseNaN(s *Schema, node *yaml.Node) error {
+	for _, key := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		number := numericKeyword(s, key)
+		if number == nil || !math.IsNaN(*number) {
+			continue
+		}
+		line := node.Line
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				line = node.Content[i].Line
+			}
+		}
+		return ez.New(ez.EINVALID, fmt.Sprintf("line %d: %s must be a number, not NaN", line, key), nil)
+	}
+	return nil
+}
+
+// numericKeyword returns the number s holds for the keyword key, one of
+// minimum, maximum, exclusiveMinimum, exclusiveMaximum and multipleOf, or
+// nil when key is another keyword or s holds none.
+func numericKeyword(s *Schema, key string) *float64 {
+	switch key {
+	case "minimum":
+		return s.Minimum
+	case "maximum":
+		return s.Maximum
+	case "multipleOf":
+		return s.MultipleOf
+	case "exclusiveMinimum":
+		if s.ExclusiveMinimum != nil {
+			return s.ExclusiveMinimum.Value
+		}
+	case "exclusiveMaximum":
+		if s.ExclusiveMaximum != nil {
+			return s.ExclusiveMaximum.Value
+		}
 	}
 	return nil
 }
