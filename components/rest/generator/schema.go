@@ -2807,16 +2807,51 @@ func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
 }
 
 // fieldSchema is a struct field's schema. The `,string` option puts a boolean, number or string
-// (or a pointer to one) inside a JSON string. A slice or map field without omitempty or
-// omitzero is nullable: encoding/json writes a nil one as null (with either option it leaves a
-// nil one out).
+// (or a pointer to one) inside a JSON string. A slice or map field is nullable unless
+// encoding/json leaves a nil one out (omitsNil): it writes a nil one as null.
 func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
 	schema := b.valueFieldSchema(field, imports, pkgPath)
-	if !jsonFieldOmitsEmpty(field) && b.isNilCollection(field.Type, imports, pkgPath, 0) {
+	if b.isNilCollection(field.Type, imports, pkgPath, 0) && !b.omitsNil(field, imports, pkgPath) {
 		return nullableSchema(schema)
 	}
 
 	return schema
+}
+
+// omitsNil reports a field encoding/json leaves out when it holds nil: one with omitempty, or
+// with omitzero unless its type declares IsZero (hasIsZero), which omitzero then asks alone, so a
+// nil slice or map whose IsZero reports false is written as null.
+func (b *schemaBuilder) omitsNil(field *ast.Field, imports map[string]string, pkgPath string) bool {
+	options := jsonTagOptions(field)
+	if slices.Contains(options, "omitempty") {
+		return true
+	}
+	if !slices.Contains(options, "omitzero") {
+		return false
+	}
+
+	return !b.hasIsZero(field.Type, imports, pkgPath)
+}
+
+// hasIsZero reports a named type, its aliases resolved, that declares IsZero with a value or a
+// pointer receiver, which encoding/json calls for omitzero in place of comparing with the zero
+// value. A type declared from one does not get the method. A standard-library type the generator
+// lists has none that matters here, and one whose declaration cannot be read is not reported.
+func (b *schemaBuilder) hasIsZero(expr ast.Expr, imports map[string]string, pkgPath string) bool {
+	ref, ok := namedTypeRef(expr, imports, pkgPath)
+	if !ok {
+		return false
+	}
+	ref = b.aliasTarget(ref)
+	if b.isListedStandardLibrary(ref) {
+		return false
+	}
+	_, pkg, found, err := b.declarationOf(ref)
+	if err != nil || !found {
+		return false
+	}
+
+	return pkg.Methods[ref.Name]["IsZero"]
 }
 
 func (b *schemaBuilder) valueFieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
