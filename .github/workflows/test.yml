@@ -9,7 +9,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The baseline tests dump a database on the service with the runner's pg_dump
+    # and load the dump back, which needs both on one major: a newer pg_dump
+    # writes settings the server refuses, an older one refuses the server.
+    # Ubuntu 24.04 has pg_dump 16; move this and the postgres image together
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     services:
