@@ -20,8 +20,15 @@ import (
 )
 
 // maxErrorBody bounds the response body quoted in an error that is not the
-// compose error envelope, and the Location quoted for a redirect.
+// compose error envelope, and the Location quoted in an error.
 const maxErrorBody = 300
+
+// maxLocation bounds the Location a redirect result returns. A presigned
+// object URL takes a few hundred bytes to a few KB, 8192 bytes is the URL
+// length many servers and proxies accept, and a result of that size fits the
+// default MaxOutputBytes. A longer location is an error, since a location cut
+// short cannot be followed.
+const maxLocation = 8192
 
 // BearerPassthrough returns an AuthFunc that forwards the bearer token of the
 // MCP request to the REST API unchanged, as "Authorization: Bearer <token>".
@@ -227,20 +234,25 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	}
 
 	// A redirect is not followed: it is the result when it says where the
-	// outcome is, and an error naming the location otherwise.
-	location, cut := cutLocation(rec.Header().Get("Location"))
+	// outcome is, and an error naming the location otherwise or when the
+	// location is longer than maxLocation.
+	location := cleanLocation(rec.Header().Get("Location"))
 	if rec.Code < 400 && location != "" {
 		// The body of a redirect result is not read. The body of a 3xx that
 		// is not a result is read only for the compose error envelope, whose
 		// code and message win over the location.
 		if redirectIsResult(f.Method, rec.Code) {
-			return redirectResult(rec.Code, location, cut)
+			if len(location) > maxLocation {
+				message := fmt.Sprintf("%s; the location has %d bytes, more than the %d a redirect result returns", redirectLine(rec.Code, location), len(location), maxLocation)
+				return nil, ez.New(ez.HTTPStatusToError(rec.Code), message, nil)
+			}
+			return redirectResult(rec.Code, location)
 		}
 		err = envelopeError(rec.Code, data)
 		if err != nil {
 			return nil, ez.Wrap(err)
 		}
-		return nil, redirectError(rec.Code, location, cut)
+		return nil, ez.New(ez.HTTPStatusToError(rec.Code), redirectLine(rec.Code, location), nil)
 	}
 	return nil, responseError(rec.Code, data)
 }
@@ -341,18 +353,13 @@ func nonJSONResult(contentType string, size int) (json.RawMessage, error) {
 	return data, nil
 }
 
-// cutLocation returns a Location header kept to valid UTF-8, without the
-// characters dropControl drops or surrounding space, and cut on a character
-// boundary at maxErrorBody bytes, and whether it was cut. Without those
+// cleanLocation returns a Location header kept to valid UTF-8, without the
+// characters dropControl drops or surrounding space. Without those
 // characters the location cannot add a line to the text that quotes it, nor
 // reorder how that text reads.
-func cutLocation(location string) (string, bool) {
+func cleanLocation(location string) string {
 	location = strings.Map(dropControl, strings.ToValidUTF8(location, ""))
-	location = strings.TrimSpace(location)
-	if len(location) <= maxErrorBody {
-		return location, false
-	}
-	return strings.ToValidUTF8(location[:maxErrorBody], ""), true
+	return strings.TrimSpace(location)
 }
 
 // dropControl removes, from a string given to strings.Map, control
@@ -366,18 +373,17 @@ func dropControl(r rune) rune {
 }
 
 // redirectResult describes a redirect as a JSON object, such as
-// {"redirect":{"status":302,"location":"/orders/7"}}, with "truncated":true
-// when the location was cut. HTML characters are not escaped, so the
-// location reads as the handler wrote it.
-func redirectResult(status int, location string, cut bool) (json.RawMessage, error) {
+// {"redirect":{"status":302,"location":"/orders/7"}}, with the whole
+// location. HTML characters are not escaped, so the location reads as the
+// handler wrote it.
+func redirectResult(status int, location string) (json.RawMessage, error) {
 	type redirect struct {
-		Status    int    `json:"status"`
-		Location  string `json:"location"`
-		Truncated bool   `json:"truncated,omitempty"`
+		Status   int    `json:"status"`
+		Location string `json:"location"`
 	}
 	result := struct {
 		Redirect redirect `json:"redirect"`
-	}{redirect{Status: status, Location: location, Truncated: cut}}
+	}{redirect{Status: status, Location: location}}
 
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
@@ -389,16 +395,16 @@ func redirectResult(status int, location string, cut bool) (json.RawMessage, err
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// redirectError is the error of a redirect that is not a result, naming its
-// status and location, such as "307 Temporary Redirect, Location: /orders/7",
-// with a cut location marked [truncated].
-func redirectError(status int, location string, cut bool) error {
+// redirectLine names the status and location of a redirect in an error, such
+// as "307 Temporary Redirect, Location: /orders/7", with a location of more
+// than maxErrorBody bytes cut on a character boundary and marked
+// [truncated].
+func redirectLine(status int, location string) string {
 	statusLine := strings.TrimSpace(fmt.Sprintf("%d %s", status, http.StatusText(status)))
-	message := statusLine + ", Location: " + location
-	if cut {
-		message += " [truncated]"
+	if len(location) <= maxErrorBody {
+		return statusLine + ", Location: " + location
 	}
-	return ez.New(ez.HTTPStatusToError(status), message, nil)
+	return statusLine + ", Location: " + strings.ToValidUTF8(location[:maxErrorBody], "") + " [truncated]"
 }
 
 // responseError converts a REST error response into an ez error: the code
