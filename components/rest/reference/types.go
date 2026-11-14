@@ -27,6 +27,10 @@ type Document struct {
 	Components Components            `json:"components" yaml:"components"`
 	Security   []map[string][]string `json:"security" yaml:"security"`
 	Tags       []Tag                 `json:"tags" yaml:"tags"`
+
+	// merged holds the allOf Flatten makes of two definitions of one
+	// property, items or additionalProperties schema, see mergedSchema.
+	merged map[[2]*Schema]*Schema
 }
 
 // Info is the document header.

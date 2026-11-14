@@ -436,9 +436,11 @@ func (p *diffPath) String() string {
 
 // Diff compares two documents structurally: operations by method and path,
 // schemas property by property after allOf flattening and ref resolution.
-// Flattening keeps the tightest of the bounds allOf members set, and the
-// keywords written beside a $ref apply together with the model it names, on
-// a schema and on each allOf member alike.
+// Flattening keeps the tightest of the bounds allOf members set and the
+// types they all allow, merges a property, items or additional properties
+// that several members define, see Document.Flatten, and the keywords
+// written beside a $ref apply together with the model it names, on a schema
+// and on each allOf member alike.
 //
 // Where both sides refer to the same model, under any spelling of the
 // reference, as a $ref or as single-member allOf wrappers nested around one,
@@ -480,7 +482,8 @@ func (p *diffPath) String() string {
 // oneOf and anyOf lists, like default and the other keywords that cannot be
 // combined across allOf members, are compared as the first one found, the
 // schema's own and then its members' in order, so the list of a second
-// member is not compared. Each keyword is compared on its own, so a change
+// member is not compared, and, of a property two members define, the later
+// definition's. Each keyword is compared on its own, so a change
 // another keyword makes moot is still reported with its own flag: a
 // maxLength changed under an enum whose values all meet both, bounds that
 // admit no value changed for others that admit none either, a const added
@@ -2013,8 +2016,7 @@ func allowsAll(s *Schema) bool {
 // closed reports whether s refuses properties it does not list, with
 // additionalProperties: false, or a schema that allows no value.
 func closed(s *Schema) bool {
-	a := s.AdditionalProperties
-	return a != nil && (!a.Allowed || refusesAll(a.Schema))
+	return refusesExtra(s.AdditionalProperties)
 }
 
 // anySchema is the empty schema, which allows any value, standing for an

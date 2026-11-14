@@ -612,7 +612,7 @@ func (e *exampler) variant(s *Schema, depth int) any {
 			merged.AnyOf = nil
 		}
 		merged.Discriminator = nil
-		mergeInto(&merged, memberFlat)
+		e.doc.mergeInto(&merged, memberFlat)
 		v = e.generate(&merged, depth)
 	}
 

@@ -3498,3 +3498,80 @@ func TestDiffTypeListOrder(t *testing.T) {
 	r = Diff(opsSpec(t, bodyPath(`{"type": ["string", "integer"]}`), ``), opsSpec(t, bodyPath(`{"type": ["integer", "boolean"]}`), ``))
 	require.Equal(t, []Change{{Kind: Changed, Path: "POST /w › request body", Detail: "type changed from string | integer to integer | boolean", Breaking: true}}, publicChanges(r.Operation("POST", "/w").Changes), r.Markdown())
 }
+
+// TestDiffAllOfMergedKeywords checks that a type narrowed by a later allOf
+// member or beside a $ref, and a property, items or additional properties
+// that two allOf members define, are compared as what applies, every
+// definition together, rather than as the first or the last one.
+func TestDiffAllOfMergedKeywords(t *testing.T) {
+	const amount = `"Amount": {"type": "number"}, "C0": {"type": "integer"}`
+	object := func(v string) string {
+		return amount + `, "M": {"type": "object", "properties": {"v": ` + v + `}}`
+	}
+	members := func(a, b string) string {
+		return `"M": {"allOf": [` + a + `, ` + b + `]}`
+	}
+	for _, c := range []struct {
+		name       string
+		base, head string
+		want       []Change
+	}{
+		{
+			name: "a reference to a number narrowed to integer by a later member",
+			base: object(`{"$ref": "#/components/schemas/Amount"}`),
+			head: object(`{"allOf": [{"$ref": "#/components/schemas/Amount"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by a later member",
+			base: object(`{"type": "number"}`),
+			head: object(`{"allOf": [{"type": "number"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by the model beside it",
+			base: object(`{"type": "number"}`),
+			head: object(`{"$ref": "#/components/schemas/C0", "type": "number"}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "types that share none keep the first",
+			base: members(`{"type": "object"}`, `{"type": "string"}`),
+			head: members(`{"type": "object"}`, `{"type": "integer"}`),
+			want: []Change{},
+		},
+		{
+			name: "a property both members define, lowered in the second",
+			base: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string", "maxLength": 40}}}`),
+			head: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string", "maxLength": 30}}}`),
+			want: []Change{{Kind: Changed, Path: "M › name", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "a property both members define, lowered in the first",
+			base: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			head: members(`{"properties": {"name": {"type": "string", "maxLength": 30}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			want: []Change{{Kind: Changed, Path: "M › name", Detail: "maxLength lowered from 50 to 30", Breaking: true}},
+		},
+		{
+			name: "items both members give, lowered in the second",
+			base: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 40}}`),
+			head: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 30}}`),
+			want: []Change{{Kind: Changed, Path: "M[]", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "additional properties both members give, lowered in the second",
+			base: members(`{"type": "object", "additionalProperties": {"type": "string", "maxLength": 50}}`, `{"additionalProperties": {"type": "string", "maxLength": 40}}`),
+			head: members(`{"type": "object", "additionalProperties": {"type": "string", "maxLength": 50}}`, `{"additionalProperties": {"type": "string", "maxLength": 30}}`),
+			want: []Change{{Kind: Changed, Path: "M › <key>", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "additional properties refused by the second member",
+			base: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object"}`),
+			head: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object", "additionalProperties": false}`),
+			want: []Change{{Kind: Changed, Path: "M", Detail: "additional properties no longer allowed", Breaking: true}},
+		},
+	} {
+		r := diffWithin(t, opsSpec(t, ``, c.base), opsSpec(t, ``, c.head))
+		require.Equal(t, c.want, publicChanges(r.Changes), "%s\n%s", c.name, r.Markdown())
+	}
+}

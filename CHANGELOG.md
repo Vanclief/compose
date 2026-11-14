@@ -2,6 +2,15 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.38.0
+
+### Breaking
+
+- **`reference.Diff` reports changes it missed, so a CI gate on `Report.Breaking()` or `Change.Breaking` can fail on a pair of documents it passed.** On the full history of two production specs, 205 revision pairs, no report changed. The new reports, with the `Change.Detail` texts to match on:
+  - **A type narrowed by a later `allOf` member or beside a `$ref`**, which compared as the first type stated: `{$ref: Amount}` with `Amount` a number to `{allOf: [{$ref: Amount}, {type: integer}]}`, `{type: number}` to `{allOf: [{type: number}, {type: integer}]}`, and `{type: number}` to `{$ref: C0, type: number}` with `C0` an integer now read `type changed from number to integer`, breaking both, as a type change does. The types of an `allOf` are those every member allows, an integer counting as a number; members whose types share none still compare as the first, as no value is accepted either way.
+  - **A property two `allOf` members define, items two members give, and two schemas of additional properties**, which compared as the later property definition, the first items and the first `additionalProperties`: a `maxLength` lowered in the earlier definition of a property, or in the second member's `items` or `additionalProperties`, now reads `maxLength lowered from 50 to 30` under the property, `M[]` or `M › <key>`, and `additionalProperties: false` in a second member, beside a schema in the first, reads `additional properties no longer allowed`.
+- **`Document.Flatten` merges what several `allOf` members define.** The flattened type is the types every member allows, so `allOf: [{type: number}, {type: integer}]` flattens to `integer` where it was `number`. A property defined in two members, `items` given by two and two `additionalProperties` schemas are each merged into an `allOf` of the definitions, which flattens by the same rules, the tightest bounds of both holding: the later definition of a property first, so where a keyword takes one value it is the later one's, as before, and the first `items` or `additionalProperties` schema first, also as before. `additionalProperties: false` now wins over a schema in another member, and a schema over `true`. A caller that reads `Properties.Map[name]` of a flattened schema without flattening it again, for a property two members define differently, now gets that `allOf`; definitions written the same, and a bare `$ref` beside a definition that refers to the same model, are not merged. The reference page, the generated examples and the input schemas of MCP tools show the merged schema.
+
 ## v1.37.0
 
 ### Breaking

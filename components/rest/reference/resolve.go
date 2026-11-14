@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Ref targets are local JSON pointers into components, the only form the
@@ -153,18 +154,26 @@ func (d *Document) Example(e *Example) *Example {
 // and the keywords beside it are dropped.
 //
 // Merge rules: properties are unioned in order, parent first then members in
-// order, and a later definition of the same property replaces the earlier one
-// while keeping its position. Required is unioned. Every member applies, so
-// of the numeric bounds the tightest is kept: of minLength, maxLength,
-// minItems, maxItems, minProperties and maxProperties each, and of the lower
-// bound minimum and exclusiveMinimum (and the upper bound maximum and
-// exclusiveMaximum) together, kept in the one keyword that holds it, the
-// exclusive one at equal values, in its numeric form. Other scalar keywords
-// take the first non-empty value walking parent first then members in
-// order; boolean flags (nullable, deprecated, readOnly, writeOnly,
-// uniqueItems) are true when any of them sets it. oneOf, anyOf,
-// discriminator and additionalProperties of members are kept only when the
-// parent has none of its own.
+// order. Required is unioned. Every member applies, so of the numeric bounds
+// the tightest is kept: of minLength, maxLength, minItems, maxItems,
+// minProperties and maxProperties each, and of the lower bound minimum and
+// exclusiveMinimum (and the upper bound maximum and exclusiveMaximum)
+// together, kept in the one keyword that holds it, the exclusive one at
+// equal values, in its numeric form. Of the types, those every member that
+// states one allows are kept, an integer counting as a number, so number
+// and integer give integer; where they share none, the first stated is
+// kept, as no value is accepted either way. A property defined more than
+// once, items given more than once and two schemas of additional
+// properties are each merged into an allOf of the definitions, which
+// flattens by these same rules: the later definition of a property first,
+// so where a keyword takes one value it is the later one's, and the first
+// items or additionalProperties schema first. additionalProperties false,
+// or a schema that allows no value, wins over any other, and true or none
+// gives way to a schema. Other scalar keywords take the first non-empty
+// value walking parent first then members in order; boolean flags
+// (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when any
+// of them sets it. oneOf, anyOf and discriminator of members are kept only
+// when the parent has none of its own.
 //
 // A member's oneOf, anyOf and discriminator are dropped when they point back
 // at the schema being flattened or at any schema in the current allOf chain.
@@ -276,7 +285,7 @@ func (f *flattener) flatten(s *Schema) (*Schema, map[*Schema]bool) {
 			m = &concrete
 		}
 		allNull = allNull && admitsNull(m)
-		mergeInto(&out, m)
+		f.doc.mergeInto(&out, m)
 		if f.siblings && out.Not == nil {
 			out.Not = m.Not
 		}
@@ -409,9 +418,16 @@ func (d *Document) polymorphicTargets(m *Schema) []*Schema {
 	return out
 }
 
-func mergeInto(out, m *Schema) {
+// mergeInto merges the flattened member m into out by the rules Flatten
+// describes.
+func (d *Document) mergeInto(out, m *Schema) {
 	for _, key := range m.Properties.Keys {
-		out.Properties.Set(key, m.Properties.Map[key])
+		earlier, ok := out.Properties.Get(key)
+		if !ok {
+			out.Properties.Set(key, m.Properties.Map[key])
+			continue
+		}
+		out.Properties.Set(key, d.mergedSchema(m.Properties.Map[key], earlier))
 	}
 	for _, r := range m.Required {
 		if !out.IsRequired(r) {
@@ -419,9 +435,7 @@ func mergeInto(out, m *Schema) {
 		}
 	}
 
-	if len(out.Type) == 0 {
-		out.Type = m.Type
-	}
+	out.Type = commonTypes(out.Type, m.Type)
 	if out.Format == "" {
 		out.Format = m.Format
 	}
@@ -431,9 +445,7 @@ func mergeInto(out, m *Schema) {
 	if out.Description == "" {
 		out.Description = m.Description
 	}
-	if out.Items == nil {
-		out.Items = m.Items
-	}
+	out.Items = d.mergedSchema(out.Items, m.Items)
 	if len(out.Enum) == 0 {
 		out.Enum = m.Enum
 	}
@@ -458,9 +470,7 @@ func mergeInto(out, m *Schema) {
 	if out.Discriminator == nil {
 		out.Discriminator = m.Discriminator
 	}
-	if out.AdditionalProperties == nil {
-		out.AdditionalProperties = m.AdditionalProperties
-	}
+	out.AdditionalProperties = d.mergedAdditional(out.AdditionalProperties, m.AdditionalProperties)
 	if m.Nullable {
 		out.Nullable = true
 	}
@@ -497,6 +507,116 @@ func mergeInto(out, m *Schema) {
 	if m.UniqueItems {
 		out.UniqueItems = true
 	}
+}
+
+// commonTypes returns the types both a and b allow, in the order of a, an
+// integer counting as a number: either list where the other is empty, and a
+// where they share none, as no value is then accepted whichever is kept.
+func commonTypes(a, b TypeList) TypeList {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	var out TypeList
+	for _, t := range a {
+		both := t
+		switch {
+		case b.Has(t):
+		case t == "number" && b.Has("integer"):
+			both = "integer"
+		case t == "integer" && b.Has("number"):
+		default:
+			continue
+		}
+		if !out.Has(both) {
+			out = append(out, both)
+		}
+	}
+	if len(out) == 0 {
+		return a
+	}
+	return out
+}
+
+// mergedMu guards the merged field of every document, see mergedSchema.
+var mergedMu sync.Mutex
+
+// mergedSchema returns a schema that applies both a and b, either of which
+// may be nil: one of them where the other adds nothing to it, as the empty
+// schema, a bare $ref to the model the other refers to, or a schema written
+// the same does, or where one allows no value, otherwise an allOf of a and
+// then b, which
+// flattens by the rules of Flatten, so where a keyword takes one value it
+// is a's. The allOf is made once per pair and document, so flattening a
+// schema again gives the same schemas, and a cycle guard keyed by schema
+// sees a schema met again through a merged definition as the cycle it is.
+func (d *Document) mergedSchema(a, b *Schema) *Schema {
+	switch {
+	case b == nil || a == b || emptySchema(b) || refusesAll(a) || bareRefTo(b, a) || reflect.DeepEqual(a, b):
+		return a
+	case a == nil || emptySchema(a) || refusesAll(b) || bareRefTo(a, b):
+		return b
+	}
+	key := [2]*Schema{a, b}
+	mergedMu.Lock()
+	defer mergedMu.Unlock()
+	out, ok := d.merged[key]
+	if ok {
+		return out
+	}
+	if d.merged == nil {
+		d.merged = map[[2]*Schema]*Schema{}
+	}
+	out = &Schema{AllOf: []*Schema{a, b}}
+	d.merged[key] = out
+	return out
+}
+
+// emptySchema reports whether s is {}, which allows any value and says
+// nothing about it.
+func emptySchema(s *Schema) bool {
+	return s.Ref == "" && len(s.AllOf) == 0 && len(s.Extensions) == 0 && !hasKeywords(s)
+}
+
+// bareRefTo reports whether s is a $ref with nothing beside it to the model
+// other refers to in the shape modelRef accepts, so other already applies
+// all of s.
+func bareRefTo(s, other *Schema) bool {
+	return s.Ref != "" && !hasSiblings(s) && modelRef(other) == s.Ref
+}
+
+// mergedAdditional returns the additionalProperties that apply where both a
+// and b do, either of which may be nil, standing for the keyword absent:
+// one that allows no other property wins, true or none gives way to the
+// other, and two schemas merge as mergedSchema says.
+func (d *Document) mergedAdditional(a, b *AdditionalProperties) *AdditionalProperties {
+	switch {
+	case b == nil || refusesExtra(a):
+		return a
+	case a == nil || refusesExtra(b):
+		return b
+	case b.Schema == nil:
+		return a
+	case a.Schema == nil:
+		return b
+	}
+	merged := d.mergedSchema(a.Schema, b.Schema)
+	if merged == a.Schema {
+		return a
+	}
+	if merged == b.Schema {
+		return b
+	}
+	return &AdditionalProperties{Allowed: true, Schema: merged}
+}
+
+// refusesExtra reports whether a, an additionalProperties keyword or nil,
+// refuses every property the object does not list: false, or a schema that
+// allows no value.
+func refusesExtra(a *AdditionalProperties) bool {
+	return a != nil && (!a.Allowed || refusesAll(a.Schema))
 }
 
 // tightest returns the tighter of two limits, either of which may be unset:
