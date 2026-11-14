@@ -251,7 +251,11 @@ Rules enforced at registration (fail boot):
   that embeds a pointer (`struct{ *user.User; Role string }`) documents the promoted fields
   as required, as they are when the pointer is set, and `encoding/json` omits them all when
   it is nil. The handler sets the pointer; an `apitest` contract fails a response in which
-  it did not
+  it did not. The walk looks at the field only, not at the items of a slice or the values
+  of a map: a nil element of a `[]*Struct` or `map[string]*Struct` field is sent as `null`,
+  which the published items or values schema, a `$ref` to the struct, does not allow (a
+  pointer to a scalar there is documented nullable). The handler leaves no nil element in
+  such a field; an `apitest` contract fails a response that has one (`list.1 must be object`)
 - GET, HEAD and DELETE request types have no body properties (and no files); registration
   fails and points at the `query:` tag. The fields of an embedded struct tagged `json:"-"`
   are no body properties, here and in a multipart request
