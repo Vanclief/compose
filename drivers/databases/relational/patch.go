@@ -2,9 +2,11 @@ package relational
 
 import (
 	"context"
+	"reflect"
 	"slices"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/schema"
 	"github.com/vanclief/compose/types"
 	"github.com/vanclief/ez"
 )
@@ -93,8 +95,9 @@ func SetNullableColumn[T any](p *Patch, column string, dst **T, value types.Opti
 // Update validates model and writes only the recorded columns of the row
 // model's primary key names. It returns the patch's error first, if a null
 // was sent for a column that cannot hold one. With no column recorded it
-// returns nil without validating or querying. A row that no longer exists
-// is ENOTFOUND.
+// returns nil without validating or querying. A recorded primary-key column
+// is EINTERNAL and nothing is written: the row is found by the key in model,
+// so a changed key would write another row. A row that no longer exists is ENOTFOUND.
 func (p *Patch) Update(ctx context.Context, db bun.IDB, model interface{ Validate() error }) error {
 	if p.err != nil {
 		return ez.Wrap(p.err)
@@ -107,6 +110,19 @@ func (p *Patch) Update(ctx context.Context, db bun.IDB, model interface{ Validat
 	err := model.Validate()
 	if err != nil {
 		return ez.Wrap(err)
+	}
+
+	table, err := rowTable(db, model)
+	if err != nil {
+		return ez.Wrap(err)
+	}
+
+	for _, column := range p.columns {
+		// A name bun does not know is left to the UPDATE, which reports it
+		field, ok := table.FieldMap[column]
+		if ok && field.IsPK {
+			return ez.New(ez.EINTERNAL, "The record's identifier cannot be changed", nil).AddData("column", column)
+		}
 	}
 
 	res, err := db.NewUpdate().Model(model).Column(p.columns...).WherePK().Exec(ctx)
@@ -124,6 +140,17 @@ func (p *Patch) Update(ctx context.Context, db bun.IDB, model interface{ Validat
 	}
 
 	return nil
+}
+
+// rowTable returns bun's table of model, which must be a non-nil pointer to
+// the struct of one row.
+func rowTable(db bun.IDB, model any) (*schema.Table, error) {
+	value := reflect.ValueOf(model)
+	if value.Kind() != reflect.Pointer || value.IsNil() || value.Elem().Kind() != reflect.Struct {
+		return nil, ez.New(ez.EINTERNAL, "The record cannot be saved", nil)
+	}
+
+	return db.Dialect().Tables().Get(value.Type()), nil
 }
 
 // fail keeps the first error recorded on the patch.

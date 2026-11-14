@@ -212,3 +212,71 @@ func TestPatchColumnsOrderAndDuplicates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Gamma", patchLoad(t, db, org.ID).Name)
 }
+
+type patchItem struct {
+	bun.BaseModel `bun:"table:patch_items"`
+
+	OrgID int64  `bun:",pk"`
+	Code  string `bun:",pk"`
+	Name  string `bun:",notnull"`
+}
+
+func (i *patchItem) Validate() error {
+	return nil
+}
+
+func TestPatchRefusesPrimaryKeyColumn(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("single key", func(t *testing.T) {
+		db, org := patchSetup(t)
+		id := org.ID
+
+		other := &patchOrg{Name: "Other", City: "Quito"}
+		_, err := db.NewInsert().Model(other).Exec(ctx)
+		require.NoError(t, err)
+
+		var patch relational.Patch
+		relational.SetColumn(&patch, "id", &org.ID, types.Some(other.ID))
+		relational.SetColumn(&patch, "name", &org.Name, types.Some("Beta"))
+
+		err = patch.Update(ctx, db, org)
+		require.Error(t, err)
+		assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+		assert.Equal(t, "id", ez.ErrorData(err)["column"])
+
+		assert.Equal(t, "Acme", patchLoad(t, db, id).Name)
+		assert.Equal(t, "Other", patchLoad(t, db, other.ID).Name)
+	})
+
+	t.Run("composite key", func(t *testing.T) {
+		db, _ := patchSetup(t)
+
+		err := db.CreateTables([]interface{}{(*patchItem)(nil)})
+		require.NoError(t, err)
+
+		_, err = db.NewInsert().Model(&[]patchItem{
+			{OrgID: 1, Code: "A", Name: "row A"},
+			{OrgID: 1, Code: "B", Name: "row B"},
+		}).Exec(ctx)
+		require.NoError(t, err)
+
+		item := &patchItem{OrgID: 1, Code: "A", Name: "row A"}
+		var patch relational.Patch
+		relational.SetColumn(&patch, "name", &item.Name, types.Some("renamed"))
+		relational.SetColumn(&patch, "code", &item.Code, types.Some("B"))
+
+		err = patch.Update(ctx, db, item)
+		require.Error(t, err)
+		assert.Equal(t, ez.EINTERNAL, ez.ErrorCode(err))
+		assert.Equal(t, "code", ez.ErrorData(err)["column"])
+
+		var stored []patchItem
+		err = db.NewSelect().Model(&stored).Order("code").Scan(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, []patchItem{
+			{OrgID: 1, Code: "A", Name: "row A"},
+			{OrgID: 1, Code: "B", Name: "row B"},
+		}, stored)
+	})
+}
