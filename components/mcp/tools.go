@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -259,17 +261,21 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 		return ez.New(ez.EINTERNAL, "mcp: cannot resolve the input schema of "+tool.Name+": "+err.Error(), err)
 	}
 
-	// The SDK validates and decodes the arguments of a transport call before
-	// the handler runs; prepare does the same for Server.CallTool.
+	// prepare validates and decodes the arguments of a call before the
+	// handler runs, as the SDK's typed tools do, for the transport and for
+	// Server.CallTool alike. The tool is registered without the SDK's typed
+	// handler because that one decodes every number as a float64 and encodes
+	// it again, which rounds an integer a float64 cannot hold before the
+	// handler sees it. The input is decoded with unmarshalExact, so a number
+	// reaches an interface value of the input, such as callInput.Args, as a
+	// json.Number, which callFunction settles with exactNumbers.
 	prepare := func(args json.RawMessage) (toolHandler, string) {
 		input, invalid := applyInputSchema(args, resolved)
 		if invalid != "" {
 			return nil, invalid
 		}
-		// The SDK answers a decode failure with the decoder's error text. Its
-		// decoder is not encoding/json, so the wording can differ.
 		var in In
-		err := json.Unmarshal(input, &in)
+		err := unmarshalExact(input, &in)
 		if err != nil {
 			return nil, err.Error()
 		}
@@ -278,11 +284,17 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 		}, ""
 	}
 
-	mcp.AddTool(s.srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+	s.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		handle, invalid := prepare(req.Params.Arguments)
+		if handle == nil {
+			// Arguments that break the schema are answered uncut, as the
+			// SDK's typed tools answer them.
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: invalid}}, IsError: true}, nil
+		}
 		result := s.serveTool(ctx, req, tool.Name, func(call *caller) (string, bool) {
-			return handle(ctx, req, call, in)
+			return handle(ctx, req, call)
 		})
-		return result, nil, nil
+		return result, nil
 	})
 	s.tools = append(s.tools, registeredTool{tool: tool, prepare: prepare})
 	return nil
@@ -291,19 +303,32 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 // applyInputSchema applies the defaults of the input schema to the JSON
 // arguments of a call and validates them, as the MCP SDK does before it
 // decodes the input of a typed tool. It returns the arguments with the
-// defaults, or the text of the tool error the SDK answers when they break
-// the schema.
+// defaults, or the text of the tool error the SDK's typed tools answer when
+// they break the schema.
 //
-// The SDK decodes with its own decoder, which matches keys case-sensitively
-// and refuses JSON nested more than 1000 levels deep, so the transport
-// answers such a request with a protocol error, Bad Request over HTTP,
-// before any tool runs. This uses encoding/json: a key in another case
-// still breaks the schema, which allows no other properties, but deeper
-// nesting reaches the tool here.
+// The schema is checked on the arguments decoded with every number as a
+// float64, the SDK's way: the validator reads a float64 as an integer or a
+// number and a json.Number as a string. The arguments returned hold each
+// number as the SDK's typed tools write it again, 1.0 as 1, except an
+// integer exactNumbers keeps, which keeps its digits. A number no float64
+// holds, such as 1e400, is refused here as the SDK's typed tools refuse it,
+// in the words of encoding/json.
+//
+// The JSON-RPC layer of the SDK decodes the whole message with its own
+// decoder, which refuses JSON nested more than 1000 levels deep, so the
+// transport answers such a request with a protocol error, Bad Request over
+// HTTP, before any tool runs. This uses encoding/json, so deeper nesting
+// reaches the tool through Server.CallTool. A key in another case breaks
+// the schema, which allows no other properties.
 func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, string) {
 	object := map[string]any{}
+	exact := map[string]any{}
 	if len(args) > 0 {
 		err := json.Unmarshal(args, &object)
+		if err != nil {
+			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
+		}
+		err = unmarshalExact(args, &exact)
 		if err != nil {
 			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
 		}
@@ -317,11 +342,73 @@ func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json
 	if err != nil {
 		return nil, `validating "arguments": ` + err.Error()
 	}
-	input, err := json.Marshal(value)
+	// Defaults are set where a property is missing, whatever the numbers
+	// are, so they fill the exact arguments as they filled the checked ones.
+	var input any = exact
+	err = resolved.ApplyDefaults(&input)
+	if err != nil {
+		return nil, "validating \"arguments\": applying schema defaults:\n" + err.Error()
+	}
+	data, err := json.Marshal(exactNumbers(input))
 	if err != nil {
 		return nil, `validating "arguments": marshalling with defaults: ` + err.Error()
 	}
-	return input, ""
+	return data, ""
+}
+
+// unmarshalExact decodes data into v as json.Unmarshal does, except that a
+// number decoded into an interface value becomes a json.Number, which keeps
+// the digits as written; exactNumbers then turns all but the integers of
+// magnitude 2^53 or more back into float64. It returns the error of
+// encoding/json unwrapped, as json.Unmarshal does, because callers quote its
+// text.
+func unmarshalExact(data []byte, v any) error {
+	if !json.Valid(data) {
+		// The decoder below would read the first value and leave the rest;
+		// json.Unmarshal reports the syntax error.
+		return json.Unmarshal(data, v)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(v)
+}
+
+// exactNumbers replaces, in arguments decoded by unmarshalExact, each
+// json.Number by the float64 json.Unmarshal would have given, except an
+// integer written without a fraction or an exponent whose magnitude is 2^53
+// or more, such as 9007199254740993 or 100000000000000000000000: that one
+// stays a json.Number, so the path, query, header, body and a composite's
+// input get its digits. Every other number, 1.0, 1e3 or 2.50 among them, is
+// a float64 as before; a float64 holds every integer below 2^53 exactly and
+// prints it with the same digits, -0 included. It changes maps and slices
+// in place, so it only runs on values this package decoded.
+func exactNumbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		// The float64 decode before this refuses a number no float64 holds,
+		// so Float64 does not fail here; if it did, the number would stay
+		// as written.
+		f, err := t.Float64()
+		if err != nil || (isIntegerLiteral(t.String()) && math.Abs(f) >= 1<<53) {
+			return t
+		}
+		return f
+	case map[string]any:
+		for key, item := range t {
+			t[key] = exactNumbers(item)
+		}
+	case []any:
+		for i, item := range t {
+			t[i] = exactNumbers(item)
+		}
+	}
+	return v
+}
+
+// isIntegerLiteral reports whether a JSON number is written as an integer:
+// an optional minus sign and digits, without a fraction or an exponent.
+func isIntegerLiteral(n string) bool {
+	return !strings.ContainsAny(n, ".eE")
 }
 
 // addFunctionTool registers the catalog function name as a tool named
@@ -364,11 +451,18 @@ func (s *Server) addFunctionTool(name string) error {
 	}
 
 	// The transport and Server.CallTool both run this handler on the raw
-	// arguments.
+	// arguments. The first decode refuses what it always refused, a number
+	// no float64 holds among them; the second keeps the digits that
+	// callFunction's exactNumbers needs.
 	run := func(ctx context.Context, req *mcp.CallToolRequest, call *caller, raw json.RawMessage) (string, bool) {
 		var args map[string]any
 		if len(raw) > 0 {
-			err := json.Unmarshal(raw, &args)
+			var checked map[string]any
+			err := json.Unmarshal(raw, &checked)
+			if err != nil {
+				return s.callErrorText(name, ez.New(ez.EINVALID, "mcp: arguments of "+name+" must be a JSON object", err)), true
+			}
+			err = unmarshalExact(raw, &args)
 			if err != nil {
 				return s.callErrorText(name, ez.New(ez.EINVALID, "mcp: arguments of "+name+" must be a JSON object", err)), true
 			}
@@ -513,6 +607,9 @@ func (s *Server) whoami(ctx context.Context, req *mcp.CallToolRequest, call *cal
 // followed by the function description so the agent can fix the call.
 func (s *Server) callFunction(ctx context.Context, req *mcp.CallToolRequest, call *caller, in callInput) (string, bool) {
 	name := strings.TrimSpace(in.Name)
+	// in.Args was decoded by unmarshalExact, for call_function and for a
+	// promoted tool alike.
+	exactNumbers(in.Args)
 	raw, err := call.Call(ctx, name, in.Args)
 	if err == nil {
 		return string(raw), false

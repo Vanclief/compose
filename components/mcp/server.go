@@ -255,8 +255,8 @@ func (s *Server) Tools() []Tool {
 // text of a tool that runs is cut to MaxOutputBytes, and a panic becomes an
 // internal error that also goes to Config.OnError. The arguments of a fixed
 // tool are validated against its input schema and decoded into its input
-// before it runs, as the MCP SDK does for the transport, and a failure of
-// either is the uncut text of a failed call, as the SDK answers it.
+// before it runs, as for the transport, and a failure of either is the
+// uncut text of a failed call, as the transport answers it.
 //
 // The headers are the credentials the REST API authenticates with, used as
 // given: Config.Auth does not run, and there is no bearer token, so whoami
@@ -287,8 +287,8 @@ func (s *Server) CallTool(ctx context.Context, header http.Header, name string, 
 	}
 	handle, invalid := s.tools[i].prepare(raw)
 	if handle == nil {
-		// The SDK answers arguments it cannot validate or decode before the
-		// handler runs, uncut.
+		// The transport answers arguments it cannot validate or decode before
+		// the handler runs, uncut.
 		return invalid, true, nil
 	}
 	call := &caller{s: s, header: header}
