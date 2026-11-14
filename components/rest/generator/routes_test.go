@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -110,8 +111,8 @@ e.PATCH("/raw-string/:id", h.UpdateThing)
 	}
 }
 
-// Groups nest and their variables are known for the rest of the file, in any function; the
-// handler is the first h.Namespace.Method in the arguments, wherever they are wrapped, and
+// Groups nest, as variables or chained calls, and the root groups are known in every function;
+// the handler is the first h.Namespace.Method in the arguments, wherever they are wrapped, and
 // neither comments nor the body of a function literal handler count.
 func TestParseRoutesReadsNestedGroupsAndHandlers(t *testing.T) {
 	root := writeFixture(t, map[string]string{
@@ -129,7 +130,7 @@ func addWidgetRoutes(e *echo.Echo, h *Handlers) {
 }
 
 func addMoreWidgetRoutes(h *Handlers) {
-	widgets.PUT("/:id", h.Widgets.Replace)
+	e.Group("/v1").Group("/widgets").PUT("/:id", h.Widgets.Replace)
 	e.GET("/internal/docs", func(c echo.Context) error {
 		return h.App.Authenticate(c)
 	})
@@ -571,6 +572,205 @@ func addRoutes(e *echo.Echo, h *Handler, cfg Config) {
 	}
 	if !reflect.DeepEqual(skipped, wantSkipped) {
 		t.Fatalf("SkipUnresolved received:\n got %+v\nwant %+v", skipped, wantSkipped)
+	}
+}
+
+// lineOf is the line number of the first line of src containing marker.
+func lineOf(t *testing.T, src string, marker string) int {
+	t.Helper()
+
+	for i, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, marker) {
+			return i + 1
+		}
+	}
+	t.Fatalf("no line contains %q", marker)
+
+	return 0
+}
+
+// Group variables follow Go's scopes: a declaration in a block, an if, a loop or another
+// function is not seen outside it, an inner scope sees the outer ones, and `=` in straight-line
+// code changes the prefix from that statement on. A function constant shadows a package one.
+func TestParseRoutesTracksGroupsPerScope(t *testing.T) {
+	src := `package api
+
+const local = "/package"
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	{
+		g := g.Group("/b")
+		g.GET("/x", h.GetThing)
+	}
+	g.GET("/y", h.GetThing)
+	if g := e.Group("/if"); g != nil {
+		g.GET("/x", h.GetThing)
+	}
+	g.GET("/after-if", h.GetThing)
+	for _, v := range []string{"/b"} {
+		g := g.Group("/loop")
+		g.GET("/x", h.GetThing)
+		_ = v
+	}
+	g.GET("/after-loop", h.GetThing)
+
+	v := e.Group("/v1")
+	v.GET("/one", h.GetThing)
+	v = e.Group("/v2")
+	v.GET("/two", h.GetThing)
+	v = v.Group("/sub")
+	v.GET("/three", h.GetThing)
+
+	const local = "/local"
+	v.GET(local, h.GetThing)
+
+	if true {
+		x := e.Group("/branch-local")
+		x = x.Group("/more")
+		x.GET("/x", h.GetThing)
+	}
+	func() {
+		g.GET("/closure", h.GetThing)
+	}()
+	e = echo.New()
+	e.GET("/root", h.GetThing)
+}
+
+func other(e *echo.Echo, h *Handler, admin bool) {
+	g := e.Group("/other")
+	g.GET("/z", h.GetThing)
+	g.GET(local, h.GetThing)
+	if admin {
+		g = e.Group("/admin")
+		g.GET("/in-branch", h.GetThing)
+	} else {
+		g.GET("/in-else", h.GetThing)
+	}
+	same := e.Group("/same")
+	if admin {
+		same = e.Group("/same")
+	}
+	same.GET("/after", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+
+	routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Method+" "+r.Path)
+	}
+	want := []string{
+		"GET /a/after-if",
+		"GET /a/after-loop",
+		"GET /a/b/x",
+		"GET /a/closure",
+		"GET /a/loop/x",
+		"GET /a/y",
+		"GET /admin/in-branch",
+		"GET /branch-local/more/x",
+		"GET /if/x",
+		"GET /other/in-else",
+		"GET /other/package",
+		"GET /other/z",
+		"GET /root",
+		"GET /same/after",
+		"GET /v1/one",
+		"GET /v2/sub/local",
+		"GET /v2/sub/three",
+		"GET /v2/two",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A group variable whose group the finder cannot know at the route fails generation: one
+// reassigned in a branch and used after it, one reassigned in a loop it is used in, one a
+// function literal uses while its function reassigns it, a parameter not named in RootGroups,
+// one set from a call, and one declared in another function.
+func TestParseRoutesReportsGroupsOfUnknownValue(t *testing.T) {
+	src := `package api
+
+func branch(e *echo.Echo, h *Handler, admin bool) {
+	g := e.Group("/a")
+	if admin {
+		g = g.Group("/b") // branch assignment
+	}
+	g.GET("/after-branch", h.GetThing)
+}
+
+func loop(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	for i := 0; i < 2; i++ {
+		g.GET("/in-loop", h.GetThing)
+		g = g.Group("/b") // loop assignment
+	}
+	g.GET("/after-loop", h.GetThing)
+}
+
+func closure(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	register := func() {
+		g.GET("/closure", h.GetThing)
+	}
+	g = e.Group("/b")
+	register()
+}
+
+func param(g *echo.Group, h *Handler) {
+	g.GET("/param", h.GetThing)
+}
+
+func fromCall(e *echo.Echo, h *Handler) {
+	g := newGroup(e)
+	g.GET("/call", h.GetThing)
+}
+
+func leak(h *Handler) {
+	g.GET("/leak", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"}
+
+	_, err := ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("expected an invalid error, got %v", err)
+	}
+
+	got := map[string]string{}
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		got[route.Path] = route.Reason
+		return true
+	}
+	_, err = ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.ENOTFOUND {
+		t.Fatalf("expected no routes once every unresolved one is skipped, got %v", err)
+	}
+
+	file := routeFile(root, "routes.go")
+	branchLine := strconv.Itoa(lineOf(t, src, "branch assignment"))
+	loopLine := strconv.Itoa(lineOf(t, src, "loop assignment"))
+	want := map[string]string{
+		`"/after-branch"`: `"g" is reassigned at ` + file + ":" + branchLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/in-loop"`:      `"g" is reassigned at ` + file + ":" + loopLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/after-loop"`:   `"g" is reassigned at ` + file + ":" + loopLine + ` in a branch, a loop or a function literal, so the group it holds here is not known`,
+		`"/closure"`:      `"g" is used in a function literal and reassigned in its function, so the group it holds when the literal runs is not known`,
+		`"/param"`:        `unknown route group "g", a function parameter not named in RootGroups`,
+		`"/call"`:         `newGroup(e) is not a group the route finder can follow`,
+		`"/leak"`:         `unknown route group "g"`,
+	}
+	for path, reason := range got {
+		got[path] = filepath.ToSlash(reason)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolved routes:\n got %q\nwant %q", got, want)
 	}
 }
 

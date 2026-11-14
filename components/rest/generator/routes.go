@@ -185,12 +185,12 @@ type fileRoutes struct {
 	unresolved  []string
 }
 
-// parseFile reads the group assignments and route calls of one file, in source order. A
-// group assignment is `child := parent.Group(prefix, ...)`; a route call is
-// `group.GET(path, handler, ...)` (or POST, PUT, PATCH, DELETE, HEAD), anywhere in the file,
-// including calls spread over several lines; comments and string literals are not code and
-// declare nothing. A path or prefix is a string constant (see constString) and a group is a
-// root group, a group variable or a Group call on a group (see groupOf).
+// parseFile reads the group variables and route calls of one file, statement by statement in
+// source order, anywhere in the file, including calls spread over several lines; comments and
+// string literals are not code and declare nothing. A route call is
+// `group.GET(path, handler, ...)` (or POST, PUT, PATCH, DELETE, HEAD); its path is a string
+// constant (see constString) and its group a root group, a group variable or a Group call on a
+// group (see groupOf). Group variables follow Go's scopes (see routeWalker).
 func (p *routeParser) parseFile(absPath string) (fileRoutes, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
@@ -219,30 +219,10 @@ func (p *routeParser) parseFile(absPath string) (fileRoutes, error) {
 		absPath: absPath,
 		relPath: filepath.ToSlash(relPath),
 		consts:  consts,
-		groups:  map[string]groupValue{},
 	}
-	for name, base := range p.cfg.RootGroups {
-		w.groups[name] = rootGroup(base)
+	for _, decl := range file.Decls {
+		w.topLevel(decl)
 	}
-
-	ast.Inspect(file, func(node ast.Node) bool {
-		if w.err != nil {
-			return false
-		}
-
-		assign, ok := node.(*ast.AssignStmt)
-		if ok {
-			w.groupAssign(assign)
-			return true
-		}
-
-		call, ok := node.(*ast.CallExpr)
-		if ok {
-			w.call(call)
-		}
-
-		return true
-	})
 	if w.err != nil {
 		return fileRoutes{}, w.err
 	}
@@ -271,7 +251,58 @@ func unknownGroup(reason string) groupValue {
 	return groupValue{reason: reason}
 }
 
-// routeWalker reads the group variables and route calls of one route file.
+// binding is a name declared in a scope: a variable, with the group it holds, or a constant,
+// with its string value.
+type binding struct {
+	name string
+	// key identifies the declaration across the walks of one top-level declaration: its
+	// identifier, or the name of a root group.
+	key   any
+	group groupValue
+
+	isConst bool
+	value   string
+	valueOK bool
+
+	// frames and funcDepth are the number of frames and of function literals open where the
+	// name is declared.
+	frames    int
+	funcDepth int
+}
+
+type scope struct {
+	parent *scope
+	names  map[string]*binding
+}
+
+// frame is a branch, a loop body or a function literal body being walked. It records the
+// bindings declared outside it that it assigns.
+type frame struct {
+	assigned map[*binding]*frameAssignment
+}
+
+// frameAssignment is what a frame did to a binding declared outside it: the group it held
+// before the frame and at its end, and where the frame first assigned it.
+type frameAssignment struct {
+	before   groupValue
+	after    groupValue
+	location string
+}
+
+// routeWalker reads the group variables and route calls of one route file, one top-level
+// declaration at a time.
+//
+// Group variables follow Go's scopes: a name declared in a block, an if, for, switch or
+// select, a case or a function literal is not seen outside it, and an inner declaration
+// shadows an outer one. The RootGroups names are known in every declaration, and a parameter
+// or variable of such a name is that root group unless it is set to another group; any other
+// parameter, and a variable set to anything but a group, holds no group the finder knows. In
+// straight-line code `=` sets a variable's group from that statement on. A variable that a
+// branch, a loop or a function literal sets to another group holds no known group after it,
+// nor anywhere in a loop or literal that does so, since another iteration or call may have
+// done it before; and a function literal sees no known group in a variable of an enclosing
+// function that `=` assigns anywhere in the top-level declaration, since the literal may run
+// after any assignment.
 type routeWalker struct {
 	p       *routeParser
 	fset    *token.FileSet
@@ -279,35 +310,463 @@ type routeWalker struct {
 	// relPath is the file relative to Config.Root, with forward slashes.
 	relPath string
 	consts  *packageConsts
-	groups  map[string]groupValue
+
+	scope     *scope
+	frames    []*frame
+	funcDepth int
+	// quiet counts the walks that record no route: the first walk of a loop or function
+	// literal body, and the first walk of a top-level declaration, which fills reassigned.
+	quiet int
+	// reassigned holds the keys of the bindings `=` assigns anywhere in the top-level
+	// declaration.
+	reassigned map[any]bool
 
 	found fileRoutes
 	err   error
 }
 
-// groupAssign records `child := parent.Group(prefix, ...)`: child's base path is parent's plus
-// the prefix, and its root path is parent's. Any other assignment is ignored.
-func (w *routeWalker) groupAssign(assign *ast.AssignStmt) {
-	if assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+// topLevel walks a top-level declaration twice: once to learn which variables it reassigns,
+// then to read its routes.
+func (w *routeWalker) topLevel(decl ast.Decl) {
+	w.reassigned = map[any]bool{}
+	w.quiet++
+	w.declaration(decl)
+	w.quiet--
+	w.declaration(decl)
+}
+
+func (w *routeWalker) declaration(decl ast.Decl) {
+	w.scope = &scope{names: map[string]*binding{}}
+	w.frames = nil
+	w.funcDepth = 0
+	for name, base := range w.p.cfg.RootGroups {
+		w.scope.names[name] = &binding{
+			name:  name,
+			key:   "root " + name,
+			group: rootGroup(base),
+		}
+	}
+
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Body == nil {
+			return
+		}
+		w.push()
+		w.params(d.Recv)
+		w.params(d.Type.Params)
+		w.params(d.Type.Results)
+		w.stmts(d.Body.List)
+		w.pop()
+	case *ast.GenDecl:
+		if d.Tok != token.VAR {
+			return
+		}
+		for _, spec := range d.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, value := range valueSpec.Values {
+				w.expr(value)
+			}
+		}
+	}
+}
+
+func (w *routeWalker) push() {
+	w.scope = &scope{
+		parent: w.scope,
+		names:  map[string]*binding{},
+	}
+}
+
+func (w *routeWalker) pop() {
+	w.scope = w.scope.parent
+}
+
+// declare adds a name to the innermost scope.
+func (w *routeWalker) declare(name *ast.Ident, group groupValue) *binding {
+	b := &binding{
+		name:      name.Name,
+		key:       name,
+		group:     group,
+		frames:    len(w.frames),
+		funcDepth: w.funcDepth,
+	}
+	if name.Name != "_" {
+		w.scope.names[name.Name] = b
+	}
+
+	return b
+}
+
+func (w *routeWalker) lookup(name string) *binding {
+	for s := w.scope; s != nil; s = s.parent {
+		b, ok := s.names[name]
+		if ok {
+			return b
+		}
+	}
+
+	return nil
+}
+
+// assign sets the group a binding holds, recording the assignment in every frame open since
+// the binding was declared.
+func (w *routeWalker) assign(b *binding, group groupValue, pos token.Pos) {
+	w.reassigned[b.key] = true
+	for _, f := range w.frames[b.frames:] {
+		_, ok := f.assigned[b]
+		if !ok {
+			f.assigned[b] = &frameAssignment{
+				before:   b.group,
+				location: w.location(pos),
+			}
+		}
+	}
+	b.group = group
+}
+
+// variableGroup is the group a variable named name holds when it is set to group: a variable
+// named in RootGroups is that root group unless it is set to another group.
+func (w *routeWalker) variableGroup(name string, group groupValue) groupValue {
+	base, ok := w.p.cfg.RootGroups[name]
+	if ok && !group.known {
+		return rootGroup(base)
+	}
+
+	return group
+}
+
+// params declares the parameters, receiver or results of a function.
+func (w *routeWalker) params(fields *ast.FieldList) {
+	if fields == nil {
 		return
 	}
 
-	child, ok := assign.Lhs[0].(*ast.Ident)
-	if !ok {
+	for _, field := range fields.List {
+		for _, name := range field.Names {
+			group := unknownGroup("unknown route group " + strconv.Quote(name.Name) + ", a function parameter not named in RootGroups")
+			w.declare(name, w.variableGroup(name.Name, group))
+		}
+	}
+}
+
+// inFrame walks body as a frame and returns what it did to the bindings declared outside it,
+// each of which holds again the group it held before.
+func (w *routeWalker) inFrame(body func()) map[*binding]*frameAssignment {
+	f := &frame{
+		assigned: map[*binding]*frameAssignment{},
+	}
+	w.frames = append(w.frames, f)
+	body()
+	w.frames = w.frames[:len(w.frames)-1]
+
+	for b, assignment := range f.assigned {
+		assignment.after = b.group
+		b.group = assignment.before
+	}
+
+	return f.assigned
+}
+
+// forget leaves the bindings that a branch, loop or function literal left holding another
+// group than before it with no known group.
+func (w *routeWalker) forget(assigned map[*binding]*frameAssignment) {
+	for b, assignment := range assigned {
+		if assignment.after != assignment.before {
+			b.group = unknownGroup(strconv.Quote(b.name) + " is reassigned at " + assignment.location + " in a branch, a loop or a function literal, so the group it holds here is not known")
+		}
+	}
+}
+
+// branches walks the alternatives of an if, switch or select, each from the groups held before
+// it.
+func (w *routeWalker) branches(bodies ...func()) {
+	changed := map[*binding]*frameAssignment{}
+	for _, body := range bodies {
+		for b, assignment := range w.inFrame(body) {
+			_, ok := changed[b]
+			if !ok && assignment.after != assignment.before {
+				changed[b] = assignment
+			}
+		}
+	}
+	w.forget(changed)
+}
+
+// loop walks a body that may run any number of times: first quietly, to learn what it
+// changes, then with what it changes holding no known group from its start.
+func (w *routeWalker) loop(body func()) {
+	w.quiet++
+	first := w.inFrame(body)
+	w.quiet--
+
+	w.forget(first)
+	second := w.inFrame(body)
+	w.forget(second)
+}
+
+func (w *routeWalker) stmts(list []ast.Stmt) {
+	for _, stmt := range list {
+		w.stmt(stmt)
+	}
+}
+
+func (w *routeWalker) block(list []ast.Stmt) {
+	w.push()
+	w.stmts(list)
+	w.pop()
+}
+
+func (w *routeWalker) stmt(stmt ast.Stmt) {
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		w.block(s.List)
+	case *ast.AssignStmt:
+		w.assignStmt(s)
+	case *ast.DeclStmt:
+		w.declStmt(s)
+	case *ast.ExprStmt:
+		w.expr(s.X)
+	case *ast.GoStmt:
+		w.expr(s.Call)
+	case *ast.DeferStmt:
+		w.expr(s.Call)
+	case *ast.ReturnStmt:
+		for _, result := range s.Results {
+			w.expr(result)
+		}
+	case *ast.IncDecStmt:
+		w.expr(s.X)
+	case *ast.SendStmt:
+		w.expr(s.Chan)
+		w.expr(s.Value)
+	case *ast.LabeledStmt:
+		w.stmt(s.Stmt)
+	case *ast.IfStmt:
+		w.push()
+		if s.Init != nil {
+			w.stmt(s.Init)
+		}
+		w.expr(s.Cond)
+		bodies := []func(){
+			func() {
+				w.block(s.Body.List)
+			},
+		}
+		if s.Else != nil {
+			bodies = append(bodies, func() {
+				w.stmt(s.Else)
+			})
+		}
+		w.branches(bodies...)
+		w.pop()
+	case *ast.ForStmt:
+		w.push()
+		if s.Init != nil {
+			w.stmt(s.Init)
+		}
+		w.loop(func() {
+			w.expr(s.Cond)
+			w.block(s.Body.List)
+			if s.Post != nil {
+				w.stmt(s.Post)
+			}
+		})
+		w.pop()
+	case *ast.RangeStmt:
+		w.expr(s.X)
+		w.loop(func() {
+			w.push()
+			for _, expr := range []ast.Expr{s.Key, s.Value} {
+				w.setVariable(expr, s.Tok, unknownGroup(types.ExprString(expr)+" is a range variable"), s.Pos())
+			}
+			w.block(s.Body.List)
+			w.pop()
+		})
+	case *ast.SwitchStmt:
+		w.push()
+		if s.Init != nil {
+			w.stmt(s.Init)
+		}
+		w.expr(s.Tag)
+		w.clauses(s.Body)
+		w.pop()
+	case *ast.TypeSwitchStmt:
+		w.push()
+		if s.Init != nil {
+			w.stmt(s.Init)
+		}
+		w.stmt(s.Assign)
+		w.clauses(s.Body)
+		w.pop()
+	case *ast.SelectStmt:
+		w.clauses(s.Body)
+	}
+}
+
+// clauses walks the case clauses of a switch or select as branches.
+func (w *routeWalker) clauses(body *ast.BlockStmt) {
+	var bodies []func()
+	for _, stmt := range body.List {
+		switch clause := stmt.(type) {
+		case *ast.CaseClause:
+			bodies = append(bodies, func() {
+				w.push()
+				for _, expr := range clause.List {
+					w.expr(expr)
+				}
+				w.stmts(clause.Body)
+				w.pop()
+			})
+		case *ast.CommClause:
+			bodies = append(bodies, func() {
+				w.push()
+				if clause.Comm != nil {
+					w.stmt(clause.Comm)
+				}
+				w.stmts(clause.Body)
+				w.pop()
+			})
+		}
+	}
+	w.branches(bodies...)
+}
+
+// assignStmt reads `x := value` and `x = value`: x holds the group value holds, and no known
+// group when value is not one or is one of several results of a call.
+func (w *routeWalker) assignStmt(s *ast.AssignStmt) {
+	for _, rhs := range s.Rhs {
+		w.expr(rhs)
+	}
+	for _, lhs := range s.Lhs {
+		_, ok := lhs.(*ast.Ident)
+		if !ok {
+			w.expr(lhs)
+		}
+	}
+
+	location := w.location(s.Pos())
+	for i, lhs := range s.Lhs {
+		group := unknownGroup(types.ExprString(lhs) + " is assigned at " + location + " from something other than a group")
+		if len(s.Lhs) == len(s.Rhs) && (s.Tok == token.DEFINE || s.Tok == token.ASSIGN) {
+			group = w.groupOf(s.Rhs[i])
+		}
+		w.setVariable(lhs, s.Tok, group, s.Pos())
+	}
+}
+
+// setVariable declares or assigns a variable written as an identifier: tok is token.DEFINE for
+// `:=`, which assigns a name already declared in the same scope, or any assignment operator.
+func (w *routeWalker) setVariable(expr ast.Expr, tok token.Token, group groupValue, pos token.Pos) {
+	name, ok := expr.(*ast.Ident)
+	if !ok || name.Name == "_" {
+		return
+	}
+	group = w.variableGroup(name.Name, group)
+
+	if tok == token.DEFINE {
+		b, ok := w.scope.names[name.Name]
+		if !ok {
+			w.declare(name, group)
+			return
+		}
+		w.assign(b, group, pos)
 		return
 	}
 
-	call, ok := assign.Rhs[0].(*ast.CallExpr)
-	if !ok {
+	b := w.lookup(name.Name)
+	if b != nil {
+		w.assign(b, group, pos)
+	}
+}
+
+// declStmt reads a const or var declaration in a function. A constant's value is read where
+// it is declared; a spec without values repeats the values of the one before it.
+func (w *routeWalker) declStmt(s *ast.DeclStmt) {
+	gen, ok := s.Decl.(*ast.GenDecl)
+	if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
 		return
 	}
 
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Group" || len(call.Args) == 0 {
+	var constValues []ast.Expr
+	for _, spec := range gen.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		for _, value := range valueSpec.Values {
+			w.expr(value)
+		}
+
+		if gen.Tok == token.CONST {
+			if len(valueSpec.Values) > 0 {
+				constValues = valueSpec.Values
+			}
+			values := make([]constValue, len(valueSpec.Names))
+			for i := range valueSpec.Names {
+				if i < len(constValues) {
+					values[i].value, values[i].ok = w.constString(constValues[i])
+				}
+			}
+			for i, name := range valueSpec.Names {
+				b := w.declare(name, unknownGroup(strconv.Quote(name.Name)+" is a constant"))
+				b.isConst = true
+				b.value = values[i].value
+				b.valueOK = values[i].ok
+			}
+			continue
+		}
+
+		location := w.location(valueSpec.Pos())
+		groups := make([]groupValue, len(valueSpec.Names))
+		for i, name := range valueSpec.Names {
+			groups[i] = unknownGroup(strconv.Quote(name.Name) + " is declared at " + location + " without a group")
+			if len(valueSpec.Values) == len(valueSpec.Names) {
+				groups[i] = w.groupOf(valueSpec.Values[i])
+			}
+		}
+		for i, name := range valueSpec.Names {
+			w.declare(name, w.variableGroup(name.Name, groups[i]))
+		}
+	}
+}
+
+// expr reads the route calls and function literals of an expression.
+func (w *routeWalker) expr(expr ast.Expr) {
+	if expr == nil {
 		return
 	}
 
-	w.groups[child.Name] = w.groupOf(call)
+	ast.Inspect(expr, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.FuncLit:
+			w.funcLit(n)
+			return false
+		case *ast.CallExpr:
+			w.call(n)
+		}
+		return true
+	})
+}
+
+// funcLit walks a function literal's body as a loop: it may run any number of times.
+func (w *routeWalker) funcLit(lit *ast.FuncLit) {
+	w.loop(func() {
+		w.funcDepth++
+		w.push()
+		w.params(lit.Type.Params)
+		w.params(lit.Type.Results)
+		w.stmts(lit.Body.List)
+		w.pop()
+		w.funcDepth--
+	})
+}
+
+func (w *routeWalker) location(pos token.Pos) string {
+	return w.absPath + ":" + strconv.Itoa(w.fset.Position(pos).Line)
 }
 
 // groupOf is the group an expression holds: a root group or a group variable, or a call
@@ -318,11 +777,14 @@ func (w *routeWalker) groupOf(expr ast.Expr) groupValue {
 	case *ast.ParenExpr:
 		return w.groupOf(x.X)
 	case *ast.Ident:
-		group, ok := w.groups[x.Name]
-		if !ok {
+		b := w.lookup(x.Name)
+		if b == nil {
 			return unknownGroup("unknown route group " + strconv.Quote(x.Name))
 		}
-		return group
+		if b.funcDepth < w.funcDepth && w.reassigned[b.key] {
+			return unknownGroup(strconv.Quote(x.Name) + " is used in a function literal and reassigned in its function, so the group it holds when the literal runs is not known")
+		}
+		return b.group
 	case *ast.CallExpr:
 		selector, ok := x.Fun.(*ast.SelectorExpr)
 		if !ok || selector.Sel.Name != "Group" || len(x.Args) == 0 {
@@ -346,15 +808,26 @@ func (w *routeWalker) groupOf(expr ast.Expr) groupValue {
 	return unknownGroup(types.ExprString(expr) + " is not a group the route finder can follow")
 }
 
-// constString is the value of a string constant expression: string literals and constants
-// declared at the top level of the file's package, joined with +.
+// constString is the value of a string constant expression: string literals, constants
+// declared in the function or at the top level of the file's package, joined with +. A
+// variable or parameter shadows a package constant of the same name.
 func (w *routeWalker) constString(expr ast.Expr) (string, bool) {
-	return foldString(expr, w.consts.value)
+	return foldString(expr, func(name string) (string, bool) {
+		b := w.lookup(name)
+		if b != nil {
+			return b.value, b.isConst && b.valueOK
+		}
+		return w.consts.value(name)
+	})
 }
 
 // call reads a route call: `group.METHOD(path, handler, ...)` with an HTTP method Echo
-// registers that way and at least one argument after the path.
+// registers that way and at least one argument after the path. A quiet walk records nothing.
 func (w *routeWalker) call(call *ast.CallExpr) {
+	if w.quiet > 0 || w.err != nil {
+		return
+	}
+
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || len(call.Args) < 2 {
 		return

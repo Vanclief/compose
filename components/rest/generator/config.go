@@ -21,13 +21,18 @@ type Config struct {
 	// Test files and files a default build on the platform the generator runs on leaves out, by
 	// their name (routes_windows.go) or their build constraints (//go:build ignore), are not
 	// read, so the document is the one of that platform. Each other file is parsed as Go, and
-	// routes are the calls `x := parent.Group(prefix, ...)` and `group.GET(path, h.Method, ...)`
-	// (or POST, PUT, PATCH, DELETE, HEAD), on one line or several. A path or prefix is a string
-	// constant: a literal, a constant declared at the top level of the file's package, or such
-	// strings joined with +. A group is a RootGroups variable, a group variable or a Group call on
-	// a group, chained as deep as written: `e.Group("/v1").GET("/x", ...)`. A route call whose
-	// path or group the finder cannot resolve this way fails generation unless SkipUnresolved
-	// leaves it out.
+	// routes are the calls `group.GET(path, h.Method, ...)` (or POST, PUT, PATCH, DELETE, HEAD),
+	// on one line or several. A path or Group prefix is a string constant: a literal, a constant
+	// declared in the function or at the top level of the file's package, or such strings joined
+	// with +. A group is a RootGroups variable, a variable set with `:=`, `=` or var to a group,
+	// or a Group call on a group, chained as deep as written: `e.Group("/v1").GET("/x", ...)`.
+	// Group variables follow Go's scopes: one declared in a block or another function is not seen
+	// outside it, and `=` changes the prefix from that statement on. A route call whose path or
+	// group the finder cannot resolve fails generation unless SkipUnresolved leaves it out: among
+	// others, a group in a parameter not named in RootGroups, or in a variable set to anything
+	// but a group, set to another group in a branch, a loop or a function literal and used after
+	// it or in that loop or literal, or used in a function literal while `=` assigns it anywhere
+	// in the function.
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
 	// routed as `h.Name.Method` (nested mode). Empty selects flat mode: one handler type routed as
