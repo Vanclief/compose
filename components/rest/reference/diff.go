@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -672,8 +673,18 @@ func (p *diffPath) String() string {
 // request property, parameter or request body; an existing request property,
 // parameter or request body made required, also a name required where no
 // property of that name is declared. A response header named Content-Type is
-// not compared, as OpenAPI says its definition is ignored. Everything else
-// is a non-breaking change.
+// not compared, as OpenAPI says its definition is ignored. A discriminator
+// is compared where both sides declare one, not where an allOf member
+// passes it on to a subtype, and is given or dropped where one side
+// declares one and only that side's flattened schema has one. One given
+// where there was none breaks a request, one dropped a response, and its
+// propertyName changed both; of its mapping, compared as written, a value
+// added breaks neither, one removed breaks a request and one that names
+// another component both. A parameter's style or explode changed, each with
+// the default of its location where unset, breaks a request, except explode
+// where both sides state only types that the style writes the same either
+// way: any but an array or an object, and an array too in style simple.
+// Everything else is a non-breaking change.
 func Diff(base, head *Document) *Report {
 	if base == nil {
 		base = &Document{}
@@ -1361,6 +1372,9 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 			w.add(Changed, path, deprecationText(hp.Deprecated), false, false)
 			head = true
 		}
+		if w.serialization(bp, hp, path) {
+			head = true
+		}
 		bs := parameterSchema(bp)
 		res := w.schema(bs, hs, path, true)
 		if hs == nil {
@@ -1368,6 +1382,72 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 		}
 		w.markRow(hs, rowSpec{name: bp.Name, schema: bs, required: bp.Required, description: bp.Description, deprecated: bp.Deprecated, param: true}, head || res.head, res, bs)
 	}
+}
+
+// serialization records a change of how the parameter, bp in the base and
+// hp in the head, is written, its style or explode with the defaults of its
+// location filled in, and reports whether there is one. Either breaks a
+// request, as a client writing the parameter the old way is misread,
+// except a change of explode where both sides write the parameter the same
+// either way, see explodeMoot. A parameter described by content has no
+// style and is skipped.
+func (w *walk) serialization(bp, hp *Parameter, path *diffPath) bool {
+	if bp.Content.Len() > 0 || hp.Content.Len() > 0 {
+		return false
+	}
+	bStyle, bExplode := parameterStyle(bp)
+	hStyle, hExplode := parameterStyle(hp)
+	changed := false
+	if bStyle != hStyle {
+		w.add(Changed, path, "style changed from "+bStyle+" to "+hStyle, true, false)
+		changed = true
+	}
+	if bExplode != hExplode {
+		moot := w.explodeMoot(w.d.base, bp.Schema, bStyle) && w.explodeMoot(w.d.head, hp.Schema, hStyle)
+		w.add(Changed, path, "explode changed from "+strconv.FormatBool(bExplode)+" to "+strconv.FormatBool(hExplode), !moot, false)
+		changed = true
+	}
+	return changed
+}
+
+// parameterStyle returns the style and explode p is written with, the
+// defaults of OpenAPI filled in: style form for a query or cookie parameter
+// and simple for any other, explode true for style form and false for any
+// other.
+func parameterStyle(p *Parameter) (string, bool) {
+	style := p.Style
+	if style == "" {
+		style = "simple"
+		if p.In == "query" || p.In == "cookie" {
+			style = "form"
+		}
+	}
+	explode := style == "form"
+	if p.Explode != nil {
+		explode = *p.Explode
+	}
+	return style, explode
+}
+
+// explodeMoot reports whether a parameter of the schema s, of doc, written
+// in style, is written the same exploded or not, as the style table of
+// OpenAPI shows: the flattened s states a type and has no variants, and
+// every type it states is neither an array nor an object, or an array in
+// style simple, which writes an array blue,black,brown either way. An
+// object is written otherwise in every style, and an array in every other
+// style: label, as RFC 6570 says, writes .blue,black,brown unexploded and
+// .blue.black.brown exploded.
+func (w *walk) explodeMoot(doc *Document, s *Schema, style string) bool {
+	f := w.d.flatten(doc, s)
+	if f == nil || hasVariants(f) || typeText(f) == "" {
+		return false
+	}
+	for _, t := range strings.Split(typeText(f), " | ") {
+		if t == "object" || t == "array" && style != "simple" {
+			return false
+		}
+	}
+	return true
 }
 
 func deprecationText(deprecated bool) string {
@@ -1573,6 +1653,18 @@ func (w *walk) schema(b, h *Schema, path *diffPath, rec bool) schemaResult {
 		res.enum = true
 	}
 	if w.not(bf.Not, hf.Not, path) {
+		res.head = true
+	}
+	// A discriminator declared on one side only is given or dropped where
+	// the flattened schema, which also takes one from an allOf member, gains
+	// or loses one too; otherwise it only moved into or out of a member.
+	bd := ownDiscriminator(b, br)
+	hd := ownDiscriminator(h, hr)
+	if (bd == nil) != (hd == nil) && (bf.Discriminator == nil) == (hf.Discriminator == nil) {
+		bd = nil
+		hd = nil
+	}
+	if w.discriminator(bd, hd, path) {
 		res.head = true
 	}
 
@@ -1979,6 +2071,76 @@ func (w *walk) not(b, h *Schema, path *diffPath) bool {
 	}
 	w.add(Changed, path, "not changed", false, false)
 	return true
+}
+
+// discriminator records a change of the discriminator from b to h and
+// reports whether there is one. A discriminator given where there was none
+// narrows the values accepted, as the property it names must then pick a
+// variant, and one dropped widens them; a changed propertyName breaks both.
+// The mapping is compared as written, by the component each value names,
+// and the names of variants it leaves implicit are not compared: a value
+// added, like an enum value added, breaks neither, one removed narrows, and
+// one that names another component breaks both.
+func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
+	switch {
+	case b == nil && h == nil:
+		return false
+	case b == nil:
+		w.add(Changed, path, "discriminator added: "+h.PropertyName, true, false)
+		return true
+	case h == nil:
+		w.add(Changed, path, "discriminator removed (was "+b.PropertyName+")", false, true)
+		return true
+	}
+	n := len(w.changes)
+	if b.PropertyName != h.PropertyName {
+		w.add(Changed, path, "discriminator property changed from "+b.PropertyName+" to "+h.PropertyName, true, true)
+	}
+	keys := slices.Collect(maps.Keys(b.Mapping))
+	for key := range h.Mapping {
+		_, ok := b.Mapping[key]
+		if !ok {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		bt, inBase := b.Mapping[key]
+		ht, inHead := h.Mapping[key]
+		value := valueText(key)
+		switch {
+		case !inBase:
+			w.addStrict(Changed, path, "discriminator mapping added: "+value+" → "+mappingName(ht), false, false, false, true)
+		case !inHead:
+			w.add(Changed, path, "discriminator mapping removed: "+value+" → "+mappingName(bt), true, false)
+		case mappingName(bt) != mappingName(ht):
+			w.add(Changed, path, "discriminator mapping "+value+" changed from "+mappingName(bt)+" to "+mappingName(ht), true, true)
+		}
+	}
+	return len(w.changes) > n
+}
+
+// ownDiscriminator is the discriminator schema s declares itself, written on
+// s or on resolved, the schema its $ref leads to, and not one an allOf
+// member passes on: Flatten gives a subtype its parent's discriminator
+// unless a mapping value names the subtype, so whether the subtype has one
+// would turn on mapping values that change nothing about it.
+func ownDiscriminator(s, resolved *Schema) *Discriminator {
+	if s.Discriminator != nil || resolved == nil {
+		return s.Discriminator
+	}
+	return resolved.Discriminator
+}
+
+// mappingName is the component a discriminator mapping value names: the
+// name a schema reference points at, or the value as written, which is a
+// component name or a reference elsewhere.
+func mappingName(target string) string {
+	name := RefName(target, refSchemas)
+	if name == "" {
+		return target
+	}
+	return name
 }
 
 // refusesAll reports whether s is the schema that allows no value,

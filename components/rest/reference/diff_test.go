@@ -3572,6 +3572,150 @@ func TestDiffAllOfMergedKeywords(t *testing.T) {
 	}
 }
 
+// TestDiffDiscriminator checks the changes of a discriminator and of its
+// mapping, used in a request and in a response, with the reason for each
+// flag.
+func TestDiffDiscriminator(t *testing.T) {
+	const variants = `"Cat": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Dog": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Wolf": {"type": "object"}`
+	pet := func(discriminator string) string {
+		s := `"Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}]`
+		if discriminator != "" {
+			s += `, "discriminator": ` + discriminator
+		}
+		return variants + ", " + s + "}"
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	for _, c := range []struct {
+		why        string
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{"a property must now pick the variant, so a request that left it out is refused", ``, `{"propertyName": "kind"}`, "discriminator added: kind", true, false},
+		{"a response no longer says which variant it is by that property", `{"propertyName": "kind"}`, ``, "discriminator removed (was kind)", false, true},
+		{"clients write and read the variant in another property", `{"propertyName": "kind"}`, `{"propertyName": "type"}`, "discriminator property changed from kind to type", true, true},
+		{"a value is added, as enum values are, which no request breaks on and a response only carries more", `{"propertyName": "kind"}`, `{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`, `discriminator mapping added: "cat" → Cat`, false, false},
+		{"a value a request could send is refused", `{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`, `{"propertyName": "kind"}`, `discriminator mapping removed: "cat" → Cat`, true, false},
+		{"a value now picks another variant, which way it moves is not known", `{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Dog"}}`, `{"propertyName": "kind", "mapping": {"dog": "Wolf"}}`, `discriminator mapping "dog" changed from Dog to Wolf`, true, true},
+	} {
+		r := Diff(opsSpec(t, paths, pet(c.base)), opsSpec(t, paths, pet(c.head)))
+		require.Equal(t, []Change{
+			{Kind: Changed, Path: "POST /w › request body", Detail: "model Pet changed", Breaking: c.req},
+			{Kind: Changed, Path: "POST /w › response 200", Detail: "model Pet changed", Breaking: c.resp},
+			{Kind: Changed, Path: "Pet", Detail: c.detail, Breaking: c.req || c.resp},
+		}, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+	}
+
+	// A mapping value written as a name or as a reference to the same
+	// component is the same.
+	r := Diff(opsSpec(t, paths, pet(`{"propertyName": "kind", "mapping": {"cat": "Cat"}}`)), opsSpec(t, paths, pet(`{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`)))
+	require.True(t, r.Empty(), r.Markdown())
+
+	// A discriminator that moves into or out of an allOf member, or behind
+	// a reference to a model that extends the one declaring it, still
+	// applies, so it is neither given nor dropped; two models that each
+	// declare one are compared, also behind references of other names.
+	const declared = variants + `, "Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}], "discriminator": {"propertyName": "kind"}}, "PetV2": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"properties": {"note": {"type": "string"}}}]}, "Animal": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}], "discriminator": {"propertyName": "type"}}`
+	body := func(schema string) string {
+		return `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": ` + schema + `}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": ` + schema + `}}}}}}`
+	}
+	const ref = `{"$ref": "#/components/schemas/Pet"}`
+	const wrapped = `{"allOf": [` + ref + `, {"properties": {"note": {"type": "string"}}}]}`
+	for _, pair := range [][2]string{{ref, wrapped}, {wrapped, ref}, {ref, `{"$ref": "#/components/schemas/PetV2"}`}, {`{"$ref": "#/components/schemas/PetV2"}`, ref}} {
+		r := Diff(opsSpec(t, body(pair[0]), declared), opsSpec(t, body(pair[1]), declared))
+		for _, change := range r.Changes {
+			require.NotContains(t, change.Detail, "discriminator", "%s to %s\n%s", pair[0], pair[1], r.Markdown())
+		}
+	}
+	r = Diff(opsSpec(t, body(ref), declared), opsSpec(t, body(wrapped), declared))
+	require.False(t, r.Breaking(), r.Markdown())
+	r = Diff(opsSpec(t, body(ref), declared), opsSpec(t, body(`{"$ref": "#/components/schemas/Animal"}`), declared))
+	require.Contains(t, changeLines(r), "POST /w › request body | discriminator property changed from kind to type", r.Markdown())
+
+	// In the inheritance shape, where each subtype extends the parent that
+	// declares the discriminator, a mapping changed is reported on the
+	// parent only: the subtypes, which Flatten gives the parent's
+	// discriminator unless a mapping value names them, report nothing.
+	inherit := func(mapping string) *Document {
+		const sub = `"Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"type": "object", "properties": {"meow": {"type": "boolean"}}}]}, "Dog": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"type": "object", "properties": {"bark": {"type": "boolean"}}}]}`
+		route := func(name string) string {
+			ref := `{"$ref": "#/components/schemas/` + name + `"}`
+			return `"/` + name + `": {"post": {"requestBody": {"content": {"application/json": {"schema": ` + ref + `}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": ` + ref + `}}}}}}`
+		}
+		return opsSpec(t, route("Cat")+", "+route("Dog"), `"Pet": {"type": "object", "required": ["petType"], "properties": {"petType": {"type": "string"}}, "discriminator": {"propertyName": "petType"`+mapping+`}}, `+sub)
+	}
+	for _, c := range []struct {
+		base, head string
+		want       []Change
+	}{
+		{``, `, "mapping": {"Cat": "#/components/schemas/Cat"}`, []Change{{Kind: Changed, Path: "Pet", Detail: `discriminator mapping added: "Cat" → Cat`}}},
+		{`, "mapping": {"Cat": "#/components/schemas/Cat"}`, `, "mapping": {"Cat": "#/components/schemas/Cat", "Dog": "Dog"}`, []Change{{Kind: Changed, Path: "Pet", Detail: `discriminator mapping added: "Dog" → Dog`}}},
+		{`, "mapping": {"Cat": "#/components/schemas/Cat"}`, ``, []Change{{Kind: Changed, Path: "Pet", Detail: `discriminator mapping removed: "Cat" → Cat`, Breaking: true}}},
+	} {
+		r := Diff(inherit(c.base), inherit(c.head))
+		var models []Change
+		for _, change := range publicChanges(r.Changes) {
+			if !strings.Contains(change.Path, " /") {
+				models = append(models, change)
+			}
+		}
+		require.Equal(t, c.want, models, r.Markdown())
+	}
+}
+
+// TestDiffParameterSerialization checks that a parameter's style or explode
+// changed is reported, compared with the defaults of its location filled
+// in, with the reason for each flag.
+func TestDiffParameterSerialization(t *testing.T) {
+	param := func(in, schema, extra string) string {
+		required := ""
+		if in == "path" {
+			required = `, "required": true`
+		}
+		return `"/r/{p}": {"get": {"parameters": [{"name": "p", "in": "` + in + `"` + required + `, "schema": ` + schema + extra + `}], "responses": {"204": {"description": "ok"}}}}`
+	}
+	const array = `{"type": "array", "items": {"type": "string"}}`
+	const integer = `{"type": "integer"}`
+	for _, c := range []struct {
+		why        string
+		in, schema string
+		base, head string
+		want       []string
+		breaking   bool
+	}{
+		{"an array written id=1&id=2 is now sent as id=1,2, which the server reads as one value", "query", array, `, "explode": true`, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"form explodes by default, so false is the same change", "query", array, ``, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"the default written out is no change", "query", array, ``, `, "style": "form", "explode": true`, nil, false},
+		{"the default of a path parameter is simple without explode", "path", array, ``, `, "style": "simple", "explode": false`, nil, false},
+		{"a header parameter is simple by default", "header", array, ``, `, "style": "form"`, []string{"style changed from simple to form", "explode changed from false to true"}, true},
+		{"items are now separated by | where they were by ,", "query", array, `, "explode": false`, `, "style": "pipeDelimited"`, []string{"style changed from form to pipeDelimited"}, true},
+		{"a path value is now written .5 where it was 5", "path", integer, ``, `, "style": "label"`, []string{"style changed from simple to label"}, true},
+		{"one integer is written the same exploded or not", "query", integer, ``, `, "explode": false`, []string{"explode changed from true to false"}, false},
+		{"a schema of no type may hold an array", "query", `{}`, ``, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"variants beside a type are not read, so they may hold an array", "query", `{"type": "integer", "anyOf": [{"type": "integer"}, {"type": "array", "items": {"type": "integer"}}]}`, ``, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"style simple writes an array a,b exploded or not", "header", array, ``, `, "explode": true`, []string{"explode changed from false to true"}, false},
+		{"also in a path", "path", array, ``, `, "explode": true`, []string{"explode changed from false to true"}, false},
+		{"style label writes an array .a,b unexploded and .a.b exploded", "path", array, `, "style": "label"`, `, "style": "label", "explode": true`, []string{"explode changed from false to true"}, true},
+		{"style matrix writes an array ;p=a,b or ;p=a;p=b", "path", array, `, "style": "matrix"`, `, "style": "matrix", "explode": true`, []string{"explode changed from false to true"}, true},
+		{"style simple writes an object R,100 or R=100", "header", `{"type": "object"}`, ``, `, "explode": true`, []string{"explode changed from false to true"}, true},
+		{"a cookie parameter is form by default, so writing that out is no change", "cookie", array, ``, `, "style": "form", "explode": true`, nil, false},
+	} {
+		r := Diff(opsSpec(t, param(c.in, c.schema, c.base), ``), opsSpec(t, param(c.in, c.schema, c.head), ``))
+		want := []Change{}
+		for _, detail := range c.want {
+			want = append(want, Change{Kind: Changed, Path: "GET /r/{p} › " + c.in + " › p", Detail: detail, Breaking: c.breaking})
+		}
+		require.Equal(t, want, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+	}
+
+	// A parameter described by content has no style.
+	content := func(explode string) string {
+		return `"/r": {"get": {"parameters": [{"name": "p", "in": "query", "content": {"application/json": {"schema": {"type": "object"}}}` + explode + `}], "responses": {"204": {"description": "ok"}}}}`
+	}
+	r := Diff(opsSpec(t, content(``), ``), opsSpec(t, content(`, "explode": false`), ``))
+	require.True(t, r.Empty(), r.Markdown())
+}
+
 // endsWithin runs f, failing t when it takes more than a minute, as work
 // that does not end would; see diffWithin.
 func endsWithin(t *testing.T, what string, f func()) {
