@@ -3,6 +3,7 @@ package generator
 import (
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -359,6 +360,42 @@ func addRoutes(api *echo.Group, h *Handler) {
 	}
 	if !reflect.DeepEqual(routes, want) {
 		t.Fatalf("routes:\n got %+v\nwant %+v", routes, want)
+	}
+}
+
+// Routes are read from the files a default build on the running platform compiles: test files,
+// files built only with a tag such as ignore and files named or constrained for another
+// platform declare nothing, and a file constrained to the running platform does.
+func TestParseRoutesReadsOnlyBuiltFiles(t *testing.T) {
+	other := "windows"
+	if runtime.GOOS == other {
+		other = "linux"
+	}
+	route := func(header string, path string) string {
+		return header + "package api\n\nfunc addRoutes(e *echo.Echo, h *Handler) {\n\te.GET(\"" + path + "\", h.GetThing)\n}\n"
+	}
+	root := writeFixture(t, map[string]string{
+		"routes.go":                      route("", "/real"),
+		"routes_test.go":                 route("", "/from-test"),
+		"routes_ignored.go":              route("//go:build ignore\n\n", "/from-ignore"),
+		"routes_" + other + ".go":        route("", "/from-other-platform-name"),
+		"routes_constrained.go":          route("//go:build "+other+"\n\n", "/from-other-platform-constraint"),
+		"routes_this_platform_only.go":   route("//go:build "+runtime.GOOS+"\n\n", "/from-this-platform"),
+		"routes_" + runtime.GOOS + ".go": route("", "/from-this-platform-name"),
+	})
+
+	routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes*.go", HandlerGlob: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Path)
+	}
+	want := []string{"/from-this-platform", "/from-this-platform-name", "/real"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, want)
 	}
 }
 
