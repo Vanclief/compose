@@ -15,7 +15,7 @@ Each section names the release its changes ship in; dates are on [GitHub release
 
 ### Highlights
 
-- **Go 1.27 support**: the test suite passes on Go 1.26.11 and on Go 1.27.2. The route registry asks `encoding/json` which key a json tag's name gives, as Go 1.27 reads a name with a backslash or a quote otherwise, so a mismatch between the document and what is sent names the key `encoding/json` really uses. Tests that compared the error text of `encoding/json`, which Go 1.27 words differently, take it from `encoding/json`. On Go 1.27 the `Request Bind Error` log line of a body field of the wrong type no longer names the field: `encoding/json` on `encoding/json/v2` does not add it to the error an `UnmarshalJSON` method returns.
+- **Go 1.27 support**: the test suite passes on Go 1.26.11 and on Go 1.27.2, and CI runs it on both: a second job of the Test workflow, which the Release workflow also runs, tests on Go 1.27.2 without `-race` and without PostgreSQL, whose tests it skips. The route registry asks `encoding/json` which key a json tag's name gives, as Go 1.27 reads a name with a backslash or a quote otherwise, so a mismatch between the document and what is sent names the key `encoding/json` really uses. Tests that compared the error text of `encoding/json`, which Go 1.27 words differently, take it from `encoding/json`. On Go 1.27 the `Request Bind Error` log line of a body field of the wrong type no longer names the field: `encoding/json` on `encoding/json/v2` does not add it to the error an `UnmarshalJSON` method returns.
 
 ## v1.37.0
 
