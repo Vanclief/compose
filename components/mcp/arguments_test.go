@@ -3,12 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vanclief/ez"
 )
 
 // bigInt is 2^53 + 1, the first integer a float64 cannot hold: decoded as a
@@ -326,4 +329,65 @@ func TestApplyInputSchemaIntegerInput(t *testing.T) {
 	var in integerInput
 	require.NoError(t, unmarshalExact(input, &in))
 	assert.Equal(t, integerInput{N: 1, M: 1000}, in)
+}
+
+// countingHandler counts the requests that reach it.
+type countingHandler struct {
+	n atomic.Int64
+}
+
+func (h *countingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.n.Add(1)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte("{}"))
+}
+
+func TestCallRefusesEmptyPathArgument(t *testing.T) {
+	handler := &countingHandler{}
+	srv, err := New(Config{Spec: []byte(numbersSpec), Handler: handler})
+	require.NoError(t, err)
+
+	empty := map[string]any{
+		"empty string":          "",
+		"empty array":           []any{},
+		"array of nulls":        []any{nil, nil},
+		"array of empty string": []any{""},
+		"empty Go slice":        []string{},
+	}
+	for name, value := range empty {
+		_, err := srv.Call(context.Background(), nil, "numbers.send", map[string]any{"id": value})
+		assert.Equal(t, ez.EINVALID, ez.ErrorCode(err), name)
+		assert.Equal(t, "mcp: numbers.send requires a non-empty path argument id", ez.ErrorMessage(err), name)
+	}
+	assert.Zero(t, handler.n.Load(), "no request reaches the handler")
+
+	_, err = srv.Call(context.Background(), nil, "numbers.send", map[string]any{"id": 0})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), handler.n.Load())
+}
+
+func TestToolsRefuseEmptyPathArgument(t *testing.T) {
+	cfg := promotedConfig(t)
+	cfg.Script.Enabled = true
+	s := newShopServer(t, cfg)
+	session := connect(t, s, "key:secret")
+	describeGetOrder := s.Catalog().renderDescribe([]string{"orders.get_order"})
+	describeAddLine := s.Catalog().renderDescribe([]string{"orders.add_line"})
+
+	text, failed := callTool(t, session, "call_function", map[string]any{"name": "orders.get_order", "args": map[string]any{"order_id": ""}})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: orders.get_order requires a non-empty path argument order_id\n\n"+describeGetOrder, text)
+
+	text, failed, err := s.CallTool(context.Background(), shopHeader(), "call_function", map[string]any{"name": "orders.get_order", "args": map[string]any{"order_id": []any{}}})
+	require.NoError(t, err)
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: orders.get_order requires a non-empty path argument order_id\n\n"+describeGetOrder, text)
+
+	text, failed = callTool(t, session, "orders-add_line", map[string]any{"order_id": "", "sku": "A1", "quantity": 1})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: orders.add_line requires a non-empty path argument order_id\n\n"+describeAddLine, text)
+
+	text, failed = callTool(t, session, "run_script", map[string]any{"code": `try { api.orders.get_order({order_id: ""}) } catch (e) { return e.code + " " + e.message }`})
+	assert.False(t, failed, text)
+	assert.Equal(t, `"invalid orders.get_order: invalid: orders.get_order requires a non-empty path argument order_id"`, text)
 }
