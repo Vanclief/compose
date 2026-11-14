@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,13 +58,18 @@ func TestBunStoreSQLite(t *testing.T) {
 // .github/workflows/test.yml); TEST_POSTGRES_DSN overrides it.
 const testPostgresDSN = "postgres://postgres@localhost:5432/compose_test?sslmode=disable"
 
-func TestBunStorePostgres(t *testing.T) {
+// newPostgresDB connects to the test PostgreSQL database and closes it when
+// the test ends.
+func newPostgresDB(t *testing.T) *bun.DB {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = testPostgresDSN
 	}
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	db := bun.NewDB(sqldb, pgdialect.New())
+	t.Cleanup(func() {
+		db.Close() // nolint:errcheck
+	})
 
 	// Without a reachable PostgreSQL the test skips so `go test ./...` stays
 	// runnable on any machine. CI sets COMPOSE_TEST_POSTGRES, turning an
@@ -71,20 +77,68 @@ func TestBunStorePostgres(t *testing.T) {
 	// behind skips.
 	err := db.PingContext(context.Background())
 	if err != nil {
-		db.Close() // nolint:errcheck
 		if os.Getenv("COMPOSE_TEST_POSTGRES") != "" {
 			t.Fatalf("PostgreSQL testing is enabled but the database is unavailable: %v", err)
 		}
 		t.Skipf("PostgreSQL is not available: %v", err)
 	}
+	return db
+}
+
+func TestBunStorePostgres(t *testing.T) {
+	db := newPostgresDB(t)
 	t.Cleanup(func() {
 		db.NewDropTable().TableExpr("?", bun.Ident(testTable)).IfExists().Exec(context.Background()) // nolint:errcheck
-		db.Close()                                                                                   // nolint:errcheck
 	})
 
-	_, err = db.NewDropTable().TableExpr("?", bun.Ident(testTable)).IfExists().Exec(context.Background())
+	_, err := db.NewDropTable().TableExpr("?", bun.Ident(testTable)).IfExists().Exec(context.Background())
 	require.NoError(t, err)
 	testStore(t, newBunStore(t, db))
+}
+
+// TestCreateTableConcurrentlyPostgres: instances booting together against a
+// database without the table all create it and its indexes without an error.
+func TestCreateTableConcurrentlyPostgres(t *testing.T) {
+	ctx := context.Background()
+	db := newPostgresDB(t)
+	const table = "sessions_boot"
+	const rounds = 50
+	const instances = 8
+	// Keeps the connections of a round open for the next, so the instances
+	// of every round start together instead of dialing one by one
+	db.SetMaxIdleConns(instances)
+	t.Cleanup(func() {
+		db.NewDropTable().TableExpr("?", bun.Ident(table)).IfExists().Exec(ctx) // nolint:errcheck
+	})
+
+	failed := 0
+	for round := 0; round < rounds; round++ {
+		_, err := db.NewDropTable().TableExpr("?", bun.Ident(table)).IfExists().Exec(ctx)
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		errs := make(chan error, instances)
+		var wg sync.WaitGroup
+		for i := 0; i < instances; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs <- CreateTable(ctx, db, table)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				failed++
+				t.Errorf("round %d: %v", round, err)
+				break
+			}
+		}
+	}
+	assert.Zero(t, failed, "rounds with a failed CreateTable")
 }
 
 // TestManagerOnSQLite: the conditional update lets exactly one of many
