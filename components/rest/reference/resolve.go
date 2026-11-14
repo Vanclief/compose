@@ -445,8 +445,9 @@ func mergeInto(out, m *Schema) {
 	if len(out.Enum) == 0 {
 		out.Enum = m.Enum
 	}
-	if out.Const == nil {
+	if out.Const == nil && !out.ConstNull {
 		out.Const = m.Const
+		out.ConstNull = m.ConstNull
 	}
 	if len(out.Examples) == 0 {
 		out.Examples = m.Examples
