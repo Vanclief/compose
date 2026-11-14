@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -436,9 +437,11 @@ func (p *diffPath) String() string {
 
 // Diff compares two documents structurally: operations by method and path,
 // schemas property by property after allOf flattening and ref resolution.
-// Flattening keeps the tightest of the bounds allOf members set, and the
-// keywords written beside a $ref apply together with the model it names, on
-// a schema and on each allOf member alike.
+// Flattening keeps the tightest of the bounds allOf members set and the
+// types they all allow, merges a property, items or additional properties
+// that several members define, see Document.Flatten, and the keywords
+// written beside a $ref apply together with the model it names, on a schema
+// and on each allOf member alike.
 //
 // Where both sides refer to the same model, under any spelling of the
 // reference, as a $ref or as single-member allOf wrappers nested around one,
@@ -480,7 +483,8 @@ func (p *diffPath) String() string {
 // oneOf and anyOf lists, like default and the other keywords that cannot be
 // combined across allOf members, are compared as the first one found, the
 // schema's own and then its members' in order, so the list of a second
-// member is not compared. Each keyword is compared on its own, so a change
+// member is not compared, and, of a property two members define, the later
+// definition's. Each keyword is compared on its own, so a change
 // another keyword makes moot is still reported with its own flag: a
 // maxLength changed under an enum whose values all meet both, bounds that
 // admit no value changed for others that admit none either, a const added
@@ -669,8 +673,14 @@ func (p *diffPath) String() string {
 // request property, parameter or request body; an existing request property,
 // parameter or request body made required, also a name required where no
 // property of that name is declared. A response header named Content-Type is
-// not compared, as OpenAPI says its definition is ignored. Everything else
-// is a non-breaking change.
+// not compared, as OpenAPI says its definition is ignored. A discriminator
+// given where there was none breaks a request, one dropped a response, and
+// its propertyName changed both; of its mapping, compared as written, a
+// value added breaks neither, one removed breaks a request and one that
+// names another component both. A parameter's style or explode changed,
+// each with the default of its location where unset, breaks a request,
+// except explode where both sides state a type that is neither an array nor
+// an object. Everything else is a non-breaking change.
 func Diff(base, head *Document) *Report {
 	if base == nil {
 		base = &Document{}
@@ -1358,6 +1368,9 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 			w.add(Changed, path, deprecationText(hp.Deprecated), false, false)
 			head = true
 		}
+		if w.serialization(bp, hp, path) {
+			head = true
+		}
 		bs := parameterSchema(bp)
 		res := w.schema(bs, hs, path, true)
 		if hs == nil {
@@ -1365,6 +1378,66 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 		}
 		w.markRow(hs, rowSpec{name: bp.Name, schema: bs, required: bp.Required, description: bp.Description, deprecated: bp.Deprecated, param: true}, head || res.head, res, bs)
 	}
+}
+
+// serialization records a change of how the parameter, bp in the base and
+// hp in the head, is written, its style or explode with the defaults of its
+// location filled in, and reports whether there is one. Either breaks a
+// request, as a client writing the parameter the old way is misread,
+// except a change of explode where both sides state a type that is neither
+// an array nor an object, which every style writes the same exploded or
+// not. A parameter described by content has no style and is skipped.
+func (w *walk) serialization(bp, hp *Parameter, path *diffPath) bool {
+	if bp.Content.Len() > 0 || hp.Content.Len() > 0 {
+		return false
+	}
+	bStyle, bExplode := parameterStyle(bp)
+	hStyle, hExplode := parameterStyle(hp)
+	changed := false
+	if bStyle != hStyle {
+		w.add(Changed, path, "style changed from "+bStyle+" to "+hStyle, true, false)
+		changed = true
+	}
+	if bExplode != hExplode {
+		scalar := w.scalar(w.d.base, bp.Schema) && w.scalar(w.d.head, hp.Schema)
+		w.add(Changed, path, "explode changed from "+strconv.FormatBool(bExplode)+" to "+strconv.FormatBool(hExplode), !scalar, false)
+		changed = true
+	}
+	return changed
+}
+
+// parameterStyle returns the style and explode p is written with, the
+// defaults of OpenAPI filled in: style form for a query or cookie parameter
+// and simple for any other, explode true for style form and false for any
+// other.
+func parameterStyle(p *Parameter) (string, bool) {
+	style := p.Style
+	if style == "" {
+		style = "simple"
+		if p.In == "query" || p.In == "cookie" {
+			style = "form"
+		}
+	}
+	explode := style == "form"
+	if p.Explode != nil {
+		explode = *p.Explode
+	}
+	return style, explode
+}
+
+// scalar reports whether the flattened s, of doc, states a type, and only
+// types that are neither array nor object, and has no variants.
+func (w *walk) scalar(doc *Document, s *Schema) bool {
+	f := w.d.flatten(doc, s)
+	if f == nil || hasVariants(f) || typeText(f) == "" {
+		return false
+	}
+	for _, t := range strings.Split(typeText(f), " | ") {
+		if t == "array" || t == "object" {
+			return false
+		}
+	}
+	return true
 }
 
 func deprecationText(deprecated bool) string {
@@ -1572,6 +1645,9 @@ func (w *walk) schema(b, h *Schema, path *diffPath, rec bool) schemaResult {
 	if w.not(bf.Not, hf.Not, path) {
 		res.head = true
 	}
+	if w.discriminator(bf.Discriminator, hf.Discriminator, path) {
+		res.head = true
+	}
 
 	// Items on one side only are compared with the empty schema, which
 	// allows any item, standing for the items keyword absent, as for
@@ -1680,7 +1756,7 @@ func sameKeywords(b, h *Schema) bool {
 		samePtr(b.MinLength, h.MinLength) && samePtr(b.MaxLength, h.MaxLength) &&
 		samePtr(b.MinItems, h.MinItems) && samePtr(b.MaxItems, h.MaxItems) &&
 		samePtr(b.MinProperties, h.MinProperties) && samePtr(b.MaxProperties, h.MaxProperties) &&
-		reflect.DeepEqual(b.Const, h.Const) && reflect.DeepEqual(b.Default, h.Default) && reflect.DeepEqual(b.Example, h.Example) &&
+		reflect.DeepEqual(b.Const, h.Const) && b.ConstNull == h.ConstNull && reflect.DeepEqual(b.Default, h.Default) && reflect.DeepEqual(b.Example, h.Example) &&
 		(b.Examples == nil && h.Examples == nil || reflect.DeepEqual(b.Examples, h.Examples))
 }
 
@@ -1699,7 +1775,7 @@ var siteKeywords = func() [][]int {
 		{"Format"}, {"Description"}, {"Nullable"}, {"Deprecated"}, {"ReadOnly"}, {"WriteOnly"},
 		{"Minimum", "ExclusiveMinimum"}, {"Maximum", "ExclusiveMaximum"},
 		{"MultipleOf"}, {"MinLength"}, {"MaxLength"}, {"Pattern"}, {"MinItems"}, {"MaxItems"},
-		{"UniqueItems"}, {"MinProperties"}, {"MaxProperties"}, {"Const"}, {"Default"},
+		{"UniqueItems"}, {"MinProperties"}, {"MaxProperties"}, {"Const", "ConstNull"}, {"Default"},
 	}
 	t := reflect.TypeOf(Schema{})
 	out := make([][]int, len(groups))
@@ -1867,8 +1943,8 @@ func (w *walk) nullable(bd *Document, b *Schema, hd *Document, h *Schema, path *
 }
 
 // admitsNull reports whether the flattened schema f lets null through: it
-// is nullable, or it states no type and none of enum, const, oneOf, anyOf
-// and not, which may refuse null. No type is inferred from properties or
+// is nullable, or it states no type and none of enum, a const other than
+// null, oneOf, anyOf and not, which may refuse null. No type is inferred from properties or
 // items here, as those apply to objects and arrays only. An enum without
 // null beside nullable is still read as letting null through.
 func admitsNull(f *Schema) bool {
@@ -1877,7 +1953,7 @@ func admitsNull(f *Schema) bool {
 
 // letsNull reports whether the flattened schema f, of doc, lets null
 // through: it is nullable, or it states no type, no not, no const other than
-// null, which Parse does not tell from no const, an enum only where it lists
+// null, an enum only where it lists
 // null, and oneOf or anyOf variants only where one of each keyword's lets
 // null through. A not is read as refusing null whatever it holds. seen holds
 // what each variant asked about was found to do, and a variant asked about
@@ -1978,6 +2054,64 @@ func (w *walk) not(b, h *Schema, path *diffPath) bool {
 	return true
 }
 
+// discriminator records a change of the discriminator from b to h and
+// reports whether there is one. A discriminator given where there was none
+// narrows the values accepted, as the property it names must then pick a
+// variant, and one dropped widens them; a changed propertyName breaks both.
+// The mapping is compared as written, by the component each value names,
+// and the names of variants it leaves implicit are not compared: a value
+// added, like an enum value added, breaks neither, one removed narrows, and
+// one that names another component breaks both.
+func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
+	switch {
+	case b == nil && h == nil:
+		return false
+	case b == nil:
+		w.add(Changed, path, "discriminator added: "+h.PropertyName, true, false)
+		return true
+	case h == nil:
+		w.add(Changed, path, "discriminator removed (was "+b.PropertyName+")", false, true)
+		return true
+	}
+	n := len(w.changes)
+	if b.PropertyName != h.PropertyName {
+		w.add(Changed, path, "discriminator property changed from "+b.PropertyName+" to "+h.PropertyName, true, true)
+	}
+	keys := slices.Collect(maps.Keys(b.Mapping))
+	for key := range h.Mapping {
+		_, ok := b.Mapping[key]
+		if !ok {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		bt, inBase := b.Mapping[key]
+		ht, inHead := h.Mapping[key]
+		value := valueText(key)
+		switch {
+		case !inBase:
+			w.addStrict(Changed, path, "discriminator mapping added: "+value+" → "+mappingName(ht), false, false, false, true)
+		case !inHead:
+			w.add(Changed, path, "discriminator mapping removed: "+value+" → "+mappingName(bt), true, false)
+		case mappingName(bt) != mappingName(ht):
+			w.add(Changed, path, "discriminator mapping "+value+" changed from "+mappingName(bt)+" to "+mappingName(ht), true, true)
+		}
+	}
+	return len(w.changes) > n
+}
+
+// mappingName is the component a discriminator mapping value names: the
+// name a schema reference points at, or the value as written, which is a
+// component name or a reference elsewhere.
+func mappingName(target string) string {
+	name := RefName(target, refSchemas)
+	if name == "" {
+		return target
+	}
+	return name
+}
+
 // refusesAll reports whether s is the schema that allows no value,
 // {not: {}}, which Parse makes of the boolean schema false, with nothing
 // but annotations beside the not or under it.
@@ -2013,8 +2147,7 @@ func allowsAll(s *Schema) bool {
 // closed reports whether s refuses properties it does not list, with
 // additionalProperties: false, or a schema that allows no value.
 func closed(s *Schema) bool {
-	a := s.AdditionalProperties
-	return a != nil && (!a.Allowed || refusesAll(a.Schema))
+	return refusesExtra(s.AdditionalProperties)
 }
 
 // anySchema is the empty schema, which allows any value, standing for an
@@ -2149,7 +2282,7 @@ func (w *walk) validation(b, h *Schema, path *diffPath) bool {
 	}
 	w.count(path, "minProperties", b.MinProperties, h.MinProperties, false)
 	w.count(path, "maxProperties", b.MaxProperties, h.MaxProperties, true)
-	w.keyword(path, "const", valueText(b.Const), valueText(h.Const), true)
+	w.keyword(path, "const", constText(b), constText(h), true)
 	w.keyword(path, "default", valueText(b.Default), valueText(h.Default), false)
 	return len(w.changes) > n
 }
@@ -2389,6 +2522,15 @@ func valueText(v any) string {
 		return ParamString(v)
 	}
 	return strings.TrimSuffix(buf.String(), "\n")
+}
+
+// constText is the const of s as JSON, null for const: null, or "" when
+// there is none.
+func constText(s *Schema) string {
+	if s.ConstNull && s.Const == nil {
+		return "null"
+	}
+	return valueText(s.Const)
 }
 
 // patternText is a pattern as a JSON string, so where it starts and ends is

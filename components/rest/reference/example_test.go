@@ -257,7 +257,7 @@ func TestExampleValuePrecedenceAndConstraints(t *testing.T) {
 	require.Equal(t, "from-example", doc.ExampleValue(schemaRef("Explicit"), ForRequest))
 	require.Equal(t, "from-default", doc.ExampleValue(schemaRef("Defaulted"), ForRequest))
 	require.Equal(t, "stringstri", doc.ExampleValue(schemaRef("Padded"), ForRequest))
-	require.Equal(t, []any{int64(0), int64(0), int64(0)}, doc.ExampleValue(schemaRef("Many"), ForRequest))
+	require.Equal(t, []any{int64(0), int64(0), int64(0), int64(0), int64(0)}, doc.ExampleValue(schemaRef("Many"), ForRequest), "minItems 5")
 
 	composed := decode(t, doc.ExampleJSON(schemaRef("Composed"), ForRequest))
 	require.Equal(t, map[string]any{"kind": "string", "meows": true, "lives": float64(9)}, composed)
@@ -772,4 +772,124 @@ func TestExampleValueTightNumberBounds(t *testing.T) {
 	require.Equal(t, 1.0000000000000002, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1), ExclusiveMaximum: excl(1.0000000000000004)}))
 	require.Equal(t, 1.25, example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(1), Maximum: num(1.5)}))
 	require.Equal(t, math.Nextafter(math.MaxFloat64/2, math.Inf(1)), example(Schema{Type: TypeList{"number"}, ExclusiveMinimum: excl(math.MaxFloat64 / 2), Maximum: num(math.MaxFloat64)}))
+}
+
+// TestExampleArrayMeetsItsBounds checks that an array example holds
+// minItems items, up to maxExampleItems, and at most maxItems, and that
+// with uniqueItems its items differ where the item schema lets them, ending
+// at as many as are distinct.
+func TestExampleArrayMeetsItsBounds(t *testing.T) {
+	doc := parseSpec(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Id: {type: object, properties: {id: {type: integer, minimum: 1}, name: {type: string}}}
+`)
+	array := func(items string, extra string) *Schema {
+		s := parseSpec(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\npaths: {}\ncomponents:\n  schemas:\n    A: {type: array, items: "+items+extra+"}\n")
+		return s.Components.Schemas.Map["A"]
+	}
+	for _, c := range []struct {
+		items, extra string
+		want         string
+	}{
+		{`{type: integer}`, `, minItems: 3`, `[0,0,0]`},
+		{`{type: integer}`, `, maxItems: 0`, `[]`},
+		{`{type: integer}`, `, minItems: 3, maxItems: 2`, `[0,0]`},
+		{`{type: integer}`, `, minItems: 3, uniqueItems: true`, `[0,1,2]`},
+		{`{type: integer, minimum: 5, maximum: 6}`, `, minItems: 3, uniqueItems: true`, `[5,6]`},
+		{`{type: integer, multipleOf: 5, minimum: 1}`, `, minItems: 3, uniqueItems: true`, `[5,10,15]`},
+		{`{type: number, multipleOf: 0.5, exclusiveMinimum: 0}`, `, minItems: 3, uniqueItems: true`, `[0.5,1,1.5]`},
+		{`{type: number, maximum: 1}`, `, minItems: 3, uniqueItems: true`, `[0,1]`},
+		{`{type: string}`, `, minItems: 3, uniqueItems: true`, `["string","string2","string3"]`},
+		{`{type: string, maxLength: 6}`, `, minItems: 3, uniqueItems: true`, `["string","strin2","strin3"]`},
+		{`{type: string, maxLength: 0}`, `, minItems: 3, uniqueItems: true`, `[""]`},
+		{`{type: string, format: uuid}`, `, minItems: 3, uniqueItems: true`, `["123e4567-e89b-12d3-a456-426614174000"]`},
+		{`{type: string, enum: [a, b]}`, `, minItems: 3, uniqueItems: true`, `["a","b"]`},
+		{`{type: string, const: c}`, `, minItems: 3, uniqueItems: true`, `["c"]`},
+		{`{type: boolean}`, `, minItems: 3, uniqueItems: true`, `[true,false]`},
+		{`{$ref: '#/components/schemas/Id'}`, `, minItems: 2, uniqueItems: true`, `[{"id":1,"name":"string"},{"id":2,"name":"string"}]`},
+		{`{type: object, properties: {flag: {type: boolean}, name: {type: string}}}`, `, minItems: 3, uniqueItems: true`, `[{"flag":true,"name":"string"},{"flag":true,"name":"string2"},{"flag":true,"name":"string3"}]`},
+	} {
+		s := array(c.items, c.extra)
+		doc.Components.Schemas.Set("A", s)
+		require.Equal(t, c.want, itemKey(doc.ExampleValue(s, ForRequest)), "%s%s", c.items, c.extra)
+	}
+
+	many := array(`{type: integer}`, `, minItems: 100000, uniqueItems: true`)
+	require.Len(t, doc.ExampleValue(many, ForRequest), maxExampleItems)
+}
+
+// TestExampleNumberMeetsMultipleOf checks that a number or integer example
+// is a multiple of multipleOf within its bounds where one exists, counting
+// multipleOf as the decimal it is written as, and is made as without it
+// where none does.
+func TestExampleNumberMeetsMultipleOf(t *testing.T) {
+	doc := &Document{}
+	for _, c := range []struct {
+		schema string
+		want   any
+	}{
+		{`{type: integer, multipleOf: 5, minimum: 7}`, int64(10)},
+		{`{type: integer, multipleOf: 5, exclusiveMinimum: 10}`, int64(15)},
+		{`{type: integer, multipleOf: 5}`, int64(0)},
+		{`{type: integer, multipleOf: 2, maximum: -3}`, int64(-4)},
+		{`{type: integer, multipleOf: 2, exclusiveMaximum: -4}`, int64(-6)},
+		{`{type: integer, multipleOf: 0.5, minimum: 0.2}`, int64(1)},
+		{`{type: integer, multipleOf: 2.5, minimum: 1}`, int64(5)},
+		{`{type: integer, multipleOf: 10, minimum: 1, maximum: 9}`, int64(1)},
+		{`{type: number, multipleOf: 0.1, exclusiveMinimum: 0.3}`, 0.4},
+		{`{type: number, multipleOf: 0.01, minimum: 1.005}`, 1.01},
+		{`{type: number, multipleOf: 0.25, maximum: -0.3}`, -0.5},
+		{`{type: number, multipleOf: 3, minimum: 30, maximum: 31}`, 30.0},
+		{`{type: number, multipleOf: 4, minimum: 1, maximum: 3}`, 1.0},
+	} {
+		parsed := parseSpec(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\npaths: {}\ncomponents:\n  schemas:\n    N: "+c.schema+"\n")
+		s := parsed.Components.Schemas.Map["N"]
+		got := doc.ExampleValue(s, ForRequest)
+		require.Equal(t, c.want, got, c.schema)
+		f, _ := exampleNumber(got)
+		if c.schema != `{type: integer, multipleOf: 10, minimum: 1, maximum: 9}` && c.schema != `{type: number, multipleOf: 4, minimum: 1, maximum: 3}` {
+			require.True(t, meetsNumber(s, f, schemaType(s) == "integer"), c.schema)
+		}
+	}
+
+	// Past what a float64 holds exactly, the example is made as without
+	// multipleOf, and stays finite.
+	huge := parseSpec(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\npaths: {}\ncomponents:\n  schemas:\n    N: {type: number, multipleOf: 3, minimum: 1e300}\n    I: {type: integer, multipleOf: 7, minimum: 9.3e18}\n")
+	require.Equal(t, 1e300, doc.ExampleValue(huge.Components.Schemas.Map["N"], ForRequest))
+	require.Equal(t, int64(math.MaxInt64), doc.ExampleValue(huge.Components.Schemas.Map["I"], ForRequest))
+
+	nullConst := parseSpec(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\npaths: {}\ncomponents:\n  schemas:\n    N: {type: [string, \"null\"], const: null}\n")
+	require.Equal(t, "null", doc.ExampleJSON(nullConst.Components.Schemas.Map["N"], ForRequest))
+}
+
+// TestExampleUniqueItemsSelfReference checks that distinct items of a
+// model that holds itself end: the model met again inside itself, directly
+// or through a property of an inline item, is an empty object, which has
+// no others, so the items vary where something else does.
+func TestExampleUniqueItemsSelfReference(t *testing.T) {
+	doc := parseSpec(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Node:
+      type: object
+      properties:
+        children: {type: array, uniqueItems: true, minItems: 3, items: {$ref: '#/components/schemas/Node'}}
+    Inline:
+      type: object
+      properties:
+        children:
+          type: array
+          uniqueItems: true
+          minItems: 3
+          items: {type: object, properties: {node: {$ref: '#/components/schemas/Inline'}, n: {type: integer}}}
+`)
+	require.Equal(t, `{"children":[{}]}`, itemKey(doc.ExampleValue(schemaRef("Node"), ForResponse)))
+	require.Equal(t, `{"children":[{"node":{},"n":0},{"node":{},"n":1},{"node":{},"n":2}]}`, itemKey(doc.ExampleValue(schemaRef("Inline"), ForResponse)))
 }

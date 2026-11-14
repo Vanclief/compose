@@ -2,6 +2,7 @@ package reference
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -392,8 +393,11 @@ func TestFlattenMergesAllOf(t *testing.T) {
 	require.Empty(t, named.AllOf)
 	require.Empty(t, named.Ref)
 	require.Equal(t, []string{"id", "shared", "name"}, named.Properties.Keys)
-	// The later member replaces the earlier definition of shared.
-	require.Equal(t, "from member", named.Properties.Map["shared"].Description)
+	// The two definitions of shared merge, the later first, so its
+	// description holds, and, as the types share none, its type.
+	shared := doc.Flatten(named.Properties.Map["shared"])
+	require.Equal(t, "from member", shared.Description)
+	require.Equal(t, TypeList{"integer"}, shared.Type)
 	require.Equal(t, []string{"id", "name"}, named.Required)
 	// Scalars: first non-empty walking parent then members in order.
 	require.Equal(t, TypeList{"object"}, named.Type)
@@ -861,4 +865,143 @@ components:
     Above: {type: integer, minimum: 9007199254740992, exclusiveMinimum: true}
 `)
 	require.Equal(t, int64(9007199254740993), old.ExampleValue(schemaRef("Above"), ForRequest))
+}
+
+// TestFlattenKeepsCommonTypes checks that the type of a flattened allOf is
+// what every member that states one allows, an integer counting as a
+// number, in the order of the first, and the first stated where they share
+// none.
+func TestFlattenKeepsCommonTypes(t *testing.T) {
+	for _, c := range []struct {
+		members string
+		want    TypeList
+	}{
+		{`[{type: number}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: integer}, {type: number}]`, TypeList{"integer"}},
+		{`[{description: d}, {type: number}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: [string, integer]}, {type: string}]`, TypeList{"string"}},
+		{`[{type: [number, string]}, {type: [integer, boolean]}]`, TypeList{"integer"}},
+		{`[{type: [number, integer]}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: [string, "null"]}, {type: [integer, string]}]`, TypeList{"string"}},
+		{`[{type: object}, {type: string}]`, TypeList{"object"}},
+		{`[{type: string}, {type: object}]`, TypeList{"string"}},
+	} {
+		doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    M: {allOf: `+c.members+`}
+`)
+		require.Equal(t, c.want, doc.Flatten(schemaRef("M")).Type, c.members)
+	}
+}
+
+// TestFlattenMergesRepeatedDefinitions checks that a property defined in
+// two allOf members, items given by two and two schemas of additional
+// properties are merged so every one applies: the tightest bound holds
+// whichever member sets it, the later definition of a property and the
+// first items or additionalProperties schema give the keywords that take
+// one value, additionalProperties false wins over a schema, a schema over
+// true or none, and a definition written the same as another, or a bare
+// reference to the model the other names, adds nothing, so the document's
+// own schema is kept. Flattening again gives the same merged schemas.
+func TestFlattenMergesRepeatedDefinitions(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Name: {type: string}
+    Props:
+      allOf:
+        - properties:
+            name: {type: string, maxLength: 30, description: first, pattern: "^a"}
+            same: {type: boolean}
+            model: {$ref: '#/components/schemas/Name', maxLength: 9}
+        - properties:
+            name: {type: string, maxLength: 50, minLength: 2, description: second}
+            same: {type: boolean}
+            model: {$ref: '#/components/schemas/Name'}
+    Items:
+      allOf:
+        - {type: array, items: {type: string, maxLength: 50, format: first}}
+        - {type: array, items: {type: string, maxLength: 30, format: second}}
+    Extra:
+      allOf:
+        - {type: object, additionalProperties: {type: string, maxLength: 50}}
+        - {type: object, additionalProperties: {type: string, maxLength: 30}}
+    Closed:
+      allOf:
+        - {type: object, additionalProperties: {type: string}}
+        - {type: object, additionalProperties: false}
+    ClosedFirst:
+      allOf:
+        - {type: object, additionalProperties: false}
+        - {type: object, additionalProperties: {type: string}}
+    Open:
+      allOf:
+        - {type: object, additionalProperties: true}
+        - {type: object, additionalProperties: {type: string}}
+`)
+	props := doc.Flatten(schemaRef("Props"))
+	name := doc.Flatten(props.Properties.Map["name"])
+	require.Equal(t, 30, *name.MaxLength)
+	require.Equal(t, 2, *name.MinLength)
+	require.Equal(t, "second", name.Description, "the later definition gives the description")
+	require.Equal(t, "^a", name.Pattern, "and the earlier one what only it says")
+	members := doc.Components.Schemas.Map["Props"].AllOf
+	require.Same(t, members[1].Properties.Map["same"], props.Properties.Map["same"], "a definition written the same adds nothing")
+	require.Same(t, members[0].Properties.Map["model"], props.Properties.Map["model"], "a bare reference to the model the other names adds nothing")
+	require.Same(t, props.Properties.Map["name"], doc.Flatten(schemaRef("Props")).Properties.Map["name"], "flattening again gives the same merged schema")
+
+	items := doc.Flatten(doc.Flatten(schemaRef("Items")).Items)
+	require.Equal(t, 30, *items.MaxLength)
+	require.Equal(t, "first", items.Format, "the first items give the format")
+
+	extra := doc.Flatten(doc.Flatten(schemaRef("Extra")).AdditionalSchema())
+	require.Equal(t, 30, *extra.MaxLength)
+
+	for _, closedName := range []string{"Closed", "ClosedFirst"} {
+		f := doc.Flatten(schemaRef(closedName))
+		require.False(t, f.AdditionalProperties.Allowed, closedName)
+	}
+	open := doc.Flatten(schemaRef("Open"))
+	require.Equal(t, TypeList{"string"}, open.AdditionalSchema().Type)
+}
+
+// TestFlattenMergedSelfReference checks that a model that refers to itself
+// through a property, items, additional properties or an allOf member that
+// two of its allOf members define, which Flatten merges, flattens, compares
+// and gives an example: flattening it again gives the merged schemas made
+// the first time, so a comparison that meets the model again inside the
+// merged schema sees the cycle, and the document holds no more merged
+// schemas after diffing it than after flattening it once.
+func TestFlattenMergedSelfReference(t *testing.T) {
+	ref := `{"$ref": "#/components/schemas/M"`
+	for name, members := range map[string]string{
+		"property":   `{"properties": {"self": ` + ref + `, "maxProperties": %d}}}, {"properties": {"self": ` + ref + `, "minProperties": 1}}}`,
+		"items":      `{"type": "array", "items": ` + ref + `, "maxItems": %d}}, {"items": ` + ref + `, "minItems": 1}}`,
+		"additional": `{"type": "object", "additionalProperties": ` + ref + `, "maxProperties": %d}}, {"additionalProperties": ` + ref + `, "minProperties": 1}}`,
+		"member":     `{"properties": {"self": {"allOf": [` + ref + `}, {"maxProperties": %d}]}}}, {"properties": {"self": {"allOf": [` + ref + `}, {"minProperties": 1}]}}}`,
+	} {
+		spec := func(max int) *Document {
+			return opsSpec(t, bodyPath(ref+`}`)+", "+respPath(ref+`}`), `"M": {"allOf": [`+fmt.Sprintf(members, max)+`]}`)
+		}
+		base := spec(5)
+		head := spec(4)
+		f := head.Flatten(schemaRef("M"))
+		require.NotNil(t, f, name)
+		require.Equal(t, f, head.Flatten(schemaRef("M")), name)
+		merged := len(head.merged)
+		require.Positive(t, merged, name)
+
+		r := diffWithin(t, base, base)
+		require.True(t, r.Empty(), "%s: %s", name, r.Markdown())
+		r = diffWithin(t, base, head)
+		require.NotEmpty(t, r.Changes, name)
+		require.Len(t, head.merged, merged, "%s: merged schemas are made once", name)
+
+		require.NotEmpty(t, head.ExampleJSON(schemaRef("M"), ForRequest), name)
+	}
 }

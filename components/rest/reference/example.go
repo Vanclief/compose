@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"math/big"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,7 +55,10 @@ const explicitExampleUnit = 1024
 // passed to ToJSON. oneOf and anyOf use their first member. A named schema
 // that recurs on the current path yields an empty value of its type ({} for
 // objects, [] for arrays, nil for scalars). Generated values nest at most
-// three named object schemas deep.
+// three named object schemas deep. A generated array holds minItems items,
+// at most maxItems and maxExampleItems, different from each other where
+// uniqueItems asks and the item schema allows, and a generated number meets
+// its bounds and multipleOf where some number does; pattern is not met.
 func (d *Document) ExampleValue(s *Schema, mode ExampleMode) any {
 	e := &exampler{doc: d, mode: mode, stack: map[string]bool{}}
 	return e.value(s, 0)
@@ -612,7 +618,7 @@ func (e *exampler) variant(s *Schema, depth int) any {
 			merged.AnyOf = nil
 		}
 		merged.Discriminator = nil
-		mergeInto(&merged, memberFlat)
+		e.doc.mergeInto(&merged, memberFlat)
 		v = e.generate(&merged, depth)
 	}
 
@@ -693,7 +699,13 @@ func (e *exampler) array(s *Schema, depth int) any {
 
 	count := 1
 	if s.MinItems != nil && *s.MinItems > count {
-		count = min(*s.MinItems, 3)
+		count = min(*s.MinItems, maxExampleItems)
+	}
+	if s.MaxItems != nil && *s.MaxItems >= 0 && *s.MaxItems < count {
+		count = *s.MaxItems
+	}
+	if count == 0 {
+		return []any{}
 	}
 
 	before := e.values
@@ -706,11 +718,263 @@ func (e *exampler) array(s *Schema, depth int) any {
 		extra = 0
 	}
 	e.values += extra
+	if s.UniqueItems {
+		return e.variants(e.doc.Flatten(s.Items), item, count, depth+1)
+	}
 	out := make([]any, count)
 	for i := range out {
 		out[i] = item
 	}
 	return out
+}
+
+// maxExampleItems caps the items a minItems gives an array example, as
+// maxExampleString caps the length of a string: an array whose minItems is
+// larger holds this many and does not meet it.
+const maxExampleItems = 1024
+
+// variants returns base, the example of the flattened schema s, followed by
+// other values s allows, each different from those before it, up to count
+// in all: the other enum values, the next numbers the bounds and multipleOf
+// allow, a string with a number at its end within its maxLength, false
+// after true, and an object with the property that varies most varied so.
+// A const, a formatted string, an array and a value that is not generated,
+// such as an author's object, have no others. They end at the first value
+// that is not new, so where s allows fewer, fewer are returned. depth past
+// maxExampleDepth stops an object from being varied.
+func (e *exampler) variants(s *Schema, base any, count int, depth int) []any {
+	out := []any{base}
+	if count <= 1 || s == nil || s.Const != nil || s.ConstNull || depth > maxExampleDepth {
+		return out
+	}
+	seen := map[string]bool{itemKey(base): true}
+	add := func(v any) bool {
+		key := itemKey(v)
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
+		out = append(out, v)
+		return len(out) < count
+	}
+	if len(s.Enum) > 0 {
+		for _, v := range s.Enum {
+			if seen[itemKey(v)] {
+				continue
+			}
+			if !add(v) {
+				break
+			}
+		}
+		return out
+	}
+	switch schemaType(s) {
+	case "integer", "number":
+		prev, ok := exampleNumber(base)
+		integer := schemaType(s) == "integer"
+		for ok {
+			next := *s
+			next.Minimum = nil
+			next.ExclusiveMinimum = &Bound{Value: &prev}
+			var v any
+			var f float64
+			if integer {
+				n := integerExample(&next)
+				v = n
+				f = float64(n)
+			} else {
+				f = numberExample(&next)
+				v = f
+			}
+			ok = f > prev && meetsNumber(s, f, integer) && add(v)
+			prev = f
+		}
+	case "string":
+		text, ok := base.(string)
+		_, formatted := formatExamples[s.Format]
+		for i := 2; ok && !formatted; i++ {
+			v, fits := numberedString(text, i, s.MaxLength)
+			ok = fits && add(v)
+		}
+	case "boolean":
+		flag, ok := base.(bool)
+		if ok {
+			add(!flag)
+		}
+	case "object":
+		obj, ok := base.(*Ordered[any])
+		if !ok {
+			return out
+		}
+		var most []any
+		key := ""
+		for _, k := range obj.Keys {
+			prop := s.Properties.Map[k]
+			if prop == nil {
+				continue
+			}
+			vs := e.variants(e.doc.Flatten(prop), obj.Map[k], count, depth+1)
+			if len(vs) > len(most) {
+				most = vs
+				key = k
+			}
+			if len(most) == count {
+				break
+			}
+		}
+		for _, v := range most[min(1, len(most)):] {
+			copied := &Ordered[any]{Keys: slices.Clone(obj.Keys), Map: maps.Clone(obj.Map)}
+			copied.Map[key] = v
+			if !add(copied) {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// itemKey is v as compact JSON, so two values that write the same are the
+// same item.
+func itemKey(v any) string {
+	var buf bytes.Buffer
+	appendJSON(&buf, v)
+	return buf.String()
+}
+
+// exampleNumber returns v as a float64 when it is a number, as generated or
+// decoded from a document.
+func exampleNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+// numberedString returns s with the number n at its end: appended, or in
+// place of its last characters where maxLength leaves no room, counted in
+// characters as JSON Schema counts them. fits is false where maxLength is
+// shorter than the number.
+func numberedString(s string, n int, maxLength *int) (string, bool) {
+	suffix := []rune(strconv.Itoa(n))
+	runes := []rune(s)
+	if maxLength != nil && len(runes)+len(suffix) > *maxLength {
+		if *maxLength < len(suffix) {
+			return "", false
+		}
+		runes = runes[:max(0, min(len(runes), *maxLength-len(suffix)))]
+	}
+	return string(runes) + string(suffix), true
+}
+
+// meetsNumber reports whether v meets the bounds and multipleOf of s, and
+// is an integer when integer is set. NaN and the infinities that bound
+// nothing are read as no bound, as everywhere in examples.
+func meetsNumber(s *Schema, v float64, integer bool) bool {
+	if math.IsNaN(v) || math.IsInf(v, 0) || integer && v != math.Trunc(v) {
+		return false
+	}
+	lo := knownLower(s)
+	if lo != nil && (v < lo.value || v == lo.value && lo.exclusive) {
+		return false
+	}
+	hi := knownUpper(s)
+	if hi != nil && (v > hi.value || v == hi.value && hi.exclusive) {
+		return false
+	}
+	step := multipleStep(s, integer)
+	if step == nil {
+		return true
+	}
+	r, ok := decimalRat(v)
+	return ok && new(big.Rat).Quo(r, step).IsInt()
+}
+
+// multipleStep is the step of the numbers s allows by its multipleOf: the
+// multipleOf as written, as an exact decimal, or, with integer set, the
+// smallest integer that is a multiple of it, the numerator of its reduced
+// fraction. nil where s has no multipleOf, or one that is not a positive
+// finite number, which every value is read as meeting.
+func multipleStep(s *Schema, integer bool) *big.Rat {
+	if s.MultipleOf == nil || !(*s.MultipleOf > 0) || math.IsInf(*s.MultipleOf, 1) {
+		return nil
+	}
+	step, ok := decimalRat(*s.MultipleOf)
+	if !ok {
+		return nil
+	}
+	if integer {
+		return new(big.Rat).SetInt(step.Num())
+	}
+	return step
+}
+
+// decimalRat is f as the exact decimal it is written as, the shortest that
+// reads back as f, so 0.1 is 1/10 and not the binary fraction nearest it.
+func decimalRat(f float64) (*big.Rat, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, false
+	}
+	return new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, 64))
+}
+
+// multipleExample is the example of s, of type integer when integer is set,
+// where s has a multipleOf: the smallest multiple its lower bound allows,
+// or, with none, 0 unless the upper bound refuses it, then the largest
+// multiple the upper bound allows. ok is false where s has no multipleOf,
+// where no multiple meets the bounds, or where the multiple is not a
+// float64, or with integer set an int64, and the example is then made as
+// without multipleOf.
+func multipleExample(s *Schema, integer bool) (float64, bool) {
+	step := multipleStep(s, integer)
+	if step == nil {
+		return 0, false
+	}
+	lo := knownLower(s)
+	hi := knownUpper(s)
+	var k *big.Int
+	switch {
+	case lo != nil:
+		r, ok := decimalRat(lo.value)
+		if !ok {
+			return 0, false
+		}
+		q := new(big.Rat).Quo(r, step)
+		k = new(big.Int).Neg(floorRat(new(big.Rat).Neg(q)))
+		if lo.exclusive && q.IsInt() {
+			k.Add(k, big.NewInt(1))
+		}
+	case hi == nil || hi.value > 0 || hi.value == 0 && !hi.exclusive:
+		k = new(big.Int)
+	default:
+		r, ok := decimalRat(hi.value)
+		if !ok {
+			return 0, false
+		}
+		q := new(big.Rat).Quo(r, step)
+		k = floorRat(q)
+		if hi.exclusive && q.IsInt() {
+			k.Sub(k, big.NewInt(1))
+		}
+	}
+	v, _ := new(big.Rat).Mul(new(big.Rat).SetInt(k), step).Float64()
+	if integer && math.Abs(v) >= 1<<63 || !meetsNumber(s, v, integer) {
+		return 0, false
+	}
+	return v, true
+}
+
+// floorRat is the largest integer at most r.
+func floorRat(r *big.Rat) *big.Int {
+	// Div rounds toward minus infinity for a positive divisor, and a Rat's
+	// denominator is always positive.
+	return new(big.Int).Div(r.Num(), r.Denom())
 }
 
 // explicitExample returns the first author-provided value of s.
@@ -724,7 +988,7 @@ func explicitExample(s *Schema) (any, bool) {
 	if s.Default != nil {
 		return s.Default, true
 	}
-	if s.Const != nil {
+	if s.Const != nil || s.ConstNull {
 		return s.Const, true
 	}
 	// An enum's first value that says something: "" is often the zero value
@@ -819,6 +1083,10 @@ func stringExample(s *Schema) string {
 // meets, a lower bound at 2^63 or above or an upper bound below -2^63 or
 // excluding it, gives the int64 nearest to it, MaxInt64 or MinInt64.
 func integerExample(s *Schema) int64 {
+	multiple, ok := multipleExample(s, true)
+	if ok {
+		return int64(multiple)
+	}
 	const two63 = 1 << 63
 	lo := knownLower(s)
 	if lo != nil {
@@ -858,6 +1126,10 @@ func integerExample(s *Schema) int64 {
 // written to the nearest one, the example meets them whenever a float64
 // does. It is never infinite: past the largest float64 it is that number.
 func numberExample(s *Schema) float64 {
+	multiple, ok := multipleExample(s, false)
+	if ok {
+		return multiple
+	}
 	lo := knownLower(s)
 	hi := knownUpper(s)
 	below := func(v float64) bool {

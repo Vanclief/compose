@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -27,6 +28,10 @@ type Document struct {
 	Components Components            `json:"components" yaml:"components"`
 	Security   []map[string][]string `json:"security" yaml:"security"`
 	Tags       []Tag                 `json:"tags" yaml:"tags"`
+
+	// merged holds the allOf Flatten makes of two definitions of one
+	// property, items or additionalProperties schema, see mergedSchema.
+	merged map[[2]*Schema]*Schema
 }
 
 // Info is the document header.
@@ -234,8 +239,9 @@ type Discriminator struct {
 // two add null to the type and leave the enum and const deciding. NullOnly
 // is true when 3.1 listed "null" as the only type, or when the oneOf and
 // anyOf members were all {type: "null"} beside no type, $ref or allOf,
-// which leaves Type empty as for a schema that states no type. Exclusive
-// bounds always hold the numeric form.
+// which leaves Type empty as for a schema that states no type. ConstNull is
+// true when Parse read const: null, which leaves Const nil as for no const.
+// Exclusive bounds always hold the numeric form.
 type Schema struct {
 	Ref           string           `json:"$ref" yaml:"$ref"`
 	Title         string           `json:"title" yaml:"title"`
@@ -247,6 +253,7 @@ type Schema struct {
 	NullOnly      bool             `json:"-" yaml:"-"`
 	Enum          []any            `json:"enum" yaml:"enum"`
 	Const         any              `json:"const" yaml:"const"`
+	ConstNull     bool             `json:"-" yaml:"-"`
 	Default       any              `json:"default" yaml:"default"`
 	Example       any              `json:"example" yaml:"example"`
 	Examples      []any            `json:"examples" yaml:"examples"`
@@ -302,9 +309,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
-	// Most schemas have no extensions; skip the second decode for them. A
-	// parent still rescans when only a nested schema has one.
-	if !bytes.Contains(data, []byte(`"x-`)) {
+	// Most schemas have no extensions and no const; skip the second decode
+	// for them. A parent still rescans when only a nested schema has one.
+	if !bytes.Contains(data, []byte(`"x-`)) && !bytes.Contains(data, []byte(`"const"`)) {
 		return nil
 	}
 	var raw map[string]json.RawMessage
@@ -312,6 +319,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
+	s.ConstNull = string(bytes.TrimSpace(raw["const"])) == "null"
 	for key, value := range raw {
 		if !strings.HasPrefix(key, "x-") {
 			continue
@@ -329,7 +337,11 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema.
+// UnmarshalYAML accepts a schema mapping or a 3.1 boolean schema. It
+// refuses a NaN, which YAML writes .nan, as the value of minimum, maximum,
+// exclusiveMinimum, exclusiveMaximum or multipleOf: no number compares with
+// it, so it bounds nothing and would hide the bound of another allOf member
+// where Flatten keeps the tightest. JSON has no NaN.
 func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!bool" {
 		var allowed bool
@@ -349,6 +361,13 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i].Value
+		if key == "const" {
+			s.ConstNull = s.Const == nil
+		}
+		number := numericKeyword(s, key)
+		if number != nil && math.IsNaN(*number) {
+			return ez.New(ez.EINVALID, fmt.Sprintf("line %d: %s must be a number, not %s", node.Content[i+1].Line, key, node.Content[i+1].Value), nil)
+		}
 		if !strings.HasPrefix(key, "x-") {
 			continue
 		}
@@ -361,6 +380,29 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 			s.Extensions = map[string]any{}
 		}
 		s.Extensions[key] = v
+	}
+	return nil
+}
+
+// numericKeyword returns the number s holds for the keyword key, one of
+// minimum, maximum, exclusiveMinimum, exclusiveMaximum and multipleOf, or
+// nil when key is another keyword or s holds none.
+func numericKeyword(s *Schema, key string) *float64 {
+	switch key {
+	case "minimum":
+		return s.Minimum
+	case "maximum":
+		return s.Maximum
+	case "multipleOf":
+		return s.MultipleOf
+	case "exclusiveMinimum":
+		if s.ExclusiveMinimum != nil {
+			return s.ExclusiveMinimum.Value
+		}
+	case "exclusiveMaximum":
+		if s.ExclusiveMaximum != nil {
+			return s.ExclusiveMaximum.Value
+		}
 	}
 	return nil
 }

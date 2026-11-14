@@ -2620,12 +2620,23 @@ func TestDiffSpellingsOfAnything(t *testing.T) {
 	requireAt(t, `{"type": "object"}`, `{"type": "object", "additionalProperties": {"not": {}, "description": "none"}}`, "", "additional properties no longer allowed", true, false)
 }
 
-// TestDiffNaNBound checks that a NaN bound, which YAML can write and no
-// number can be compared with, is read as no bound: two documents that
-// hold it are the same, and the example ignores it.
+// TestDiffNaNBound checks that Parse refuses a NaN bound or multipleOf,
+// which YAML can write and no number can be compared with, naming the
+// keyword and its line, also inside an allOf member and in a parameter,
+// and that a document built without Parse that holds one reads it as no
+// bound: two such documents are the same, and the example ignores it.
 func TestDiffNaNBound(t *testing.T) {
-	spec := func(s string) *Document {
-		doc, err := Parse([]byte(`openapi: 3.1.0
+	for _, c := range []struct {
+		schema, message string
+	}{
+		{`{type: number, minimum: .nan}`, "line 11: minimum must be a number, not .nan"},
+		{`{type: integer, maximum: .NaN}`, "line 11: maximum must be a number, not .NaN"},
+		{`{type: number, exclusiveMinimum: .nan}`, "line 11: exclusiveMinimum must be a number, not .nan"},
+		{`{type: number, exclusiveMaximum: .nan}`, "line 11: exclusiveMaximum must be a number, not .nan"},
+		{`{type: number, multipleOf: .nan}`, "line 11: multipleOf must be a number, not .nan"},
+		{"\n              allOf:\n                - {type: number, minimum: 10}\n                - {minimum: .nan}", "line 14: minimum must be a number, not .nan"},
+	} {
+		_, err := Parse([]byte(`openapi: 3.1.0
 info:
   title: t
   version: "1"
@@ -2635,23 +2646,31 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: ` + s + `
+            schema: ` + c.schema + `
       responses:
         "200":
           description: ok
 `))
-		require.NoError(t, err)
+		require.Error(t, err, c.schema)
+		require.Equal(t, ez.EINVALID, ez.ErrorCode(err), c.schema)
+		require.Equal(t, "invalid OpenAPI document: "+c.message, ez.ErrorMessage(err), c.schema)
+	}
+	_, err := Parse([]byte("openapi: 3.0.3\ninfo: {title: t, version: \"1\"}\npaths:\n  /x:\n    get:\n      parameters:\n        - {name: n, in: query, schema: {type: number, maximum: .nan}}\n      responses: {\"200\": {description: ok}}\n"))
+	require.Error(t, err)
+	require.Equal(t, "invalid OpenAPI document: line 7: maximum must be a number, not .nan", ez.ErrorMessage(err))
+
+	nan := math.NaN()
+	built := func(minimum *float64) *Document {
+		doc := opsSpec(t, bodyPath(`{"$ref": "#/components/schemas/S"}`), `"S": {"type": "number"}`)
+		doc.Components.Schemas.Map["S"].Minimum = minimum
 		return doc
 	}
-	for _, s := range []string{`{type: number, minimum: .nan}`, `{type: integer, maximum: .nan, exclusiveMinimum: .nan}`} {
-		r := Diff(spec(s), spec(s))
-		require.True(t, r.Empty(), "%s: %s", s, r.Markdown())
-	}
-	r := Diff(spec(`{type: number, minimum: .nan}`), spec(`{type: number, minimum: 3}`))
-	require.Equal(t, []string{"POST /x › request body | minimum added: 3"}, changeLines(r))
+	r := Diff(built(&nan), built(&nan))
+	require.True(t, r.Empty(), r.Markdown())
+	r = Diff(built(&nan), built(ptrTo(3.0)))
+	require.Equal(t, []string{"POST /w › request body | model S changed", "S | minimum added: 3"}, changeLines(r))
 
 	doc := &Document{}
-	nan := math.NaN()
 	require.Equal(t, 0.0, doc.ExampleValue(&Schema{Type: TypeList{"number"}, Minimum: &nan}, ForRequest))
 	require.Equal(t, -3.0, doc.ExampleValue(&Schema{Type: TypeList{"number"}, Minimum: &nan, Maximum: ptrTo(-3.0)}, ForRequest))
 	require.Equal(t, int64(0), doc.ExampleValue(&Schema{Type: TypeList{"integer"}, Maximum: &nan}, ForRequest))
@@ -3497,4 +3516,200 @@ func TestDiffTypeListOrder(t *testing.T) {
 	require.True(t, r.Empty(), r.Markdown())
 	r = Diff(opsSpec(t, bodyPath(`{"type": ["string", "integer"]}`), ``), opsSpec(t, bodyPath(`{"type": ["integer", "boolean"]}`), ``))
 	require.Equal(t, []Change{{Kind: Changed, Path: "POST /w › request body", Detail: "type changed from string | integer to integer | boolean", Breaking: true}}, publicChanges(r.Operation("POST", "/w").Changes), r.Markdown())
+}
+
+// TestDiffAllOfMergedKeywords checks that a type narrowed by a later allOf
+// member or beside a $ref, and a property, items or additional properties
+// that two allOf members define, are compared as what applies, every
+// definition together, rather than as the first or the last one.
+func TestDiffAllOfMergedKeywords(t *testing.T) {
+	const amount = `"Amount": {"type": "number"}, "C0": {"type": "integer"}`
+	object := func(v string) string {
+		return amount + `, "M": {"type": "object", "properties": {"v": ` + v + `}}`
+	}
+	members := func(a, b string) string {
+		return `"M": {"allOf": [` + a + `, ` + b + `]}`
+	}
+	for _, c := range []struct {
+		name       string
+		base, head string
+		want       []Change
+	}{
+		{
+			name: "a reference to a number narrowed to integer by a later member",
+			base: object(`{"$ref": "#/components/schemas/Amount"}`),
+			head: object(`{"allOf": [{"$ref": "#/components/schemas/Amount"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by a later member",
+			base: object(`{"type": "number"}`),
+			head: object(`{"allOf": [{"type": "number"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by the model beside it",
+			base: object(`{"type": "number"}`),
+			head: object(`{"$ref": "#/components/schemas/C0", "type": "number"}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "types that share none keep the first",
+			base: members(`{"type": "object"}`, `{"type": "string"}`),
+			head: members(`{"type": "object"}`, `{"type": "integer"}`),
+			want: []Change{},
+		},
+		{
+			name: "a property both members define, lowered in the second",
+			base: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string", "maxLength": 40}}}`),
+			head: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string", "maxLength": 30}}}`),
+			want: []Change{{Kind: Changed, Path: "M › name", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "a property both members define, lowered in the first",
+			base: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			head: members(`{"properties": {"name": {"type": "string", "maxLength": 30}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			want: []Change{{Kind: Changed, Path: "M › name", Detail: "maxLength lowered from 50 to 30", Breaking: true}},
+		},
+		{
+			name: "items both members give, lowered in the second",
+			base: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 40}}`),
+			head: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 30}}`),
+			want: []Change{{Kind: Changed, Path: "M[]", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "additional properties both members give, lowered in the second",
+			base: members(`{"type": "object", "additionalProperties": {"type": "string", "maxLength": 50}}`, `{"additionalProperties": {"type": "string", "maxLength": 40}}`),
+			head: members(`{"type": "object", "additionalProperties": {"type": "string", "maxLength": 50}}`, `{"additionalProperties": {"type": "string", "maxLength": 30}}`),
+			want: []Change{{Kind: Changed, Path: "M › <key>", Detail: "maxLength lowered from 40 to 30", Breaking: true}},
+		},
+		{
+			name: "additional properties refused by the second member",
+			base: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object"}`),
+			head: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object", "additionalProperties": false}`),
+			want: []Change{{Kind: Changed, Path: "M", Detail: "additional properties no longer allowed", Breaking: true}},
+		},
+	} {
+		r := diffWithin(t, opsSpec(t, ``, c.base), opsSpec(t, ``, c.head))
+		require.Equal(t, c.want, publicChanges(r.Changes), "%s\n%s", c.name, r.Markdown())
+	}
+}
+
+// TestDiffDiscriminator checks the changes of a discriminator and of its
+// mapping, used in a request and in a response, with the reason for each
+// flag.
+func TestDiffDiscriminator(t *testing.T) {
+	const variants = `"Cat": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Dog": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Wolf": {"type": "object"}`
+	pet := func(discriminator string) string {
+		s := `"Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}]`
+		if discriminator != "" {
+			s += `, "discriminator": ` + discriminator
+		}
+		return variants + ", " + s + "}"
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	for _, c := range []struct {
+		why        string
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{"a property must now pick the variant, so a request that left it out is refused", ``, `{"propertyName": "kind"}`, "discriminator added: kind", true, false},
+		{"a response no longer says which variant it is by that property", `{"propertyName": "kind"}`, ``, "discriminator removed (was kind)", false, true},
+		{"clients write and read the variant in another property", `{"propertyName": "kind"}`, `{"propertyName": "type"}`, "discriminator property changed from kind to type", true, true},
+		{"a value is added, as enum values are, which no request breaks on and a response only carries more", `{"propertyName": "kind"}`, `{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`, `discriminator mapping added: "cat" → Cat`, false, false},
+		{"a value a request could send is refused", `{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`, `{"propertyName": "kind"}`, `discriminator mapping removed: "cat" → Cat`, true, false},
+		{"a value now picks another variant, which way it moves is not known", `{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Dog"}}`, `{"propertyName": "kind", "mapping": {"dog": "Wolf"}}`, `discriminator mapping "dog" changed from Dog to Wolf`, true, true},
+	} {
+		r := Diff(opsSpec(t, paths, pet(c.base)), opsSpec(t, paths, pet(c.head)))
+		require.Equal(t, []Change{
+			{Kind: Changed, Path: "POST /w › request body", Detail: "model Pet changed", Breaking: c.req},
+			{Kind: Changed, Path: "POST /w › response 200", Detail: "model Pet changed", Breaking: c.resp},
+			{Kind: Changed, Path: "Pet", Detail: c.detail, Breaking: c.req || c.resp},
+		}, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+	}
+
+	// A mapping value written as a name or as a reference to the same
+	// component is the same.
+	r := Diff(opsSpec(t, paths, pet(`{"propertyName": "kind", "mapping": {"cat": "Cat"}}`)), opsSpec(t, paths, pet(`{"propertyName": "kind", "mapping": {"cat": "#/components/schemas/Cat"}}`)))
+	require.True(t, r.Empty(), r.Markdown())
+}
+
+// TestDiffParameterSerialization checks that a parameter's style or explode
+// changed is reported, compared with the defaults of its location filled
+// in, with the reason for each flag.
+func TestDiffParameterSerialization(t *testing.T) {
+	param := func(in, schema, extra string) string {
+		required := ""
+		if in == "path" {
+			required = `, "required": true`
+		}
+		return `"/r/{p}": {"get": {"parameters": [{"name": "p", "in": "` + in + `"` + required + `, "schema": ` + schema + extra + `}], "responses": {"204": {"description": "ok"}}}}`
+	}
+	const array = `{"type": "array", "items": {"type": "string"}}`
+	const integer = `{"type": "integer"}`
+	for _, c := range []struct {
+		why        string
+		in, schema string
+		base, head string
+		want       []string
+		breaking   bool
+	}{
+		{"an array written id=1&id=2 is now sent as id=1,2, which the server reads as one value", "query", array, `, "explode": true`, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"form explodes by default, so false is the same change", "query", array, ``, `, "explode": false`, []string{"explode changed from true to false"}, true},
+		{"the default written out is no change", "query", array, ``, `, "style": "form", "explode": true`, nil, false},
+		{"the default of a path parameter is simple without explode", "path", array, ``, `, "style": "simple", "explode": false`, nil, false},
+		{"a header parameter is simple by default", "header", array, ``, `, "style": "form"`, []string{"style changed from simple to form", "explode changed from false to true"}, true},
+		{"items are now separated by | where they were by ,", "query", array, `, "explode": false`, `, "style": "pipeDelimited"`, []string{"style changed from form to pipeDelimited"}, true},
+		{"a path value is now written .5 where it was 5", "path", integer, ``, `, "style": "label"`, []string{"style changed from simple to label"}, true},
+		{"one integer is written the same exploded or not", "query", integer, ``, `, "explode": false`, []string{"explode changed from true to false"}, false},
+		{"a schema of no type may hold an array", "query", `{}`, ``, `, "explode": false`, []string{"explode changed from true to false"}, true},
+	} {
+		r := Diff(opsSpec(t, param(c.in, c.schema, c.base), ``), opsSpec(t, param(c.in, c.schema, c.head), ``))
+		want := []Change{}
+		for _, detail := range c.want {
+			want = append(want, Change{Kind: Changed, Path: "GET /r/{p} › " + c.in + " › p", Detail: detail, Breaking: c.breaking})
+		}
+		require.Equal(t, want, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+	}
+
+	// A parameter described by content has no style.
+	content := func(explode string) string {
+		return `"/r": {"get": {"parameters": [{"name": "p", "in": "query", "content": {"application/json": {"schema": {"type": "object"}}}` + explode + `}], "responses": {"204": {"description": "ok"}}}}`
+	}
+	r := Diff(opsSpec(t, content(``), ``), opsSpec(t, content(`, "explode": false`), ``))
+	require.True(t, r.Empty(), r.Markdown())
+}
+
+// TestDiffConstNull checks that const: null given, dropped or replaced is
+// reported, as Parse tells it from no const, also given by an allOf member
+// or beside a $ref, with the reason for each flag.
+func TestDiffConstNull(t *testing.T) {
+	for _, c := range []struct {
+		why        string
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{"a string is no longer accepted, only null", `{"type": ["string", "null"]}`, `{"type": ["string", "null"], "const": null}`, "const added: null", true, false},
+		{"any value is now accepted where only null was", `{"const": null}`, `{}`, "const removed (was null)", false, true},
+		{"one value replaces another, which way it moves is not known", `{"const": null}`, `{"const": 1}`, "const changed from null to 1", true, true},
+		{"the same the other way", `{"const": 1}`, `{"const": null}`, "const changed from 1 to null", true, true},
+		{"a member's const applies to the schema", `{"type": ["string", "null"]}`, `{"allOf": [{"type": ["string", "null"]}, {"const": null}]}`, "const added: null", true, false},
+		{"a const beside a $ref applies with the model", `{"$ref": "#/components/schemas/N"}`, `{"$ref": "#/components/schemas/N", "const": null}`, "const added: null", true, false},
+	} {
+		const n = `"N": {"type": ["string", "null"]}`
+		for _, route := range []func(string) string{bodyPath, respPath} {
+			r := Diff(opsSpec(t, route(c.base), n), opsSpec(t, route(c.head), n))
+			path := "POST /w › request body"
+			breaking := c.req
+			if r.Operation("POST", "/w") == nil {
+				path = "GET /r › response 200"
+				breaking = c.resp
+			}
+			require.Equal(t, []Change{{Kind: Changed, Path: path, Detail: c.detail, Breaking: breaking}}, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+		}
+	}
+	r := Diff(opsSpec(t, bodyPath(`{"const": null}`), ``), opsSpec(t, bodyPath(`{"const": null}`), ``))
+	require.True(t, r.Empty(), r.Markdown())
 }
