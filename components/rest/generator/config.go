@@ -18,8 +18,21 @@ type Config struct {
 	// Root is the module root, the directory holding go.mod. Defaults to the working directory.
 	Root string
 	// RoutesGlob matches the files declaring routes, e.g. "application/interfaces/rest/routes_*.go".
-	// Each file is parsed as Go, and routes are the calls `x := parent.Group("/prefix", ...)`
-	// and `x.GET("/path", h.Method, ...)`, on one line or several.
+	// Test files and files a default build on the platform the generator runs on leaves out, by
+	// their name (routes_windows.go) or their build constraints (//go:build ignore), are not
+	// read, so the document is the one of that platform. Each other file is parsed as Go, and
+	// routes are the calls `group.GET(path, h.Method, ...)` (or POST, PUT, PATCH, DELETE, HEAD),
+	// on one line or several. A path or Group prefix is a string constant: a literal, a constant
+	// declared in the function or at the top level of the file's package, or such strings joined
+	// with +. A group is a RootGroups variable, a variable set with `:=`, `=` or var to a group,
+	// or a Group call on a group, chained as deep as written: `e.Group("/v1").GET("/x", ...)`.
+	// Group variables follow Go's scopes: one declared in a block or another function is not seen
+	// outside it, and `=` changes the prefix from that statement on. A route call whose path or
+	// group the finder cannot resolve fails generation unless SkipUnresolved leaves it out: among
+	// others, a group in a parameter not named in RootGroups, or in a variable set to anything
+	// but a group, set to another group in a branch, a loop or a function literal and used after
+	// it or in that loop or literal, or used in a function literal while `=` assigns it anywhere
+	// in the function.
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
 	// routed as `h.Name.Method` (nested mode). Empty selects flat mode: one handler type routed as
@@ -155,6 +168,11 @@ type Config struct {
 
 	// Skip leaves an operation out of the document. path is the OpenAPI path ({id}, not :id).
 	Skip func(method string, path string) bool
+	// SkipUnresolved leaves out a route registration the route finder cannot resolve (see
+	// RoutesGlob), which has no path Skip could be asked about. Without it, or when it returns
+	// false, generation fails and names the registration, its file and line, and what was not
+	// resolved. Leaving one out keeps it out of Spec.Routes too.
+	SkipUnresolved func(route UnresolvedRoute) bool
 	// Internal marks an operation as internal: it is documented with `x-internal: true` and
 	// Spec.Public leaves it out. path is the OpenAPI path.
 	Internal func(method string, path string) bool
