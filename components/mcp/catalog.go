@@ -263,7 +263,7 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 			Schema:      schema,
 			param:       p,
 		})
-		b.index(b.accepted, b.termOf(p.Schema), f.Name)
+		b.indexSchema(b.accepted, p.Schema, f.Name)
 	}
 
 	b.addBodyArgs(f, op)
@@ -274,7 +274,7 @@ func (b *catalogBuilder) addOperation(ref reference.OperationRef) error {
 		if media != nil && media.Schema != nil {
 			f.Returns = b.refTerm(media.Schema)
 			f.ReturnSchema = b.schema(media.Schema)
-			b.index(b.returned, b.termOf(media.Schema), f.Name)
+			b.indexSchema(b.returned, media.Schema, f.Name)
 		}
 	}
 
@@ -455,7 +455,7 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 	f.bodyRequired = body.Required
 	f.bodyType = contentType
 	raw := media.Schema
-	b.index(b.accepted, b.termOf(raw), f.Name)
+	b.indexSchema(b.accepted, raw, f.Name)
 
 	single := &Arg{
 		Name:        "body",
@@ -496,7 +496,7 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 			arg.Description = prop.Description
 		}
 		f.Args = append(f.Args, arg)
-		b.index(b.accepted, b.termOf(prop), f.Name)
+		b.indexSchema(b.accepted, prop, f.Name)
 	}
 }
 
@@ -598,20 +598,36 @@ func (b *catalogBuilder) refTerm(s *reference.Schema) string {
 	return b.termNames[name]
 }
 
-// termOf returns the term s refers to directly or through array items, or "".
-func (b *catalogBuilder) termOf(s *reference.Schema) string {
-	if s == nil {
-		return ""
+// indexSchema records in the given reverse index that function uses every
+// term s refers to directly, through array items or through oneOf and anyOf
+// members, at any depth. The properties of an inline object are not followed.
+func (b *catalogBuilder) indexSchema(index map[string]map[string]bool, s *reference.Schema, function string) {
+	b.indexTerms(index, s, function, map[*reference.Schema]bool{})
+}
+
+// indexTerms is indexSchema; visited holds the schemas already walked, so a
+// cycle of inline schemas ends.
+func (b *catalogBuilder) indexTerms(index map[string]map[string]bool, s *reference.Schema, function string, visited map[*reference.Schema]bool) {
+	if s == nil || visited[s] {
+		return
 	}
+	visited[s] = true
 	term := b.refTerm(s)
 	if term != "" {
-		return term
+		b.index(index, term, function)
+		return
 	}
-	resolved, _ := b.doc.Schema(s)
-	if resolved == nil || resolved.Items == nil {
-		return ""
+	flat := b.doc.Flatten(s)
+	if flat == nil {
+		return
 	}
-	return b.refTerm(resolved.Items)
+	b.indexTerms(index, flat.Items, function, visited)
+	for _, member := range flat.OneOf {
+		b.indexTerms(index, member, function, visited)
+	}
+	for _, member := range flat.AnyOf {
+		b.indexTerms(index, member, function, visited)
+	}
 }
 
 // index records that function uses term in the given reverse index.

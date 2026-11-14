@@ -549,3 +549,79 @@ func TestBuildCatalogBodyAndHeaderArgs(t *testing.T) {
 	_, ok := c.Function("items.upload")
 	assert.False(t, ok, "operations without a JSON request body are left out")
 }
+
+// alternativesSpec uses the term Severity through oneOf and anyOf members,
+// their array items and the nullable forms of 3.0 and 3.1.
+const alternativesSpec = `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+	"/findings": {
+		"get": {"operationId": "findings.list", "parameters": [
+			{"name": "severity", "in": "query", "schema": {"oneOf": [
+				{"$ref": "#/components/schemas/Severity"},
+				{"type": "array", "items": {"$ref": "#/components/schemas/Severity"}}
+			]}}
+		], "responses": {}},
+		"post": {"operationId": "findings.create", "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+			"severity": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#/components/schemas/Severity"}}]},
+			"meta": {"type": "object", "properties": {"finding": {"$ref": "#/components/schemas/Finding"}}}
+		}}}}}, "responses": {}}
+	},
+	"/findings/any": {"get": {"operationId": "findings.any", "parameters": [
+		{"name": "severity", "in": "query", "schema": {"anyOf": [
+			{"$ref": "#/components/schemas/Severity"},
+			{"type": "array", "items": {"$ref": "#/components/schemas/Severity"}}
+		]}}
+	], "responses": {}}},
+	"/findings/nullable": {"get": {"operationId": "findings.nullable", "parameters": [
+		{"name": "severity", "in": "query", "schema": {"anyOf": [
+			{"type": "integer"},
+			{"type": "array", "items": {"$ref": "#/components/schemas/Severity"}},
+			{"type": "null"}
+		]}},
+		{"name": "kind", "in": "query", "schema": {"oneOf": [
+			{"type": "integer"},
+			{"allOf": [{"$ref": "#/components/schemas/Kind"}], "nullable": true}
+		]}}
+	], "responses": {}}},
+	"/findings/latest": {"get": {"operationId": "findings.latest", "responses": {"200": {"content": {"application/json": {"schema": {"oneOf": [
+		{"$ref": "#/components/schemas/Finding"},
+		{"type": "array", "items": {"$ref": "#/components/schemas/Finding"}}
+	]}}}}}}},
+	"/findings/batch": {"post": {"operationId": "findings.batch", "requestBody": {"content": {"application/json": {"schema": {"anyOf": [
+		{"$ref": "#/components/schemas/Finding"},
+		{"type": "array", "items": {"$ref": "#/components/schemas/Finding"}}
+	]}}}}, "responses": {}}}
+}, "components": {"schemas": {
+	"Severity": {"type": "string", "enum": ["low", "high"]},
+	"Kind": {"type": "string"},
+	"Finding": {"type": "object", "properties": {"severity": {"$ref": "#/components/schemas/Severity"}}}
+}}}`
+
+func TestBuildCatalogIndexesAlternatives(t *testing.T) {
+	c, err := buildCatalog(parseSpec(t, alternativesSpec), nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"findings.any", "findings.create", "findings.list", "findings.nullable"}, mustTerm(t, c, "Severity").AcceptedBy)
+	assert.Equal(t, []string{"findings.nullable"}, mustTerm(t, c, "Kind").AcceptedBy, "a nullable allOf wrapper as a member")
+
+	finding := mustTerm(t, c, "Finding")
+	assert.Equal(t, []string{"findings.latest"}, finding.ReturnedBy)
+	assert.Equal(t, []string{"findings.batch"}, finding.AcceptedBy, "properties of an inline object body property are not followed")
+
+	assert.Contains(t, c.renderExplain([]string{"Severity"}), "accepted by: findings.any, findings.create, findings.list, findings.nullable")
+}
+
+func TestBuildCatalogIndexEndsOnCycle(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/x": {"get": {"operationId": "x.get", "parameters": [
+			{"name": "q", "in": "query", "schema": {"oneOf": [{"type": "string"}, {"$ref": "#/components/schemas/Kind"}]}}
+		], "responses": {}}}
+	}, "components": {"schemas": {"Kind": {"type": "string"}}}}`)
+	// An inline schema that is its own member, which a parsed document does
+	// not hold but a built one can.
+	schema := doc.Paths.Map["/x"].Get.Parameters[0].Schema
+	schema.OneOf[0].AnyOf = []*reference.Schema{schema, schema.OneOf[0]}
+
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"x.get"}, mustTerm(t, c, "Kind").AcceptedBy)
+}
