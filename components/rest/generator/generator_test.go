@@ -887,12 +887,12 @@ func TestParseRoutesRejectsFlatHandlerReferenceWithHandlersFile(t *testing.T) {
 
 func TestParseRoutesRejectsUnknownGroups(t *testing.T) {
 	root := writeFixture(t, map[string]string{
-		"routes_example.go": "package api\n\nfunc addRoutes() {\n\tapi := missing.Group(\"/api\")\n}\n",
+		"routes_example.go": "package api\n\nfunc addRoutes() {\n\tapi := missing.Group(\"/api\")\n\tapi.GET(\"/x\", h.List)\n}\n",
 	})
 
 	_, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes_*.go", HandlerGlob: "handler/*/*.go"})
-	if err == nil || !strings.Contains(err.Error(), "unknown parent group") {
-		t.Fatalf("expected an unknown parent group to fail, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `routes_example.go:5: api.GET("/x", ...): unknown route group "missing"`) {
+		t.Fatalf("expected a route on a group of an unknown parent group to fail, got %v", err)
 	}
 }
 
