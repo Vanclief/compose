@@ -366,6 +366,30 @@ func TestCallRefusesEmptyPathArgument(t *testing.T) {
 	assert.Equal(t, int64(1), handler.n.Load())
 }
 
+func TestCallRefusesDotPathSegment(t *testing.T) {
+	handler := &countingHandler{}
+	srv, err := New(Config{Spec: []byte(numbersSpec), Handler: handler})
+	require.NoError(t, err)
+
+	dots := map[string]any{
+		"dot":         ".",
+		"two dots":    "..",
+		"array of ..": []any{".."},
+	}
+	for name, value := range dots {
+		_, err := srv.Call(context.Background(), nil, "numbers.send", map[string]any{"id": value})
+		assert.Equal(t, ez.EINVALID, ez.ErrorCode(err), name)
+		assert.Equal(t, "mcp: numbers.send path arguments must not make a path segment of . or ..", ez.ErrorMessage(err), name)
+	}
+	assert.Zero(t, handler.n.Load(), "no request reaches the handler")
+
+	for _, value := range []any{"...", ".a", "a..", "a.b", "../a", []any{".", "."}} {
+		_, err = srv.Call(context.Background(), nil, "numbers.send", map[string]any{"id": value})
+		require.NoError(t, err, value)
+	}
+	assert.Equal(t, int64(6), handler.n.Load())
+}
+
 func TestToolsRefuseEmptyPathArgument(t *testing.T) {
 	cfg := promotedConfig(t)
 	cfg.Script.Enabled = true
@@ -390,4 +414,25 @@ func TestToolsRefuseEmptyPathArgument(t *testing.T) {
 	text, failed = callTool(t, session, "run_script", map[string]any{"code": `try { api.orders.get_order({order_id: ""}) } catch (e) { return e.code + " " + e.message }`})
 	assert.False(t, failed, text)
 	assert.Equal(t, `"invalid orders.get_order: invalid: orders.get_order requires a non-empty path argument order_id"`, text)
+}
+
+func TestToolsRefuseDotPathSegment(t *testing.T) {
+	cfg := promotedConfig(t)
+	cfg.Script.Enabled = true
+	s := newShopServer(t, cfg)
+	session := connect(t, s, "key:secret")
+	describeGetOrder := s.Catalog().renderDescribe([]string{"orders.get_order"})
+	describeAddLine := s.Catalog().renderDescribe([]string{"orders.add_line"})
+
+	text, failed := callTool(t, session, "call_function", map[string]any{"name": "orders.get_order", "args": map[string]any{"order_id": ".."}})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: orders.get_order path arguments must not make a path segment of . or ..\n\n"+describeGetOrder, text)
+
+	text, failed = callTool(t, session, "orders-add_line", map[string]any{"order_id": "..", "sku": "A1", "quantity": 1})
+	assert.True(t, failed)
+	assert.Equal(t, "error invalid: orders.add_line path arguments must not make a path segment of . or ..\n\n"+describeAddLine, text)
+
+	text, failed = callTool(t, session, "run_script", map[string]any{"code": `try { api.orders.get_order({order_id: "."}) } catch (e) { return e.code + " " + e.message }`})
+	assert.False(t, failed, text)
+	assert.Equal(t, `"invalid orders.get_order: invalid: orders.get_order path arguments must not make a path segment of . or .."`, text)
 }

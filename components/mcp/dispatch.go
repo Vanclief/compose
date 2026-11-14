@@ -158,6 +158,15 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 		}
 	}
 
+	// A handler that cleans the path before routing drops a . segment and
+	// takes a .. segment with the one before it, so /runs/{id}/logs with an
+	// id of .. would be answered as /logs, by another route.
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "." || segment == ".." {
+			return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s path arguments must not make a path segment of . or ..", f.Name), nil)
+		}
+	}
+
 	target := path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
