@@ -1756,7 +1756,7 @@ func sameKeywords(b, h *Schema) bool {
 		samePtr(b.MinLength, h.MinLength) && samePtr(b.MaxLength, h.MaxLength) &&
 		samePtr(b.MinItems, h.MinItems) && samePtr(b.MaxItems, h.MaxItems) &&
 		samePtr(b.MinProperties, h.MinProperties) && samePtr(b.MaxProperties, h.MaxProperties) &&
-		reflect.DeepEqual(b.Const, h.Const) && reflect.DeepEqual(b.Default, h.Default) && reflect.DeepEqual(b.Example, h.Example) &&
+		reflect.DeepEqual(b.Const, h.Const) && b.ConstNull == h.ConstNull && reflect.DeepEqual(b.Default, h.Default) && reflect.DeepEqual(b.Example, h.Example) &&
 		(b.Examples == nil && h.Examples == nil || reflect.DeepEqual(b.Examples, h.Examples))
 }
 
@@ -1775,7 +1775,7 @@ var siteKeywords = func() [][]int {
 		{"Format"}, {"Description"}, {"Nullable"}, {"Deprecated"}, {"ReadOnly"}, {"WriteOnly"},
 		{"Minimum", "ExclusiveMinimum"}, {"Maximum", "ExclusiveMaximum"},
 		{"MultipleOf"}, {"MinLength"}, {"MaxLength"}, {"Pattern"}, {"MinItems"}, {"MaxItems"},
-		{"UniqueItems"}, {"MinProperties"}, {"MaxProperties"}, {"Const"}, {"Default"},
+		{"UniqueItems"}, {"MinProperties"}, {"MaxProperties"}, {"Const", "ConstNull"}, {"Default"},
 	}
 	t := reflect.TypeOf(Schema{})
 	out := make([][]int, len(groups))
@@ -1943,8 +1943,8 @@ func (w *walk) nullable(bd *Document, b *Schema, hd *Document, h *Schema, path *
 }
 
 // admitsNull reports whether the flattened schema f lets null through: it
-// is nullable, or it states no type and none of enum, const, oneOf, anyOf
-// and not, which may refuse null. No type is inferred from properties or
+// is nullable, or it states no type and none of enum, a const other than
+// null, oneOf, anyOf and not, which may refuse null. No type is inferred from properties or
 // items here, as those apply to objects and arrays only. An enum without
 // null beside nullable is still read as letting null through.
 func admitsNull(f *Schema) bool {
@@ -1953,7 +1953,7 @@ func admitsNull(f *Schema) bool {
 
 // letsNull reports whether the flattened schema f, of doc, lets null
 // through: it is nullable, or it states no type, no not, no const other than
-// null, which Parse does not tell from no const, an enum only where it lists
+// null, an enum only where it lists
 // null, and oneOf or anyOf variants only where one of each keyword's lets
 // null through. A not is read as refusing null whatever it holds. seen holds
 // what each variant asked about was found to do, and a variant asked about
@@ -2282,7 +2282,7 @@ func (w *walk) validation(b, h *Schema, path *diffPath) bool {
 	}
 	w.count(path, "minProperties", b.MinProperties, h.MinProperties, false)
 	w.count(path, "maxProperties", b.MaxProperties, h.MaxProperties, true)
-	w.keyword(path, "const", valueText(b.Const), valueText(h.Const), true)
+	w.keyword(path, "const", constText(b), constText(h), true)
 	w.keyword(path, "default", valueText(b.Default), valueText(h.Default), false)
 	return len(w.changes) > n
 }
@@ -2522,6 +2522,15 @@ func valueText(v any) string {
 		return ParamString(v)
 	}
 	return strings.TrimSuffix(buf.String(), "\n")
+}
+
+// constText is the const of s as JSON, null for const: null, or "" when
+// there is none.
+func constText(s *Schema) string {
+	if s.ConstNull && s.Const == nil {
+		return "null"
+	}
+	return valueText(s.Const)
 }
 
 // patternText is a pattern as a JSON string, so where it starts and ends is

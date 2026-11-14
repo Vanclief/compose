@@ -3661,3 +3661,36 @@ func TestDiffParameterSerialization(t *testing.T) {
 	r := Diff(opsSpec(t, content(``), ``), opsSpec(t, content(`, "explode": false`), ``))
 	require.True(t, r.Empty(), r.Markdown())
 }
+
+// TestDiffConstNull checks that const: null given, dropped or replaced is
+// reported, as Parse tells it from no const, also given by an allOf member
+// or beside a $ref, with the reason for each flag.
+func TestDiffConstNull(t *testing.T) {
+	for _, c := range []struct {
+		why        string
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{"a string is no longer accepted, only null", `{"type": ["string", "null"]}`, `{"type": ["string", "null"], "const": null}`, "const added: null", true, false},
+		{"any value is now accepted where only null was", `{"const": null}`, `{}`, "const removed (was null)", false, true},
+		{"one value replaces another, which way it moves is not known", `{"const": null}`, `{"const": 1}`, "const changed from null to 1", true, true},
+		{"the same the other way", `{"const": 1}`, `{"const": null}`, "const changed from 1 to null", true, true},
+		{"a member's const applies to the schema", `{"type": ["string", "null"]}`, `{"allOf": [{"type": ["string", "null"]}, {"const": null}]}`, "const added: null", true, false},
+		{"a const beside a $ref applies with the model", `{"$ref": "#/components/schemas/N"}`, `{"$ref": "#/components/schemas/N", "const": null}`, "const added: null", true, false},
+	} {
+		const n = `"N": {"type": ["string", "null"]}`
+		for _, route := range []func(string) string{bodyPath, respPath} {
+			r := Diff(opsSpec(t, route(c.base), n), opsSpec(t, route(c.head), n))
+			path := "POST /w › request body"
+			breaking := c.req
+			if r.Operation("POST", "/w") == nil {
+				path = "GET /r › response 200"
+				breaking = c.resp
+			}
+			require.Equal(t, []Change{{Kind: Changed, Path: path, Detail: c.detail, Breaking: breaking}}, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+		}
+	}
+	r := Diff(opsSpec(t, bodyPath(`{"const": null}`), ``), opsSpec(t, bodyPath(`{"const": null}`), ``))
+	require.True(t, r.Empty(), r.Markdown())
+}

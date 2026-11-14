@@ -238,8 +238,9 @@ type Discriminator struct {
 // two add null to the type and leave the enum and const deciding. NullOnly
 // is true when 3.1 listed "null" as the only type, or when the oneOf and
 // anyOf members were all {type: "null"} beside no type, $ref or allOf,
-// which leaves Type empty as for a schema that states no type. Exclusive
-// bounds always hold the numeric form.
+// which leaves Type empty as for a schema that states no type. ConstNull is
+// true when Parse read const: null, which leaves Const nil as for no const.
+// Exclusive bounds always hold the numeric form.
 type Schema struct {
 	Ref           string           `json:"$ref" yaml:"$ref"`
 	Title         string           `json:"title" yaml:"title"`
@@ -251,6 +252,7 @@ type Schema struct {
 	NullOnly      bool             `json:"-" yaml:"-"`
 	Enum          []any            `json:"enum" yaml:"enum"`
 	Const         any              `json:"const" yaml:"const"`
+	ConstNull     bool             `json:"-" yaml:"-"`
 	Default       any              `json:"default" yaml:"default"`
 	Example       any              `json:"example" yaml:"example"`
 	Examples      []any            `json:"examples" yaml:"examples"`
@@ -306,9 +308,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
-	// Most schemas have no extensions; skip the second decode for them. A
-	// parent still rescans when only a nested schema has one.
-	if !bytes.Contains(data, []byte(`"x-`)) {
+	// Most schemas have no extensions and no const; skip the second decode
+	// for them. A parent still rescans when only a nested schema has one.
+	if !bytes.Contains(data, []byte(`"x-`)) && !bytes.Contains(data, []byte(`"const"`)) {
 		return nil
 	}
 	var raw map[string]json.RawMessage
@@ -316,6 +318,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
+	s.ConstNull = string(bytes.TrimSpace(raw["const"])) == "null"
 	for key, value := range raw {
 		if !strings.HasPrefix(key, "x-") {
 			continue
@@ -353,6 +356,9 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i].Value
+		if key == "const" {
+			s.ConstNull = s.Const == nil
+		}
 		if !strings.HasPrefix(key, "x-") {
 			continue
 		}

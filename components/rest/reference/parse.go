@@ -334,11 +334,13 @@ func withoutNullMembers(members []*Schema) ([]*Schema, bool) {
 }
 
 // onlyNull reports whether s admits null and nothing else, written as
-// {type: "null"} or as a nested anyOf or oneOf of null members, which
+// {type: "null"}, with or without const: null, or as a nested anyOf or
+// oneOf of null members, which
 // normalizeNullMembers has already folded into Nullable and NullMember.
 func onlyNull(s Schema) bool {
 	s.NullMember = false
 	s.NullOnly = false
+	s.ConstNull = false
 	return reflect.DeepEqual(s, Schema{Nullable: true})
 }
 

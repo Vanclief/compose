@@ -88,6 +88,41 @@ func TestSchemaTypeOnlyNull(t *testing.T) {
 	}
 }
 
+// TestSchemaConstNull checks that Parse tells const: null from no const,
+// in JSON and in YAML, where null may also be written ~, at any depth.
+func TestSchemaConstNull(t *testing.T) {
+	for _, c := range []struct {
+		schema string
+		null   bool
+	}{
+		{`{"const": null}`, true},
+		{`{"type": ["string", "null"], "const": null, "x-a": 1}`, true},
+		{`{"const": 1}`, false},
+		{`{"const": "null"}`, false},
+		{`{"type": "string"}`, false},
+		{`{"properties": {"const": {"type": "string"}}}`, false},
+	} {
+		for format, s := range parseSchemaBothWays(t, "3.1.0", c.schema) {
+			require.Equal(t, c.null, s.ConstNull, "%s %s", format, c.schema)
+			if c.null {
+				require.Nil(t, s.Const, "%s %s", format, c.schema)
+			}
+		}
+	}
+	for format, s := range parseSchemaBothWays(t, "3.1.0", `{"properties": {"p": {"items": {"const": null}}}}`) {
+		require.True(t, s.Properties.Map["p"].Items.ConstNull, format)
+	}
+	doc := parseYAML(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n    S: {const: ~}\n")
+	require.True(t, doc.Components.Schemas.Map["S"].ConstNull)
+
+	// A {type: null} member that also says const: null is a null member.
+	for format, s := range parseSchemaBothWays(t, "3.1.0", `{"anyOf": [{"type": "string"}, {"type": "null", "const": null}]}`) {
+		require.True(t, s.NullMember, format)
+		require.Empty(t, s.AnyOf, format)
+		require.Len(t, s.AllOf, 1, format)
+	}
+}
+
 func TestSchemaTypeNullValue(t *testing.T) {
 	for format, s := range parseSchemaBothWays(t, "3.1.0", `{"type": null}`) {
 		require.Empty(t, s.Type, format)
