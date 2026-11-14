@@ -12,7 +12,7 @@ Each section names the release its changes ship in; dates are on [GitHub release
 
 ### Highlights
 
-- **Generator: a route's handler is no longer read from inside a string literal.** The route finder searched the text of the handler argument for `h.Namespace.Method` or `h.Method`, string literals included, so `e.GET("/x", withLog("see h.Other.Thing", h.Widgets.Get))` was documented as `Other.Thing`, and `e.GET("/x", proxy("https://h.example.com/x"))` as a handler named after the host. The handler is now read from the argument's syntax tree, with the same rules as before otherwise: the first reference to the receiver variable, outside the body of a function literal and before the middleware arguments. A route whose only reference was in a string is now reported as a route without a handler method, which the app routes through one or leaves out with `Config.Skip`.
+- **Generator: a route's handler is no longer read from inside a string literal.** The route finder searched the text of the handler argument for `h.Namespace.Method` or `h.Method`, string literals included, so `e.GET("/x", withLog("see h.Other.Thing", h.Widgets.Get))` was documented as `Other.Thing`, and `e.GET("/x", proxy("https://h.example.com/x"))` as a handler whose name was read from the host. The handler is now read from the argument's syntax tree, with the same rules as before otherwise: the first reference to the receiver variable, outside the body of a function literal and before the middleware arguments. A route whose only reference was in a string is now reported as a route without a handler method, which the app routes through one or leaves out with `Config.Skip`.
 
 ## v1.37.0
 
