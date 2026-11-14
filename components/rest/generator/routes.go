@@ -143,19 +143,11 @@ func builtGoFile(path string) (bool, error) {
 }
 
 type routeParser struct {
-	cfg           Config
-	nestedHandler *regexp.Regexp
-	flatHandler   *regexp.Regexp
+	cfg Config
 }
 
 func newRouteParser(cfg Config) routeParser {
-	receiver := regexp.QuoteMeta(cfg.ReceiverVar)
-
-	return routeParser{
-		cfg:           cfg,
-		nestedHandler: regexp.MustCompile(`\b` + receiver + `\.(\w+)\.(\w+)`),
-		flatHandler:   regexp.MustCompile(`\b` + receiver + `\.(\w+)\b`),
-	}
+	return routeParser{cfg: cfg}
 }
 
 // parseFile reads the group assignments and route calls of one file, in source order. A
@@ -231,23 +223,21 @@ func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
 			flat:       p.cfg.flat(),
 		}
 
-		handlerRaw := handlerText(fset, file, data, call)
-
 		if p.cfg.DeprecatedWrapper != "" {
 			r.Deprecated = callsWrapper(call, p.cfg.DeprecatedWrapper)
 		}
 
-		nestedMatch, flatMatch := p.handlerMatches(handlerRaw)
+		names := handlerReference(call.Args[1], p.cfg.ReceiverVar)
 		switch {
-		case len(nestedMatch) > 2:
-			r.Namespace = lowerFirst(nestedMatch[1])
-			r.Handler = nestedMatch[2]
-		case len(flatMatch) > 1 && !p.cfg.flat():
-			err = ez.New(ez.EINVALID, location+": flat handler reference "+p.cfg.ReceiverVar+"."+flatMatch[1]+" is not allowed with a HandlersFile", nil)
+		case len(names) > 1:
+			r.Namespace = lowerFirst(names[0])
+			r.Handler = names[1]
+		case len(names) == 1 && !p.cfg.flat():
+			err = ez.New(ez.EINVALID, location+": flat handler reference "+p.cfg.ReceiverVar+"."+names[0]+" is not allowed with a HandlersFile", nil)
 			return false
-		case len(flatMatch) > 1:
+		case len(names) == 1:
 			r.Namespace = flatNamespace(strings.TrimPrefix(fullPath, rootPaths[receiver]))
-			r.Handler = flatMatch[1]
+			r.Handler = names[0]
 		}
 
 		if r.Handler == "" && !p.skip(method, fullPath) {
@@ -355,51 +345,51 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 	return value, true
 }
 
-// handlerText is the source of a route call's handler argument, the one after the path, for
-// the handler lookup. The arguments after it are middleware and are not read, so a route is
-// never documented as a middleware method. Comments and the bodies of
-// function literals are left out: a function literal is the route's handler itself, so an
-// h.Namespace.Method its body calls is not.
-func handlerText(fset *token.FileSet, file *ast.File, data []byte, call *ast.CallExpr) string {
-	tokenFile := fset.File(call.Pos())
-	handler := call.Args[1]
-	start := handler.Pos()
-	end := handler.End()
-
-	var cuts []ast.Node
-	for _, group := range file.Comments {
-		for _, comment := range group.List {
-			if comment.Pos() >= start && comment.End() <= end {
-				cuts = append(cuts, comment)
-			}
-		}
-	}
+// handlerReference returns the names after the receiver variable of the first reference to it
+// in a route call's handler argument, the one after the path: ["Namespace", "Method"] for
+// h.Namespace.Method, ["Method"] for h.Method. It reads the argument's syntax tree, so comments
+// and string literals refer to nothing. The arguments after it are middleware and are not read,
+// so a route is never documented as a middleware method, and the body of a function literal is
+// not read either: the literal is the route's handler itself, not an h.Namespace.Method it calls.
+func handlerReference(handler ast.Expr, receiver string) []string {
+	var names []string
 	ast.Inspect(handler, func(node ast.Node) bool {
-		lit, ok := node.(*ast.FuncLit)
-		if ok {
-			cuts = append(cuts, lit.Body)
+		if names != nil {
 			return false
+		}
+		switch n := node.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.SelectorExpr:
+			chain, ok := receiverChain(n, receiver)
+			if ok {
+				names = chain
+				return false
+			}
 		}
 		return true
 	})
-	sort.Slice(cuts, func(i int, j int) bool {
-		return cuts[i].Pos() < cuts[j].Pos()
-	})
 
-	var text strings.Builder
-	pos := start
-	for _, cut := range cuts {
-		if cut.Pos() > pos {
-			text.Write(data[tokenFile.Offset(pos):tokenFile.Offset(cut.Pos())])
-			text.WriteString(" ")
-		}
-		if cut.End() > pos {
-			pos = cut.End()
+	return names
+}
+
+// receiverChain returns the names after the receiver variable of a selector written on it,
+// [A, B] for h.A.B, through parentheses.
+func receiverChain(expr ast.Expr, receiver string) ([]string, bool) {
+	var names []string
+	for {
+		switch x := expr.(type) {
+		case *ast.ParenExpr:
+			expr = x.X
+		case *ast.SelectorExpr:
+			names = append([]string{x.Sel.Name}, names...)
+			expr = x.X
+		case *ast.Ident:
+			return names, x.Name == receiver && len(names) > 0
+		default:
+			return nil, false
 		}
 	}
-	text.Write(data[tokenFile.Offset(pos):tokenFile.Offset(end)])
-
-	return text.String()
 }
 
 // callsWrapper reports a call of the Config.DeprecatedWrapper function among a route call's
@@ -471,31 +461,6 @@ func selectorText(expr ast.Expr) string {
 	}
 
 	return ""
-}
-
-// handlerMatches returns the handler reference of a route call's handler argument as either
-// `h.Namespace.Method` (nestedMatch) or `h.Method` (flatMatch). The handler is the first
-// reference; a nested one after it in the same argument does not shadow a flat handler
-// before it.
-func (p routeParser) handlerMatches(handlerRaw string) ([]string, []string) {
-	nestedMatch := p.nestedHandler.FindStringSubmatchIndex(handlerRaw)
-	flatMatch := p.flatHandler.FindStringSubmatchIndex(handlerRaw)
-
-	if nestedMatch != nil && (flatMatch == nil || nestedMatch[0] <= flatMatch[0]) {
-		return []string{
-			handlerRaw[nestedMatch[0]:nestedMatch[1]],
-			handlerRaw[nestedMatch[2]:nestedMatch[3]],
-			handlerRaw[nestedMatch[4]:nestedMatch[5]],
-		}, nil
-	}
-	if flatMatch != nil {
-		return nil, []string{
-			handlerRaw[flatMatch[0]:flatMatch[1]],
-			handlerRaw[flatMatch[2]:flatMatch[3]],
-		}
-	}
-
-	return nil, nil
 }
 
 func (p routeParser) skip(method string, path string) bool {

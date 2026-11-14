@@ -8,6 +8,10 @@ Each section names the release its changes ship in; dates are on [GitHub release
 
 - **Generator: routes are no longer read from test files or from files a build leaves out.** The route finder read every file `Config.RoutesGlob` matched, so a route registered in a `_test.go` file, in a file marked `//go:build ignore` or in a file built only on another platform, such as `routes_windows.go` or one constrained with `//go:build windows`, was documented as an API route. Those files are now left out the way the compiler leaves them out, with go/build's default context, so the document is the one of the platform the generator runs on, as the standard-library types it reads already were. An app whose routes really live in such a file moves them to a file the build compiles; one that registers routes only on one platform generates its document on that platform.
 
+### Highlights
+
+- **Generator: a route's handler is no longer read from inside a string literal.** The route finder searched the text of the handler argument for `h.Namespace.Method` or `h.Method`, string literals included, so `e.GET("/x", withLog("see h.Other.Thing", h.Widgets.Get))` was documented as `Other.Thing`, and `e.GET("/x", proxy("https://h.example.com/x"))` as a handler named after the host. The handler is now read from the argument's syntax tree, with the same rules as before otherwise: the first reference to the receiver variable, outside the body of a function literal and before the middleware arguments. A route whose only reference was in a string is now reported as a route without a handler method, which the app routes through one or leaves out with `Config.Skip`.
+
 ## v1.37.0
 
 ### Breaking

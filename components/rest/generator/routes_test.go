@@ -259,6 +259,80 @@ func addRoutes(e *echo.Echo, h *Handler) {
 	}
 }
 
+// The handler is read from the code of the handler argument: a reference to the receiver
+// variable written inside a string literal names no handler.
+func TestParseRoutesReadsNoHandlerFromStrings(t *testing.T) {
+	nested := `package api
+
+func addRoutes(e *echo.Echo, h *Handlers) {
+	e.GET("/string", withLog("see h.Other.Thing", h.Widgets.Get))
+	e.GET("/raw-string", withLog(` + "`h.Other.Thing`" + `, h.Widgets.List))
+	e.GET("/url", proxy("https://h.example.com/x"))
+}
+`
+	flat := `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.GET("/string", withLog("see h.Nothing", h.GetWidget))
+	e.GET("/raw-string", withLog(` + "`h.Nothing`" + `, h.ListWidgets))
+	e.GET("/url", proxy("https://h.example.com/x"))
+}
+`
+
+	cases := []struct {
+		name string
+		src  string
+		cfg  Config
+		want []string
+	}{
+		{
+			name: "nested",
+			src:  nested,
+			cfg:  Config{RoutesGlob: "routes.go", HandlersFile: "handlers.go", HandlerGlob: "*.go"},
+			want: []string{"GET /raw-string widgets.List", "GET /string widgets.Get", "GET /url "},
+		},
+		{
+			name: "flat",
+			src:  flat,
+			cfg:  Config{RoutesGlob: "routes.go", HandlerGlob: "*.go"},
+			want: []string{"GET /raw-string ListWidgets", "GET /string GetWidget", "GET /url "},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeFixture(t, map[string]string{"routes.go": tc.src})
+			cfg := tc.cfg
+			cfg.Root = root
+
+			_, err := ParseRoutes(cfg)
+			if err == nil || !strings.Contains(err.Error(), "GET /url") {
+				t.Fatalf("the route whose only reference is in a string was not reported as without a handler: %v", err)
+			}
+
+			cfg.Skip = func(method string, path string) bool {
+				return path == "/url"
+			}
+			routes, err := ParseRoutes(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var got []string
+			for _, r := range routes {
+				key := ""
+				if r.Handler != "" {
+					key = r.HandlerKey()
+				}
+				got = append(got, r.Method+" "+r.Path+" "+key)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("routes:\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // The DeprecatedWrapper marks a route deprecated when its call calls that function among the
 // arguments after the path: around the handler, among the middleware, inside a function
 // literal or on a later line, qualified, with type arguments or in parentheses. A comment, a
