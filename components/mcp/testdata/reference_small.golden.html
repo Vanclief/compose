@@ -152,7 +152,7 @@ Then describe_function &lt;before&gt; call_function.</pre>
   The resident is notified.
   args:
     unit_id  integer  required  Unit receiving the package
-    carrier  string   enum: dhl|fedex|ups
+    carrier  string   enum: &#34;dhl&#34;|&#34;fedex&#34;|&#34;ups&#34;
     notes    string?
   returns Package: {id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit}
   see also: Package, RegisterPackageRequest, Unit, packages.Status</pre>
@@ -181,7 +181,7 @@ Then describe_function &lt;before&gt; call_function.</pre>
     unit_id       integer   required
     X-Request-Id  string
     body          string[]
-  returns units.Status: string enum: occupied|vacant
+  returns units.Status: string enum: &#34;occupied&#34;|&#34;vacant&#34;
   see also: units.Status</pre>
 </div>
 <div class="block" id="fn-units-summary" data-k="units.summary summarize a unit">
@@ -224,7 +224,7 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <h3>RegisterPackageRequest</h3>
 <pre>RegisterPackageRequest
   (no description)
-  fields: unit_id integer, carrier string enum: dhl|fedex|ups, notes string?
+  fields: unit_id integer, carrier string enum: &#34;dhl&#34;|&#34;fedex&#34;|&#34;ups&#34;, notes string?
   accepted by: packages.register_package</pre>
 </div>
 <div class="block" id="term-unit" data-k="unit">
@@ -250,14 +250,14 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <h3>packages.Status</h3>
 <pre>packages.Status
   (no description)
-  type: string enum: pending|delivered
+  type: string enum: &#34;pending&#34;|&#34;delivered&#34;
   accepted by: packages.list_packages</pre>
 </div>
 <div class="block" id="term-units.status" data-k="units.status">
 <h3>units.Status</h3>
 <pre>units.Status
   (no description)
-  type: string enum: occupied|vacant
+  type: string enum: &#34;occupied&#34;|&#34;vacant&#34;
   returned by: units.set_notes</pre>
 </div>
 </section>

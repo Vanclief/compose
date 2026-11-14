@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"flag"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,7 @@ func TestRenderSearchModule(t *testing.T) {
     The resident is notified.
     args:
       unit_id  integer  required  Unit receiving the package
-      carrier  string   enum: dhl|fedex|ups
+      carrier  string   enum: "dhl"|"fedex"|"ups"
       notes    string?
 
   packages.update_package  Update a package [deprecated]
@@ -134,7 +135,7 @@ module units
     The resident is notified.
     args:
       unit_id  integer  required  Unit receiving the package
-      carrier  string   enum: dhl|fedex|ups
+      carrier  string   enum: "dhl"|"fedex"|"ups"
       notes    string?`, c.renderSearch("", "front desk"))
 
 	// More than five matches keep one dense line per function.
@@ -225,7 +226,7 @@ func TestRenderDescribe(t *testing.T) {
   The resident is notified.
   args:
     unit_id  integer  required  Unit receiving the package
-    carrier  string   enum: dhl|fedex|ups
+    carrier  string   enum: "dhl"|"fedex"|"ups"
     notes    string?
   returns Package: {id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit}
   see also: Package, RegisterPackageRequest, Unit, packages.Status`, c.renderDescribe([]string{"packages.register_package"}))
@@ -252,7 +253,7 @@ packages.update_package  PATCH /packages/{id}  [deprecated]
     unit_id       integer   required
     X-Request-Id  string
     body          string[]
-  returns units.Status: string enum: occupied|vacant
+  returns units.Status: string enum: "occupied"|"vacant"
   see also: units.Status`, c.renderDescribe([]string{"units.set_notes"}))
 
 	assert.Equal(t, `units.summary  composite
@@ -334,7 +335,7 @@ func TestRenderExplain(t *testing.T) {
 
 packages.Status
   (no description)
-  type: string enum: pending|delivered
+  type: string enum: "pending"|"delivered"
   accepted by: packages.list_packages
 
 Unit
@@ -371,7 +372,7 @@ func TestTypeName(t *testing.T) {
 		"unknown ref":    {&reference.Schema{Ref: "#/components/schemas/Missing"}, "Missing"},
 		"allOf wrapper":  {&reference.Schema{AllOf: []*reference.Schema{{Ref: "#/components/schemas/models_Unit"}}, Nullable: true}, "Unit?"},
 		"array of terms": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Ref: "#/components/schemas/models_Unit"}}, "Unit[]"},
-		"array of enums": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}}}, "string[] enum: a|b"},
+		"array of enums": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}}}, `string[] enum: "a"|"b"`},
 		"format":         {&reference.Schema{Type: reference.TypeList{"string"}, Format: "date-time", Nullable: true}, "string date-time?"},
 		"enum":           {&reference.Schema{Type: reference.TypeList{"integer"}, Enum: []any{1.0, 2.0}}, "integer enum: 1|2"},
 		"inline object":  {&reference.Schema{Type: reference.TypeList{"object"}}, "object"},
@@ -384,12 +385,85 @@ func TestTypeName(t *testing.T) {
 			{Type: reference.TypeList{"integer"}},
 			{Type: reference.TypeList{"boolean"}},
 		}}, "integer|boolean"},
+		"empty string enum": {&reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", ""}}, `string enum: "a"|""`},
+		"enum as JSON":      {&reference.Schema{Enum: []any{`say "hi"`, "a|b", true, nil, 2.5}}, `any enum: "say \"hi\""|"a|b"|true|null|2.5`},
+		"enum not JSON":     {&reference.Schema{Type: reference.TypeList{"number"}, Enum: []any{math.Inf(1)}}, "number enum: +Inf"},
+		"enum as written":   {&reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"R&D", "<a>"}}, `string enum: "R&D"|"<a>"`},
+		"oneOf of enums": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}, Enum: []any{"valid", "invalid"}},
+			{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"valid", "invalid"}}},
+		}}, `(string enum: "valid"|"invalid")|(string[] enum: "valid"|"invalid")`},
+		"anyOf with one enum": {&reference.Schema{AnyOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}, Enum: []any{"a"}},
+			{Type: reference.TypeList{"integer"}},
+		}, Nullable: true}, `((string enum: "a")|integer)?`},
+		"nullable alternatives": {&reference.Schema{OneOf: []*reference.Schema{
+			{Ref: "#/components/schemas/models_Unit"},
+			{Type: reference.TypeList{"string"}},
+		}, Nullable: true}, "(Unit|string)?"},
+		"array of alternatives": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{OneOf: []*reference.Schema{
+			{Ref: "#/components/schemas/models_Unit"},
+			{Type: reference.TypeList{"string"}},
+		}}}, "(Unit|string)[]"},
+		"array of alternatives with an enum": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}},
+			{Type: reference.TypeList{"integer"}},
+		}}}, `((string enum: "a"|"b")|integer)[]`},
+		"nullable array of alternatives": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{AnyOf: []*reference.Schema{
+			{Type: reference.TypeList{"integer"}},
+			{Type: reference.TypeList{"boolean"}},
+		}}, Nullable: true}, "(integer|boolean)[]?"},
+		"array of nullable alternatives": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{AnyOf: []*reference.Schema{
+			{Type: reference.TypeList{"integer"}},
+			{Type: reference.TypeList{"boolean"}},
+		}, Nullable: true}}, "(integer|boolean)?[]"},
+		"alternative that is an array of alternatives": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+			{Type: reference.TypeList{"array"}, Items: &reference.Schema{AnyOf: []*reference.Schema{
+				{Type: reference.TypeList{"string"}, Enum: []any{"x", "y"}},
+				{Type: reference.TypeList{"integer"}, Enum: []any{1.0}},
+			}}},
+		}}, `string|((string enum: "x"|"y")|(integer enum: 1))[]`},
+		"nullable list around a list": {&reference.Schema{OneOf: []*reference.Schema{
+			{AnyOf: []*reference.Schema{
+				{Type: reference.TypeList{"string"}, Enum: []any{"a"}},
+				{Type: reference.TypeList{"integer"}},
+			}},
+		}, Nullable: true}, `((string enum: "a")|integer)?`},
+		"array of a list around a list": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{OneOf: []*reference.Schema{
+			{AnyOf: []*reference.Schema{
+				{Type: reference.TypeList{"string"}},
+				{Type: reference.TypeList{"integer"}},
+			}},
+		}}}, "(string|integer)[]"},
+		"array of a list around a nullable list": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{OneOf: []*reference.Schema{
+			{AnyOf: []*reference.Schema{
+				{Type: reference.TypeList{"string"}},
+				{Type: reference.TypeList{"integer"}},
+			}, Nullable: true},
+		}}}, "(string|integer)?[]"},
+		"nullable list of one": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+		}, Nullable: true}, "string?"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			assert.Equal(t, tc.want, c.typeName(tc.schema))
 		})
 	}
+}
+
+func TestTypeNameTermOfAlternatives(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {},
+		"components": {"schemas": {"Severity": {"oneOf": [{"type": "string"}, {"type": "integer"}]}}}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	// A term prints by its name, never wrapped, whatever its schema.
+	severity := &reference.Schema{Ref: "#/components/schemas/Severity"}
+	assert.Equal(t, "Severity[]", c.typeName(&reference.Schema{Type: reference.TypeList{"array"}, Items: severity}))
+	assert.Equal(t, "Severity?", c.typeName(&reference.Schema{Ref: "#/components/schemas/Severity", Nullable: true}))
+	assert.Equal(t, "string|integer", c.inlineType(mustTerm(t, c, "Severity").Schema))
 }
 
 func TestRenderEmmaGolden(t *testing.T) {
@@ -448,4 +522,40 @@ func TestRenderSmallClean(t *testing.T) {
 	assertClean(t, c.renderDescribe(names))
 	assertClean(t, c.renderExplain(terms))
 	assertClean(t, c.renderSearch("", "a"))
+}
+
+func TestRenderAlternativesWithEnums(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/checks": {"get": {"operationId": "checks.list", "parameters": [
+			{"name": "status", "in": "query", "schema": {"$ref": "#/components/schemas/StatusFilter"}},
+			{"name": "result", "in": "query", "schema": {"oneOf": [
+				{"type": "string", "enum": ["valid", "invalid"]},
+				{"type": "array", "items": {"type": "string", "enum": ["valid", "invalid"]}}
+			]}}
+		], "responses": {"200": {"content": {"application/json": {"schema": {"anyOf": [
+			{"type": "string", "enum": ["a", ""]},
+			{"type": "integer"}
+		]}}}}}}}
+	}, "components": {"schemas": {
+		"StatusFilter": {"oneOf": [
+			{"type": "string", "enum": ["open", "closed"]},
+			{"type": "array", "items": {"type": "string", "enum": ["open", "closed"]}}
+		]}
+	}}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, `checks.list  GET /checks
+  args:
+    status  StatusFilter
+    result  (string enum: "valid"|"invalid")|(string[] enum: "valid"|"invalid")
+  returns (string enum: "a"|"")|integer
+  see also: StatusFilter`, c.renderDescribe([]string{"checks.list"}))
+
+	assert.Equal(t, `StatusFilter
+  (no description)
+  type: (string enum: "open"|"closed")|(string[] enum: "open"|"closed")
+  accepted by: checks.list`, c.renderExplain([]string{"StatusFilter"}))
+
+	assert.Equal(t, `Returns (string enum: "a"|"")|integer`, c.toolDescription(mustFunction(t, c, "checks.list")))
 }

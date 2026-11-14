@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -554,7 +555,9 @@ func (c *Catalog) argParts(a *Arg) (string, string) {
 
 // typeName is the compact type notation the agent reads: a term name,
 // "<items>[]", "<type> <format>", a trailing "?" when nullable, "A|B" for
-// alternatives, "object" for inline objects, and " enum: a|b" for enums.
+// alternatives, with an alternative that has an enum in parentheses and
+// "(A|B)" before a "?" or "[]", "object" for inline objects, and
+// ` enum: "a"|"b"` for enums, the values written as JSON.
 func (c *Catalog) typeName(s *reference.Schema) string {
 	head, enum := c.typeParts(s)
 	if enum == "" {
@@ -595,13 +598,32 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 	if len(members) > 0 {
 		names := make([]string, 0, len(members))
 		for _, member := range members {
-			names = append(names, c.typeName(member))
+			head, enum := c.typeParts(member)
+			// The values of an enum are joined by "|" too, so a member with
+			// one is parenthesized.
+			if enum != "" {
+				names = append(names, "("+head+" "+enum+")")
+				continue
+			}
+			names = append(names, head)
 		}
-		return strings.Join(names, "|") + nullMark(s), ""
+		list := strings.Join(names, "|")
+		// A list of alternatives is wrapped before the "?".
+		if c.listCount(s) > 1 && s.Nullable {
+			list = "(" + list + ")"
+		}
+		return list + nullMark(s), ""
 	}
 
 	if s.Items != nil || s.Type.Primary() == "array" {
-		head, enum := c.typeParts(s.Items)
+		items := s.Items
+		head, enum := c.typeParts(items)
+		// Items printed as a list of alternatives are wrapped before the
+		// "[]", unless nullable, as those already are.
+		listed := items != nil && c.termName(items) == "" && c.listCount(items) > 1
+		if listed && !items.Nullable {
+			head = "(" + head + ")"
+		}
 		return head + "[]" + nullMark(s), enum
 	}
 
@@ -616,6 +638,28 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 		head += " " + s.Format
 	}
 	return head + nullMark(s), enumText(s.Enum)
+}
+
+// listCount is the number of alternatives inlineParts joins with "|" for s:
+// the members of its oneOf and anyOf, where a member that is itself a list
+// counts by its own alternatives unless it prints wrapped, as a nullable one
+// does.
+func (c *Catalog) listCount(s *reference.Schema) int {
+	n := 0
+	for _, members := range [][]*reference.Schema{s.OneOf, s.AnyOf} {
+		for _, member := range members {
+			inner := 0
+			if member != nil && c.termName(member) == "" {
+				inner = c.listCount(member)
+			}
+			if inner > 1 && !member.Nullable {
+				n += inner
+				continue
+			}
+			n++
+		}
+	}
+	return n
 }
 
 // termName returns the term s stands for: the target of its $ref, the member
@@ -648,14 +692,25 @@ func nullMark(s *reference.Schema) string {
 	return ""
 }
 
-// enumText prints enum values as "enum: a|b", or "" without values.
+// enumText prints enum values as JSON, `enum: "a"|""|1|null`, or "" without
+// values. <, > and & are written as they are, not as the \u escapes
+// json.Marshal gives them. A value the encoder refuses is printed with
+// fmt.Sprint.
 func enumText(values []any) string {
 	if len(values) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(values))
 	for _, v := range values {
-		parts = append(parts, fmt.Sprint(v))
+		var text strings.Builder
+		encoder := json.NewEncoder(&text)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(v)
+		if err != nil {
+			parts = append(parts, fmt.Sprint(v))
+			continue
+		}
+		parts = append(parts, strings.TrimSuffix(text.String(), "\n"))
 	}
 	return "enum: " + strings.Join(parts, "|")
 }
