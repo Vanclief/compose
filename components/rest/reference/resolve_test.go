@@ -862,3 +862,86 @@ components:
 `)
 	require.Equal(t, int64(9007199254740993), old.ExampleValue(schemaRef("Above"), ForRequest))
 }
+
+// TestFlattenKeepsCommonTypes checks that the type of a flattened allOf is
+// what every member that states one allows, an integer counting as a
+// number, in the order of the first, and the first stated where they share
+// none.
+func TestFlattenKeepsCommonTypes(t *testing.T) {
+	for _, c := range []struct {
+		members string
+		want    TypeList
+	}{
+		{`[{type: number}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: integer}, {type: number}]`, TypeList{"integer"}},
+		{`[{description: d}, {type: number}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: [string, integer]}, {type: string}]`, TypeList{"string"}},
+		{`[{type: [number, string]}, {type: [integer, boolean]}]`, TypeList{"integer"}},
+		{`[{type: [number, integer]}, {type: integer}]`, TypeList{"integer"}},
+		{`[{type: [integer, string]}, {type: number}]`, TypeList{"integer"}},
+		{`[{type: [string, integer]}, {type: integer}, {type: string}]`, TypeList{"integer"}},
+		{`[{type: [number, "null"]}, {type: "null"}]`, TypeList{"number"}},
+		{`[{type: [string, "null"]}, {type: [integer, string]}]`, TypeList{"string"}},
+		{`[{type: object}, {type: string}]`, TypeList{"object"}},
+		{`[{type: string}, {type: object}]`, TypeList{"string"}},
+	} {
+		doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    M: {allOf: `+c.members+`}
+`)
+		require.Equal(t, c.want, doc.Flatten(schemaRef("M")).Type, c.members)
+	}
+}
+
+// TestFlattenAdditionalProperties checks that a flattened allOf keeps the
+// first additionalProperties given, unless a later one refuses every other
+// property and the first does not, and that items keep the first given.
+func TestFlattenAdditionalProperties(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    Extra:
+      allOf:
+        - {type: object, additionalProperties: {type: string, maxLength: 50}}
+        - {type: object, additionalProperties: {type: string, maxLength: 30}}
+    Closed:
+      allOf:
+        - {type: object, additionalProperties: {type: string}}
+        - {type: object, additionalProperties: false}
+    ClosedFirst:
+      allOf:
+        - {type: object, additionalProperties: false}
+        - {type: object, additionalProperties: {type: string}}
+    RefusesAll:
+      allOf:
+        - {type: object, additionalProperties: true}
+        - {type: object, additionalProperties: {not: {}}}
+    Open:
+      allOf:
+        - {type: object, additionalProperties: true}
+        - {type: object, additionalProperties: {type: string}}
+    BothRefuse:
+      allOf:
+        - {type: object, additionalProperties: false}
+        - {type: object, additionalProperties: {not: {}}}
+    Items:
+      allOf:
+        - {type: array, items: {type: string, maxLength: 50}}
+        - {type: array, items: {type: string, maxLength: 30}}
+`)
+	members := func(name string) []*Schema {
+		return doc.Components.Schemas.Map[name].AllOf
+	}
+	require.Same(t, members("Extra")[0].AdditionalProperties, doc.Flatten(schemaRef("Extra")).AdditionalProperties)
+	require.Same(t, members("Closed")[1].AdditionalProperties, doc.Flatten(schemaRef("Closed")).AdditionalProperties)
+	require.Same(t, members("ClosedFirst")[0].AdditionalProperties, doc.Flatten(schemaRef("ClosedFirst")).AdditionalProperties)
+	require.Same(t, members("RefusesAll")[1].AdditionalProperties, doc.Flatten(schemaRef("RefusesAll")).AdditionalProperties)
+	require.Same(t, members("Open")[0].AdditionalProperties, doc.Flatten(schemaRef("Open")).AdditionalProperties)
+	require.Same(t, members("BothRefuse")[0].AdditionalProperties, doc.Flatten(schemaRef("BothRefuse")).AdditionalProperties)
+	require.Same(t, members("Items")[0].Items, doc.Flatten(schemaRef("Items")).Items)
+}

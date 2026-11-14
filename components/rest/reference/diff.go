@@ -436,9 +436,10 @@ func (p *diffPath) String() string {
 
 // Diff compares two documents structurally: operations by method and path,
 // schemas property by property after allOf flattening and ref resolution.
-// Flattening keeps the tightest of the bounds allOf members set, and the
-// keywords written beside a $ref apply together with the model it names, on
-// a schema and on each allOf member alike.
+// Flattening keeps the tightest of the bounds allOf members set and the
+// types they have in common, see Document.Flatten, and the keywords written
+// beside a $ref apply together with the model it names, on a schema and on
+// each allOf member alike.
 //
 // Where both sides refer to the same model, under any spelling of the
 // reference, as a $ref or as single-member allOf wrappers nested around one,
@@ -480,16 +481,18 @@ func (p *diffPath) String() string {
 // oneOf and anyOf lists, like default and the other keywords that cannot be
 // combined across allOf members, are compared as the first one found, the
 // schema's own and then its members' in order, so the list of a second
-// member is not compared. Each keyword is compared on its own, so a change
-// another keyword makes moot is still reported with its own flag: a
-// maxLength changed under an enum whose values all meet both, bounds that
-// admit no value changed for others that admit none either, a const added
-// under an enum of that one value, a minProperties of 1 added where a
-// required property was dropped. A schema with nullable and an enum or const
-// without null is read as letting null through, so nullable removed there is
-// breaking in a request though neither side accepts null, and a oneOf in
-// which two variants let null through is read as letting null through,
-// though the oneOf then refuses it. A schema with a not is read as refusing
+// member is not compared. Of a property two members define only the later
+// definition is compared, and of items two members give only the first.
+// Each keyword is compared on its own, so a change another keyword makes
+// moot is still reported with its own flag: a maxLength changed under an
+// enum whose values all meet both, bounds that admit no value changed for
+// others that admit none either, a const added under an enum of that one
+// value, a minProperties of 1 added where a required property was dropped.
+// A schema with nullable and an enum or const without null is read as
+// letting null through, so nullable removed there is breaking in a request
+// though neither side accepts null, and a oneOf in which two variants let
+// null through is read as letting null through, though the oneOf then
+// refuses it. A schema with a not is read as refusing
 // null, so nullable removed beside a not breaks a request, and given beside
 // one breaks a response, whatever the not refuses. A type of only null is
 // read as the type null, made nullable, so {type: string} or {} to {type:
@@ -2013,8 +2016,7 @@ func allowsAll(s *Schema) bool {
 // closed reports whether s refuses properties it does not list, with
 // additionalProperties: false, or a schema that allows no value.
 func closed(s *Schema) bool {
-	a := s.AdditionalProperties
-	return a != nil && (!a.Allowed || refusesAll(a.Schema))
+	return refusesExtra(s.AdditionalProperties)
 }
 
 // anySchema is the empty schema, which allows any value, standing for an

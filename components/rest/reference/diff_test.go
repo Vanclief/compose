@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -3497,4 +3498,188 @@ func TestDiffTypeListOrder(t *testing.T) {
 	require.True(t, r.Empty(), r.Markdown())
 	r = Diff(opsSpec(t, bodyPath(`{"type": ["string", "integer"]}`), ``), opsSpec(t, bodyPath(`{"type": ["integer", "boolean"]}`), ``))
 	require.Equal(t, []Change{{Kind: Changed, Path: "POST /w › request body", Detail: "type changed from string | integer to integer | boolean", Breaking: true}}, publicChanges(r.Operation("POST", "/w").Changes), r.Markdown())
+}
+
+// TestDiffAllOfMergedKeywords checks that a type narrowed by a later allOf
+// member or beside a $ref, and additional properties refused by a later
+// member, are compared as what applies, while of a property two members
+// define and of items two give only the definition Flatten keeps is
+// compared.
+func TestDiffAllOfMergedKeywords(t *testing.T) {
+	const amount = `"Amount": {"type": "number"}, "C0": {"type": "integer"}`
+	object := func(v string) string {
+		return amount + `, "M": {"type": "object", "properties": {"v": ` + v + `}}`
+	}
+	members := func(a, b string) string {
+		return `"M": {"allOf": [` + a + `, ` + b + `]}`
+	}
+	for _, c := range []struct {
+		name       string
+		base, head string
+		want       []Change
+	}{
+		{
+			name: "a reference to a number narrowed to integer by a later member",
+			base: object(`{"$ref": "#/components/schemas/Amount"}`),
+			head: object(`{"allOf": [{"$ref": "#/components/schemas/Amount"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by a later member",
+			base: object(`{"type": "number"}`),
+			head: object(`{"allOf": [{"type": "number"}, {"type": "integer"}]}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "a number narrowed to integer by the model beside it",
+			base: object(`{"type": "number"}`),
+			head: object(`{"$ref": "#/components/schemas/C0", "type": "number"}`),
+			want: []Change{{Kind: Changed, Path: "M › v", Detail: "type changed from number to integer", Breaking: true}},
+		},
+		{
+			name: "types that share none keep the first",
+			base: members(`{"type": "object"}`, `{"type": "string"}`),
+			head: members(`{"type": "object"}`, `{"type": "integer"}`),
+			want: []Change{},
+		},
+		{
+			name: "a property both members define, lowered in the earlier definition, which the later replaces",
+			base: members(`{"properties": {"name": {"type": "string", "maxLength": 50}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			head: members(`{"properties": {"name": {"type": "string", "maxLength": 30}}}`, `{"properties": {"name": {"type": "string"}}}`),
+			want: []Change{},
+		},
+		{
+			name: "items both members give, lowered in the second, as the first is kept",
+			base: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 40}}`),
+			head: members(`{"type": "array", "items": {"type": "string", "maxLength": 50}}`, `{"items": {"type": "string", "maxLength": 30}}`),
+			want: []Change{},
+		},
+		{
+			name: "additional properties refused by the second member",
+			base: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object"}`),
+			head: members(`{"type": "object", "additionalProperties": {"type": "string"}}`, `{"type": "object", "additionalProperties": false}`),
+			want: []Change{{Kind: Changed, Path: "M", Detail: "additional properties no longer allowed", Breaking: true}},
+		},
+		{
+			name: "additional properties allowed by the first member and refused by the second",
+			base: members(`{"type": "object", "additionalProperties": true}`, `{"type": "object"}`),
+			head: members(`{"type": "object", "additionalProperties": true}`, `{"type": "object", "additionalProperties": false}`),
+			want: []Change{{Kind: Changed, Path: "M", Detail: "additional properties no longer allowed", Breaking: true}},
+		},
+	} {
+		r := diffWithin(t, opsSpec(t, ``, c.base), opsSpec(t, ``, c.head))
+		require.Equal(t, c.want, publicChanges(r.Changes), "%s\n%s", c.name, r.Markdown())
+	}
+}
+
+// endsWithin runs f, failing t when it takes more than a minute, as work
+// that does not end would; see diffWithin.
+func endsWithin(t *testing.T, what string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		f()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatal(what + " did not return")
+	}
+}
+
+// recursiveSubtype is a model M, used by a request body and a response,
+// that refers to itself where a model it extends through allOf refers to
+// that model: through a property, items, additional properties, n
+// properties, two models that refer to each other, or a chain of three
+// models. limit is the maxLength, maxItems or maxProperties of each
+// shape's one bound.
+func recursiveSubtype(t *testing.T, shape string, limit int) *Document {
+	ref := func(name string) string {
+		return `{"$ref": "#/components/schemas/` + name + `"}`
+	}
+	l := strconv.Itoa(limit)
+	id := `"id": {"type": "string", "maxLength": ` + l + `}`
+	properties := func(n int, model string) string {
+		var out []string
+		for i := range n {
+			out = append(out, `"p`+strconv.Itoa(i)+`": `+ref(model))
+		}
+		return strings.Join(out, ", ")
+	}
+	schemas := map[string]string{
+		"parent":        `"B": {"type": "object", "properties": {` + id + `, "parent": ` + ref("B") + `}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {"name": {"type": "string"}, "parent": ` + ref("M") + `}}]}`,
+		"children":      `"B": {"type": "object", "properties": {` + id + `, "children": {"type": "array", "items": ` + ref("B") + `}}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {"children": {"type": "array", "items": ` + ref("M") + `}}}]}`,
+		"items":         `"B": {"type": "array", "items": ` + ref("B") + `, "maxItems": ` + l + `}, "M": {"allOf": [` + ref("B") + `, {"type": "array", "items": ` + ref("M") + `}]}`,
+		"additional":    `"B": {"type": "object", "additionalProperties": ` + ref("B") + `, "maxProperties": ` + l + `}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "additionalProperties": ` + ref("M") + `}]}`,
+		"mutual":        `"M": {"allOf": [{"type": "object", "properties": {"p": ` + ref("M") + `}}, {"type": "object", "properties": {"p": ` + ref("N") + `}}]}, "N": {"allOf": [{"type": "object", "properties": {"p": ` + ref("N") + `, "q": {"type": "string", "maxLength": ` + l + `}}}, {"type": "object", "properties": {"p": ` + ref("M") + `}}]}`,
+		"5 properties":  `"B": {"type": "object", "properties": {` + id + `, ` + properties(5, "B") + `}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {` + properties(5, "M") + `}}]}`,
+		"10 properties": `"B": {"type": "object", "properties": {` + id + `, ` + properties(10, "B") + `}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {` + properties(10, "M") + `}}]}`,
+		"chain":         `"A": {"type": "object", "properties": {"kids": {"type": "array", "items": ` + ref("A") + `}, "n": {"type": "string", "maxLength": ` + l + `}}}, "B": {"allOf": [` + ref("A") + `, {"type": "object", "properties": {"kids": {"type": "array", "items": ` + ref("B") + `}}}]}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {"kids": {"type": "array", "items": ` + ref("M") + `}}}]}`,
+	}
+	return opsSpec(t, bodyPath(ref("M"))+", "+respPath(ref("M")), schemas[shape])
+}
+
+// TestDiffRecursiveSubtypes checks that a model that refers to itself where
+// the model it extends refers to that one, see recursiveSubtype, is
+// compared, rendered and given an example: comparing it with itself finds
+// no change, a lowered bound is reported in each model that holds it, and
+// the property, items or additional properties the subtype redefines are
+// its own definition, so the example stops at the subtype as at any model
+// met again.
+func TestDiffRecursiveSubtypes(t *testing.T) {
+	many := func(n int) []string {
+		out := []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "B › id | maxLength lowered from 5 to 4"}
+		for i := range n {
+			out = append(out, "B › p"+strconv.Itoa(i)+" | model B changed")
+		}
+		out = append(out, "M › id | maxLength lowered from 5 to 4")
+		for i := range n {
+			out = append(out, "M › p"+strconv.Itoa(i)+" | model M changed")
+		}
+		return out
+	}
+	for _, c := range []struct {
+		shape   string
+		changes []string
+		example string
+	}{
+		{"parent", []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "B › id | maxLength lowered from 5 to 4", "B › parent | model B changed", "M › id | maxLength lowered from 5 to 4", "M › parent | model M changed"}, `{"id":"stri","parent":{},"name":"string"}`},
+		{"children", []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "B › id | maxLength lowered from 5 to 4", "B › children[] | model B changed", "M › id | maxLength lowered from 5 to 4", "M › children[] | model M changed"}, `{"id":"stri","children":[{}]}`},
+		{"items", []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "B | maxItems lowered from 5 to 4", "B[] | model B changed", "M | maxItems lowered from 5 to 4", "M[] | model B changed"}, `[[[]]]`},
+		{"additional", []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "B | maxProperties lowered from 5 to 4", "B › <key> | model B changed", "M | maxProperties lowered from 5 to 4", "M › <key> | model B changed"}, `{"key":{"key":{}}}`},
+		{"mutual", []string{"POST /w › request body | model M changed (through N)", "GET /r › response 200 | model M changed (through N)", "M › p | model N changed", "N › q | maxLength lowered from 5 to 4", "N › p | model M changed (through N)"}, `{"p":{"p":{},"q":"stri"}}`},
+		{"5 properties", many(5), `{"id":"stri","p0":{},"p1":{},"p2":{},"p3":{},"p4":{}}`},
+		{"10 properties", many(10), `{"id":"stri","p0":{},"p1":{},"p2":{},"p3":{},"p4":{},"p5":{},"p6":{},"p7":{},"p8":{},"p9":{}}`},
+		{"chain", []string{"POST /w › request body | model M changed", "GET /r › response 200 | model M changed", "A › n | maxLength lowered from 5 to 4", "A › kids[] | model A changed", "B › n | maxLength lowered from 5 to 4", "B › kids[] | model B changed", "M › n | maxLength lowered from 5 to 4", "M › kids[] | model M changed"}, `{"kids":[{}],"n":"stri"}`},
+	} {
+		base := recursiveSubtype(t, c.shape, 5)
+		head := recursiveSubtype(t, c.shape, 4)
+		r := diffWithin(t, base, base)
+		require.True(t, r.Empty(), "%s\n%s", c.shape, r.Markdown())
+		r = diffWithin(t, base, head)
+		require.Equal(t, c.changes, changeLines(r), c.shape)
+		var err error
+		endsWithin(t, c.shape+": Render", func() {
+			_, err = Render(head, Options{})
+		})
+		require.NoError(t, err, c.shape)
+		var example string
+		endsWithin(t, c.shape+": ExampleJSON", func() {
+			example = head.ExampleJSON(schemaRef("M"), ForRequest)
+		})
+		require.JSONEq(t, c.example, example, c.shape)
+	}
+}
+
+// TestDiffRedefinedPropertyKeepsItsModel checks that a property an allOf
+// member redefines as a reference to the same model, with only another
+// description, is still that model: a change inside the model is reported
+// once, in it, where the property is used.
+func TestDiffRedefinedPropertyKeepsItsModel(t *testing.T) {
+	spec := func(maxLength string) *Document {
+		return opsSpec(t, bodyPath(`{"$ref": "#/components/schemas/Sub"}`), `"User": {"type": "object", "properties": {"name": {"type": "string", "maxLength": `+maxLength+`}, "id": {"type": "integer"}}}, "Base": {"type": "object", "properties": {"owner": {"$ref": "#/components/schemas/User", "description": "Owner"}}}, "Sub": {"allOf": [{"$ref": "#/components/schemas/Base"}, {"type": "object", "properties": {"owner": {"$ref": "#/components/schemas/User", "description": "The admin owner"}}}]}`)
+	}
+	r := diffWithin(t, spec("4"), spec("5"))
+	require.Equal(t, []string{"POST /w › request body | model Sub changed (through User)", "User › name | maxLength raised from 4 to 5", "Base › owner | model User changed", "Sub › owner | model User changed"}, changeLines(r))
 }

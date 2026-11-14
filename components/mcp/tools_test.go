@@ -471,6 +471,92 @@ func TestFunctionInputSchemaAllOfCycle(t *testing.T) {
 	}`, schemaJSON(t, schema))
 }
 
+// TestFunctionInputSchemaRecursiveSubtype: a model that refers to itself
+// where the model it extends through allOf refers to that one, through a
+// property, array items or several properties, and a model that redefines
+// properties of the one it extends without their readOnly and nullable,
+// give the schema of the redefinition, and a schema past maxSchemaNodes is
+// refused rather than built.
+func TestFunctionInputSchemaRecursiveSubtype(t *testing.T) {
+	ref := func(name string) string {
+		return `{"$ref": "#/components/schemas/` + name + `"}`
+	}
+	properties := func(model string) string {
+		var out []string
+		for i := range 10 {
+			out = append(out, fmt.Sprintf(`"p%d": %s`, i, ref(model)))
+		}
+		return strings.Join(out, ", ")
+	}
+	for _, c := range []struct {
+		name, schemas, want string
+	}{
+		{
+			name:    "parent",
+			schemas: `"B": {"type": "object", "properties": {"id": {"type": "string"}, "parent": ` + ref("B") + `}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {"name": {"type": "string"}, "parent": ` + ref("M") + `}}]}`,
+			want: `{"type": "object", "properties": {
+				"id": {"type": "string"},
+				"parent": {"type": "object", "properties": {
+					"id": {"type": "string"},
+					"parent": {"type": "object", "properties": {"id": {"type": "string"}, "parent": {"type": "object"}, "name": {"type": "string"}}},
+					"name": {"type": "string"}
+				}},
+				"name": {"type": "string"}
+			}, "additionalProperties": false}`,
+		},
+		{
+			name:    "children",
+			schemas: `"B": {"type": "object", "properties": {"id": {"type": "string"}, "children": {"type": "array", "items": ` + ref("B") + `}}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {"children": {"type": "array", "items": ` + ref("M") + `}}}]}`,
+			want: `{"type": "object", "properties": {
+				"id": {"type": "string"},
+				"children": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "children": {"type": "array"}}}}
+			}, "additionalProperties": false}`,
+		},
+		{
+			name:    "flags",
+			schemas: `"Pet": {"type": "object", "properties": {"id": {"type": "string", "readOnly": true}, "nickname": {"type": "string", "nullable": true}}}, "M": {"allOf": [` + ref("Pet") + `, {"type": "object", "required": ["id", "nickname"], "properties": {"id": {"type": "string", "description": "client-chosen id"}, "nickname": {"type": "string", "description": "required and not null here"}}}]}`,
+			want: `{"type": "object", "properties": {
+				"id": {"type": "string", "description": "client-chosen id"},
+				"nickname": {"type": "string", "description": "required and not null here"}
+			}, "required": ["id", "nickname"], "additionalProperties": false}`,
+		},
+		{
+			name:    "10 properties",
+			schemas: `"B": {"type": "object", "properties": {"id": {"type": "string"}, ` + properties("B") + `}}, "M": {"allOf": [` + ref("B") + `, {"type": "object", "properties": {` + properties("M") + `}}]}`,
+		},
+	} {
+		doc := parseSpec(t, `{"openapi": "3.0.3", "info": {"title": "T", "version": "1"}, "paths": {"/m": {"post": {
+			"operationId": "m.create",
+			"requestBody": {"required": true, "content": {"application/json": {"schema": `+ref("M")+`}}},
+			"responses": {"200": {"description": "OK"}}
+		}}}, "components": {"schemas": {`+c.schemas+`}}}`)
+		var schema any
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var catalog *Catalog
+			catalog, err = buildCatalog(doc, nil, nil)
+			if err != nil {
+				return
+			}
+			f, _ := catalog.Function("m.create")
+			schema, err = f.InputSchema()
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
+			t.Fatalf("%s: the input schema did not return", c.name)
+		}
+		if c.want == "" {
+			require.Equal(t, ez.EINVALID, ez.ErrorCode(err), c.name)
+			continue
+		}
+		require.NoError(t, err, c.name)
+		assert.JSONEq(t, c.want, schemaJSON(t, schema), c.name)
+	}
+}
+
 func TestFunctionInputSchemaNullableRefs(t *testing.T) {
 	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "Null", "version": "1"}, "paths": {
 		"/people": {"post": {

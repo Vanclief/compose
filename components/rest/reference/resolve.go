@@ -159,12 +159,22 @@ func (d *Document) Example(e *Example) *Example {
 // minItems, maxItems, minProperties and maxProperties each, and of the lower
 // bound minimum and exclusiveMinimum (and the upper bound maximum and
 // exclusiveMaximum) together, kept in the one keyword that holds it, the
-// exclusive one at equal values, in its numeric form. Other scalar keywords
-// take the first non-empty value walking parent first then members in
-// order; boolean flags (nullable, deprecated, readOnly, writeOnly,
-// uniqueItems) are true when any of them sets it. oneOf, anyOf,
-// discriminator and additionalProperties of members are kept only when the
-// parent has none of its own.
+// exclusive one at equal values, in its numeric form. The types are taken
+// walking parent first then members in order: each one that states types
+// keeps of those taken so far the ones it allows, an integer counting as a
+// number, so number and integer give integer, and leaves them as they are
+// where they share none, as no value is accepted either way, so [string,
+// integer], then integer, then string give integer. A member of only
+// {type: "null"}, which Parse reads as nullable with no type, states none.
+// items and the other keywords that take one value take the first
+// non-empty one walking parent first then members in order; boolean flags
+// (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when
+// any of them sets it.
+// additionalProperties is the first one given as well, unless a later one
+// refuses every other property, false or a schema that allows no value, and
+// the first does not; then that later one is kept. oneOf, anyOf and
+// discriminator of members are kept only when the parent has none of its
+// own.
 //
 // A member's oneOf, anyOf and discriminator are dropped when they point back
 // at the schema being flattened or at any schema in the current allOf chain.
@@ -419,9 +429,7 @@ func mergeInto(out, m *Schema) {
 		}
 	}
 
-	if len(out.Type) == 0 {
-		out.Type = m.Type
-	}
+	out.Type = commonTypes(out.Type, m.Type)
 	if out.Format == "" {
 		out.Format = m.Format
 	}
@@ -458,7 +466,7 @@ func mergeInto(out, m *Schema) {
 	if out.Discriminator == nil {
 		out.Discriminator = m.Discriminator
 	}
-	if out.AdditionalProperties == nil {
+	if out.AdditionalProperties == nil || (refusesExtra(m.AdditionalProperties) && !refusesExtra(out.AdditionalProperties)) {
 		out.AdditionalProperties = m.AdditionalProperties
 	}
 	if m.Nullable {
@@ -497,6 +505,46 @@ func mergeInto(out, m *Schema) {
 	if m.UniqueItems {
 		out.UniqueItems = true
 	}
+}
+
+// commonTypes returns the types both a and b allow, in the order of a, an
+// integer counting as a number: either list where the other is empty, and a
+// where they share none, as no value is then accepted whichever is kept.
+// Flatten folds the members' types with it, so a is what those before
+// agree on.
+func commonTypes(a, b TypeList) TypeList {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	var out TypeList
+	for _, t := range a {
+		both := t
+		switch {
+		case b.Has(t):
+		case t == "number" && b.Has("integer"):
+			both = "integer"
+		case t == "integer" && b.Has("number"):
+		default:
+			continue
+		}
+		if !out.Has(both) {
+			out = append(out, both)
+		}
+	}
+	if len(out) == 0 {
+		return a
+	}
+	return out
+}
+
+// refusesExtra reports whether a, an additionalProperties keyword or nil,
+// refuses every property the object does not list: false, or a schema that
+// allows no value.
+func refusesExtra(a *AdditionalProperties) bool {
+	return a != nil && (!a.Allowed || refusesAll(a.Schema))
 }
 
 // tightest returns the tighter of two limits, either of which may be unset:
