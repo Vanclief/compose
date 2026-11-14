@@ -164,6 +164,15 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 			hasBody = true
 		}
 	}
+	// checkArgNames let through only the other keys a body allows.
+	if f.otherArgs {
+		for name, v := range args {
+			if !hasArg(f, name) {
+				body[name] = v
+				hasBody = true
+			}
+		}
+	}
 
 	// A handler that cleans the path before routing drops a . segment and
 	// takes a .. segment with the one before it, so /runs/{id}/logs with an
@@ -273,7 +282,11 @@ func redirectIsResult(method string, status int) bool {
 	return false
 }
 
-// checkArgNames rejects argument names the function does not take.
+// checkArgNames rejects argument names the function does not take. A
+// function with otherArgs takes any other name, except one that is an
+// argument name or a body property in another letter case, which a handler
+// decoding JSON without regard to case could read as that one, or a
+// read-only body property.
 func checkArgNames(f *Function, args map[string]any) error {
 	valid := map[string]bool{}
 	names := make([]string, 0, len(f.Args))
@@ -284,19 +297,56 @@ func checkArgNames(f *Function, args map[string]any) error {
 
 	var unknown []string
 	for name := range args {
-		if !valid[name] {
-			unknown = append(unknown, name)
+		if valid[name] {
+			continue
 		}
+		if f.otherArgs && !reservedArg(f, name) {
+			continue
+		}
+		unknown = append(unknown, name)
 	}
 	if len(unknown) == 0 {
 		return nil
 	}
 	sort.Strings(unknown)
 
+	if f.otherArgs {
+		accepted := "other keys"
+		if len(names) > 0 {
+			accepted = strings.Join(names, ", ") + ", and other keys"
+		}
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: arguments %s for %s repeat an argument or a body property in another letter case, or name a read-only body property; valid: %s, sent in the body", strings.Join(unknown, ", "), f.Name, accepted), nil)
+	}
 	if len(names) == 0 {
 		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s takes no arguments, got %s", f.Name, strings.Join(unknown, ", ")), nil)
 	}
 	return ez.New(ez.EINVALID, fmt.Sprintf("mcp: unknown arguments %s for %s; valid: %s", strings.Join(unknown, ", "), f.Name, strings.Join(names, ", ")), nil)
+}
+
+// hasArg reports whether f has an argument named name.
+func hasArg(f *Function, name string) bool {
+	for _, a := range f.Args {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// reservedArg reports whether name, which is not an argument of f, is an
+// argument name or a body property of f in any letter case.
+func reservedArg(f *Function, name string) bool {
+	for _, a := range f.Args {
+		if strings.EqualFold(a.Name, name) {
+			return true
+		}
+	}
+	for _, key := range f.bodyKeys {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // paramValues renders a path, query or header argument with the style and

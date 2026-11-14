@@ -343,16 +343,23 @@ func route(f *Function) string {
 func (c *Catalog) detailLines(f *Function) []string {
 	description := trimSummary(strings.TrimSpace(f.Description), summaryLine(f))
 	lines := indentLines(description)
-	if len(f.Args) > 0 {
+	if len(f.Args) > 0 || f.otherArgs {
 		lines = append(lines, "  args:")
-		lines = append(lines, c.argLines(f.Args)...)
+		lines = append(lines, c.argLines(f)...)
 	}
 	return lines
 }
 
-// argLines prints the arguments as aligned columns: name, type, then the
-// required flag, enum values and the first line of the description.
-func (c *Catalog) argLines(args []*Arg) []string {
+// argLines prints the arguments of f as aligned columns: name, type, then
+// the required flag, enum values and the first line of the description. The
+// other keys a body takes come last, as a row named "*" with the type of
+// their values.
+func (c *Catalog) argLines(f *Function) []string {
+	args := f.Args
+	if f.otherArgs {
+		other := &Arg{Name: "*", In: "body", Description: "other keys, sent in the body", Schema: f.otherSchema}
+		args = append(append([]*Arg(nil), args...), other)
+	}
 	heads := make([]string, len(args))
 	enums := make([]string, len(args))
 	nameWidth := 0

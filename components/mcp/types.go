@@ -348,6 +348,10 @@ type Function struct {
 	// Args is the flat argument list: path, query and header parameters
 	// followed by the body properties. When a body property name collides
 	// with a parameter the body is exposed as one "body" argument instead.
+	// When the body's properties are arguments and its schema allows
+	// properties it does not declare, other argument keys are accepted too
+	// and sent in the body, except a key that is an argument name or a body
+	// property in another letter case, or a read-only body property.
 	Args []*Arg
 	// Returns is the term name of the success response, or empty.
 	Returns string
@@ -376,6 +380,14 @@ type Function struct {
 	// still sends one, as {}. A required body without a schema leaves it
 	// false and is not sent.
 	bodyRequired bool
+	// otherArgs is true when the body's properties are arguments and its
+	// schema allows properties it does not declare: an argument key that is
+	// not in Args is then sent in the body. otherSchema is the schema of
+	// their values, nil for any value. bodyKeys are the properties the body
+	// declares, read-only ones included.
+	otherArgs   bool
+	otherSchema *reference.Schema
+	bodyKeys    []string
 	// bodyType is the Content-Type of the request body: exactly
 	// application/json for a media type whose type is application/json, with
 	// or without parameters, else the x/y+json media type in canonical form,

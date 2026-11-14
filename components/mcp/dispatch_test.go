@@ -838,3 +838,131 @@ return [r.redirect.status, r.redirect.location]`})
 	defer mu.Unlock()
 	assert.Empty(t, reported, "neither a redirect nor a REST error goes to OnError")
 }
+
+// otherKeysSpec declares object bodies that allow properties they do not
+// declare, through a schema, true or {}, and bodies that do not.
+const otherKeysSpec = `{"openapi": "3.1.0", "info": {"title": "Other", "version": "1"}, "paths": {
+	"/labels/{id}": {"post": {"operationId": "labels.set", "parameters": [
+		{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+		{"name": "mode", "in": "query", "schema": {"type": "string"}},
+		{"name": "X-Trace", "in": "header", "schema": {"type": "string"}}
+	], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object",
+		"properties": {"name": {"type": "string"}, "secret": {"type": "string", "readOnly": true}},
+		"additionalProperties": {"type": "string"}}}}}, "responses": {"200": {"description": "OK"}}}},
+	"/notes": {"post": {"operationId": "notes.add", "requestBody": {"content": {"application/json": {"schema": {"type": "object",
+		"properties": {"title": {"type": "string"}},
+		"additionalProperties": true}}}}, "responses": {"200": {"description": "OK"}}}},
+	"/empty": {"post": {"operationId": "notes.empty", "requestBody": {"content": {"application/json": {"schema": {"type": "object",
+		"properties": {"title": {"type": "string"}},
+		"additionalProperties": {}}}}}, "responses": {"200": {"description": "OK"}}}},
+	"/absent": {"post": {"operationId": "closed.absent", "requestBody": {"content": {"application/json": {"schema": {"type": "object",
+		"properties": {"title": {"type": "string"}}}}}}, "responses": {"200": {"description": "OK"}}}},
+	"/false": {"post": {"operationId": "closed.false", "requestBody": {"content": {"application/json": {"schema": {"type": "object",
+		"properties": {"title": {"type": "string"}},
+		"additionalProperties": false}}}}, "responses": {"200": {"description": "OK"}}}},
+	"/never": {"post": {"operationId": "closed.never", "requestBody": {"content": {"application/json": {"schema": {"type": "object",
+		"properties": {"title": {"type": "string"}},
+		"additionalProperties": {"not": {}}}}}}, "responses": {"200": {"description": "OK"}}}}
+}}`
+
+func TestDispatchOtherBodyKeys(t *testing.T) {
+	var mu sync.Mutex
+	var got *http.Request
+	var body string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = r
+		body = string(data)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	srv, err := New(Config{Spec: []byte(otherKeysSpec), Handler: handler, Tools: []string{"labels.set", "notes.add", "closed.absent"}})
+	require.NoError(t, err)
+	session := connect(t, srv, "")
+	call := func(name string, args map[string]any) (string, bool) {
+		return callTool(t, session, "call_function", map[string]any{"name": name, "args": args})
+	}
+
+	// Other keys go in the body; parameters keep their names.
+	text, failed := call("labels.set", map[string]any{"id": "7", "mode": "fast", "X-Trace": "t1", "name": "a", "color": "red", "size": "L"})
+	require.False(t, failed, text)
+	mu.Lock()
+	assert.Equal(t, "/labels/7", got.URL.Path)
+	assert.Equal(t, "mode=fast", got.URL.RawQuery)
+	assert.Equal(t, "t1", got.Header.Get("X-Trace"))
+	assert.JSONEq(t, `{"name":"a","color":"red","size":"L"}`, body)
+	mu.Unlock()
+
+	// A key that is an argument or a body property in another letter case,
+	// or a read-only property, is refused before any request.
+	for _, key := range []string{"ID", "Mode", "x-trace", "NAME", "secret", "Secret"} {
+		text, failed = call("labels.set", map[string]any{"id": "8", key: "x"})
+		assert.True(t, failed, key)
+		assert.True(t, strings.HasPrefix(text, "error invalid: arguments "+key+" for labels.set repeat an argument or a body property in another letter case, or name a read-only body property; valid: id, mode, X-Trace, name, and other keys, sent in the body\n\n"), text)
+	}
+	mu.Lock()
+	assert.Equal(t, "/labels/7", got.URL.Path, "no refused call reached the handler")
+	mu.Unlock()
+
+	// additionalProperties true and {} take any value.
+	text, failed = call("notes.add", map[string]any{"pinned": true, "rank": 2})
+	require.False(t, failed, text)
+	assert.JSONEq(t, `{"pinned":true,"rank":2}`, body)
+	text, failed = call("notes.empty", map[string]any{"title": "t", "tags": []any{"a"}})
+	require.False(t, failed, text)
+	assert.JSONEq(t, `{"title":"t","tags":["a"]}`, body)
+
+	// Without additionalProperties, or with false or {not: {}}, other keys
+	// are refused as before.
+	for _, name := range []string{"closed.absent", "closed.false", "closed.never"} {
+		text, failed = call(name, map[string]any{"color": "red"})
+		assert.True(t, failed, name)
+		assert.True(t, strings.HasPrefix(text, "error invalid: unknown arguments color for "+name+"; valid: title\n\n"), text)
+	}
+
+	// describe_function and the folded search name the other keys and the
+	// type of their values.
+	text, failed = callTool(t, session, "describe_function", map[string]any{"names": []string{"labels.set", "notes.add", "closed.absent"}})
+	require.False(t, failed, text)
+	assert.Equal(t, `labels.set  POST /labels/{id}
+  args:
+    id       string  required
+    mode     string
+    X-Trace  string
+    name     string
+    *        string  other keys, sent in the body
+
+notes.add  POST /notes
+  args:
+    title  string
+    *      any     other keys, sent in the body
+
+closed.absent  POST /absent
+  args:
+    title  string`, text)
+	text, failed = callTool(t, session, "search_functions", map[string]any{"query": "labels"})
+	require.False(t, failed, text)
+	assert.Contains(t, text, "\n      *        string  other keys, sent in the body")
+
+	// The input schemas of promoted tools allow the other keys.
+	schemas := map[string]string{}
+	for _, tool := range srv.Tools() {
+		var schema struct {
+			AdditionalProperties json.RawMessage `json:"additionalProperties"`
+		}
+		require.NoError(t, json.Unmarshal(tool.InputSchema, &schema))
+		if strings.Contains(tool.Name, "-") {
+			schemas[tool.Name] = string(schema.AdditionalProperties)
+		}
+	}
+	assert.Equal(t, map[string]string{"labels-set": `{"type":"string"}`, "notes-add": `true`, "closed-absent": `false`}, schemas)
+
+	// The snapshot names them too.
+	snap, err := srv.Snapshot()
+	require.NoError(t, err)
+	assert.Contains(t, string(snap), `"other_args": "string"`)
+	assert.Equal(t, 2, strings.Count(string(snap), `"other_args": "any"`))
+	assert.Equal(t, 3, strings.Count(string(snap), `"other_args"`))
+}

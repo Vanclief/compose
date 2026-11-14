@@ -37,11 +37,14 @@ type snapshotFunction struct {
 	Method      string        `json:"method"`
 	Path        string        `json:"path"`
 	Args        []snapshotArg `json:"args"`
-	Returns     string        `json:"returns"`
-	ReadOnly    bool          `json:"read_only"`
-	Destructive bool          `json:"destructive"`
-	Composite   bool          `json:"composite"`
-	Deprecated  bool          `json:"deprecated"`
+	// OtherArgs is the type of the other keys the body takes, sent in the
+	// body, or empty when it takes none.
+	OtherArgs   string `json:"other_args,omitempty"`
+	Returns     string `json:"returns"`
+	ReadOnly    bool   `json:"read_only"`
+	Destructive bool   `json:"destructive"`
+	Composite   bool   `json:"composite"`
+	Deprecated  bool   `json:"deprecated"`
 }
 
 type snapshotArg struct {
@@ -108,6 +111,9 @@ func (s *Server) Snapshot() ([]byte, error) {
 			}
 			for _, a := range f.Args {
 				function.Args = append(function.Args, snapshotArg{Name: a.Name, In: a.In, Required: a.Required, Type: c.argType(a)})
+			}
+			if f.otherArgs {
+				function.OtherArgs = c.typeName(f.otherSchema)
 			}
 			module.Functions = append(module.Functions, function)
 		}
