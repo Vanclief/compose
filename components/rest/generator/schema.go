@@ -3017,8 +3017,9 @@ func (b *schemaBuilder) isQuotableType(expr ast.Expr, imports map[string]string,
 }
 
 // isStructType reports a struct type, directly or through a named type, whose fields encoding/json
-// promotes when it is embedded. A type it cannot resolve counts as one, as embedded types always
-// did. A standard-library type is read from GOROOT (namedDeclaration) unless the generator lists
+// promotes when it is embedded. An instantiation of a generic type is the kind of the generic
+// type, so an embedded List[int], with `type List[T any] []T`, is a field named List. A type it
+// cannot resolve counts as one, as embedded types always did. A standard-library type is read from GOROOT (namedDeclaration) unless the generator lists
 // it: knownUnderlying gives the kind of uuid.UUID, a [16]byte, and of its siblings, and of the
 // other listed types time.Duration, the maps standardLibraryNilCollections lists and the marshaler
 // interfaces are not structs. Aliases are
@@ -3042,16 +3043,26 @@ func (b *schemaBuilder) isStructType(expr ast.Expr, imports map[string]string, p
 		}
 		ref = typeRef{ImportPath: imports[pkgIdent.Name], Name: t.Sel.Name}
 	case *ast.IndexExpr, *ast.IndexListExpr:
-		return true
+		// An instantiation is the kind its generic type is declared as, database/sql's Null[T] a
+		// struct.
+		generic, ok := typeRefFromExpr(genericType(t), imports, pkgPath)
+		if !ok {
+			return true
+		}
+		ref = b.aliasTarget(generic)
+		if isSQLNull(ref) {
+			return true
+		}
 	default:
 		return false
 	}
 
-	// A described type is the kind its description says, unless the description is of a
-	// marshaler's output (describedMarshaler).
+	// encoding/json expands an embedded type by its Go kind, which a described type's declaration
+	// gives where its source can be read; elsewhere the kind its description says stands for it,
+	// unless the description is of a marshaler's output (describedMarshaler).
 	ref = b.aliasTarget(ref)
 	override, described := b.typeSchemas[typeKey(ref)]
-	if described && !isExtension(override) && !b.describedMarshaler(ref) {
+	if described && !isExtension(override) && !b.describedMarshaler(ref) && !b.declaredInSource(ref) {
 		kind, typed := override["type"]
 		return !typed || kind == "object"
 	}
@@ -3075,6 +3086,20 @@ func (b *schemaBuilder) isStructType(expr ast.Expr, imports map[string]string, p
 	}
 
 	return b.isStructType(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
+}
+
+// declaredInSource reports a type of a module whose declaration loadPackage reads.
+func (b *schemaBuilder) declaredInSource(ref typeRef) bool {
+	if b.isStandardLibraryImport(ref.ImportPath) {
+		return false
+	}
+	pkg, err := b.loadPackage(ref.ImportPath)
+	if err != nil {
+		return false
+	}
+	_, ok := pkg.Types[ref.Name]
+
+	return ok
 }
 
 // embeddedTypeName is the field name Go gives an embedded field: its type's name.
