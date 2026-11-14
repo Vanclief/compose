@@ -5,6 +5,7 @@ import (
 	"go/build"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,6 +55,20 @@ func (r Route) OpenAPIPath() string {
 	return toOpenAPIPath(r.Path)
 }
 
+// UnresolvedRoute is a route registration the route finder recognises but cannot resolve, as
+// Config.SkipUnresolved receives it. Receiver and Path are the expressions as written, e.g.
+// `s.api` and `cfg.HealthPath`, or `"/health"` for a string literal.
+type UnresolvedRoute struct {
+	Method   string
+	Receiver string
+	Path     string
+	// File is the route file relative to Config.Root, with forward slashes.
+	File string
+	Line int
+	// Reason says what the finder could not resolve.
+	Reason string
+}
+
 var (
 	rePathParam = regexp.MustCompile(`:([^/]+)`)
 	reOASParam  = regexp.MustCompile(`\{([^}]+)\}`)
@@ -88,6 +103,7 @@ func parseRoutes(cfg Config) ([]Route, error) {
 
 	var routes []Route
 	var handlerless []string
+	var unresolved []string
 	for _, abs := range routeFiles {
 		built, err := builtGoFile(abs)
 		if err != nil {
@@ -97,14 +113,19 @@ func parseRoutes(cfg Config) ([]Route, error) {
 			continue
 		}
 
-		parsed, missing, err := parser.parseFile(abs)
+		found, err := parser.parseFile(abs)
 		if err != nil {
 			return nil, ez.Wrap(err)
 		}
-		routes = append(routes, parsed...)
-		handlerless = append(handlerless, missing...)
+		routes = append(routes, found.routes...)
+		handlerless = append(handlerless, found.handlerless...)
+		unresolved = append(unresolved, found.unresolved...)
 	}
 
+	if len(unresolved) > 0 {
+		message := "route registrations the generator cannot resolve; make the path a string constant and register the route on a root group, a Group call on one or a variable holding one, or leave them out with SkipUnresolved:\n  " + strings.Join(unresolved, "\n  ")
+		return nil, ez.New(ez.EINVALID, message, nil)
+	}
 	if len(handlerless) > 0 {
 		message := "routes without a " + cfg.ReceiverVar + " handler method; route them through a handler method or Skip them:\n  " + strings.Join(handlerless, "\n  ")
 		return nil, ez.New(ez.EINVALID, message, nil)
@@ -144,205 +165,415 @@ func builtGoFile(path string) (bool, error) {
 
 type routeParser struct {
 	cfg Config
+	// consts holds the constants of the route files' packages, by directory and package name.
+	consts map[string]*packageConsts
 }
 
-func newRouteParser(cfg Config) routeParser {
-	return routeParser{cfg: cfg}
+func newRouteParser(cfg Config) *routeParser {
+	return &routeParser{
+		cfg:    cfg,
+		consts: map[string]*packageConsts{},
+	}
+}
+
+// fileRoutes is what one route file declares: its routes, the "file:line METHOD path" of every
+// route with no handler method that Skip does not cover, and the description of every route
+// registration that cannot be resolved and that SkipUnresolved does not cover.
+type fileRoutes struct {
+	routes      []Route
+	handlerless []string
+	unresolved  []string
 }
 
 // parseFile reads the group assignments and route calls of one file, in source order. A
-// group assignment is `child := parent.Group("/prefix", ...)`; a route call is
-// `group.GET("/path", handler, ...)` (or POST, PUT, PATCH, DELETE, HEAD) with a string literal
-// path, anywhere in the file, including calls spread over several lines; comments and string
-// literals are not code and declare nothing. It returns the routes and the
-// "file:line METHOD path" of every route with no handler method that Skip does not cover.
-func (p routeParser) parseFile(absPath string) ([]Route, []string, error) {
+// group assignment is `child := parent.Group(prefix, ...)`; a route call is
+// `group.GET(path, handler, ...)` (or POST, PUT, PATCH, DELETE, HEAD), anywhere in the file,
+// including calls spread over several lines; comments and string literals are not code and
+// declare nothing. A path or prefix is a string constant (see constString) and a group is a
+// root group, a group variable or a Group call on a group (see groupOf).
+func (p *routeParser) parseFile(absPath string) (fileRoutes, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return nil, nil, ez.Wrap(err)
+		return fileRoutes{}, ez.Wrap(err)
 	}
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, absPath, data, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return nil, nil, ez.New(ez.EINVALID, absPath+": route file is not valid Go", err)
+		return fileRoutes{}, ez.New(ez.EINVALID, absPath+": route file is not valid Go", err)
 	}
 
-	basePaths := map[string]string{}
-	rootPaths := map[string]string{}
+	consts, err := p.packageConsts(filepath.Dir(absPath), file.Name.Name)
+	if err != nil {
+		return fileRoutes{}, ez.Wrap(err)
+	}
+
+	relPath, err := filepath.Rel(p.cfg.Root, absPath)
+	if err != nil {
+		return fileRoutes{}, ez.Wrap(err)
+	}
+
+	w := &routeWalker{
+		p:       p,
+		fset:    fset,
+		absPath: absPath,
+		relPath: filepath.ToSlash(relPath),
+		consts:  consts,
+		groups:  map[string]groupValue{},
+	}
 	for name, base := range p.cfg.RootGroups {
-		basePaths[name] = base
-		rootPaths[name] = base
+		w.groups[name] = rootGroup(base)
 	}
-
-	var routes []Route
-	var handlerless []string
 
 	ast.Inspect(file, func(node ast.Node) bool {
-		if err != nil {
+		if w.err != nil {
 			return false
 		}
 
 		assign, ok := node.(*ast.AssignStmt)
 		if ok {
-			err = p.readGroupAssign(fset, absPath, assign, basePaths, rootPaths)
-			if err != nil {
-				err = ez.Wrap(err)
-				return false
-			}
-
+			w.groupAssign(assign)
 			return true
 		}
 
 		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
+		if ok {
+			w.call(call)
 		}
-
-		receiver, method, suffix, ok := routeCall(call)
-		if !ok {
-			return true
-		}
-
-		lineNo := fset.Position(call.Pos()).Line
-		location := absPath + ":" + strconv.Itoa(lineNo)
-
-		basePath, ok := basePaths[receiver]
-		if !ok {
-			err = ez.New(ez.EINVALID, location+": unknown route group "+strconv.Quote(receiver), nil)
-			return false
-		}
-
-		fullPath := basePath + suffix
-
-		r := Route{
-			Method:     method,
-			Path:       fullPath,
-			SourceFile: filepath.ToSlash(absPath),
-			SourceLine: lineNo,
-			flat:       p.cfg.flat(),
-		}
-
-		if p.cfg.DeprecatedWrapper != "" {
-			r.Deprecated = callsWrapper(call, p.cfg.DeprecatedWrapper)
-		}
-
-		names := handlerReference(call.Args[1], p.cfg.ReceiverVar)
-		switch {
-		case len(names) > 1:
-			r.Namespace = lowerFirst(names[0])
-			r.Handler = names[1]
-		case len(names) == 1 && !p.cfg.flat():
-			err = ez.New(ez.EINVALID, location+": flat handler reference "+p.cfg.ReceiverVar+"."+names[0]+" is not allowed with a HandlersFile", nil)
-			return false
-		case len(names) == 1:
-			r.Namespace = flatNamespace(strings.TrimPrefix(fullPath, rootPaths[receiver]))
-			r.Handler = names[0]
-		}
-
-		if r.Handler == "" && !p.skip(method, fullPath) {
-			handlerless = append(handlerless, location+" "+method+" "+fullPath)
-		}
-
-		routes = append(routes, r)
 
 		return true
 	})
-	if err != nil {
-		return nil, nil, err
+	if w.err != nil {
+		return fileRoutes{}, w.err
 	}
 
-	return routes, handlerless, nil
+	return w.found, nil
 }
 
-// readGroupAssign records `child := parent.Group("/prefix", ...)`: child's base path is
-// parent's plus the prefix, and its root path is parent's. Any other assignment is ignored.
-func (p routeParser) readGroupAssign(fset *token.FileSet, absPath string, assign *ast.AssignStmt, basePaths map[string]string, rootPaths map[string]string) error {
+// groupValue is what a group expression holds: its base path and the base path of the root
+// group it descends from, or, when the finder cannot tell, the reason.
+type groupValue struct {
+	known  bool
+	base   string
+	root   string
+	reason string
+}
+
+func rootGroup(base string) groupValue {
+	return groupValue{
+		known: true,
+		base:  base,
+		root:  base,
+	}
+}
+
+func unknownGroup(reason string) groupValue {
+	return groupValue{reason: reason}
+}
+
+// routeWalker reads the group variables and route calls of one route file.
+type routeWalker struct {
+	p       *routeParser
+	fset    *token.FileSet
+	absPath string
+	// relPath is the file relative to Config.Root, with forward slashes.
+	relPath string
+	consts  *packageConsts
+	groups  map[string]groupValue
+
+	found fileRoutes
+	err   error
+}
+
+// groupAssign records `child := parent.Group(prefix, ...)`: child's base path is parent's plus
+// the prefix, and its root path is parent's. Any other assignment is ignored.
+func (w *routeWalker) groupAssign(assign *ast.AssignStmt) {
 	if assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
-		return nil
+		return
 	}
 
 	child, ok := assign.Lhs[0].(*ast.Ident)
 	if !ok {
-		return nil
+		return
 	}
 
 	call, ok := assign.Rhs[0].(*ast.CallExpr)
 	if !ok {
-		return nil
+		return
 	}
 
-	parent, name, ok := selectorCall(call)
-	if !ok || name != "Group" || len(call.Args) == 0 {
-		return nil
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Group" || len(call.Args) == 0 {
+		return
 	}
 
-	groupPath, ok := stringLiteral(call.Args[0])
-	if !ok {
-		return nil
-	}
-
-	parentPath, ok := basePaths[parent]
-	if !ok {
-		location := absPath + ":" + strconv.Itoa(fset.Position(assign.Pos()).Line)
-		return ez.New(ez.EINVALID, location+": unknown parent group "+strconv.Quote(parent), nil)
-	}
-
-	basePaths[child.Name] = parentPath + groupPath
-	rootPaths[child.Name] = rootPaths[parent]
-
-	return nil
+	w.groups[child.Name] = w.groupOf(call)
 }
 
-// routeCall reports whether call is `group.METHOD("/path", ...)` with an HTTP method Echo
-// registers that way, a string literal path and at least one argument after it.
-func routeCall(call *ast.CallExpr) (string, string, string, bool) {
-	receiver, method, ok := selectorCall(call)
-	if !ok || len(call.Args) < 2 {
-		return "", "", "", false
+// groupOf is the group an expression holds: a root group or a group variable, or a call
+// `parent.Group(prefix, ...)` on a group, chained as deep as written, whose prefix is a string
+// constant.
+func (w *routeWalker) groupOf(expr ast.Expr) groupValue {
+	switch x := expr.(type) {
+	case *ast.ParenExpr:
+		return w.groupOf(x.X)
+	case *ast.Ident:
+		group, ok := w.groups[x.Name]
+		if !ok {
+			return unknownGroup("unknown route group " + strconv.Quote(x.Name))
+		}
+		return group
+	case *ast.CallExpr:
+		selector, ok := x.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Group" || len(x.Args) == 0 {
+			break
+		}
+		parent := w.groupOf(selector.X)
+		if !parent.known {
+			return parent
+		}
+		prefix, ok := w.constString(x.Args[0])
+		if !ok {
+			return unknownGroup("group prefix " + types.ExprString(x.Args[0]) + " is not a string constant")
+		}
+		return groupValue{
+			known: true,
+			base:  parent.base + prefix,
+			root:  parent.root,
+		}
 	}
 
+	return unknownGroup(types.ExprString(expr) + " is not a group the route finder can follow")
+}
+
+// constString is the value of a string constant expression: string literals and constants
+// declared at the top level of the file's package, joined with +.
+func (w *routeWalker) constString(expr ast.Expr) (string, bool) {
+	return foldString(expr, w.consts.value)
+}
+
+// call reads a route call: `group.METHOD(path, handler, ...)` with an HTTP method Echo
+// registers that way and at least one argument after the path.
+func (w *routeWalker) call(call *ast.CallExpr) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || len(call.Args) < 2 {
+		return
+	}
+
+	method := selector.Sel.Name
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
 	default:
-		return "", "", "", false
+		return
 	}
 
-	path, ok := stringLiteral(call.Args[0])
-	if !ok {
-		return "", "", "", false
+	lineNo := w.fset.Position(call.Pos()).Line
+	location := w.absPath + ":" + strconv.Itoa(lineNo)
+
+	group := w.groupOf(selector.X)
+	suffix, pathKnown := w.constString(call.Args[0])
+	if !group.known || !pathKnown {
+		var reasons []string
+		if !group.known {
+			reasons = append(reasons, group.reason)
+		}
+		if !pathKnown {
+			reasons = append(reasons, "path "+types.ExprString(call.Args[0])+" is not a string constant")
+		}
+		unresolved := UnresolvedRoute{
+			Method:   method,
+			Receiver: types.ExprString(selector.X),
+			Path:     types.ExprString(call.Args[0]),
+			File:     w.relPath,
+			Line:     lineNo,
+			Reason:   strings.Join(reasons, "; "),
+		}
+		if w.p.cfg.SkipUnresolved != nil && w.p.cfg.SkipUnresolved(unresolved) {
+			return
+		}
+		w.found.unresolved = append(w.found.unresolved, location+": "+unresolved.Receiver+"."+method+"("+unresolved.Path+", ...): "+unresolved.Reason)
+		return
 	}
 
-	return receiver, method, path, true
+	fullPath := group.base + suffix
+
+	r := Route{
+		Method:     method,
+		Path:       fullPath,
+		SourceFile: filepath.ToSlash(w.absPath),
+		SourceLine: lineNo,
+		flat:       w.p.cfg.flat(),
+	}
+
+	if w.p.cfg.DeprecatedWrapper != "" {
+		r.Deprecated = callsWrapper(call, w.p.cfg.DeprecatedWrapper)
+	}
+
+	names := handlerReference(call.Args[1], w.p.cfg.ReceiverVar)
+	switch {
+	case len(names) > 1:
+		r.Namespace = lowerFirst(names[0])
+		r.Handler = names[1]
+	case len(names) == 1 && !w.p.cfg.flat():
+		w.err = ez.New(ez.EINVALID, location+": flat handler reference "+w.p.cfg.ReceiverVar+"."+names[0]+" is not allowed with a HandlersFile", nil)
+		return
+	case len(names) == 1:
+		r.Namespace = flatNamespace(strings.TrimPrefix(fullPath, group.root))
+		r.Handler = names[0]
+	}
+
+	if r.Handler == "" && !w.p.skip(method, fullPath) {
+		w.found.handlerless = append(w.found.handlerless, location+" "+method+" "+fullPath)
+	}
+
+	w.found.routes = append(w.found.routes, r)
 }
 
-// selectorCall returns x and name of a call `x.name(...)` whose x is a plain identifier.
-func selectorCall(call *ast.CallExpr) (string, string, bool) {
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return "", "", false
-	}
-
-	x, ok := selector.X.(*ast.Ident)
-	if !ok {
-		return "", "", false
-	}
-
-	return x.Name, selector.Sel.Name, true
+// packageConsts are the constants declared at the top level of a package, by name, with their
+// string values once read.
+type packageConsts struct {
+	exprs  map[string]ast.Expr
+	values map[string]constValue
+	// reading holds the constants whose value is being read, so a cycle ends.
+	reading map[string]bool
 }
 
-func stringLiteral(expr ast.Expr) (string, bool) {
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return "", false
+type constValue struct {
+	value string
+	ok    bool
+}
+
+// packageConsts returns the top-level constants of the package name in dir, read from the
+// files a default build compiles.
+func (p *routeParser) packageConsts(dir string, name string) (*packageConsts, error) {
+	key := dir + "\x00" + name
+	consts, ok := p.consts[key]
+	if ok {
+		return consts, nil
 	}
 
-	value, err := strconv.Unquote(lit.Value)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+
+	consts = &packageConsts{
+		exprs:   map[string]ast.Expr{},
+		values:  map[string]constValue{},
+		reading: map[string]bool{},
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		built, err := builtGoFile(path)
+		if err != nil {
+			return nil, ez.Wrap(err)
+		}
+		if !built {
+			continue
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, ez.New(ez.EINVALID, path+": file of a route file's package is not valid Go", err)
+		}
+		if file.Name.Name != name {
+			continue
+		}
+
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			addConstExprs(gen, consts.exprs)
+		}
+	}
+
+	p.consts[key] = consts
+
+	return consts, nil
+}
+
+// addConstExprs adds the value expression of every constant of a const declaration to exprs. A
+// spec without values repeats the values of the one before it.
+func addConstExprs(gen *ast.GenDecl, exprs map[string]ast.Expr) {
+	var values []ast.Expr
+	for _, spec := range gen.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		if len(valueSpec.Values) > 0 {
+			values = valueSpec.Values
+		}
+		for i, ident := range valueSpec.Names {
+			if i < len(values) {
+				exprs[ident.Name] = values[i]
+			}
+		}
+	}
+}
+
+// value is the string value of the package constant name.
+func (c *packageConsts) value(name string) (string, bool) {
+	known, ok := c.values[name]
+	if ok {
+		return known.value, known.ok
+	}
+
+	expr, ok := c.exprs[name]
+	if !ok || c.reading[name] {
 		return "", false
 	}
 
-	return value, true
+	c.reading[name] = true
+	value, ok := foldString(expr, c.value)
+	delete(c.reading, name)
+	c.values[name] = constValue{
+		value: value,
+		ok:    ok,
+	}
+
+	return value, ok
+}
+
+// foldString is the value of a string constant expression: string literals and the constants
+// lookup knows, in parentheses or joined with +.
+func foldString(expr ast.Expr, lookup func(name string) (string, bool)) (string, bool) {
+	switch x := expr.(type) {
+	case *ast.BasicLit:
+		if x.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(x.Value)
+		if err != nil {
+			return "", false
+		}
+		return value, true
+	case *ast.ParenExpr:
+		return foldString(x.X, lookup)
+	case *ast.BinaryExpr:
+		if x.Op != token.ADD {
+			return "", false
+		}
+		left, ok := foldString(x.X, lookup)
+		if !ok {
+			return "", false
+		}
+		right, ok := foldString(x.Y, lookup)
+		if !ok {
+			return "", false
+		}
+		return left + right, true
+	case *ast.Ident:
+		return lookup(x.Name)
+	}
+
+	return "", false
 }
 
 // handlerReference returns the names after the receiver variable of the first reference to it
@@ -463,7 +694,7 @@ func selectorText(expr ast.Expr) string {
 	return ""
 }
 
-func (p routeParser) skip(method string, path string) bool {
+func (p *routeParser) skip(method string, path string) bool {
 	if p.cfg.Skip == nil {
 		return false
 	}

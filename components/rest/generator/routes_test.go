@@ -89,7 +89,6 @@ e.PATCH("/raw-string/:id", h.UpdateThing)
 		e.PUT("/dead-code/:id", h.ReplaceThing)
 	}
 
-	e.GET(dynamicPath, h.GetThing)
 	e.Add("OPTIONS", "/options/:id", h.GetThing)
 }
 `,
@@ -437,6 +436,144 @@ func addRoutes(api *echo.Group, h *Handler) {
 	}
 }
 
+// A path or group prefix is any string constant: a literal, a constant of the route file's
+// package declared in any of its files, or such strings joined with +. A route or a group can
+// be registered on a chain of Group calls.
+func TestParseRoutesResolvesConstantPathsAndGroupChains(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"api/routes.go": `package api
+
+const p = "/const"
+
+const (
+	prefix = "/pre"
+	nested = prefix + "/nested"
+	same
+)
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	g := e.Group("/g")
+	g.GET("/literal", h.GetThing)
+	g.GET(p, h.GetThing)
+	g.GET("/a"+"/b", h.GetThing)
+	g.GET(prefix+"/b", h.GetThing)
+	g.POST((nested), h.GetThing)
+	g.PUT(same, h.GetThing)
+	g.GET(other+"/x", h.GetThing)
+	e.Group("/v1").GET("/y", h.GetThing)
+	x := e.Group("/v1").Group("/x")
+	x.GET("/y", h.GetThing)
+	v2 := e.Group(prefix)
+	v2.GET("/z", h.GetThing)
+	(e.Group(p).Group(other)).DELETE("/chain", h.GetThing)
+}
+`,
+		"api/consts.go": "package api\n\nconst other = \"/other\"\n",
+	})
+
+	routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "api/routes.go", HandlerGlob: "api/*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Method+" "+r.Path+" "+r.Namespace)
+	}
+	want := []string{
+		"DELETE /const/other/chain const",
+		"GET /g/a/b g",
+		"GET /g/const g",
+		"GET /g/literal g",
+		"GET /g/other/x g",
+		"GET /g/pre/b g",
+		"POST /g/pre/nested g",
+		"PUT /g/pre/nested g",
+		"GET /pre/z pre",
+		"GET /v1/x/y v1",
+		"GET /v1/y v1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A route call whose path is not a string constant, or whose group the finder cannot follow,
+// fails generation with its file and line and what was not resolved, unless SkipUnresolved
+// leaves it out.
+func TestParseRoutesReportsUnresolvedRoutes(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"api/routes.go": `package api
+
+var dynamic = "/dynamic"
+
+func addRoutes(e *echo.Echo, h *Handler, cfg Config) {
+	e.GET(dynamic, h.GetThing)
+	e.GET(cfg.HealthPath, h.GetThing)
+	e.GET(fmt.Sprintf("/%d", 1), h.GetThing)
+	e.GET(testOnly, h.GetThing)
+	s.api.GET("/x", h.GetThing)
+	newGroup(e).GET("/y", h.GetThing)
+	e.Group(dynamic).POST("/z", h.GetThing)
+	e.GET("/ok", h.GetThing)
+}
+`,
+		"api/consts_test.go": "package api\n\nconst testOnly = \"/test-only\"\n",
+	})
+	cfg := Config{Root: root, RoutesGlob: "api/routes.go", HandlerGlob: "api/*.go"}
+
+	_, err := ParseRoutes(cfg)
+	if err == nil {
+		t.Fatal("unresolved routes were not reported")
+	}
+	if ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("error code %s, want %s: %v", ez.ErrorCode(err), ez.EINVALID, err)
+	}
+	file := routeFile(root, "api/routes.go")
+	for _, line := range []string{
+		file + `:6: e.GET(dynamic, ...): path dynamic is not a string constant`,
+		file + `:7: e.GET(cfg.HealthPath, ...): path cfg.HealthPath is not a string constant`,
+		file + `:8: e.GET(fmt.Sprintf("/%d", 1), ...): path fmt.Sprintf("/%d", 1) is not a string constant`,
+		file + `:9: e.GET(testOnly, ...): path testOnly is not a string constant`,
+		file + `:10: s.api.GET("/x", ...): s.api is not a group the route finder can follow`,
+		file + `:11: newGroup(e).GET("/y", ...): newGroup(e) is not a group the route finder can follow`,
+		file + `:12: e.Group(dynamic).POST("/z", ...): group prefix dynamic is not a string constant`,
+		"SkipUnresolved",
+	} {
+		if !strings.Contains(filepath.ToSlash(ez.ErrorMessage(err)), line) {
+			t.Errorf("error does not contain %q: %v", line, err)
+		}
+	}
+	if strings.Contains(err.Error(), "/ok") {
+		t.Errorf("error lists the resolved route: %v", err)
+	}
+
+	var skipped []UnresolvedRoute
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		skipped = append(skipped, route)
+		return true
+	}
+	routes, err := ParseRoutes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Path != "/ok" {
+		t.Fatalf("routes: %+v, want only GET /ok", routes)
+	}
+	wantSkipped := []UnresolvedRoute{
+		{Method: "GET", Receiver: "e", Path: "dynamic", File: "api/routes.go", Line: 6, Reason: "path dynamic is not a string constant"},
+		{Method: "GET", Receiver: "e", Path: "cfg.HealthPath", File: "api/routes.go", Line: 7, Reason: "path cfg.HealthPath is not a string constant"},
+		{Method: "GET", Receiver: "e", Path: `fmt.Sprintf("/%d", 1)`, File: "api/routes.go", Line: 8, Reason: `path fmt.Sprintf("/%d", 1) is not a string constant`},
+		{Method: "GET", Receiver: "e", Path: "testOnly", File: "api/routes.go", Line: 9, Reason: "path testOnly is not a string constant"},
+		{Method: "GET", Receiver: "s.api", Path: `"/x"`, File: "api/routes.go", Line: 10, Reason: "s.api is not a group the route finder can follow"},
+		{Method: "GET", Receiver: "newGroup(e)", Path: `"/y"`, File: "api/routes.go", Line: 11, Reason: "newGroup(e) is not a group the route finder can follow"},
+		{Method: "POST", Receiver: "e.Group(dynamic)", Path: `"/z"`, File: "api/routes.go", Line: 12, Reason: "group prefix dynamic is not a string constant"},
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Fatalf("SkipUnresolved received:\n got %+v\nwant %+v", skipped, wantSkipped)
+	}
+}
+
 // Routes are read from the files a default build on the running platform compiles: test files,
 // files built only with a tag such as ignore and files named or constrained for another
 // platform declare nothing, and a file constrained to the running platform does.
@@ -487,7 +624,7 @@ func TestParseRoutesReportsBadRouteFiles(t *testing.T) {
 		"unknown route group": {
 			files: map[string]string{"routes_a.go": "package api\n\nfunc addRoutes() {\n\tmissing.GET(\"/x\", h.List)\n}\n"},
 			code:  ez.EINVALID,
-			want:  "routes_a.go:4: unknown route group \"missing\"",
+			want:  "routes_a.go:4: missing.GET(\"/x\", ...): unknown route group \"missing\"",
 		},
 		"group of another file": {
 			files: map[string]string{
@@ -495,7 +632,7 @@ func TestParseRoutesReportsBadRouteFiles(t *testing.T) {
 				"routes_b.go": "package api\n\nfunc addB() {\n\titems.POST(\"\", h.Create)\n}\n",
 			},
 			code: ez.EINVALID,
-			want: "routes_b.go:4: unknown route group \"items\"",
+			want: "routes_b.go:4: items.POST(\"\", ...): unknown route group \"items\"",
 		},
 		"route without a handler": {
 			files: map[string]string{"routes_a.go": "package api\n\nfunc addRoutes() {\n\te.GET(\"/x\",\n\t\tnotAHandler)\n}\n"},

@@ -21,8 +21,13 @@ type Config struct {
 	// Test files and files a default build on the platform the generator runs on leaves out, by
 	// their name (routes_windows.go) or their build constraints (//go:build ignore), are not
 	// read, so the document is the one of that platform. Each other file is parsed as Go, and
-	// routes are the calls `x := parent.Group("/prefix", ...)` and `x.GET("/path", h.Method, ...)`,
-	// on one line or several.
+	// routes are the calls `x := parent.Group(prefix, ...)` and `group.GET(path, h.Method, ...)`
+	// (or POST, PUT, PATCH, DELETE, HEAD), on one line or several. A path or prefix is a string
+	// constant: a literal, a constant declared at the top level of the file's package, or such
+	// strings joined with +. A group is a RootGroups variable, a group variable or a Group call on
+	// a group, chained as deep as written: `e.Group("/v1").GET("/x", ...)`. A route call whose
+	// path or group the finder cannot resolve this way fails generation unless SkipUnresolved
+	// leaves it out.
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
 	// routed as `h.Name.Method` (nested mode). Empty selects flat mode: one handler type routed as
@@ -158,6 +163,11 @@ type Config struct {
 
 	// Skip leaves an operation out of the document. path is the OpenAPI path ({id}, not :id).
 	Skip func(method string, path string) bool
+	// SkipUnresolved leaves out a route registration the route finder cannot resolve (see
+	// RoutesGlob), which has no path Skip could be asked about. Without it, or when it returns
+	// false, generation fails and names the registration, its file and line, and what was not
+	// resolved. Leaving one out keeps it out of Spec.Routes too.
+	SkipUnresolved func(route UnresolvedRoute) bool
 	// Internal marks an operation as internal: it is documented with `x-internal: true` and
 	// Spec.Public leaves it out. path is the OpenAPI path.
 	Internal func(method string, path string) bool
