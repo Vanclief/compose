@@ -1,6 +1,7 @@
 package configurator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -121,10 +122,20 @@ func (cfg *Configurator) LoadConfiguration(output any) error {
 	fileName := fmt.Sprintf("%s.config", environment)
 	viper.SetConfigName(fileName)
 
+	var notFound viper.ConfigFileNotFoundError
+	var malformed viper.ConfigParseError
 	err := viper.ReadInConfig()
-	if err != nil {
+	if errors.As(err, &notFound) {
 		errMsg := fmt.Sprintf("Config file with path %s/%s.json not found", cfg.configPath, fileName)
 		return ez.New(ez.ENOTFOUND, errMsg, err)
+	}
+	if errors.As(err, &malformed) {
+		errMsg := fmt.Sprintf("Config file %s is not a valid JSON object", viper.ConfigFileUsed())
+		return ez.New(ez.EINVALID, errMsg, err)
+	}
+	if err != nil {
+		errMsg := fmt.Sprintf("Config file %s could not be read", viper.ConfigFileUsed())
+		return ez.New(ez.EINTERNAL, errMsg, err)
 	}
 
 	err = viper.Unmarshal(&output)
