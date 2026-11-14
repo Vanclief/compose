@@ -285,8 +285,9 @@ func redirectIsResult(method string, status int) bool {
 // checkArgNames rejects argument names the function does not take. A
 // function with otherArgs takes any other name, except one that is an
 // argument name or a body property in another letter case, which a handler
-// decoding JSON without regard to case could read as that one, or a
-// read-only body property.
+// decoding JSON without regard to case could read as that one, a read-only
+// body property, or body, the argument that holds a whole body on other
+// functions, which would be sent as a property named body.
 func checkArgNames(f *Function, args map[string]any) error {
 	valid := map[string]bool{}
 	names := make([]string, 0, len(f.Args))
@@ -315,7 +316,7 @@ func checkArgNames(f *Function, args map[string]any) error {
 		if len(names) > 0 {
 			accepted = strings.Join(names, ", ") + ", and other keys"
 		}
-		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: arguments %s for %s repeat an argument or a body property in another letter case, or name a read-only body property; valid: %s, sent in the body", strings.Join(unknown, ", "), f.Name, accepted), nil)
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: arguments %s for %s repeat an argument or a body property in another letter case, name a read-only body property, or are body, whose properties this function takes as arguments; valid: %s, sent in the body", strings.Join(unknown, ", "), f.Name, accepted), nil)
 	}
 	if len(names) == 0 {
 		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s takes no arguments, got %s", f.Name, strings.Join(unknown, ", ")), nil)
@@ -334,8 +335,11 @@ func hasArg(f *Function, name string) bool {
 }
 
 // reservedArg reports whether name, which is not an argument of f, is an
-// argument name or a body property of f in any letter case.
+// argument name or a body property of f in any letter case, or body.
 func reservedArg(f *Function, name string) bool {
+	if strings.EqualFold(name, "body") {
+		return true
+	}
 	for _, a := range f.Args {
 		if strings.EqualFold(a.Name, name) {
 			return true

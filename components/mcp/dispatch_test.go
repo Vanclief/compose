@@ -896,11 +896,11 @@ func TestDispatchOtherBodyKeys(t *testing.T) {
 	mu.Unlock()
 
 	// A key that is an argument or a body property in another letter case,
-	// or a read-only property, is refused before any request.
-	for _, key := range []string{"ID", "Mode", "x-trace", "NAME", "secret", "Secret"} {
+	// a read-only property, or body, is refused before any request.
+	for _, key := range []string{"ID", "Mode", "x-trace", "NAME", "secret", "Secret", "body", "Body"} {
 		text, failed = call("labels.set", map[string]any{"id": "8", key: "x"})
 		assert.True(t, failed, key)
-		assert.True(t, strings.HasPrefix(text, "error invalid: arguments "+key+" for labels.set repeat an argument or a body property in another letter case, or name a read-only body property; valid: id, mode, X-Trace, name, and other keys, sent in the body\n\n"), text)
+		assert.True(t, strings.HasPrefix(text, "error invalid: arguments "+key+" for labels.set repeat an argument or a body property in another letter case, name a read-only body property, or are body, whose properties this function takes as arguments; valid: id, mode, X-Trace, name, and other keys, sent in the body\n\n"), text)
 	}
 	mu.Lock()
 	assert.Equal(t, "/labels/7", got.URL.Path, "no refused call reached the handler")

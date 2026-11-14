@@ -351,7 +351,7 @@ type Function struct {
 	// When the body's properties are arguments and its schema allows
 	// properties it does not declare, other argument keys are accepted too
 	// and sent in the body, except a key that is an argument name or a body
-	// property in another letter case, or a read-only body property.
+	// property in another letter case, a read-only body property, or body.
 	Args []*Arg
 	// Returns is the term name of the success response, or empty.
 	Returns string
