@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -672,8 +673,14 @@ func (p *diffPath) String() string {
 // request property, parameter or request body; an existing request property,
 // parameter or request body made required, also a name required where no
 // property of that name is declared. A response header named Content-Type is
-// not compared, as OpenAPI says its definition is ignored. Everything else
-// is a non-breaking change.
+// not compared, as OpenAPI says its definition is ignored. A discriminator
+// given where there was none breaks a request, one dropped a response, and
+// its propertyName changed both; of its mapping, compared as written, a
+// value added breaks neither, one removed breaks a request and one that
+// names another component both. A parameter's style or explode changed,
+// each with the default of its location where unset, breaks a request,
+// except explode where both sides state a type that is neither an array nor
+// an object. Everything else is a non-breaking change.
 func Diff(base, head *Document) *Report {
 	if base == nil {
 		base = &Document{}
@@ -1361,6 +1368,9 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 			w.add(Changed, path, deprecationText(hp.Deprecated), false, false)
 			head = true
 		}
+		if w.serialization(bp, hp, path) {
+			head = true
+		}
 		bs := parameterSchema(bp)
 		res := w.schema(bs, hs, path, true)
 		if hs == nil {
@@ -1368,6 +1378,66 @@ func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
 		}
 		w.markRow(hs, rowSpec{name: bp.Name, schema: bs, required: bp.Required, description: bp.Description, deprecated: bp.Deprecated, param: true}, head || res.head, res, bs)
 	}
+}
+
+// serialization records a change of how the parameter, bp in the base and
+// hp in the head, is written, its style or explode with the defaults of its
+// location filled in, and reports whether there is one. Either breaks a
+// request, as a client writing the parameter the old way is misread,
+// except a change of explode where both sides state a type that is neither
+// an array nor an object, which every style writes the same exploded or
+// not. A parameter described by content has no style and is skipped.
+func (w *walk) serialization(bp, hp *Parameter, path *diffPath) bool {
+	if bp.Content.Len() > 0 || hp.Content.Len() > 0 {
+		return false
+	}
+	bStyle, bExplode := parameterStyle(bp)
+	hStyle, hExplode := parameterStyle(hp)
+	changed := false
+	if bStyle != hStyle {
+		w.add(Changed, path, "style changed from "+bStyle+" to "+hStyle, true, false)
+		changed = true
+	}
+	if bExplode != hExplode {
+		scalar := w.scalar(w.d.base, bp.Schema) && w.scalar(w.d.head, hp.Schema)
+		w.add(Changed, path, "explode changed from "+strconv.FormatBool(bExplode)+" to "+strconv.FormatBool(hExplode), !scalar, false)
+		changed = true
+	}
+	return changed
+}
+
+// parameterStyle returns the style and explode p is written with, the
+// defaults of OpenAPI filled in: style form for a query or cookie parameter
+// and simple for any other, explode true for style form and false for any
+// other.
+func parameterStyle(p *Parameter) (string, bool) {
+	style := p.Style
+	if style == "" {
+		style = "simple"
+		if p.In == "query" || p.In == "cookie" {
+			style = "form"
+		}
+	}
+	explode := style == "form"
+	if p.Explode != nil {
+		explode = *p.Explode
+	}
+	return style, explode
+}
+
+// scalar reports whether the flattened s, of doc, states a type, and only
+// types that are neither array nor object, and has no variants.
+func (w *walk) scalar(doc *Document, s *Schema) bool {
+	f := w.d.flatten(doc, s)
+	if f == nil || hasVariants(f) || typeText(f) == "" {
+		return false
+	}
+	for _, t := range strings.Split(typeText(f), " | ") {
+		if t == "array" || t == "object" {
+			return false
+		}
+	}
+	return true
 }
 
 func deprecationText(deprecated bool) string {
@@ -1573,6 +1643,9 @@ func (w *walk) schema(b, h *Schema, path *diffPath, rec bool) schemaResult {
 		res.enum = true
 	}
 	if w.not(bf.Not, hf.Not, path) {
+		res.head = true
+	}
+	if w.discriminator(bf.Discriminator, hf.Discriminator, path) {
 		res.head = true
 	}
 
@@ -1979,6 +2052,64 @@ func (w *walk) not(b, h *Schema, path *diffPath) bool {
 	}
 	w.add(Changed, path, "not changed", false, false)
 	return true
+}
+
+// discriminator records a change of the discriminator from b to h and
+// reports whether there is one. A discriminator given where there was none
+// narrows the values accepted, as the property it names must then pick a
+// variant, and one dropped widens them; a changed propertyName breaks both.
+// The mapping is compared as written, by the component each value names,
+// and the names of variants it leaves implicit are not compared: a value
+// added, like an enum value added, breaks neither, one removed narrows, and
+// one that names another component breaks both.
+func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
+	switch {
+	case b == nil && h == nil:
+		return false
+	case b == nil:
+		w.add(Changed, path, "discriminator added: "+h.PropertyName, true, false)
+		return true
+	case h == nil:
+		w.add(Changed, path, "discriminator removed (was "+b.PropertyName+")", false, true)
+		return true
+	}
+	n := len(w.changes)
+	if b.PropertyName != h.PropertyName {
+		w.add(Changed, path, "discriminator property changed from "+b.PropertyName+" to "+h.PropertyName, true, true)
+	}
+	keys := slices.Collect(maps.Keys(b.Mapping))
+	for key := range h.Mapping {
+		_, ok := b.Mapping[key]
+		if !ok {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		bt, inBase := b.Mapping[key]
+		ht, inHead := h.Mapping[key]
+		value := valueText(key)
+		switch {
+		case !inBase:
+			w.addStrict(Changed, path, "discriminator mapping added: "+value+" → "+mappingName(ht), false, false, false, true)
+		case !inHead:
+			w.add(Changed, path, "discriminator mapping removed: "+value+" → "+mappingName(bt), true, false)
+		case mappingName(bt) != mappingName(ht):
+			w.add(Changed, path, "discriminator mapping "+value+" changed from "+mappingName(bt)+" to "+mappingName(ht), true, true)
+		}
+	}
+	return len(w.changes) > n
+}
+
+// mappingName is the component a discriminator mapping value names: the
+// name a schema reference points at, or the value as written, which is a
+// component name or a reference elsewhere.
+func mappingName(target string) string {
+	name := RefName(target, refSchemas)
+	if name == "" {
+		return target
+	}
+	return name
 }
 
 // refusesAll reports whether s is the schema that allows no value,
