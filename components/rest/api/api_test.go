@@ -936,6 +936,64 @@ func TestMultipartAllOptional(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
+// formNumbersRequest takes numbers as multipart form values.
+type formNumbersRequest struct {
+	requests.NoRules
+	N    *big.Int              `json:"n"`
+	I    *int64                `json:"i"`
+	F    json.Number           `json:"f"`
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestMultipartExactNumbers: a form value is decoded as the exact number
+// the client sent, or refused: an integer of more than 64 characters is
+// refused as no integer.
+func TestMultipartExactNumbers(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *formNumbersRequest
+	api.POST(reg.Group("/numbers"), "", "upload", func(ctx context.Context, req *formNumbersRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	send := func(name, value string) *httptest.ResponseRecorder {
+		body, contentType := form(t, part{name: name, value: value})
+		return s.do(http.MethodPost, "/numbers", body, echo.HeaderContentType, contentType)
+	}
+
+	for _, n := range []string{"+" + strings.Repeat("9", 65), "0" + strings.Repeat("9", 65), "+1" + strings.Repeat("0", 70), strings.Repeat("9", 65)} {
+		rec := send("n", n)
+		requireError(t, rec, http.StatusBadRequest, "n must be integer or null")
+		rec = send("i", n)
+		requireError(t, rec, http.StatusBadRequest, "i must be integer or null")
+	}
+
+	for n, want := range map[string]string{
+		"+5":                          "5",
+		"007":                         "7",
+		"+" + strings.Repeat("9", 63): strings.Repeat("9", 63),
+		"0" + strings.Repeat("9", 63): strings.Repeat("9", 63),
+		strings.Repeat("9", 64):       strings.Repeat("9", 64),
+	} {
+		rec := send("n", n)
+		require.Equal(t, http.StatusOK, rec.Code, n+": "+rec.Body.String())
+		require.Equal(t, want, got.N.String())
+	}
+
+	// A number keeps the client's literal, however the validator saw it.
+	for _, f := range []string{"1e2", "1.0000000000000000000000000000000000000000000000000000000000000000001e2", "-0.5"} {
+		rec := send("f", f)
+		require.Equal(t, http.StatusOK, rec.Code, f+": "+rec.Body.String())
+		require.Equal(t, json.Number(f), got.F)
+	}
+	for _, f := range []string{"+1.5", "007.5", "1e999999"} {
+		rec := send("f", f)
+		requireError(t, rec, http.StatusBadRequest, "f must be number")
+	}
+}
+
 // requiredTagsRequest reads required:"true", required:"false" and no tag on
 // query, header and file fields.
 type requiredTagsRequest struct {
@@ -1103,7 +1161,7 @@ type numberFormRequest struct {
 
 // TestMultipartNumbers: a number form value reaches the handler as the
 // client wrote it, as a query parameter and a JSON body field do, even where
-// the validator checked its float64 text; an integer that is no JSON number
+// the validator checked other text; an integer that is no JSON number
 // arrives in canonical text.
 func TestMultipartNumbers(t *testing.T) {
 	e := newEcho()
@@ -1406,9 +1464,10 @@ func TestHugeExponents(t *testing.T) {
 		return `{"children":[` + items + `]}`
 	}
 
-	// An underflow is 0 to the validator; encoding/json refuses it for an int.
+	// A number closer to 0 than every float64 is 1e-325 to the validator,
+	// which is no integer.
 	rec := doWithin(t, 5*time.Second, s, http.MethodPost, "/nodes", children("1e-999999"))
-	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
+	requireError(t, rec, http.StatusBadRequest, "children.0.retries must be integer")
 
 	// A number no float64 holds is past every bound to the validator.
 	rec = doWithin(t, 5*time.Second, s, http.MethodPost, "/nodes", children("1e999999"))
@@ -1696,9 +1755,9 @@ type boundedRequest struct {
 }
 
 // TestExactNumberBounds: the validator checks a number of up to 64
-// characters without an exponent on the client's own digits, so a bound
-// holds for the value a json.Number field receives; a longer number or one
-// with an exponent is checked on its nearest float64.
+// significant digits on its exact value, whatever its length or exponent,
+// so a bound and multipleOf hold for the value a json.Number field
+// receives.
 func TestExactNumberBounds(t *testing.T) {
 	e := newEcho()
 	reg := api.New(e, api.Public())
@@ -1711,11 +1770,11 @@ func TestExactNumberBounds(t *testing.T) {
 	s := &server{e: e, reg: reg}
 
 	exact64 := "0.01" + strings.Repeat("0", 59) + "1"
-	canonical65 := "0.01" + strings.Repeat("0", 60) + "1"
+	exact65 := "0.01" + strings.Repeat("0", 60) + "1"
 	require.Len(t, exact64, 64)
-	require.Len(t, canonical65, 65)
+	require.Len(t, exact65, 65)
 
-	for _, amount := range []string{"0.01", "99.99", "1e2", canonical65} {
+	for _, amount := range []string{"0.01", "99.99", "1e2", "0.0100000000000000000000000000000000000000000000000000000000000000000000"} {
 		rec := s.do(http.MethodPost, "/bounded", `{"amount":`+amount+`}`)
 		require.Equal(t, http.StatusOK, rec.Code, amount+": "+rec.Body.String())
 		require.Equal(t, json.Number(amount), got.Amount)
@@ -1725,7 +1784,7 @@ func TestExactNumberBounds(t *testing.T) {
 		require.Equal(t, json.Number(amount), got.Query)
 	}
 
-	for _, amount := range []string{"0.010000000000000001", exact64} {
+	for _, amount := range []string{"0.010000000000000001", exact64, exact65, "1.0000000000000000001e-2"} {
 		rec := s.do(http.MethodPost, "/bounded", `{"amount":`+amount+`}`)
 		requireError(t, rec, http.StatusBadRequest, "amount must be a multiple of 0.01")
 
@@ -1742,6 +1801,108 @@ func TestExactNumberBounds(t *testing.T) {
 	requireError(t, rec, http.StatusBadRequest, "ratio must be <= 1")
 	rec = s.do(http.MethodPost, "/bounded", `{"ratio":1}`)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// hugeBoundRequest bounds numbers that keep their exact value at 10^64 and
+// at 1, and takes a big.Int in the query.
+type hugeBoundRequest struct {
+	requests.NoRules
+	Num   json.Number `json:"num" maximum:"1e64"`
+	Big   *big.Int    `json:"big" maximum:"1e64"`
+	One   json.Number `json:"one" maximum:"1"`
+	Least json.Number `json:"least" minimum:"0"`
+	Query *big.Int    `json:"-" query:"n" maximum:"1e64"`
+	Free  *big.Int    `json:"-" query:"free"`
+}
+
+// TestHugeNumberBounds: a bound holds for a number of any length and any
+// exponent, which the validator once checked on its nearest float64, so
+// 10^64+1 passed maximum 1e64.
+func TestHugeNumberBounds(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *hugeBoundRequest
+	api.POST(reg.Group("/huge"), "", "create", func(ctx context.Context, req *hugeBoundRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	tenTo64 := "1" + strings.Repeat("0", 64)
+	over := []string{
+		"1" + strings.Repeat("0", 63) + "1",
+		tenTo64 + "1e-1",
+		"1" + strings.Repeat("0", 15) + "1" + strings.Repeat("0", 48),
+		"1" + strings.Repeat("0", 100) + "1",
+		"1.0000000000000000000000000000000000000000000000000000000000000000000000001e64",
+		"1e65",
+	}
+	for _, n := range over {
+		rec := s.do(http.MethodPost, "/huge", `{"num":`+n+`}`)
+		requireError(t, rec, http.StatusBadRequest, "num must be <= ")
+		if !strings.Contains(n, "e") {
+			rec = s.do(http.MethodPost, "/huge", `{"big":`+n+`}`)
+			requireError(t, rec, http.StatusBadRequest, "big must be <= ")
+		}
+	}
+
+	under := []string{
+		tenTo64,
+		"9" + strings.Repeat("9", 70) + "e-7",
+		strings.Repeat("9", 64),
+		"1" + strings.Repeat("0", 62) + "1",
+		"0.99999999999999999999999999999999999999999999999999999999999999999999999999e64",
+	}
+	for _, n := range under {
+		rec := s.do(http.MethodPost, "/huge", `{"num":`+n+`}`)
+		require.Equal(t, http.StatusOK, rec.Code, n+": "+rec.Body.String())
+		require.Equal(t, json.Number(n), got.Num)
+		if !strings.ContainsAny(n, "e.") {
+			rec = s.do(http.MethodPost, "/huge", `{"big":`+n+`}`)
+			require.Equal(t, http.StatusOK, rec.Code, n+": "+rec.Body.String())
+			require.Equal(t, n, got.Big.String())
+		}
+	}
+
+	// An integer parameter takes at most 64 characters: past those it is
+	// refused before big.Int parses it, which takes time in the square of
+	// its length, so a million digits cost what a million letters do.
+	rec := s.do(http.MethodPost, "/huge?n=-"+strings.Repeat("9", 63), "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "-"+strings.Repeat("9", 63), got.Query.String())
+	for _, n := range []string{strings.Repeat("9", 65), tenTo64, "%2B" + strings.Repeat("9", 64), "0" + strings.Repeat("9", 64)} {
+		rec = s.do(http.MethodPost, "/huge?n="+n, "")
+		requireError(t, rec, http.StatusBadRequest, "query n must be integer")
+	}
+	timed := func(n string) time.Duration {
+		start := time.Now()
+		rec := s.do(http.MethodPost, "/huge?free="+n, "")
+		requireError(t, rec, http.StatusBadRequest, "query free must be integer")
+		return time.Since(start)
+	}
+	letters := timed(strings.Repeat("x", 1_000_000))
+	digits := timed(strings.Repeat("7", 1_000_000))
+	require.Less(t, digits, 10*letters+100*time.Millisecond, "digits %v, letters %v", digits, letters)
+
+	// An exponent rounds no number onto a bound or off it.
+	for _, n := range []string{"1.0000000000000000001e0", "1" + strings.Repeat("0", 70) + "1e-71"} {
+		rec = s.do(http.MethodPost, "/huge", `{"one":`+n+`}`)
+		requireError(t, rec, http.StatusBadRequest, "one must be <= 1")
+	}
+	rec = s.do(http.MethodPost, "/huge", `{"one":0.99999999999999999999e0}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Nor does closeness to 0: a negative number is below 0 however small.
+	rec = s.do(http.MethodPost, "/huge", `{"least":-1e-999999}`)
+	requireError(t, rec, http.StatusBadRequest, "least must be >= 0")
+	rec = s.do(http.MethodPost, "/huge", `{"least":1e-999999}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// A big.Int is an integer as written: a fraction is no integer however
+	// many digits come before it.
+	rec = s.do(http.MethodPost, "/huge", `{"big":`+strings.Repeat("1", 70)+`.5}`)
+	requireError(t, rec, http.StatusBadRequest, "big must be integer")
 }
 
 type addressRequest struct {
