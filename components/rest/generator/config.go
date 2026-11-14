@@ -8,9 +8,12 @@
 // app's own when it runs with `go run` inside the app's module. With the jsonv2 experiment, on by
 // default from Go 1.27 (build tag goexperiment.jsonv2), encoding/json runs on encoding/json/v2: it
 // also writes a value with MarshalJSONTo, before MarshalJSON, and with AppendText, before
-// MarshalText, and json.Number has a MarshalJSONTo, which a struct embedding one gets. Without it,
-// as on Go 1.26 or with GOEXPERIMENT=nojsonv2, encoding/json writes with MarshalJSON and
-// MarshalText alone. jsonrules_v1.go and jsonrules_v2.go hold the two rule sets. The v2 rules are
+// MarshalText, and json.Number has a MarshalJSONTo, which a struct embedding one gets; a json tag
+// name is taken whole unless it holds a backslash, a quote or a backtick, and then up to the
+// first character other than a letter, a digit or an underscore, as "it" for it's. Without it, as
+// on Go 1.26 or with GOEXPERIMENT=nojsonv2, encoding/json writes with MarshalJSON and MarshalText
+// alone and takes a json tag name only when it is made of letters, digits, spaces and
+// !#$%&()*+-./:;<=>?@[]^_{|}~, using the Go field name for any other. jsonrules_v1.go and jsonrules_v2.go hold the two rule sets. The v2 rules are
 // Go 1.27's; Go 1.25 and 1.26 with GOEXPERIMENT=jsonv2 run an earlier encoding/json/v2.
 package generator
 

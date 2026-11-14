@@ -3142,8 +3142,9 @@ func jsonFieldName(goName string, field *ast.Field) string {
 	return name
 }
 
-// jsonTagName is the name a field's json tag gives, "" when it names none, and whether the tag
-// is `json:"-"`, which drops the field (`json:"-,"` names it "-" instead).
+// jsonTagName is the name a field's json tag gives, "" when it names none or encoding/json does
+// not take the name it writes (jsonTagKey), and whether the tag is `json:"-"`, which drops the
+// field (`json:"-,"` names it "-" instead).
 func jsonTagName(field *ast.Field) (string, bool) {
 	jsonTag := fieldJSONTag(field)
 	if jsonTag == "-" {
@@ -3151,7 +3152,7 @@ func jsonTagName(field *ast.Field) (string, bool) {
 	}
 
 	name, _, _ := strings.Cut(jsonTag, ",")
-	return name, false
+	return jsonTagKey(name), false
 }
 
 // jsonTagOptions are the options after the name of a field's json tag.

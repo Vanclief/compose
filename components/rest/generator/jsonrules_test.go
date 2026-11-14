@@ -2,6 +2,7 @@ package generator
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -190,5 +191,59 @@ func TestMarshalJSONToFollowsTheToolchain(t *testing.T) {
 	builder := buildThings(t, marshalJSONToSource, "Holder")
 	if !encodingJSONV2 {
 		assertConforms(t, builder, builder.schemas["things_Holder"], map[string]any{"A": float64(1), "n": float64(2)})
+	}
+}
+
+// tagNames are json tag names, written after `json:` as Go quotes them, that encoding/json's own
+// implementation and encoding/json/v2 read differently, or alike.
+var tagNames = []string{
+	`it's`, `a\b`, `ab\`, `\ab`, `b"c`, `d-e'x`, `9a'x`, `_x'y`, `'quoted'`, `f'g'`,
+	`a b`, "\U0001F600", `é`, `日本`, "a\tb", `<>`, `a&b`, `h,i`, `a-b.c`, `x y z`, `~`, `-,`,
+}
+
+// The key of a field whose json tag names it is the key encoding/json writes for that tag, on
+// the toolchain the test runs on: a name encoding/json's own implementation does not take, such
+// as it's, is replaced by the Go field name, and encoding/json/v2 takes it up to its quote, "it".
+func TestJSONTagNamesFollowTheToolchain(t *testing.T) {
+	source := "package things\n\ntype Thing struct {\n"
+	for i, name := range tagNames {
+		source += "\tF" + strconv.Itoa(i) + " int `json:" + strconv.Quote(name) + "`\n"
+	}
+	source += "}\n"
+	builder := buildThings(t, source, "Thing")
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties := componentProperties(t, builder, "things_Thing")
+
+	fields := make([]reflect.StructField, 0, len(tagNames))
+	for i, name := range tagNames {
+		fields = append(fields, reflect.StructField{Name: "F" + strconv.Itoa(i), Type: reflect.TypeFor[int](), Tag: reflect.StructTag("json:" + strconv.Quote(name))})
+	}
+	written := marshalled(t, reflect.New(reflect.StructOf(fields)).Interface()).(map[string]any)
+	keys := make([]string, 0, len(written))
+	for key := range written {
+		keys = append(keys, key)
+	}
+	got := make([]string, 0, len(properties))
+	for key := range properties {
+		got = append(got, key)
+	}
+	slices.Sort(keys)
+	slices.Sort(got)
+	if !slices.Equal(got, keys) {
+		t.Fatalf("expected the keys encoding/json writes, %q, got %q", keys, got)
+	}
+
+	// The names the two implementations read apart, as each reads them.
+	want := map[string]string{`it's`: "F0", `a\b`: "F1", "\U0001F600": "F11", "a\tb": "F14"}
+	if encodingJSONV2 {
+		want = map[string]string{`it's`: "it", `a\b`: "a", "\U0001F600": "\U0001F600", "a\tb": "a\tb"}
+	}
+	for name, key := range want {
+		if properties[key] == nil {
+			t.Errorf("%q: expected the key %q, got %v", name, key, got)
+		}
 	}
 }

@@ -128,7 +128,16 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 		// enclosing object without reading its boolean tags, which the lint
 		// and the key check read there (nullable, hidden), so they are held
 		// to "true" or "false" here as on any other field.
+		// The schema names a property by its json tag's name as written;
+		// encoding/json names the key by its own rules (jsonTagKey).
 		tagName, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if tagName != "" && tagName != "-" && jsonTagKey(tagName) != tagName {
+			key := jsonTagKey(tagName)
+			if key == "" {
+				key = f.Name
+			}
+			*problems = append(*problems, fmt.Sprintf("%s.%s: encoding/json does not take the json tag name %q as it is written and uses the key %q, which the schema would not list; name the key with letters, digits, spaces and ASCII punctuation other than a backslash, a quote, a backtick or a comma", t, f.Name, tagName, key))
+		}
 		if f.Anonymous && tagName == "" && deref(f.Type).Kind() == reflect.Struct {
 			for _, tag := range []string{"required", "nullable", "deprecated", "hidden", "uniqueItems"} {
 				_, err := huma.ParseBoolTag(f, tag, false)

@@ -2,6 +2,11 @@
 
 package generator
 
+import (
+	"strings"
+	"unicode"
+)
+
 // The JSON rules of encoding/json's own implementation, which a toolchain without the jsonv2
 // experiment builds: Go 1.26 and earlier, and Go 1.27 with GOEXPERIMENT=nojsonv2.
 // jsonrules_v2.go declares the same names for the implementation on encoding/json/v2.
@@ -20,3 +25,19 @@ var (
 // jsonNumberMethods are json.Number's marshal methods: none, encoding/json writes a Number as a
 // JSON number by its exact type.
 var jsonNumberMethods = map[string]bool{}
+
+// jsonTagKey is the key a json tag's name, the text before its first comma, gives a field: the
+// name when encoding/json takes it, "" when it uses the field's Go name instead. It takes a name
+// of letters, digits, spaces and the punctuation !#$%&()*+-./:;<=>?@[]^_{|}~, and no other.
+func jsonTagKey(name string) string {
+	for _, c := range name {
+		if strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c) {
+			continue
+		}
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) {
+			return ""
+		}
+	}
+
+	return name
+}

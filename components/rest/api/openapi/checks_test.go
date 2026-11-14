@@ -711,3 +711,36 @@ func TestNamer(t *testing.T) {
 	require.Equal(t, "fixture.Page_units.ListRequest", SegmentsNamer(0)(reflect.TypeFor[fixture.Page[aunits.ListRequest]]()))
 	require.Equal(t, "string", DefaultNamer(reflect.TypeFor[string]()))
 }
+
+// tnApostrophe has a json tag name encoding/json does not take as written.
+type tnApostrophe struct {
+	Its int `json:"it's"`
+}
+
+// tnSpace has a json tag name encoding/json takes as written.
+type tnSpace struct {
+	Space int `json:"a b"`
+}
+
+// TestTagNamesEncodingJSONRenames: a json tag name encoding/json does not
+// take as written is refused, naming the key it uses: the Go name on its own
+// implementation, the letters before the quote on encoding/json/v2.
+func TestTagNamesEncodingJSONRenames(t *testing.T) {
+	key := "Its"
+	if jsonEncoderType != nil {
+		key = "it"
+	}
+	require.Equal(t, `{"`+key+`":0}`, marshalled(t, tnApostrophe{}))
+
+	want := `openapi: openapi.tnApostrophe.Its: encoding/json does not take the json tag name "it's" as it is written and uses the key "` + key + `", which the schema would not list`
+	err := NewReflector().AddResponse(reflect.TypeFor[tnApostrophe]())
+	require.Error(t, err)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, ez.ErrorMessage(err), want)
+	_, err = NewReflector().AddRequest(reflect.TypeFor[tnApostrophe]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), want)
+
+	err = NewReflector().AddResponse(reflect.TypeFor[tnSpace]())
+	require.NoError(t, err)
+}
