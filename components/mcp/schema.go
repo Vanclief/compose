@@ -35,7 +35,9 @@ const maxSchemaNodes = 1000
 // For an operation it has one property per argument, with the full JSON
 // Schema of each argument, refs resolved, the required arguments in
 // required, path arguments always among them, and no other properties
-// allowed. An argument name used twice, such as a path and a query id, is one
+// allowed, unless the body takes other argument keys: then
+// additionalProperties is the schema of their values, true for any value.
+// An argument name used twice, such as a path and a query id, is one
 // property, required when either is. A schema of more than 1000 nodes is
 // ez.EINVALID. A composite has the schema reflected from its Input
 // type, or any object when Input is not a struct, since Run takes anything.
@@ -69,6 +71,12 @@ func (f *Function) InputSchema() (*jsonschema.Schema, error) {
 		}
 		if (a.Required || a.In == "path") && !slices.Contains(schema.Required, a.Name) {
 			schema.Required = append(schema.Required, a.Name)
+		}
+	}
+	if f.otherArgs {
+		schema.AdditionalProperties = &jsonschema.Schema{}
+		if f.otherSchema != nil {
+			schema.AdditionalProperties = b.convert(f.otherSchema)
 		}
 	}
 	if b.nodes > maxSchemaNodes {
