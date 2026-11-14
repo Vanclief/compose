@@ -321,8 +321,10 @@ as unknown keys, then bind). Decode once instead.
    absent). An array header is read as an RFC 9110 list: each line is split on commas,
    spaces around the items are trimmed and empty items dropped. An integer is read as an
    int64, else as a uint64, else kept as its digits when it has at most 64 characters (a
-   `big.Int` parameter, which is also set in base 10); a number is kept as the client wrote it when it has at most 64
-   characters and no exponent, and is otherwise the shortest text of the nearest float64. If
+   `big.Int` parameter, which is also set in base 10), else given the text
+   `validate.CanonicalNumber` gives it (step 6); a number is kept as the client wrote it when
+   it has at most 64 characters and no exponent, and otherwise gets that text too, unless it
+   is past the float64 range. If
    parsing fails keep the raw string so santhosh reports `kind.Type` like any other type
    error. Header keys lowercased, only declared `header:` fields included.
    Missing stays missing (presence semantics).
@@ -338,11 +340,18 @@ as unknown keys, then bind). Decode once instead.
    body, made before that check, bounds what validation costs. A body whose arrays and objects nest deeper than
    64 levels is a 400: every error carries its full path, so on a recursive type a small,
    deep body would cost megabytes. And a number of more than 64 characters, or with an
-   exponent, is handed to the validator in canonical text (an integer's digits, else the
-   shortest text of the nearest float64, else `1e309` for a number no float64 holds):
-   santhosh parses numbers with `big.Rat`, where one `1e999999` costs 20 ms. An ordinary
-   number is validated as the client wrote it, so a bound on a `json.Number` or `big.Int`
-   field is checked on the digits the handler receives. A `float32` or `float64` field
+   exponent, is handed to the validator in the text `validate.CanonicalNumber` gives it:
+   santhosh parses numbers with `big.Rat`, where one `1e999999` costs 20 ms. That text is
+   its exact value as digits and an exponent when it has at most 64 significant digits and
+   lies within the float64 range; past 64 digits, its first 64 and a 5, which no number of
+   64 digits or fewer lies between; past the float64 range `1e309`, and closer to 0 than
+   any float64 `1e-325`, with its sign. Every number the document states (a bound, an enum
+   value) is a float64, an int64 or a uint64, of at most 20 significant digits, so each compares with
+   that text as with the client's number, which is an integer exactly when the text is.
+   An ordinary number is validated as the client wrote it. So a bound on a `json.Number`
+   or `big.Int` field holds for the value the handler receives, at any length and
+   exponent; `multipleOf` does for a number of at most 64 significant digits within the
+   float64 range, and is checked on that text for any other. A `float32` or `float64` field
    rounds them, which is why registration refuses an exclusive bound on one. The handler
    always decodes the client's own bytes. A non-empty body needs a JSON content type: a missing or non-JSON
    one returns `EINVALID`, since Echo's binder no longer produces the 415. A body without
