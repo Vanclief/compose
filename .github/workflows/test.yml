@@ -52,3 +52,25 @@ jobs:
       # so the full suite is safe to run without AWS secrets
       - name: Test
         run: go test ./... -count=1 -race
+
+  test-go-1-27:
+    # Go 1.27 runs encoding/json on encoding/json/v2, whose rules the OpenAPI
+    # generator and the route registry follow there. With no PostgreSQL service
+    # and no COMPOSE_TEST_POSTGRES the PostgreSQL tests skip; the job above
+    # runs them, and -race, on the go.mod toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    env:
+      # Test with the Go set up below, never a toolchain go.mod asks for
+      GOTOOLCHAIN: local
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.2"
+
+      - name: Test
+        run: go test ./... -count=1
