@@ -71,8 +71,8 @@ func New(t testing.TB, reg *api.Registry) *Contract {
 
 // AssertResponse validates a response body against the operation's 200
 // schema (status 200) or the error envelope (any other status), and reports
-// the failing fields with t.Errorf (the first validate.MaxFields of them and
-// a count of the rest), that an object repeats a key, or that the body is
+// the failing fields with t.Errorf (at most validate.MaxFields of them, and
+// "and more" past those), that an object repeats a key, or that the body is
 // empty. The body of a HEAD operation's response is not
 // checked: rest.ErrorHandler answers a HEAD request with the status alone.
 func (c *Contract) AssertResponse(t testing.TB, operationID string, status int, body []byte) {

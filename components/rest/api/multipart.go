@@ -209,7 +209,7 @@ func (op *operation) formBody(form *multipart.Form) (body, decode map[string]any
 // decodeValue returns what decodeForm decodes for form values that
 // validate.Coerce turned into coerced: a number takes the client's own
 // literal when it is a JSON number, as a query parameter and a JSON body
-// field do, where the validator may have seen float64 text (65 digits, 1e2);
+// field do, where the validator may have seen other text (65 digits, 1e2);
 // any other value, and a number that is no JSON number (007, +5), takes
 // coerced, which Coerce gave exact canonical text.
 func decodeValue(coerced any, values []string) any {

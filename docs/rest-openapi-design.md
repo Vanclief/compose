@@ -251,7 +251,11 @@ Rules enforced at registration (fail boot):
   that embeds a pointer (`struct{ *user.User; Role string }`) documents the promoted fields
   as required, as they are when the pointer is set, and `encoding/json` omits them all when
   it is nil. The handler sets the pointer; an `apitest` contract fails a response in which
-  it did not
+  it did not. The walk looks at the field only, not at the items of a slice or the values
+  of a map: a nil element of a `[]*Struct` or `map[string]*Struct` field is sent as `null`,
+  which the published items or values schema, a `$ref` to the struct, does not allow (a
+  pointer to a scalar there is documented nullable). The handler leaves no nil element in
+  such a field; an `apitest` contract fails a response that has one (`list.1 must be object`)
 - GET, HEAD and DELETE request types have no body properties (and no files); registration
   fails and points at the `query:` tag. The fields of an embedded struct tagged `json:"-"`
   are no body properties, here and in a multipart request
@@ -321,8 +325,10 @@ as unknown keys, then bind). Decode once instead.
    absent). An array header is read as an RFC 9110 list: each line is split on commas,
    spaces around the items are trimmed and empty items dropped. An integer is read as an
    int64, else as a uint64, else kept as its digits when it has at most 64 characters (a
-   `big.Int` parameter, which is also set in base 10); a number is kept as the client wrote it when it has at most 64
-   characters and no exponent, and is otherwise the shortest text of the nearest float64. If
+   `big.Int` parameter, which is also set in base 10), else given the text
+   `validate.CanonicalNumber` gives it (step 6); a number is kept as the client wrote it when
+   it has at most 64 characters and no exponent, and otherwise gets that text too, unless it
+   is past the float64 range. If
    parsing fails keep the raw string so santhosh reports `kind.Type` like any other type
    error. Header keys lowercased, only declared `header:` fields included.
    Missing stays missing (presence semantics).
@@ -338,11 +344,18 @@ as unknown keys, then bind). Decode once instead.
    body, made before that check, bounds what validation costs. A body whose arrays and objects nest deeper than
    64 levels is a 400: every error carries its full path, so on a recursive type a small,
    deep body would cost megabytes. And a number of more than 64 characters, or with an
-   exponent, is handed to the validator in canonical text (an integer's digits, else the
-   shortest text of the nearest float64, else `1e309` for a number no float64 holds):
-   santhosh parses numbers with `big.Rat`, where one `1e999999` costs 20 ms. An ordinary
-   number is validated as the client wrote it, so a bound on a `json.Number` or `big.Int`
-   field is checked on the digits the handler receives. A `float32` or `float64` field
+   exponent, is handed to the validator in the text `validate.CanonicalNumber` gives it:
+   santhosh parses numbers with `big.Rat`, where one `1e999999` costs 20 ms. That text is
+   its exact value as digits and an exponent when it has at most 64 significant digits and
+   lies within the float64 range; past 64 digits, its first 64 and a 5, which no number of
+   64 digits or fewer lies between; past the float64 range `1e309`, and closer to 0 than
+   any float64 `1e-325`, with its sign. Every number the document states (a bound, an enum
+   value) is a float64, an int64 or a uint64, of at most 20 significant digits, so each compares with
+   that text as with the client's number, which is an integer exactly when the text is.
+   An ordinary number is validated as the client wrote it. So a bound on a `json.Number`
+   or `big.Int` field holds for the value the handler receives, at any length and
+   exponent; `multipleOf` does for a number of at most 64 significant digits within the
+   float64 range, and is checked on that text for any other. A `float32` or `float64` field
    rounds them, which is why registration refuses an exclusive bound on one. The handler
    always decodes the client's own bytes. A non-empty body needs a JSON content type: a missing or non-JSON
    one returns `EINVALID`, since Echo's binder no longer produces the 415. A body without
@@ -695,7 +708,10 @@ lint, key check and variants.
   which is the way out when its wire form is a string.
 - **Enums as named components**: `enums.Set[T]` records the values by `reflect.Type`
   (`enums.Values`); repeated `Set` calls for one type record the union in first-seen order,
-  and a field narrows with the `enum:"a,b"` tag. For a recorded type the registry registers a
+  and a field narrows with the `enum:"a,b"` tag. `Set` panics for `string` itself (or an
+  alias of it), and the reflector ignores a recorded type without a package path, since an
+  entry for `string` would make every string field of every operation that enum. For a
+  recorded type the registry registers a
   `<pkg>.<T>` component with the values and returns a fresh `&Schema{Ref: ...}` on every call.
   Two conditions verified in source: the registry must return a fresh pointer because
   `SchemaFromField` (`schema.go:572`) applies the field-level `enum` tag to it
@@ -708,7 +724,9 @@ lint, key check and variants.
   `OpenAPI.MarshalJSON` prunes components no path references. Both files are re-encoded with
   sorted keys, and the 3.0.3 one gets what `Downgrade` leaves invalid rewritten:
   `anyOf [X, {type: null}]` becomes `nullable: true` (beside `allOf [{$ref}]` for a ref)
-  (`api/spec.go`, `canonical`).
+  (`api/spec.go`, `canonical`). Where a schema holds both `minimum` and a numeric
+  `exclusiveMinimum`, the copy's `Downgrade` keeps the tighter of the two, the exclusive one
+  at equal values, as the boolean form can carry only one; the same for the maximum.
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
   `default` response pointing at the `handler.ErrorResponse` component, under the name the
   namer gives it. The `api.APIKeyHeader` security
@@ -846,7 +864,11 @@ Errors
   (location, then name with a run of digits compared as a number, so `steps.2` precedes `steps.10`);
   `fields` lists those and `message` names them and ends with `; and <n> more`. Without the
   cap a 1 MiB body of failing array items was answered with about 15 MB of `message`, and
-  the list would have tripled that.
+  the list would have tripled that. The registry's validation stops mapping violations to
+  fields at the 101st, in the order of their locations, so a body that fails on millions of
+  fields costs about what the validator's own errors cost (it allocated about 2.5 GB for a
+  975 KB body before v1.38.0); its `message` then ends with `; and more`, as nothing counted
+  the rest.
 
 Types
 

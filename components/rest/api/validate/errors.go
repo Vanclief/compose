@@ -49,6 +49,13 @@ func (e *fieldsError) Error() string {
 // ends with "; and <n> more", and Fields returns the ones kept. Returns nil
 // when fields is empty.
 func NewFieldsError(fields []FieldError) error {
+	return newFieldsError(fields, false)
+}
+
+// newFieldsError is NewFieldsError for a list that stopped at the cap, when
+// truncated is true: more fields failed than it holds, and the message ends
+// with "; and more", as it has no count of them.
+func newFieldsError(fields []FieldError, truncated bool) error {
 	fields = normalize(fields)
 	if len(fields) == 0 {
 		return nil
@@ -64,7 +71,10 @@ func NewFieldsError(fields []FieldError) error {
 		parts[i] = displayName(f) + " " + f.Message
 	}
 	message := strings.Join(parts, "; ")
-	if more > 0 {
+	switch {
+	case truncated:
+		message += "; and more"
+	case more > 0:
 		message += "; and " + strconv.Itoa(more) + " more"
 	}
 
@@ -168,37 +178,74 @@ func digitRun(s string) int {
 	return n
 }
 
-// collect walks the santhosh error tree and maps every leaf to FieldErrors.
-// root is the compiled schema the instance was validated against; it tells
-// declared property names apart from client-chosen map keys.
-func collect(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
-	switch verr.ErrorKind.(type) {
-	case *kind.AnyOf, *kind.OneOf:
-		return collectAlternatives(root, verr)
-	}
-
-	if len(verr.Causes) == 0 {
-		return mapLeaf(root, verr)
-	}
-
-	var fields []FieldError
-	for _, cause := range verr.Causes {
-		fields = append(fields, collect(root, cause)...)
-	}
-	return fields
+// collector gathers the FieldErrors of a santhosh error tree, at most
+// MaxFields distinct ones. root is the compiled schema the instance was
+// validated against; it tells declared property names apart from
+// client-chosen map keys.
+type collector struct {
+	root   *jsonschema.Schema
+	seen   map[FieldError]bool
+	fields []FieldError
+	// full is set at the first distinct field past MaxFields, where the walk
+	// stops, so its cost is bounded by the cap and not by how many values
+	// failed.
+	full bool
 }
 
-// collectAlternatives handles anyOf/oneOf. When every branch failed only on
-// type at this location the wanted types are merged into one message
-// ("must be string or null"). Otherwise branches that failed on type are
-// dropped and the remaining, more specific errors are reported.
-func collectAlternatives(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
+// collect walks the santhosh error tree and maps its leaves to FieldErrors,
+// in the order of their instance locations, until more than MaxFields
+// distinct fields failed. It returns the fields found, and true when it
+// stopped at the cap. It sorts the causes of the tree's nodes in place.
+func collect(root *jsonschema.Schema, verr *jsonschema.ValidationError) ([]FieldError, bool) {
+	c := &collector{root: root, seen: map[FieldError]bool{}}
+	c.walk(verr)
+	return c.fields, c.full
+}
+
+func (c *collector) add(f FieldError) {
+	if c.full || c.seen[f] {
+		return
+	}
+	if len(c.fields) == MaxFields {
+		c.full = true
+		return
+	}
+	c.seen[f] = true
+	c.fields = append(c.fields, f)
+}
+
+func (c *collector) walk(verr *jsonschema.ValidationError) {
+	switch verr.ErrorKind.(type) {
+	case *kind.AnyOf, *kind.OneOf:
+		c.alternatives(verr)
+		return
+	}
+
 	if len(verr.Causes) == 0 {
-		return mapLeaf(root, verr)
+		c.leaf(verr)
+		return
+	}
+
+	for _, cause := range sortedCauses(verr) {
+		if c.full {
+			return
+		}
+		c.walk(cause)
+	}
+}
+
+// alternatives handles anyOf/oneOf. When every branch failed only on type
+// at this location the wanted types are merged into one message ("must be
+// string or null"). Otherwise branches that failed on type are dropped and
+// the remaining, more specific errors are reported.
+func (c *collector) alternatives(verr *jsonschema.ValidationError) {
+	if len(verr.Causes) == 0 {
+		c.leaf(verr)
+		return
 	}
 
 	var leaves []*jsonschema.ValidationError
-	for _, cause := range verr.Causes {
+	for _, cause := range sortedCauses(verr) {
 		leaves = append(leaves, flatten(cause)...)
 	}
 
@@ -214,14 +261,16 @@ func collectAlternatives(root *jsonschema.Schema, verr *jsonschema.ValidationErr
 	}
 
 	if len(rest) == 0 {
-		return []FieldError{newField(root, verr.InstanceLocation, "", "must be "+typeList(want))}
+		c.add(newField(displayPath(c.root, verr.InstanceLocation), "", "must be "+typeList(want)))
+		return
 	}
 
-	var fields []FieldError
 	for _, leaf := range rest {
-		fields = append(fields, collect(root, leaf)...)
+		if c.full {
+			return
+		}
+		c.walk(leaf)
 	}
-	return fields
 }
 
 func flatten(verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
@@ -229,31 +278,66 @@ func flatten(verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
 		return []*jsonschema.ValidationError{verr}
 	}
 	var leaves []*jsonschema.ValidationError
-	for _, cause := range verr.Causes {
+	for _, cause := range sortedCauses(verr) {
 		leaves = append(leaves, flatten(cause)...)
 	}
 	return leaves
 }
 
-func mapLeaf(root *jsonschema.Schema, verr *jsonschema.ValidationError) []FieldError {
-	loc := verr.InstanceLocation
+// sortedCauses sorts the causes of verr in place by instance location,
+// keeping the order of causes at the same location, and returns them. The
+// validator lists the properties of an object in map order, so without it
+// the fields found before the cap would change from one request to the
+// next.
+func sortedCauses(verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
+	byLocation := func(a, b *jsonschema.ValidationError) int {
+		return compareLocations(a.InstanceLocation, b.InstanceLocation)
+	}
+	if !slices.IsSortedFunc(verr.Causes, byLocation) {
+		slices.SortStableFunc(verr.Causes, byLocation)
+	}
+	return verr.Causes
+}
+
+// compareLocations orders instance locations as NewFieldsError orders
+// names: the request location first, then segment by segment with a run of
+// digits compared as a number, a location before the ones inside it.
+func compareLocations(a, b []string) int {
+	for i := range min(len(a), len(b)) {
+		if i == 0 {
+			rank := locationRank(a[0]) - locationRank(b[0])
+			if rank != 0 {
+				return rank
+			}
+		}
+		names := compareNames(a[i], b[i])
+		if names != 0 {
+			return names
+		}
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+func (c *collector) leaf(verr *jsonschema.ValidationError) {
+	segments := displayPath(c.root, verr.InstanceLocation)
 
 	switch k := verr.ErrorKind.(type) {
 	case *kind.Required:
-		fields := make([]FieldError, len(k.Missing))
-		for i, name := range k.Missing {
-			fields[i] = newField(root, loc, name, "is required")
+		for _, name := range k.Missing {
+			c.add(newField(segments, name, "is required"))
 		}
-		return fields
+		return
 	case *kind.AdditionalProperties:
-		fields := make([]FieldError, len(k.Properties))
-		for i, name := range k.Properties {
-			fields[i] = newField(root, loc, unknownName(name), "is not a known field")
+		// Listed in map order: sorted, the ones kept at the cap do not vary.
+		names := slices.Clone(k.Properties)
+		slices.Sort(names)
+		for _, name := range names {
+			c.add(newField(segments, unknownName(name), "is not a known field"))
 		}
-		return fields
+		return
 	}
 
-	return []FieldError{newField(root, loc, "", message(verr.ErrorKind))}
+	c.add(newField(segments, "", message(verr.ErrorKind)))
 }
 
 func message(errKind jsonschema.ErrorKind) string {
@@ -300,13 +384,12 @@ func message(errKind jsonschema.ErrorKind) string {
 	return "is invalid"
 }
 
-// newField splits an instance location into its request location and the
-// dotted name inside it, appending child when set. child must come from the
-// schema or be sanitised by the caller.
-func newField(root *jsonschema.Schema, loc []string, child string, msg string) FieldError {
-	segments := displayPath(root, loc)
+// newField splits the display path of an instance location into its
+// request location and the dotted name inside it, appending child when set.
+// child must come from the schema or be sanitised by the caller.
+func newField(segments []string, child string, msg string) FieldError {
 	if child != "" {
-		segments = append(segments, child)
+		segments = append(segments[:len(segments):len(segments)], child)
 	}
 	if len(segments) == 0 {
 		return FieldError{Message: msg}

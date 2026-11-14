@@ -324,6 +324,41 @@ func TestFieldsErrorKeepsMaxFields(t *testing.T) {
 	require.NotContains(t, ez.ErrorMessage(err), "more")
 }
 
+func TestValidateStopsAtMaxFields(t *testing.T) {
+	schema := compile(t, "op:strict.json", "fixture.StrictRequest")
+
+	// 150 unknown keys, which the validator lists in map order: the walk
+	// stops past the cap, keeps the first 100 by name every time, and the
+	// message says there are more without counting them.
+	var keys []string
+	for i := range MaxFields + 50 {
+		keys = append(keys, fmt.Sprintf(`"k%03d":1`, i))
+	}
+	raw := `{"path":{"id":"` + validID + `"},"body":{` + strings.Join(keys, ",") + `}}`
+	for range 5 {
+		err := schema.Validate(instance(t, raw))
+		kept := Fields(err)
+		require.Len(t, kept, MaxFields)
+		require.Equal(t, "k000", kept[0].Name)
+		require.Equal(t, "k099", kept[MaxFields-1].Name)
+		require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; k099 is not a known field; and more"), ez.ErrorMessage(err))
+	}
+
+	// Exactly MaxFields failing fields are all listed, with nothing appended.
+	raw = `{"path":{"id":"` + validID + `"},"body":{` + strings.Join(keys[:MaxFields], ",") + `}}`
+	err := schema.Validate(instance(t, raw))
+	require.Len(t, Fields(err), MaxFields)
+	require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; k099 is not a known field"), ez.ErrorMessage(err))
+
+	// The caller's fields past the cap are counted: the list is whole.
+	var extra []FieldError
+	for i := range MaxFields + 50 {
+		extra = append(extra, FieldError{In: "body", Name: fmt.Sprintf("x%03d", i), Message: "is invalid"})
+	}
+	err = schema.Validate(instance(t, `{"path":{"id":"`+validID+`"},"body":{}}`), extra...)
+	require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; x099 is invalid; and 50 more"), ez.ErrorMessage(err))
+}
+
 func TestFieldsErrorOrdersIndicesAsNumbers(t *testing.T) {
 	var fields []FieldError
 	for i := range MaxFields + 50 {

@@ -203,3 +203,28 @@ func TestSetRecordsUnionAcrossCalls(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, []string{"", "organization", "custom", "legacy"}, values)
 }
+
+// plain is an alias, so Set sees string itself.
+type plain = string
+
+func TestSetRefusesString(t *testing.T) {
+	for _, set := range []func(){
+		func() { Set([]string{"red", "green"}) },
+		func() { Set([]plain{"red"}) },
+	} {
+		var recovered any
+		func() {
+			defer func() {
+				recovered = recover()
+			}()
+			set()
+		}()
+		err, ok := recovered.(error)
+		require.True(t, ok, "Set did not panic with an error: %v", recovered)
+		require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+		require.Equal(t, "enums: Set needs a declared string type, not string", ez.ErrorMessage(err))
+	}
+
+	_, ok := Values(reflect.TypeFor[string]())
+	require.False(t, ok)
+}
