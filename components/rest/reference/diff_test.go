@@ -2620,12 +2620,23 @@ func TestDiffSpellingsOfAnything(t *testing.T) {
 	requireAt(t, `{"type": "object"}`, `{"type": "object", "additionalProperties": {"not": {}, "description": "none"}}`, "", "additional properties no longer allowed", true, false)
 }
 
-// TestDiffNaNBound checks that a NaN bound, which YAML can write and no
-// number can be compared with, is read as no bound: two documents that
-// hold it are the same, and the example ignores it.
+// TestDiffNaNBound checks that Parse refuses a NaN bound or multipleOf,
+// which YAML can write and no number can be compared with, naming the
+// keyword and its line, also inside an allOf member and in a parameter,
+// and that a document built without Parse that holds one reads it as no
+// bound: two such documents are the same, and the example ignores it.
 func TestDiffNaNBound(t *testing.T) {
-	spec := func(s string) *Document {
-		doc, err := Parse([]byte(`openapi: 3.1.0
+	for _, c := range []struct {
+		schema, message string
+	}{
+		{`{type: number, minimum: .nan}`, "line 11: minimum must be a number, not .nan"},
+		{`{type: integer, maximum: .NaN}`, "line 11: maximum must be a number, not .NaN"},
+		{`{type: number, exclusiveMinimum: .nan}`, "line 11: exclusiveMinimum must be a number, not .nan"},
+		{`{type: number, exclusiveMaximum: .nan}`, "line 11: exclusiveMaximum must be a number, not .nan"},
+		{`{type: number, multipleOf: .nan}`, "line 11: multipleOf must be a number, not .nan"},
+		{"\n              allOf:\n                - {type: number, minimum: 10}\n                - {minimum: .nan}", "line 14: minimum must be a number, not .nan"},
+	} {
+		_, err := Parse([]byte(`openapi: 3.1.0
 info:
   title: t
   version: "1"
@@ -2635,23 +2646,31 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: ` + s + `
+            schema: ` + c.schema + `
       responses:
         "200":
           description: ok
 `))
-		require.NoError(t, err)
+		require.Error(t, err, c.schema)
+		require.Equal(t, ez.EINVALID, ez.ErrorCode(err), c.schema)
+		require.Equal(t, "invalid OpenAPI document: "+c.message, ez.ErrorMessage(err), c.schema)
+	}
+	_, err := Parse([]byte("openapi: 3.0.3\ninfo: {title: t, version: \"1\"}\npaths:\n  /x:\n    get:\n      parameters:\n        - {name: n, in: query, schema: {type: number, maximum: .nan}}\n      responses: {\"200\": {description: ok}}\n"))
+	require.Error(t, err)
+	require.Equal(t, "invalid OpenAPI document: line 7: maximum must be a number, not .nan", ez.ErrorMessage(err))
+
+	nan := math.NaN()
+	built := func(minimum *float64) *Document {
+		doc := opsSpec(t, bodyPath(`{"$ref": "#/components/schemas/S"}`), `"S": {"type": "number"}`)
+		doc.Components.Schemas.Map["S"].Minimum = minimum
 		return doc
 	}
-	for _, s := range []string{`{type: number, minimum: .nan}`, `{type: integer, maximum: .nan, exclusiveMinimum: .nan}`} {
-		r := Diff(spec(s), spec(s))
-		require.True(t, r.Empty(), "%s: %s", s, r.Markdown())
-	}
-	r := Diff(spec(`{type: number, minimum: .nan}`), spec(`{type: number, minimum: 3}`))
-	require.Equal(t, []string{"POST /x › request body | minimum added: 3"}, changeLines(r))
+	r := Diff(built(&nan), built(&nan))
+	require.True(t, r.Empty(), r.Markdown())
+	r = Diff(built(&nan), built(ptrTo(3.0)))
+	require.Equal(t, []string{"POST /w › request body | model S changed", "S | minimum added: 3"}, changeLines(r))
 
 	doc := &Document{}
-	nan := math.NaN()
 	require.Equal(t, 0.0, doc.ExampleValue(&Schema{Type: TypeList{"number"}, Minimum: &nan}, ForRequest))
 	require.Equal(t, -3.0, doc.ExampleValue(&Schema{Type: TypeList{"number"}, Minimum: &nan, Maximum: ptrTo(-3.0)}, ForRequest))
 	require.Equal(t, int64(0), doc.ExampleValue(&Schema{Type: TypeList{"integer"}, Maximum: &nan}, ForRequest))
