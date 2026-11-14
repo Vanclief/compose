@@ -548,11 +548,11 @@ var mergedMu sync.Mutex
 // may be nil: one of them where the other adds nothing to it, as the empty
 // schema, a bare $ref to the model the other refers to, or a schema written
 // the same does, or where one allows no value, otherwise an allOf of a and
-// then b, which
-// flattens by the rules of Flatten, so where a keyword takes one value it
-// is a's. The allOf is made once per pair and document, so flattening a
-// schema again gives the same schemas, and a cycle guard keyed by schema
-// sees a schema met again through a merged definition as the cycle it is.
+// then b, which flattens by the rules of Flatten, so where a keyword takes
+// one value it is a's. The allOf is made once per pair and document, so
+// flattening a schema again gives the same schemas, and a cycle guard keyed
+// by schema sees a schema met again through a merged definition as the
+// cycle it is.
 func (d *Document) mergedSchema(a, b *Schema) *Schema {
 	switch {
 	case b == nil || a == b || emptySchema(b) || refusesAll(a) || bareRefTo(b, a) || reflect.DeepEqual(a, b):
