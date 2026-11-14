@@ -12,6 +12,11 @@ import (
 	"github.com/vanclief/ez"
 )
 
+// createTableLock names the transaction-level advisory lock CreateTable takes
+// on PostgreSQL, so instances booting together create the table one at a
+// time.
+const createTableLock = "compose/auth/session.CreateTable"
+
 // bunStore keeps sessions in one table of a bun database, PostgreSQL or
 // SQLite.
 type bunStore struct {
@@ -94,8 +99,34 @@ func NewBunStore(db *bun.DB, table string) Store {
 // unique index on token_hash and plain indexes on previous_hash, subject,
 // expires_at and last_used_at, named after the table with "_token_hash",
 // "_previous_hash", "_subject", "_expires_at" and "_last_used_at" suffixes in
-// the schema of the table. The last two serve Sweep.
+// the schema of the table. The last two serve Sweep. Every instance can call
+// it at startup: on PostgreSQL it creates the table and indexes in one
+// transaction that holds an advisory lock, since concurrent CREATE TABLE IF
+// NOT EXISTS statements can fail on PostgreSQL's catalog.
 func CreateTable(ctx context.Context, db *bun.DB, table string) error {
+	if db.Dialect().Name() != dialect.PG {
+		err := createTable(ctx, db, table)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		return nil
+	}
+
+	err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext(?))", createTableLock)
+		if err != nil {
+			return ez.New(ez.EINTERNAL, "session: creating the "+table+" table failed", err)
+		}
+		return createTable(ctx, tx, table)
+	})
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
+}
+
+// createTable creates the table and indexes of CreateTable on db.
+func createTable(ctx context.Context, db bun.IDB, table string) error {
 	_, err := db.NewCreateTable().
 		Model((*bunRecord)(nil)).
 		ModelTableExpr("?", bun.Ident(table)).
@@ -136,7 +167,7 @@ func CreateTable(ctx context.Context, db *bun.DB, table string) error {
 // SQLite takes the schema on the index name and a bare table:
 //
 //	CREATE INDEX IF NOT EXISTS "schema"."table_subject" ON "table" ("subject")
-func createIndex(ctx context.Context, db *bun.DB, table, column string, unique bool) error {
+func createIndex(ctx context.Context, db bun.IDB, table, column string, unique bool) error {
 	index := table + "_" + column
 	on := table
 	qualifier, name := indexParts(table)

@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.37.0
+
+### Highlights
+
+- **Instances booting together can all create their tables and extensions**: `relational.DB.CreateTables`, `relational.DB.CreateExtensions`, `oauth.CreateTable` and `session.CreateTable` ran `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT EXISTS` for `CreateExtensions`, and the last two `CREATE INDEX IF NOT EXISTS`, with no lock, so on PostgreSQL two instances creating a missing table or extension at the same moment could fail one of them with a duplicate key error on PostgreSQL's catalog (SQLSTATE 23505) or with `already exists`, and an app that calls them at boot could crash one instance on the deploy that adds a table. On PostgreSQL `oauth.CreateTable` and `session.CreateTable` now create their table and indexes in one transaction that first takes a transaction-level advisory lock, as `claims.CreateTable` does, with a key of their own that is not the migration lock's. `CreateTables` now runs a model's statement again, up to twenty attempts in all, when it fails on the catalog (a unique violation on a PostgreSQL catalog index, SQLSTATE 23505, or 42P07 or 42710) because another instance created the object at the same moment; a model's create-table hooks run on each attempt, the same error twice in a row ends the attempts, and a failure still leaves the models before the failing one created. A hook statement that rewrites an existing catalog row, such as `CREATE OR REPLACE FUNCTION` or `GRANT`, can still fail when instances run it at the same moment, with an error that is not retried. `CreateExtensions`, and so `relational.WithExtensions`, runs each `CREATE EXTENSION IF NOT EXISTS` again the same way. Every instance can call the four at startup. SQLite is unchanged.
+
 ## v1.36.0
 
 ### Highlights

@@ -12,6 +12,11 @@ import (
 	"github.com/vanclief/ez"
 )
 
+// createTableLock names the transaction-level advisory lock CreateTable takes
+// on PostgreSQL, so instances booting together create the table one at a
+// time.
+const createTableLock = "compose/mcp/oauth.CreateTable"
+
 // bunStore keeps records in one table of a bun database, PostgreSQL or
 // SQLite. Expired rows are never read; Sweep deletes them.
 type bunStore struct {
@@ -49,8 +54,34 @@ func NewBunStore(db *bun.DB, table string) Store {
 
 // CreateTable creates the table of NewBunStore and its index on expires_at,
 // named after the table with an "_expires_at" suffix in the schema of the
-// table, when they do not exist.
+// table, when they do not exist. Every instance can call it at startup: on
+// PostgreSQL it creates them in one transaction that holds an advisory lock,
+// since concurrent CREATE TABLE IF NOT EXISTS statements can fail on
+// PostgreSQL's catalog.
 func CreateTable(ctx context.Context, db *bun.DB, table string) error {
+	if db.Dialect().Name() != dialect.PG {
+		err := createTable(ctx, db, table)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		return nil
+	}
+
+	err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext(?))", createTableLock)
+		if err != nil {
+			return ez.New(ez.EINTERNAL, "oauth: creating the "+table+" table failed", err)
+		}
+		return createTable(ctx, tx, table)
+	})
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	return nil
+}
+
+// createTable creates the table and index of CreateTable on db.
+func createTable(ctx context.Context, db bun.IDB, table string) error {
 	_, err := db.NewCreateTable().
 		Model((*bunRecord)(nil)).
 		ModelTableExpr("?", bun.Ident(table)).
