@@ -805,14 +805,28 @@ func TestDispatchRedirect(t *testing.T) {
 	assert.False(t, failed, text)
 	assert.Equal(t, `{"redirect":{"status":302,"location":"/ab"}}`, text)
 
-	// A long location is cut on a character boundary.
+	// A result holds the whole location up to 8192 bytes, as a presigned
+	// URL needs; an error cuts it at 300 bytes on a character boundary.
 	long := "/" + strings.Repeat("é", 400)
 	text, failed = call("redirects.go", 302, long)
 	assert.False(t, failed, text)
-	assert.Equal(t, `{"redirect":{"status":302,"location":"`+long[:299]+`","truncated":true}}`, text)
+	assert.Equal(t, `{"redirect":{"status":302,"location":"`+long+`"}}`, text)
 	text, failed = call("redirects.send", 307, long)
 	assert.True(t, failed, text)
 	assert.Equal(t, "error internal: 307 Temporary Redirect, Location: "+long[:299]+" [truncated]", text)
+	presigned := "https://bucket.s3.us-east-1.amazonaws.com/report.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20261114%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261114T000000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=" + strings.Repeat("a", 64)
+	text, failed = call("redirects.go", 302, url.PathEscape(presigned))
+	assert.False(t, failed, text)
+	assert.Equal(t, `{"redirect":{"status":302,"location":"`+presigned+`"}}`, text)
+	limit := "/" + strings.Repeat("a", 8191)
+	text, failed = call("redirects.go", 303, limit)
+	assert.False(t, failed, text)
+	assert.Equal(t, `{"redirect":{"status":303,"location":"`+limit+`"}}`, text)
+
+	// A longer location is not returned cut as if it could be followed.
+	text, failed = call("redirects.go", 302, limit+"b")
+	assert.True(t, failed, text)
+	assert.Equal(t, "error internal: 302 Found, Location: "+limit[:300]+" [truncated]; the location has 8193 bytes, more than the 8192 a redirect result returns", text)
 
 	// A script receives the object.
 	text, failed = callTool(t, session, "run_script", map[string]any{"code": `const r = api.redirects.go({status: 302, to: "/x"})
