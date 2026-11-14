@@ -595,8 +595,10 @@ func (c *Catalog) argParts(a *Arg) (string, string) {
 // typeName is the compact type notation the agent reads: a term name,
 // "<items>[]", "<type> <format>", a trailing "?" when nullable, "A|B" for
 // alternatives, with an alternative that has an enum in parentheses and
-// "(A|B)" before a "?" or "[]", "object" for inline objects, and
-// ` enum: "a"|"b"` for enums, the values written as JSON.
+// "(A|B)" before a "?", a "[]" or an enum of its own, "object" for inline
+// objects, and ` enum: "a"|"b"` for enums, the values written as JSON, a
+// const as a one-value enum. After "<items>[]" the enum is the items'; an
+// array's own enum follows "(<items>[])".
 func (c *Catalog) typeName(s *reference.Schema) string {
 	head, enum := c.typeParts(s)
 	if enum == "" {
@@ -647,23 +649,34 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 			names = append(names, head)
 		}
 		list := strings.Join(names, "|")
-		// A list of alternatives is wrapped before the "?".
-		if c.listCount(s) > 1 && s.Nullable {
+		enum := ownEnum(s)
+		// A list of alternatives is wrapped before the "?", and before its
+		// own enum, which would otherwise read as the last alternative's.
+		if c.listCount(s) > 1 && (s.Nullable || enum != "") {
 			list = "(" + list + ")"
 		}
-		return list + nullMark(s), ""
+		return list + nullMark(s), enum
 	}
 
 	if s.Items != nil || s.Type.Primary() == "array" {
 		items := s.Items
 		head, enum := c.typeParts(items)
 		// Items printed as a list of alternatives are wrapped before the
-		// "[]", unless nullable, as those already are.
+		// "[]", unless nullable or with an enum, as those already are.
 		listed := items != nil && c.termName(items) == "" && c.listCount(items) > 1
-		if listed && !items.Nullable {
+		if listed && !items.Nullable && enum == "" {
 			head = "(" + head + ")"
 		}
-		return head + "[]" + nullMark(s), enum
+		own := ownEnum(s)
+		if own == "" {
+			return head + "[]" + nullMark(s), enum
+		}
+		// The array's own enum follows the array in parentheses, so it is
+		// not read as the items', which then go inside with theirs.
+		if enum != "" {
+			head = "(" + head + " " + enum + ")"
+		}
+		return "(" + head + "[])" + nullMark(s), own
 	}
 
 	head := s.Type.Primary()
@@ -676,13 +689,22 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 	if s.Format != "" {
 		head += " " + s.Format
 	}
-	return head + nullMark(s), enumText(s.Enum)
+	return head + nullMark(s), ownEnum(s)
+}
+
+// ownEnum is the enum annotation of the values s itself allows: its const,
+// as a one-value enum, else its enum, else "".
+func ownEnum(s *reference.Schema) string {
+	if s.Const != nil {
+		return enumText([]any{s.Const})
+	}
+	return enumText(s.Enum)
 }
 
 // listCount is the number of alternatives inlineParts joins with "|" for s:
 // the members of its oneOf and anyOf, where a member that is itself a list
 // counts by its own alternatives unless it prints wrapped, as a nullable one
-// does.
+// or one with an enum of its own does.
 func (c *Catalog) listCount(s *reference.Schema) int {
 	n := 0
 	for _, members := range [][]*reference.Schema{s.OneOf, s.AnyOf} {
@@ -691,7 +713,7 @@ func (c *Catalog) listCount(s *reference.Schema) int {
 			if member != nil && c.termName(member) == "" {
 				inner = c.listCount(member)
 			}
-			if inner > 1 && !member.Nullable {
+			if inner > 1 && !member.Nullable && ownEnum(member) == "" {
 				n += inner
 				continue
 			}

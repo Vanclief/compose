@@ -536,6 +536,49 @@ func TestTypeName(t *testing.T) {
 		"nullable list of one": {&reference.Schema{OneOf: []*reference.Schema{
 			{Type: reference.TypeList{"string"}},
 		}, Nullable: true}, "string?"},
+		"const":           {&reference.Schema{Type: reference.TypeList{"string"}, Const: "fast"}, `string enum: "fast"`},
+		"untyped const":   {&reference.Schema{Const: "widget"}, `any enum: "widget"`},
+		"number const":    {&reference.Schema{Type: reference.TypeList{"integer"}, Const: 3.0, Nullable: true}, "integer? enum: 3"},
+		"object const":    {&reference.Schema{Const: map[string]any{"a": []any{1.0}}}, `any enum: {"a":[1]}`},
+		"const over enum": {&reference.Schema{Type: reference.TypeList{"string"}, Const: "a", Enum: []any{"a", "b"}}, `string enum: "a"`},
+		"alternatives of consts": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}, Const: "a"},
+			{Type: reference.TypeList{"integer"}, Const: 1.0},
+		}}, `(string enum: "a")|(integer enum: 1)`},
+		"alternatives with an enum": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+			{Type: reference.TypeList{"integer"}},
+		}, Enum: []any{"low", 1.0}}, `(string|integer) enum: "low"|1`},
+		"nullable alternatives with an enum": {&reference.Schema{AnyOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+			{Type: reference.TypeList{"integer"}},
+		}, Enum: []any{"low", 1.0}, Nullable: true}, `(string|integer)? enum: "low"|1`},
+		"one alternative with an enum": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+		}, Enum: []any{"a"}}, `string enum: "a"`},
+		"alternatives with a const": {&reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+			{Type: reference.TypeList{"integer"}},
+		}, Const: "x"}, `(string|integer) enum: "x"`},
+		"alternative that is a list with an enum": {&reference.Schema{OneOf: []*reference.Schema{
+			{AnyOf: []*reference.Schema{
+				{Type: reference.TypeList{"string"}},
+				{Type: reference.TypeList{"integer"}},
+			}, Enum: []any{"a", 1.0}},
+			{Type: reference.TypeList{"boolean"}},
+		}, Nullable: true}, `(((string|integer) enum: "a"|1)|boolean)?`},
+		"array of alternatives with an enum of their own": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{OneOf: []*reference.Schema{
+			{Type: reference.TypeList{"string"}},
+			{Type: reference.TypeList{"integer"}},
+		}, Enum: []any{"a", 1.0}}}, `(string|integer)[] enum: "a"|1`},
+		"array with an enum": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}},
+			Enum: []any{[]any{"a", "b"}, []any{"c"}}}, `(string[]) enum: ["a","b"]|["c"]`},
+		"nullable array with a const": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"integer"}},
+			Const: []any{1.0}, Nullable: true}, `(integer[])? enum: [1]`},
+		"array with an enum of items with an enum": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}},
+			Enum: []any{[]any{"a"}, []any{"a", "b"}}}, `((string enum: "a"|"b")[]) enum: ["a"]|["a","b"]`},
+		"array of arrays with an enum": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}},
+			Enum: []any{[]any{"a"}}}}, `(string[])[] enum: ["a"]`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -649,4 +692,26 @@ func TestRenderAlternativesWithEnums(t *testing.T) {
   accepted by: checks.list`, c.renderExplain([]string{"StatusFilter"}))
 
 	assert.Equal(t, `Returns (string enum: "a"|"")|integer`, c.toolDescription(mustFunction(t, c, "checks.list")))
+}
+
+func TestRenderConstAndSiblingEnum(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/things": {"post": {"operationId": "things.create", "requestBody": {"required": true, "content": {"application/json": {"schema": {
+			"type": "object",
+			"properties": {
+				"kind": {"const": "widget"},
+				"mode": {"type": "string", "const": "fast"},
+				"level": {"oneOf": [{"type": "string"}, {"type": "integer"}], "enum": ["low", 1]},
+				"pair": {"type": "array", "items": {"type": "string"}, "enum": [["a", "b"]]}
+			}}}}}, "responses": {"200": {"description": "OK"}}}}
+	}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, `things.create  POST /things
+  args:
+    kind   any               enum: "widget"
+    mode   string            enum: "fast"
+    level  (string|integer)  enum: "low"|1
+    pair   (string[])        enum: ["a","b"]`, c.renderDescribe([]string{"things.create"}))
 }
