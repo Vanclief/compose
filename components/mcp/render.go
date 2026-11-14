@@ -55,6 +55,11 @@ func (c *Catalog) renderSearch(module, query string) string {
 	}
 
 	words := searchWords(query)
+	// A query of only underscores and punctuation leaves no words, which
+	// every function would match.
+	if query != "" && len(words) == 0 {
+		return fmt.Sprintf("no functions match %q\nmodules: %s", query, c.moduleNames())
+	}
 	var matched []matchedModule
 	total := 0
 	for _, m := range modules {
@@ -153,8 +158,20 @@ func (c *Catalog) returnLabel(f *Function) string {
 
 // searchWords splits a query into lowercase words. Underscores count as
 // spaces, so "register_package" and "register package" are the same query.
+// A word without a letter or a digit, such as "." or "-", is dropped: a dot
+// alone would match the whole catalog, as every function name holds one.
 func searchWords(query string) []string {
-	return strings.Fields(strings.ReplaceAll(strings.ToLower(query), "_", " "))
+	var words []string
+	for _, word := range strings.Fields(strings.ReplaceAll(strings.ToLower(query), "_", " ")) {
+		if strings.IndexFunc(word, isLetterOrDigit) >= 0 {
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+func isLetterOrDigit(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // minSingularLen is the fewest letters a word may keep after dropping a
