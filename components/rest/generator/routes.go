@@ -2,6 +2,7 @@ package generator
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -58,8 +59,8 @@ var (
 	reOASParam  = regexp.MustCompile(`\{([^}]+)\}`)
 )
 
-// ParseRoutes returns every route declared in the files matched by cfg.RoutesGlob, sorted by
-// path then method.
+// ParseRoutes returns every route declared in the files matched by cfg.RoutesGlob that a
+// default build compiles, sorted by path then method.
 func ParseRoutes(cfg Config) ([]Route, error) {
 	cfg, err := cfg.withDefaults()
 	if err != nil {
@@ -88,6 +89,14 @@ func parseRoutes(cfg Config) ([]Route, error) {
 	var routes []Route
 	var handlerless []string
 	for _, abs := range routeFiles {
+		built, err := builtGoFile(abs)
+		if err != nil {
+			return nil, ez.Wrap(err)
+		}
+		if !built {
+			continue
+		}
+
 		parsed, missing, err := parser.parseFile(abs)
 		if err != nil {
 			return nil, ez.Wrap(err)
@@ -112,6 +121,25 @@ func parseRoutes(cfg Config) ([]Route, error) {
 	})
 
 	return routes, nil
+}
+
+// builtGoFile reports whether a default build on the platform the generator runs on compiles a
+// Go file: a test file, and a file whose name or build constraints select another platform or a
+// tag such as ignore, are not. A file whose name does not end in .go is left to the parser.
+func builtGoFile(path string) (bool, error) {
+	if !strings.HasSuffix(path, ".go") {
+		return true, nil
+	}
+	if strings.HasSuffix(path, "_test.go") {
+		return false, nil
+	}
+
+	match, err := build.Default.MatchFile(filepath.Dir(path), filepath.Base(path))
+	if err != nil {
+		return false, ez.New(ez.EINVALID, "cannot evaluate the build constraints of "+path+": "+err.Error(), err)
+	}
+
+	return match, nil
 }
 
 type routeParser struct {

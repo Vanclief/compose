@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.38.0
+
+### Breaking
+
+- **Generator: routes are no longer read from test files or from files a build leaves out.** The route finder read every file `Config.RoutesGlob` matched, so a route registered in a `_test.go` file, in a file marked `//go:build ignore` or in a file built only on another platform, such as `routes_windows.go` or one constrained with `//go:build windows`, was documented as an API route. Those files are now left out the way the compiler leaves them out, with go/build's default context, so the document is the one of the platform the generator runs on, as the standard-library types it reads already were. An app whose routes really live in such a file moves them to a file the build compiles; one that registers routes only on one platform generates its document on that platform.
+
 ## v1.37.0
 
 ### Breaking

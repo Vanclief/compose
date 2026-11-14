@@ -18,8 +18,11 @@ type Config struct {
 	// Root is the module root, the directory holding go.mod. Defaults to the working directory.
 	Root string
 	// RoutesGlob matches the files declaring routes, e.g. "application/interfaces/rest/routes_*.go".
-	// Each file is parsed as Go, and routes are the calls `x := parent.Group("/prefix", ...)`
-	// and `x.GET("/path", h.Method, ...)`, on one line or several.
+	// Test files and files a default build on the platform the generator runs on leaves out, by
+	// their name (routes_windows.go) or their build constraints (//go:build ignore), are not
+	// read, so the document is the one of that platform. Each other file is parsed as Go, and
+	// routes are the calls `x := parent.Group("/prefix", ...)` and `x.GET("/path", h.Method, ...)`,
+	// on one line or several.
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
 	// routed as `h.Name.Method` (nested mode). Empty selects flat mode: one handler type routed as
