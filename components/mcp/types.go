@@ -193,6 +193,10 @@ type Concept struct {
 // of the tool cuts the logs first and reaches the result only when the
 // result alone is over the cap.
 //
+// Numbers: a script's numbers are JavaScript doubles, so it cannot pass
+// every integer above 2^53 to a function exactly, while call_function and
+// promoted tools pass such an integer with its digits.
+//
 // Concurrency: MaxConcurrent bounds the scripts running at once across all
 // callers, and each caller runs one script at a time. Both refusals are
 // ERESOURCEEXHAUSTED: a caller whose script is still running is refused at

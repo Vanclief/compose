@@ -277,8 +277,14 @@ func checkArgNames(f *Function, args map[string]any) error {
 // explode of its parameter. Go slices from composites become []any first,
 // with nil elements skipped.
 //
-// grug: arguments arrive decoded as float64, so integers above 2^53 have
-// already lost precision before they get here.
+// Numbers from call_function and promoted tools arrive as float64, except
+// an integer written without a fraction or an exponent whose magnitude is
+// 2^53 or more, which arrives as a json.Number and renders with the digits
+// the agent wrote. grug: numbers in run_script are JavaScript doubles, so a
+// script cannot pass every integer above 2^53 exactly; written as a string
+// it reaches a path, query or header argument with its digits, but not a
+// body integer. Exact script numbers would need the script bridge to carry
+// them as text.
 func paramValues(a *Arg, v any) []string {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {

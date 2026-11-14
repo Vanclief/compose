@@ -101,7 +101,7 @@ func callDispatch(t *testing.T, c *caller, name string, args map[string]any) dis
 func TestDispatchNumbersAndStyles(t *testing.T) {
 	c := dispatchCaller(t, http.Header{})
 
-	// Arguments arrive as float64 from the SDK.
+	// Numbers arrive as float64 from run_script and may from Go callers.
 	got := callDispatch(t, c, "items.get", map[string]any{
 		"id":    float64(1234567),
 		"limit": float64(1000000),
