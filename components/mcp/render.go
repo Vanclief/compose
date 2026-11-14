@@ -385,33 +385,48 @@ func indentLines(text string) []string {
 	return lines
 }
 
-// functionSuggestions lists up to maxSuggestions function names containing
-// the whole name or the part after its first dot, case-insensitively.
+// functionSuggestions lists up to maxSuggestions function names,
+// case-insensitively, each rank in catalog order. For a name with a dot:
+// first the one equal to name, then those containing the whole name, then
+// those whose function part, after the module and its dot, equals the part
+// of name after its first dot, then those containing that part. For a name
+// without a dot: first those whose function part equals name, then those
+// containing it.
 func (c *Catalog) functionSuggestions(name string) []string {
-	var needles []string
 	whole := strings.ToLower(name)
-	if whole != "" {
-		needles = append(needles, whole)
+	if whole == "" {
+		return nil
 	}
 	_, after, dotted := strings.Cut(whole, ".")
-	if dotted && after != "" {
-		needles = append(needles, after)
+	part := whole
+	if dotted {
+		part = after
 	}
 
-	var out []string
+	var equal, equalPart, containsWhole, containsAfter []string
 	for _, f := range c.Functions() {
-		if len(out) == maxSuggestions {
-			break
-		}
 		lower := strings.ToLower(f.Name)
-		for _, needle := range needles {
-			if strings.Contains(lower, needle) {
-				out = append(out, f.Name)
-				break
-			}
+		_, function, _ := strings.Cut(lower, ".")
+		switch {
+		case lower == whole:
+			equal = append(equal, f.Name)
+		case dotted && strings.Contains(lower, whole):
+			containsWhole = append(containsWhole, f.Name)
+		case function != "" && function == part:
+			equalPart = append(equalPart, f.Name)
+		case strings.Contains(lower, whole):
+			containsWhole = append(containsWhole, f.Name)
+		case dotted && after != "" && strings.Contains(lower, after):
+			containsAfter = append(containsAfter, f.Name)
 		}
 	}
-	return out
+	// A name with a dot names a module, so the functions containing the
+	// whole of it are closer than the same function part in other modules.
+	out := slices.Concat(equal, equalPart, containsWhole, containsAfter)
+	if dotted {
+		out = slices.Concat(equal, containsWhole, equalPart, containsAfter)
+	}
+	return out[:min(len(out), maxSuggestions)]
 }
 
 // unknownName is the reply for a name that is not in the catalog.

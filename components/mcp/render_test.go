@@ -321,6 +321,73 @@ units.summary  composite
   see also: UnitSummary`, c.renderDescribe([]string{"zzz", "units.summary"}))
 }
 
+func TestRenderDescribeUnknownRanksSuggestions(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/docs/home": {"get": {"operationId": "documentation.home", "responses": {}}},
+		"/docs/meetings": {"get": {"operationId": "documentation.meetings", "responses": {}}},
+		"/docs/members": {"get": {"operationId": "documentation.members", "responses": {}}},
+		"/docs/memos": {"get": {"operationId": "documentation.memos", "responses": {}}},
+		"/docs/metrics": {"get": {"operationId": "documentation.metrics", "responses": {}}},
+		"/docs/readme": {"get": {"operationId": "documentation.readme", "responses": {}}},
+		"/users/me/avatar": {"get": {"operationId": "users.me_avatar", "responses": {}}},
+		"/users/me": {"get": {"operationId": "users.me", "responses": {}}}
+	}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	// The name in another case comes first, then the names containing the
+	// whole name, then the names whose function part equals the given one,
+	// then those containing the part after the dot, each in catalog order,
+	// five at most and none twice.
+	assert.Equal(t, `unknown function "Users.Me"
+  did you mean: users.me, users.me_avatar, documentation.home, documentation.meetings, documentation.members`, c.renderDescribe([]string{"Users.Me"}))
+
+	assert.Equal(t, `unknown function "USERS.ME_AVATAR"
+  did you mean: users.me_avatar`, c.renderDescribe([]string{"USERS.ME_AVATAR"}))
+
+	// The function part is matched under a wrong module or none.
+	for _, name := range []string{"user.me", "people.me", "me", "Me"} {
+		got := c.functionSuggestions(name)
+		require.NotEmpty(t, got, name)
+		assert.Equal(t, "users.me", got[0], name)
+	}
+	assert.Equal(t, `unknown function "people.me"
+  did you mean: users.me, documentation.home, documentation.meetings, documentation.members, documentation.memos`, c.renderDescribe([]string{"people.me"}))
+}
+
+func TestRenderDescribeUnknownSameFunctionInTwoModules(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/accounts/list": {"get": {"operationId": "accounts.list_all_archived", "responses": {}}},
+		"/admins/list": {"get": {"operationId": "admins.list_all", "responses": {}}},
+		"/users/list": {"get": {"operationId": "users.list_all", "responses": {}}}
+	}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, `unknown function "people.LIST_ALL"
+  did you mean: admins.list_all, users.list_all, accounts.list_all_archived`, c.renderDescribe([]string{"people.LIST_ALL"}))
+
+	// A name with a dot gets the functions containing the whole of it before
+	// the same function part in other modules; one without a dot gets the
+	// equal function parts first.
+	assert.Equal(t, []string{"accounts.list_all_archived", "admins.list_all", "users.list_all"}, c.functionSuggestions("accounts.list_all"))
+	assert.Equal(t, []string{"admins.list_all", "users.list_all", "accounts.list_all_archived"}, c.functionSuggestions("list_all"))
+}
+
+func TestRenderDescribeUnknownOtherCaseFirst(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/superusers/me": {"get": {"operationId": "superusers.me", "responses": {}}},
+		"/users/me": {"get": {"operationId": "users.me", "responses": {}}}
+	}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	// The name in another case comes before a name that contains it and is
+	// earlier in the catalog.
+	assert.Equal(t, `unknown function "Users.Me"
+  did you mean: users.me, superusers.me`, c.renderDescribe([]string{"Users.Me"}))
+}
+
 func TestRenderExplain(t *testing.T) {
 	c := smallCatalog(t)
 
