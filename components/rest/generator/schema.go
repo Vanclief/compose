@@ -55,6 +55,10 @@ type packageInfo struct {
 	// Methods holds, per receiver type name, the names of its methods (value or pointer
 	// receiver).
 	Methods map[string]map[string]bool
+	// PlatformMethods holds, per type of a module package, its marshal methods and IsZero that
+	// are declared on fewer platforms than the type (parsePackage), each with the files that
+	// declare it; typeMethods refuses them.
+	PlatformMethods map[string]map[string][]string
 	// Consts holds the value of every package-level constant declared with a string literal.
 	Consts map[string]string
 	// Doc is the package's doc comment.
@@ -1047,7 +1051,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 				"type": "object",
 			}
 		}
-		reason = b.customMarshalReason(pkg.Methods[ref.Name], declared, declaredImports, declaredPkgPath, ref)
+		reason = b.customMarshalReason(b.typeMethods(pkg, ref.Name, marshalMethods()), declared, declaredImports, declaredPkgPath, ref)
 		if reason != "" {
 			b.recordUnresolved(ref, reason)
 			return map[string]any{
@@ -1060,7 +1064,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 	// MarshalText returns, whatever its kind; its fields or underlying type say nothing about it.
 	// MarshalJSON wins over MarshalText, as in encoding/json: a struct with it was refused above,
 	// any other kind with it is still described by its kind.
-	textual := !overridden && marshalsAsText(pkg.Methods[ref.Name])
+	textual := !overridden && marshalsAsText(b.typeMethods(pkg, ref.Name, marshalMethods()))
 
 	// A named struct goes to schemaForStruct directly: it was checked for a promoted marshaler
 	// above, unless Config.TypeSchemas extends it, and schemaForExpr refuses an anonymous struct
@@ -1327,7 +1331,29 @@ func (b *schemaBuilder) sourceMethods(ref typeRef) (map[string]bool, bool) {
 		return nil, false
 	}
 
-	return pkg.Methods[ref.Name], true
+	return b.typeMethods(pkg, ref.Name, marshalMethods()), true
+}
+
+// typeMethods is pkg.Methods[name], the method set read from source for the type name of pkg,
+// of which the caller reads the methods read. One of them in PlatformMethods, declared in files
+// whose build constraints leave out platforms the type is declared on, makes encoding/json write
+// the type differently by platform; the generator does not pick one, and generation fails naming
+// the method and its files unless Config.TypeSchemas describes the type.
+func (b *schemaBuilder) typeMethods(pkg *packageInfo, name string, read []string) map[string]bool {
+	ref := typeRef{ImportPath: pkg.ImportPath, Name: name}
+	override, described := b.typeSchemas[typeKey(ref)]
+	if described && !isExtension(override) {
+		return pkg.Methods[name]
+	}
+	for _, method := range sortedKeys(pkg.PlatformMethods[name]) {
+		if !slices.Contains(read, method) {
+			continue
+		}
+		files := strings.Join(pkg.PlatformMethods[name][method], ", ")
+		b.recordUnresolved(ref, "method "+method+" of "+name+" is declared in "+files+", whose build constraints leave out platforms "+name+" is declared on, so encoding/json writes "+name+" differently by platform and the generator does not pick one; describe it with Config.TypeSchemas["+strconv.Quote(typeKey(ref))+"]")
+	}
+
+	return pkg.Methods[name]
 }
 
 // methodsOf is a named type's method set: knownMarshalers' for a type whose source the generator
@@ -1729,7 +1755,7 @@ func (b *schemaBuilder) embeddedTypeOf(ref typeRef, hops int) embeddedType {
 		}
 		return embeddedType{unreadable: ref, cause: ref.Name + " is not declared in " + pkg.Dir + platformNote()}
 	}
-	methods := pkg.Methods[ref.Name]
+	methods := b.typeMethods(pkg, ref.Name, marshalMethods())
 
 	switch t := info.Spec.Type.(type) {
 	case *ast.InterfaceType:
@@ -2533,7 +2559,7 @@ func (b *schemaBuilder) isBase64Element(expr ast.Expr, imports map[string]string
 	if !ok {
 		return false
 	}
-	if depth == 0 && marshalMethod(pkg.Methods[ref.Name]) != "" {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -2851,7 +2877,7 @@ func (b *schemaBuilder) hasIsZero(expr ast.Expr, imports map[string]string, pkgP
 		return false
 	}
 
-	return pkg.Methods[ref.Name]["IsZero"]
+	return b.typeMethods(pkg, ref.Name, []string{"IsZero"})["IsZero"]
 }
 
 func (b *schemaBuilder) valueFieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
@@ -2933,7 +2959,7 @@ func (b *schemaBuilder) isNilCollection(expr ast.Expr, imports map[string]string
 	}
 	// Only the field's own type's methods count: a type declared from another named type does
 	// not inherit that type's marshalers. An alias is that type, so its methods count.
-	if depth == 0 && marshalMethod(pkg.Methods[ref.Name]) != "" {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -3009,7 +3035,7 @@ func (b *schemaBuilder) isQuotableType(expr ast.Expr, imports map[string]string,
 	}
 	// Only the field's own type's methods count: a type declared from another named type does
 	// not inherit that type's marshalers. An alias is that type, so its methods count.
-	if depth == 0 && marshalMethod(pkg.Methods[ref.Name]) != "" {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -3479,10 +3505,13 @@ func (b *schemaBuilder) gorootDir() (string, error) {
 
 // parsePackage reads the Go files of the package importPath in dir, leaving out its tests. For
 // the standard library only the files its build constraints select for the platform the
-// generator runs on (GOOS/GOARCH) are read, without comments. A file that cannot be read, whose
-// build constraints cannot be evaluated or that does not parse fails it, with an error whose
-// message names the file and the cause, rather than being left out: a left-out file could hold a
-// method that changes a type's schema.
+// generator runs on (GOOS/GOARCH) are read, without comments. For a module package every file
+// some platform builds is read (filePlatforms), and a marshal method or IsZero declared on fewer
+// platforms than its type is recorded in PlatformMethods; a file no platform builds, such as one
+// marked //go:build ignore, is not read. A file that cannot be read, whose build constraints
+// cannot be evaluated or that does not parse fails it, with an error whose message names the
+// file and the cause, rather than being left out: a left-out file could hold a method that
+// changes a type's schema.
 func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibrary bool) (*packageInfo, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -3506,6 +3535,11 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 	stringConsts := map[string]string{}
 	packageDoc := ""
 	var funcs []funcInfo
+	// The platforms each type and each method of a module package is declared on, and the files
+	// that declare a method.
+	typePlatforms := map[string]platformSet{}
+	methodPlatforms := map[string]map[string]platformSet{}
+	methodFiles := map[string]map[string][]string{}
 
 	for _, filePath := range files {
 		if strings.HasSuffix(filePath, "_test.go") {
@@ -3520,10 +3554,38 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 				continue
 			}
 		}
-		file, err := parser.ParseFile(fset, filePath, nil, mode)
+		// The standard library's files are read by the parser, a module package's here.
+		var source any
+		var platforms platformSet
+		if !standardLibrary {
+			src, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, ez.New(ez.EINTERNAL, "cannot read "+filePath+": "+err.Error(), err)
+			}
+			clauseSet := token.NewFileSet()
+			clause, err := parser.ParseFile(clauseSet, filePath, src, parser.PackageClauseOnly|parser.ParseComments)
+			if err != nil {
+				// The parser's error starts with the file, line and column.
+				return nil, ez.New(ez.EINVALID, "cannot parse "+err.Error(), err)
+			}
+			header := src[:clauseSet.Position(clause.Package).Offset]
+			platforms, err = filePlatforms(dir, filepath.Base(filePath), header)
+			if err != nil {
+				return nil, ez.New(ez.EINVALID, "cannot evaluate the build constraints of "+filePath+": "+err.Error(), err)
+			}
+			if platforms == (platformSet{}) {
+				continue
+			}
+			source = src
+		}
+		file, err := parser.ParseFile(fset, filePath, source, mode)
 		if err != nil {
 			// The parser's error starts with the file, line and column.
 			return nil, ez.New(ez.EINVALID, "cannot parse "+err.Error(), err)
+		}
+		if importsC(file) {
+			// go build leaves a file importing "C" out with cgo off.
+			platforms = platforms.intersect(cgoPlatforms)
 		}
 
 		imports := b.importMap(file)
@@ -3544,6 +3606,12 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 						methods[receiver] = map[string]bool{}
 					}
 					methods[receiver][fn.Name.Name] = true
+					if methodPlatforms[receiver] == nil {
+						methodPlatforms[receiver] = map[string]platformSet{}
+						methodFiles[receiver] = map[string][]string{}
+					}
+					methodPlatforms[receiver][fn.Name.Name] = methodPlatforms[receiver][fn.Name.Name].union(platforms)
+					methodFiles[receiver][fn.Name.Name] = append(methodFiles[receiver][fn.Name.Name], filepath.Base(filePath))
 				}
 				continue
 			}
@@ -3569,6 +3637,7 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 						Imports: imports,
 						Doc:     doc,
 					}
+					typePlatforms[typeSpec.Name.Name] = typePlatforms[typeSpec.Name.Name].union(platforms)
 				}
 			case token.CONST:
 				collectTypedStringConsts(gen, consts)
@@ -3603,6 +3672,36 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 		for method := range methods[name] {
 			methods[target][method] = true
 		}
+		for method, declared := range methodPlatforms[name] {
+			if methodPlatforms[target] == nil {
+				methodPlatforms[target] = map[string]platformSet{}
+				methodFiles[target] = map[string][]string{}
+			}
+			methodPlatforms[target][method] = methodPlatforms[target][method].union(declared)
+			methodFiles[target][method] = append(methodFiles[target][method], methodFiles[name][method]...)
+		}
+	}
+
+	// A method that some platform its type is declared on does not build makes the type's JSON
+	// differ by platform. The standard library is read for one platform, so it has none.
+	watched := append(marshalMethods(), "IsZero")
+	platformMethods := map[string]map[string][]string{}
+	for name, declared := range methodPlatforms {
+		_, ok := types[name]
+		if !ok || standardLibrary {
+			continue
+		}
+		for method, on := range declared {
+			if !slices.Contains(watched, method) || typePlatforms[name].within(on) {
+				continue
+			}
+			if platformMethods[name] == nil {
+				platformMethods[name] = map[string][]string{}
+			}
+			files := slices.Clone(methodFiles[name][method])
+			slices.Sort(files)
+			platformMethods[name][method] = slices.Compact(files)
+		}
 	}
 
 	enums := map[string][]string{}
@@ -3635,7 +3734,20 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 		Methods:    methods,
 		Consts:     stringConsts,
 		Doc:        packageDoc,
+
+		PlatformMethods: platformMethods,
 	}, nil
+}
+
+// importsC reports whether file imports "C", which makes it a cgo file.
+func importsC(file *ast.File) bool {
+	for _, spec := range file.Imports {
+		if spec.Path.Value == `"C"` {
+			return true
+		}
+	}
+
+	return false
 }
 
 // receiverTypeName is the type a method is declared on, T for `(t T)`, `(t *T)`, `(t T[A])` and

@@ -13,8 +13,16 @@
 // first character other than a letter, a digit or an underscore, as "it" for it's. Without it, as
 // on Go 1.26 or with GOEXPERIMENT=nojsonv2, encoding/json writes with MarshalJSON and MarshalText
 // alone and takes a json tag name only when it is made of letters, digits, spaces and
-// !#$%&()*+-./:;<=>?@[]^_{|}~, using the Go field name for any other. jsonrules_v1.go and jsonrules_v2.go hold the two rule sets. The v2 rules are
-// Go 1.27's; Go 1.25 and 1.26 with GOEXPERIMENT=jsonv2 run an earlier encoding/json/v2.
+// !#$%&()*+-./:;<=>?@[]^_{|}~, using the Go field name for any other. jsonrules_v1.go and
+// jsonrules_v2.go hold the two rule sets. The v2 rules are Go 1.27's; Go 1.25 and 1.26 with
+// GOEXPERIMENT=jsonv2 run an earlier encoding/json/v2.
+//
+// The document is the same on every platform: of the app's own packages and its dependencies, the
+// generator reads every file that some GOOS/GOARCH, with cgo on or off, builds, and leaves out one
+// that none builds, such as one marked //go:build ignore or needing a custom build tag. A marshal
+// method or IsZero declared on fewer platforms than its type, through a file-name suffix such as
+// _windows.go, a //go:build line or an import of "C", fails generation unless Config.TypeSchemas
+// describes the type.
 package generator
 
 import (
@@ -90,7 +98,9 @@ type Config struct {
 	// read from GOROOT's source, from the files selected for the platform the generator runs on,
 	// and generation fails wherever one is needed, as a field or embedded, when that source or
 	// one of its files cannot be read. A type with MarshalText (or AppendText) and without
-	// MarshalJSON (or MarshalJSONTo) is a string unless described here.
+	// MarshalJSON (or MarshalJSONTo) is a string unless described here. A type of the app or a
+	// dependency whose marshal method or IsZero only some of the platforms it is declared on
+	// build must be described here too (see the package doc).
 	// ExtendGenerated builds an entry from the derived schema.
 	TypeSchemas map[string]map[string]any
 	// SchemaPrefixCollapse maps a module-relative package path prefix to the path every package
