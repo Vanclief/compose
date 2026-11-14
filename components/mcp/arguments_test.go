@@ -331,6 +331,32 @@ func TestApplyInputSchemaIntegerInput(t *testing.T) {
 	assert.Equal(t, integerInput{N: 1, M: 1000}, in)
 }
 
+// The SDK's typed tools panic on these arguments, so there is nothing to
+// compare with.
+func TestApplyInputSchemaNullArguments(t *testing.T) {
+	schema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"name": {Type: "string"},
+			"page": {Type: "integer", Default: json.RawMessage("1")},
+		},
+	}
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	require.NoError(t, err)
+
+	input, invalid := applyInputSchema(json.RawMessage(`null`), resolved)
+	require.Empty(t, invalid)
+	assert.JSONEq(t, `{"page": 1}`, string(input))
+
+	schema.Required = []string{"name"}
+	resolved, err = schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	require.NoError(t, err)
+	_, invalid = applyInputSchema(json.RawMessage(`null`), resolved)
+	_, want := applyInputSchema(json.RawMessage(`{}`), resolved)
+	require.NotEmpty(t, want)
+	assert.Equal(t, want, invalid)
+}
+
 // countingHandler counts the requests that reach it.
 type countingHandler struct {
 	n atomic.Int64

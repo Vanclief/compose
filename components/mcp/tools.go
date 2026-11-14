@@ -333,6 +333,14 @@ func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json
 			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
 		}
 	}
+	// Arguments of null leave both maps nil, and a default cannot be set in
+	// a nil map, so null is read as no arguments.
+	if object == nil {
+		object = map[string]any{}
+	}
+	if exact == nil {
+		exact = map[string]any{}
+	}
 	var value any = object
 	err := resolved.ApplyDefaults(&value)
 	if err != nil {
