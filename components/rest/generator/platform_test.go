@@ -62,6 +62,11 @@ func TestPlatformMethodsAreRefused(t *testing.T) {
 		{"cgo", map[string]string{"things.go": levelSource, "level.go": strings.Replace(levelMarshalText, "package things\n", "package things\n\nimport \"C\"\n", 1)}, []string{"Level"}, "level.go"},
 		{"cgo tag", map[string]string{"things.go": levelSource, "level.go": "//go:build cgo\n\n" + levelMarshalText}, []string{"Level"}, "level.go"},
 		{"field", map[string]string{"things.go": levelSource + "\ntype Holder struct {\n\tL Level `json:\"l\"`\n}\n", "level_darwin.go": levelMarshalText}, []string{"Holder"}, "level_darwin.go"},
+		{"IsZero", map[string]string{
+			"things.go":      "package things\n\ntype Tags []string\n\ntype Holder struct {\n\tT Tags `json:\"t,omitzero\"`\n}\n",
+			"tags_linux.go":  "package things\n\nfunc (t Tags) IsZero() bool {\n\treturn false\n}\n",
+			"tags_ignore.go": "//go:build ignore\n\npackage things\n",
+		}, []string{"Holder"}, "tags_linux.go"},
 		// A method declared everywhere that ranks below it does not outrank it.
 		{"ranked above", map[string]string{"things.go": levelSource + strings.TrimPrefix(levelMarshalText, "package things\n"), "level_windows.go": "package things\n\nfunc (l Level) MarshalJSON() ([]byte, error) {\n\treturn []byte(\"1\"), nil\n}\n"}, []string{"Level"}, "level_windows.go"},
 	}
@@ -70,6 +75,10 @@ func TestPlatformMethodsAreRefused(t *testing.T) {
 		err := builder.unresolvedError()
 		method := "MarshalText"
 		name := "Level"
+		if c.name == "IsZero" {
+			method = "IsZero"
+			name = "Tags"
+		}
 		if c.name == "ranked above" {
 			method = "MarshalJSON"
 		}
