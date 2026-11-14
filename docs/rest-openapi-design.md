@@ -235,15 +235,19 @@ Rules enforced at registration (fail boot):
   request type: registration fails for unexported embedded structs, `hidden` body fields,
   exported embedded non-struct types and shadowed promoted fields, any of which would let a value the
   validator never saw reach the handler (`openapi/jsonkeys.go`), and for a struct that gets
-  an `UnmarshalJSON` from an embedded field, whose decoder would take the whole value and
-  leave the validated fields unset; a `hidden` parameter fails
+  an `UnmarshalJSON` from an embedded field (or an `UnmarshalJSONFrom`, which `encoding/json`
+  calls on `encoding/json/v2`, the default from Go 1.27), whose decoder would take the whole
+  value and leave the validated fields unset; a `hidden` parameter fails
   too, since the document would hide a parameter the server still reads
 - the keys `encoding/json` writes are exactly the schema's properties, at every depth of a
   response type: registration fails for the same shapes (an unexported embedded struct's
   fields are sent but huma does not list them), so the document cannot miss a field the
   server sends. `hidden` fields stay allowed there: sent, and left out on purpose. Types
-  that encode themselves (`json.Marshaler`, `encoding.TextMarshaler`) are not looked into,
-  except that a struct which gets its encoder from an embedded field is refused.
+  that encode themselves (`json.Marshaler`, `encoding.TextMarshaler`, and on
+  `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) are not looked into,
+  except that a struct which gets its encoder from an embedded field is refused. Both walks
+  ask `encoding/json` which of those methods it calls and which key a json tag's name gives
+  (`openapi/jsonrules.go`), so they follow the toolchain the app is built with.
   The same walk refuses a pointer field that Go would send as `null` where its schema
   refuses null: one with neither `omitempty` nor `omitzero` whose schema is not nullable,
   which in practice is a pointer to a struct (a pointer to a scalar, a `time.Time`, a

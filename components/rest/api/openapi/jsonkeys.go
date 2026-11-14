@@ -8,7 +8,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/vanclief/ez"
 
@@ -77,9 +76,7 @@ func jsonFields(t reflect.Type) (fields []jsonField, candidates map[string][]jso
 					continue
 				}
 				name, _, _ := strings.Cut(tag, ",")
-				if !validJSONTag(name) {
-					name = ""
-				}
+				name = jsonTagKey(name)
 
 				index := make([]int, len(f.index)+1)
 				copy(index, f.index)
@@ -158,21 +155,6 @@ func lessIndex(a, b []int) bool {
 		}
 	}
 	return len(a) < len(b)
-}
-
-// validJSONTag mirrors encoding/json's isValidTag.
-func validJSONTag(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
-		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
-			return false
-		}
-	}
-	return true
 }
 
 // checkKeys verifies, for every struct reachable from the root t, that the
@@ -274,18 +256,15 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 }
 
 // codesOwnJSON reports whether encoding/json hands t, or a pointer to it, to
-// the type's own decoder (request: json.Unmarshaler; isOpaque covers
-// encoding.TextUnmarshaler) or encoder (response: json.Marshaler or
-// encoding.TextMarshaler) instead of reading or writing its fields.
+// the type's own decoder (request: decodesOwnJSON; isOpaque covers
+// encoding.TextUnmarshaler) or encoder (response: encodesOwnJSON) instead of
+// reading or writing its fields.
 func codesOwnJSON(t reflect.Type, request bool) bool {
-	coders := []reflect.Type{jsonMarshalerType, textMarshalerType}
+	coder := encodesOwnJSON
 	if request {
-		coders = []reflect.Type{jsonUnmarshalerType}
+		coder = decodesOwnJSON
 	}
-	ptr := reflect.PointerTo(t)
-	return slices.ContainsFunc(coders, func(coder reflect.Type) bool {
-		return t.Implements(coder) || ptr.Implements(coder)
-	})
+	return coder(t) || coder(reflect.PointerTo(t))
 }
 
 // promotedCoder returns the name of the first embedded field of the struct t

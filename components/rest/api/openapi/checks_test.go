@@ -28,6 +28,13 @@ type jkPlain struct {
 	F int `json:"a\\b"`
 }
 
+// jkNames has json tag names encoding/json/v2 reads otherwise.
+type jkNames struct {
+	Its   int `json:"it's"`
+	Space int `json:"a b"`
+	Emoji int `json:"😀"`
+}
+
 type jkInner struct {
 	X int `json:"x"`
 	Y int
@@ -80,13 +87,22 @@ type jkRec struct {
 }
 
 func TestJSONFields(t *testing.T) {
+	// encoding/json takes no name with a backslash and uses the Go name; on
+	// encoding/json/v2 it takes the letters before it.
+	backslashKey := "F"
+	names := map[string]string{"Its": "Its", "a b": "Space", "Emoji": "Emoji"}
+	if jsonEncoderType != nil {
+		backslashKey = "a"
+		names = map[string]string{"it": "Its", "a b": "Space", "\U0001F600": "Emoji"}
+	}
 	tests := []struct {
 		name      string
 		typ       reflect.Type
 		want      map[string]string // JSON key -> Go path
 		noMarshal bool              // nil embedded pointers hide keys from Marshal
 	}{
-		{"exported, dash, invalid tag", reflect.TypeFor[jkPlain](), map[string]string{"-": "D", "A": "A", "F": "F", "e": "E"}, false},
+		{"exported, dash, invalid tag", reflect.TypeFor[jkPlain](), map[string]string{"-": "D", "A": "A", backslashKey: "F", "e": "E"}, false},
+		{"tag names", reflect.TypeFor[jkNames](), names, false},
 		{"unexported embedded struct promotes", reflect.TypeFor[struct {
 			jkInner
 			N int
@@ -334,6 +350,67 @@ func TestPromotedCoder(t *testing.T) {
 		err = NewReflector().AddResponse(typ)
 		require.NoError(t, err, typ.String())
 	}
+}
+
+// PCAppend writes itself with AppendText alone, which encoding/json calls on
+// encoding/json/v2 only.
+type PCAppend struct {
+	V string
+}
+
+func (a PCAppend) AppendText(b []byte) ([]byte, error) {
+	return append(b, a.V...), nil
+}
+
+// pcAppendResponse gets PCAppend's AppendText by embedding it.
+type pcAppendResponse struct {
+	PCAppend
+	Name string `json:"name"`
+}
+
+// pcAppendPointer has AppendText on its pointer.
+type pcAppendPointer struct {
+	V string
+}
+
+func (a *pcAppendPointer) AppendText(b []byte) ([]byte, error) {
+	return append(b, a.V...), nil
+}
+
+// pcAppendMap holds pcAppendPointer by value in a map, where encoding/json
+// cannot call the method.
+type pcAppendMap struct {
+	ByID map[string]pcAppendPointer `json:"by_id"`
+}
+
+// TestAppendTextFollowsTheToolchain: a response that gets AppendText from an
+// embedded field, or holds a type with it on its pointer by value in a map,
+// is refused as one with MarshalText is where encoding/json writes a value
+// with AppendText, and is its fields where it does not.
+func TestAppendTextFollowsTheToolchain(t *testing.T) {
+	written := marshalled(t, pcAppendResponse{PCAppend: PCAppend{V: "v"}, Name: "n"})
+	require.Equal(t, writesAppendText, written == `"v"`, written)
+
+	err := NewReflector().AddResponse(reflect.TypeFor[pcAppendResponse]())
+	errMap := NewReflector().AddResponse(reflect.TypeFor[pcAppendMap]())
+	if !writesAppendText {
+		require.Equal(t, `{"V":"v","name":"n"}`, written)
+		require.NoError(t, err)
+		require.NoError(t, errMap)
+		return
+	}
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcAppendResponse: the JSON encoder of embedded field PCAppend would take over the whole value, not the fields the schema lists; make it a named field`, ez.ErrorMessage(err))
+	require.Error(t, errMap)
+	require.Contains(t, ez.ErrorMessage(errMap), `openapi.pcAppendPointer is held by value in a map of a response type: encoding/json cannot call its marshaler there`)
+}
+
+// marshalled is what encoding/json writes for value.
+func marshalled(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(data)
 }
 
 type nullOwner struct {
@@ -633,4 +710,37 @@ func TestNamer(t *testing.T) {
 	require.Equal(t, "internal.fixture.Page_a.units.ListRequest", SegmentsNamer(2)(reflect.TypeFor[fixture.Page[aunits.ListRequest]]()))
 	require.Equal(t, "fixture.Page_units.ListRequest", SegmentsNamer(0)(reflect.TypeFor[fixture.Page[aunits.ListRequest]]()))
 	require.Equal(t, "string", DefaultNamer(reflect.TypeFor[string]()))
+}
+
+// tnApostrophe has a json tag name encoding/json does not take as written.
+type tnApostrophe struct {
+	Its int `json:"it's"`
+}
+
+// tnSpace has a json tag name encoding/json takes as written.
+type tnSpace struct {
+	Space int `json:"a b"`
+}
+
+// TestTagNamesEncodingJSONRenames: a json tag name encoding/json does not
+// take as written is refused, naming the key it uses: the Go name on its own
+// implementation, the letters before the quote on encoding/json/v2.
+func TestTagNamesEncodingJSONRenames(t *testing.T) {
+	key := "Its"
+	if jsonEncoderType != nil {
+		key = "it"
+	}
+	require.Equal(t, `{"`+key+`":0}`, marshalled(t, tnApostrophe{}))
+
+	want := `openapi: openapi.tnApostrophe.Its: encoding/json does not take the json tag name "it's" as it is written and uses the key "` + key + `", which the schema would not list`
+	err := NewReflector().AddResponse(reflect.TypeFor[tnApostrophe]())
+	require.Error(t, err)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, ez.ErrorMessage(err), want)
+	_, err = NewReflector().AddRequest(reflect.TypeFor[tnApostrophe]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), want)
+
+	err = NewReflector().AddResponse(reflect.TypeFor[tnSpace]())
+	require.NoError(t, err)
 }

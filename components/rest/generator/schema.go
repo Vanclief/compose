@@ -55,6 +55,10 @@ type packageInfo struct {
 	// Methods holds, per receiver type name, the names of its methods (value or pointer
 	// receiver).
 	Methods map[string]map[string]bool
+	// PlatformMethods holds, per type of a module package, its marshal methods and IsZero that
+	// are declared on fewer platforms than the type (parsePackage), each with the files that
+	// declare it; typeMethods refuses them.
+	PlatformMethods map[string]map[string][]string
 	// Consts holds the value of every package-level constant declared with a string literal.
 	Consts map[string]string
 	// Doc is the package's doc comment.
@@ -1047,7 +1051,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 				"type": "object",
 			}
 		}
-		reason = b.customMarshalReason(pkg.Methods[ref.Name], declared, declaredImports, declaredPkgPath, ref)
+		reason = b.customMarshalReason(b.typeMethods(pkg, ref.Name, marshalMethods()), declared, declaredImports, declaredPkgPath, ref)
 		if reason != "" {
 			b.recordUnresolved(ref, reason)
 			return map[string]any{
@@ -1060,7 +1064,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 	// MarshalText returns, whatever its kind; its fields or underlying type say nothing about it.
 	// MarshalJSON wins over MarshalText, as in encoding/json: a struct with it was refused above,
 	// any other kind with it is still described by its kind.
-	textual := !overridden && marshalsAsText(pkg.Methods[ref.Name])
+	textual := !overridden && marshalsAsText(b.typeMethods(pkg, ref.Name, marshalMethods()))
 
 	// A named struct goes to schemaForStruct directly: it was checked for a promoted marshaler
 	// above, unless Config.TypeSchemas extends it, and schemaForExpr refuses an anonymous struct
@@ -1174,10 +1178,10 @@ func (b *schemaBuilder) declaredType(info typeSpecInfo, pkgPath string) (ast.Exp
 	}
 
 	_, isStruct := underlying.(*ast.StructType)
-	marshals := marshalsAsText(methods) || (methods["MarshalJSON"] && isStruct)
+	marshals := marshalsAsText(methods) || (jsonMethod(methods) != "" && isStruct)
 	_, described := b.typeSchemas[typeKey(from)]
 	if described {
-		marshals = methods["MarshalJSON"] || methods["MarshalText"]
+		marshals = marshalMethod(methods) != ""
 	}
 	if marshals {
 		return underlying, imports, underlyingPkgPath
@@ -1196,8 +1200,7 @@ func (b *schemaBuilder) declaredFromStandardLibrary(from typeRef, info typeSpecI
 	if !ok {
 		return info.Spec.Type, info.Imports, pkgPath
 	}
-	methods := pkg.Methods[from.Name]
-	if !methods["MarshalJSON"] && !methods["MarshalText"] {
+	if marshalMethod(pkg.Methods[from.Name]) == "" {
 		return info.Spec.Type, info.Imports, pkgPath
 	}
 	expr, imports, underlyingPkgPath, ok := b.standardLibraryUnderlying(from, 1)
@@ -1328,7 +1331,29 @@ func (b *schemaBuilder) sourceMethods(ref typeRef) (map[string]bool, bool) {
 		return nil, false
 	}
 
-	return pkg.Methods[ref.Name], true
+	return b.typeMethods(pkg, ref.Name, marshalMethods()), true
+}
+
+// typeMethods is pkg.Methods[name], the method set read from source for the type name of pkg,
+// of which the caller reads the methods read. One of them in PlatformMethods, declared in files
+// whose build constraints leave out platforms the type is declared on, makes encoding/json write
+// the type differently by platform; the generator does not pick one, and generation fails naming
+// the method and its files unless Config.TypeSchemas describes the type.
+func (b *schemaBuilder) typeMethods(pkg *packageInfo, name string, read []string) map[string]bool {
+	ref := typeRef{ImportPath: pkg.ImportPath, Name: name}
+	override, described := b.typeSchemas[typeKey(ref)]
+	if described && !isExtension(override) {
+		return pkg.Methods[name]
+	}
+	for _, method := range sortedKeys(pkg.PlatformMethods[name]) {
+		if !slices.Contains(read, method) {
+			continue
+		}
+		files := strings.Join(pkg.PlatformMethods[name][method], ", ")
+		b.recordUnresolved(ref, "method "+method+" of "+name+" is declared in "+files+", whose build constraints leave out platforms "+name+" is declared on, so encoding/json writes "+name+" differently by platform and the generator does not pick one; describe it with Config.TypeSchemas["+strconv.Quote(typeKey(ref))+"]")
+	}
+
+	return pkg.Methods[name]
 }
 
 // methodsOf is a named type's method set: knownMarshalers' for a type whose source the generator
@@ -1352,7 +1377,7 @@ func (b *schemaBuilder) describedMarshaler(ref typeRef) bool {
 	}
 	methods, _ := b.methodsOf(ref)
 
-	return methods["MarshalJSON"] || methods["MarshalText"]
+	return marshalMethod(methods) != ""
 }
 
 // readsFromSource reports a named type whose declaration and methods the generator reads from
@@ -1369,11 +1394,11 @@ func (b *schemaBuilder) readsFromSource(ref typeRef) bool {
 }
 
 // customMarshalReason explains why the fields of a struct type, declared as expr, do not describe
-// its JSON: methods, its own, has MarshalJSON, or an embedded type promotes MarshalJSON or
-// MarshalText into its method set, so it marshals as that type alone, or the generator cannot
-// tell whether one does (promotedMarshaler). "" for any other struct, which encoding/json writes
-// as its fields unless its own MarshalText makes it a string (buildSchema), and for any other
-// kind.
+// its JSON: methods, its own, has a method of jsonMethods, or an embedded type promotes a marshal
+// method (jsonMethods, textMethods) its own methods do not shadow into its method set, so it
+// marshals as that type alone, or the generator cannot tell whether one does
+// (promotedMarshaler). "" for any other struct, which encoding/json writes as its fields unless
+// its own text method makes it a string (buildSchema), and for any other kind.
 func (b *schemaBuilder) customMarshalReason(methods map[string]bool, expr ast.Expr, imports map[string]string, pkgPath string, ref typeRef) string {
 	structure, ok := expr.(*ast.StructType)
 	if !ok {
@@ -1381,11 +1406,12 @@ func (b *schemaBuilder) customMarshalReason(methods map[string]bool, expr ast.Ex
 	}
 
 	hint := "; describe it with Config.TypeSchemas[" + strconv.Quote(typeKey(ref)) + "]"
-	if methods["MarshalJSON"] {
-		return "type " + ref.Name + " defines MarshalJSON" + hint
+	method := jsonMethod(methods)
+	if method != "" {
+		return "type " + ref.Name + " defines " + method + hint
 	}
 
-	reason := b.promotedMarshaler(structure, imports, pkgPath, methods["MarshalText"])
+	reason := b.promotedMarshaler(structure, imports, pkgPath, methods)
 	if reason != "" {
 		return "type " + ref.Name + " " + reason + hint
 	}
@@ -1479,8 +1505,8 @@ func (b *schemaBuilder) genericStruct(expr ast.Expr, imports map[string]string, 
 }
 
 // genericDeclarationReason explains why a type declared from an instantiation of a generic type
-// with MarshalJSON or MarshalText, `type BoxD Box[int]`, cannot be described: it gets none of
-// those methods, so encoding/json writes it as the generic type's fields, which the generator
+// with a marshal method (marshalMethod), `type BoxD Box[int]`, cannot be described: it gets none
+// of its methods, so encoding/json writes it as the generic type's fields, which the generator
 // does not instantiate, while the generic type's description in Config.TypeSchemas is of the
 // method's output. "" for any other type.
 func (b *schemaBuilder) genericDeclarationReason(info typeSpecInfo, ref typeRef) string {
@@ -1501,11 +1527,8 @@ func (b *schemaBuilder) genericDeclarationReason(info typeSpecInfo, ref typeRef)
 	}
 	genericRef = b.aliasTarget(genericRef)
 	methods, _ := b.methodsOf(genericRef)
-	method := "MarshalText"
-	if methods["MarshalJSON"] {
-		method = "MarshalJSON"
-	}
-	if isSQLNull(genericRef) || !methods[method] {
+	method := marshalMethod(methods)
+	if isSQLNull(genericRef) || method == "" {
 		return ""
 	}
 
@@ -1513,21 +1536,23 @@ func (b *schemaBuilder) genericDeclarationReason(info typeSpecInfo, ref typeRef)
 }
 
 // promotedKey memoizes promotedMarshaler by a struct's AST node, which the cached packages keep
-// for the builder's life, and its own MarshalText. The answer depends on source alone, which
-// does not change while the builder runs.
+// for the builder's life, and the marshal methods it declares itself. The answer depends on
+// source alone, which does not change while the builder runs.
 type promotedKey struct {
-	st      *ast.StructType
-	ownText bool
+	st  *ast.StructType
+	own string
 }
 
-// promotedMarshaler is "embeds X, which ..." when an embedded type promotes MarshalJSON or
-// MarshalText into a struct's method set, or when the generator cannot tell whether one does;
-// "" when none does. It follows Go's selector rule for each of the two methods: depth by depth,
-// every path to an embedded type counts, two paths to one type at one depth included, and a
-// type already reached at a shallower depth is not looked at again. The method is promoted from
-// the shallowest depth where an embedded type declares it, when exactly one path reaches such a
-// type there; two make it ambiguous, and it is not promoted, nor from deeper. ownText is a
-// MarshalText the struct declares, which shadows a promoted one. An embedded alias has the
+// promotedMarshaler is "embeds X, which ..." when an embedded type promotes a marshal method
+// (jsonMethods, textMethods) into a struct's method set, or when the generator cannot tell
+// whether one does; "" when none does. It follows Go's selector rule for each of the methods:
+// depth by depth, every path to an embedded type counts, two paths to one type at one depth
+// included, and a type already reached at a shallower depth is not looked at again. The method is
+// promoted from the shallowest depth where an embedded type declares it, when exactly one path
+// reaches such a type there; two make it ambiguous, and it is not promoted, nor from deeper. own
+// holds the methods the struct declares, each of which shadows a promoted method of its name and
+// no other: encoding/json on encoding/json/v2 writes a struct with its own MarshalText as the text
+// of an AppendText it gets. An embedded alias has the
 // methods of the type it names (aliasTarget, and embeddedTypeOf for an alias of a generic
 // instantiation) and is reported by the name it is embedded by; an interface has the methods it
 // lists and embeds (embeddedTypeOf). A type described in Config.TypeSchemas counts with the
@@ -1539,18 +1564,24 @@ type promotedKey struct {
 // undecided and fewer than two paths there reach a type known to declare it, the type could
 // change the answer: the reason names it and the embedded types the struct reaches it through,
 // and the struct is refused rather than described by fields Go may not write. A standard-library
-// type fails generation also where both methods are already ambiguous, as reading it does
+// type fails generation also where every method is already ambiguous, as reading it does
 // wherever it is needed (standardLibraryDeclaration). Two limits remain: the instantiations of a
 // generic type count as one type, so G[string] is not looked at below a G[int] reached at a
-// shallower depth, and a field named MarshalJSON or MarshalText, which in Go hides a deeper
-// method of that name, is not looked for.
-func (b *schemaBuilder) promotedMarshaler(structure *ast.StructType, imports map[string]string, pkgPath string, ownText bool) string {
-	key := promotedKey{st: structure, ownText: ownText}
+// shallower depth, and a field named like a marshal method, which in Go hides a deeper method of
+// that name, is not looked for.
+func (b *schemaBuilder) promotedMarshaler(structure *ast.StructType, imports map[string]string, pkgPath string, own map[string]bool) string {
+	var declared []string
+	for _, method := range marshalMethods() {
+		if own[method] {
+			declared = append(declared, method)
+		}
+	}
+	key := promotedKey{st: structure, own: strings.Join(declared, ",")}
 	reason, ok := b.promoted[key]
 	if ok {
 		return reason
 	}
-	reason = b.findPromotedMarshaler(structure, imports, pkgPath, ownText)
+	reason = b.findPromotedMarshaler(structure, imports, pkgPath, own)
 	if b.promoted == nil {
 		b.promoted = map[promotedKey]string{}
 	}
@@ -1570,13 +1601,21 @@ type embeddedPath struct {
 	decl      sourceStruct
 }
 
-func (b *schemaBuilder) findPromotedMarshaler(structure *ast.StructType, imports map[string]string, pkgPath string, ownText bool) string {
+func (b *schemaBuilder) findPromotedMarshaler(structure *ast.StructType, imports map[string]string, pkgPath string, own map[string]bool) string {
 	level := []embeddedPath{{decl: sourceStruct{st: structure, imports: imports, pkgPath: pkgPath}, paths: 1}}
 	seen := map[typeRef]bool{}
-	jsonDecided := false
-	textDecided := ownText
+	methods := marshalMethods()
+	decided := map[string]bool{}
+	for _, method := range methods {
+		decided[method] = own[method]
+	}
+	undecided := func() bool {
+		return slices.ContainsFunc(methods, func(method string) bool {
+			return !decided[method]
+		})
+	}
 
-	for len(level) > 0 && !(jsonDecided && textDecided) {
+	for len(level) > 0 && undecided() {
 		// The types one depth further, the paths to one type added up.
 		var reached []embeddedPath
 		position := map[typeRef]int{}
@@ -1606,10 +1645,8 @@ func (b *schemaBuilder) findPromotedMarshaler(structure *ast.StructType, imports
 			}
 		}
 
-		jsonOwners := 0
-		textOwners := 0
-		jsonReason := ""
-		textReason := ""
+		owners := map[string]int{}
+		reasons := map[string]string{}
 		unknown := ""
 		var next []embeddedPath
 		for _, path := range reached {
@@ -1632,36 +1669,33 @@ func (b *schemaBuilder) findPromotedMarshaler(structure *ast.StructType, imports
 			if described {
 				note = "; Config.TypeSchemas describes " + path.name + ", not the types that embed it"
 			}
-			if embedded.methods["MarshalJSON"] {
-				jsonOwners += path.paths
-				jsonReason = "embeds " + path.name + ", which defines MarshalJSON, so it marshals as " + path.name + " alone" + note
-			}
-			if embedded.methods["MarshalText"] {
-				textOwners += path.paths
-				textReason = "embeds " + path.name + ", which defines MarshalText, so it marshals as " + path.name + "'s text alone" + note
+			for _, method := range methods {
+				if !embedded.methods[method] {
+					continue
+				}
+				owners[method] += path.paths
+				written := path.name
+				if slices.Contains(textMethods, method) {
+					written += "'s text"
+				}
+				reasons[method] = "embeds " + path.name + ", which defines " + method + ", so it marshals as " + written + " alone" + note
 			}
 			if embedded.isStruct {
 				next = append(next, embeddedPath{ref: path.ref, chain: path.chain, paths: path.paths, decl: embedded.decl})
 			}
 		}
 
-		if !jsonDecided {
-			if jsonOwners < 2 && unknown != "" {
+		for _, method := range methods {
+			if decided[method] {
+				continue
+			}
+			if owners[method] < 2 && unknown != "" {
 				return unknown
 			}
-			if jsonOwners == 1 {
-				return jsonReason
+			if owners[method] == 1 {
+				return reasons[method]
 			}
-			jsonDecided = jsonOwners > 1
-		}
-		if !textDecided {
-			if textOwners < 2 && unknown != "" {
-				return unknown
-			}
-			if textOwners == 1 {
-				return textReason
-			}
-			textDecided = textOwners > 1
+			decided[method] = owners[method] > 1
 		}
 		level = next
 	}
@@ -1721,7 +1755,7 @@ func (b *schemaBuilder) embeddedTypeOf(ref typeRef, hops int) embeddedType {
 		}
 		return embeddedType{unreadable: ref, cause: ref.Name + " is not declared in " + pkg.Dir + platformNote()}
 	}
-	methods := pkg.Methods[ref.Name]
+	methods := b.typeMethods(pkg, ref.Name, marshalMethods())
 
 	switch t := info.Spec.Type.(type) {
 	case *ast.InterfaceType:
@@ -1860,11 +1894,11 @@ func (b *schemaBuilder) standardLibraryDeclaration(ref typeRef) (typeSpecInfo, *
 
 // standardLibrarySchema is the schema of a standard-library type the generator does not list,
 // read from GOROOT's source by the rules a type read from source follows: an interface is written
-// as the value it holds, so it admits anything; a type with MarshalText and without MarshalJSON
-// is a string; any other is its kind, `time.Month` an integer, `template.HTML` a string,
+// as the value it holds, so it admits anything; a type with a text method and without a JSON
+// method (marshalsAsText) is a string; any other is its kind, `time.Month` an integer, `template.HTML` a string,
 // `net.IPMask` a base64 string, following the named types it is declared from, whose methods it
-// does not get. Two cases are not read: a type with MarshalJSON, whose output its declaration does
-// not say, admits anything, and a struct stays an object whose fields are not described. An
+// does not get. Two cases are not read: a type with a JSON method, whose output its declaration
+// does not say, admits anything, and a struct stays an object whose fields are not described. An
 // alias is the type it names.
 func (b *schemaBuilder) standardLibrarySchema(ref typeRef) map[string]any {
 	info, pkg, ok := b.standardLibraryDeclaration(ref)
@@ -1878,10 +1912,10 @@ func (b *schemaBuilder) standardLibrarySchema(ref typeRef) map[string]any {
 		return b.schemaForExpr(info.Spec.Type, info.Imports, pkg.ImportPath)
 	}
 	methods := pkg.Methods[ref.Name]
-	if methods["MarshalJSON"] {
+	if jsonMethod(methods) != "" {
 		return map[string]any{}
 	}
-	if methods["MarshalText"] {
+	if textMethod(methods) != "" {
 		return map[string]any{"type": "string"}
 	}
 
@@ -1940,16 +1974,50 @@ func (b *schemaBuilder) recordLongChain(ref typeRef) {
 	b.recordUnresolved(ref, "reached through a chain of more than "+strconv.Itoa(maxDeclarationHops)+" types declared from one another, or a cycle; the generator follows "+strconv.Itoa(maxDeclarationHops))
 }
 
-// marshalsAsText reports a method set with MarshalText and without MarshalJSON: encoding/json
-// writes such a value as the string MarshalText returns.
+// marshalMethods are jsonMethods then textMethods: every method encoding/json writes a value with
+// instead of by its kind, in the order it prefers them.
+func marshalMethods() []string {
+	return slices.Concat(jsonMethods, textMethods)
+}
+
+// jsonMethod is the method of jsonMethods encoding/json writes a value of the method set methods
+// with, "" when it has none.
+func jsonMethod(methods map[string]bool) string {
+	return firstMethod(jsonMethods, methods)
+}
+
+// textMethod is the method of textMethods encoding/json would write a value of the method set
+// methods with, "" when it has none; a method of jsonMethods wins over it (marshalsAsText).
+func textMethod(methods map[string]bool) string {
+	return firstMethod(textMethods, methods)
+}
+
+// marshalMethod is the method encoding/json writes a value of the method set methods with, a
+// method of jsonMethods before one of textMethods, "" when it has none.
+func marshalMethod(methods map[string]bool) string {
+	return firstMethod(marshalMethods(), methods)
+}
+
+func firstMethod(names []string, methods map[string]bool) string {
+	for _, name := range names {
+		if methods[name] {
+			return name
+		}
+	}
+
+	return ""
+}
+
+// marshalsAsText reports a method set with a text method and without a JSON method:
+// encoding/json writes such a value as the string the text method returns.
 //
 // Methods does not tell value receivers from pointer receivers, and a pointer-receiver
-// MarshalText counts too. encoding/json calls it on every addressable value: each field of a
+// text method counts too. encoding/json calls it on every addressable value: each field of a
 // value marshaled through a pointer (a module function's *Response), each slice element, and
 // what a pointer field points to. A value it cannot address, such as a map value or a struct
 // marshaled by value, is written by its kind instead; the schema does not describe that case.
 func marshalsAsText(methods map[string]bool) bool {
-	return methods["MarshalText"] && !methods["MarshalJSON"]
+	return textMethod(methods) != "" && jsonMethod(methods) == ""
 }
 
 // knownMarshalers are the marshal methods of the concrete types whose source the generator does
@@ -1961,19 +2029,19 @@ func marshalsAsText(methods map[string]bool) bool {
 // structs with a marshal method have unexported fields only. The methods of a standard-library
 // type not listed here are read from GOROOT (embeddedTypeOf).
 var knownMarshalers = map[string]map[string]bool{
-	"time.Time":                              {"MarshalJSON": true, "MarshalText": true},
+	"time.Time":                              {"MarshalJSON": true, "AppendText": true, "MarshalText": true},
 	"time.Duration":                          {},
 	"encoding/json.RawMessage":               {"MarshalJSON": true},
-	"encoding/json.Number":                   {},
-	"net.IP":                                 {"MarshalText": true},
-	"net/netip.Addr":                         {"MarshalText": true},
-	"net/netip.AddrPort":                     {"MarshalText": true},
-	"net/netip.Prefix":                       {"MarshalText": true},
-	"math/big.Int":                           {"MarshalJSON": true, "MarshalText": true},
-	"math/big.Float":                         {"MarshalText": true},
-	"math/big.Rat":                           {"MarshalText": true},
-	"log/slog.Level":                         {"MarshalJSON": true, "MarshalText": true},
-	"log/slog.LevelVar":                      {"MarshalText": true},
+	"encoding/json.Number":                   jsonNumberMethods,
+	"net.IP":                                 {"AppendText": true, "MarshalText": true},
+	"net/netip.Addr":                         {"AppendText": true, "MarshalText": true},
+	"net/netip.AddrPort":                     {"AppendText": true, "MarshalText": true},
+	"net/netip.Prefix":                       {"AppendText": true, "MarshalText": true},
+	"math/big.Int":                           {"MarshalJSON": true, "AppendText": true, "MarshalText": true},
+	"math/big.Float":                         {"AppendText": true, "MarshalText": true},
+	"math/big.Rat":                           {"AppendText": true, "MarshalText": true},
+	"log/slog.Level":                         {"MarshalJSON": true, "AppendText": true, "MarshalText": true},
+	"log/slog.LevelVar":                      {"AppendText": true, "MarshalText": true},
 	"github.com/google/uuid.UUID":            {"MarshalText": true},
 	paginationImportPath + ".CursorRequest":  {},
 	paginationImportPath + ".CursorResponse": {},
@@ -2157,7 +2225,7 @@ func (b *schemaBuilder) schemaForExpr(expr ast.Expr, imports map[string]string, 
 		// is written as that type alone. A named one is refused when its component is built
 		// (customMarshalReason); an anonymous one has no component, so it is refused here,
 		// named by its fields.
-		reason := b.promotedMarshaler(t, imports, pkgPath, false)
+		reason := b.promotedMarshaler(t, imports, pkgPath, nil)
 		if reason != "" {
 			anonymous := typeRef{ImportPath: pkgPath, Name: types.ExprString(t)}
 			b.recordUnresolved(anonymous, "anonymous struct "+reason+"; declare it as a named type and describe that type with Config.TypeSchemas")
@@ -2491,8 +2559,7 @@ func (b *schemaBuilder) isBase64Element(expr ast.Expr, imports map[string]string
 	if !ok {
 		return false
 	}
-	methods := pkg.Methods[ref.Name]
-	if depth == 0 && (methods["MarshalJSON"] || methods["MarshalText"]) {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -2766,16 +2833,51 @@ func (b *schemaBuilder) isNilableNamedType(ref typeRef, depth int) bool {
 }
 
 // fieldSchema is a struct field's schema. The `,string` option puts a boolean, number or string
-// (or a pointer to one) inside a JSON string. A slice or map field without omitempty or
-// omitzero is nullable: encoding/json writes a nil one as null (with either option it leaves a
-// nil one out).
+// (or a pointer to one) inside a JSON string. A slice or map field is nullable unless
+// encoding/json leaves a nil one out (omitsNil): it writes a nil one as null.
 func (b *schemaBuilder) fieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
 	schema := b.valueFieldSchema(field, imports, pkgPath)
-	if !jsonFieldOmitsEmpty(field) && b.isNilCollection(field.Type, imports, pkgPath, 0) {
+	if b.isNilCollection(field.Type, imports, pkgPath, 0) && !b.omitsNil(field, imports, pkgPath) {
 		return nullableSchema(schema)
 	}
 
 	return schema
+}
+
+// omitsNil reports a field encoding/json leaves out when it holds nil: one with omitempty, or
+// with omitzero unless its type declares IsZero (hasIsZero), which omitzero then asks alone, so a
+// nil slice or map whose IsZero reports false is written as null.
+func (b *schemaBuilder) omitsNil(field *ast.Field, imports map[string]string, pkgPath string) bool {
+	options := jsonTagOptions(field)
+	if slices.Contains(options, "omitempty") {
+		return true
+	}
+	if !slices.Contains(options, "omitzero") {
+		return false
+	}
+
+	return !b.hasIsZero(field.Type, imports, pkgPath)
+}
+
+// hasIsZero reports a named type, its aliases resolved, that declares IsZero with a value or a
+// pointer receiver, which encoding/json calls for omitzero in place of comparing with the zero
+// value. A type declared from one does not get the method. A standard-library type the generator
+// lists has none that matters here, and one whose declaration cannot be read is not reported.
+func (b *schemaBuilder) hasIsZero(expr ast.Expr, imports map[string]string, pkgPath string) bool {
+	ref, ok := namedTypeRef(expr, imports, pkgPath)
+	if !ok {
+		return false
+	}
+	ref = b.aliasTarget(ref)
+	if b.isListedStandardLibrary(ref) {
+		return false
+	}
+	_, pkg, found, err := b.declarationOf(ref)
+	if err != nil || !found {
+		return false
+	}
+
+	return b.typeMethods(pkg, ref.Name, []string{"IsZero"})["IsZero"]
 }
 
 func (b *schemaBuilder) valueFieldSchema(field *ast.Field, imports map[string]string, pkgPath string) map[string]any {
@@ -2857,8 +2959,7 @@ func (b *schemaBuilder) isNilCollection(expr ast.Expr, imports map[string]string
 	}
 	// Only the field's own type's methods count: a type declared from another named type does
 	// not inherit that type's marshalers. An alias is that type, so its methods count.
-	methods := pkg.Methods[ref.Name]
-	if depth == 0 && (methods["MarshalJSON"] || methods["MarshalText"]) {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -2934,8 +3035,7 @@ func (b *schemaBuilder) isQuotableType(expr ast.Expr, imports map[string]string,
 	}
 	// Only the field's own type's methods count: a type declared from another named type does
 	// not inherit that type's marshalers. An alias is that type, so its methods count.
-	methods := pkg.Methods[ref.Name]
-	if depth == 0 && (methods["MarshalJSON"] || methods["MarshalText"]) {
+	if depth == 0 && marshalMethod(b.typeMethods(pkg, ref.Name, marshalMethods())) != "" {
 		return false
 	}
 
@@ -2943,8 +3043,9 @@ func (b *schemaBuilder) isQuotableType(expr ast.Expr, imports map[string]string,
 }
 
 // isStructType reports a struct type, directly or through a named type, whose fields encoding/json
-// promotes when it is embedded. A type it cannot resolve counts as one, as embedded types always
-// did. A standard-library type is read from GOROOT (namedDeclaration) unless the generator lists
+// promotes when it is embedded. An instantiation of a generic type is the kind of the generic
+// type, so an embedded List[int], with `type List[T any] []T`, is a field named List. A type it
+// cannot resolve counts as one, as embedded types always did. A standard-library type is read from GOROOT (namedDeclaration) unless the generator lists
 // it: knownUnderlying gives the kind of uuid.UUID, a [16]byte, and of its siblings, and of the
 // other listed types time.Duration, the maps standardLibraryNilCollections lists and the marshaler
 // interfaces are not structs. Aliases are
@@ -2968,16 +3069,26 @@ func (b *schemaBuilder) isStructType(expr ast.Expr, imports map[string]string, p
 		}
 		ref = typeRef{ImportPath: imports[pkgIdent.Name], Name: t.Sel.Name}
 	case *ast.IndexExpr, *ast.IndexListExpr:
-		return true
+		// An instantiation is the kind its generic type is declared as, database/sql's Null[T] a
+		// struct.
+		generic, ok := typeRefFromExpr(genericType(t), imports, pkgPath)
+		if !ok {
+			return true
+		}
+		ref = b.aliasTarget(generic)
+		if isSQLNull(ref) {
+			return true
+		}
 	default:
 		return false
 	}
 
-	// A described type is the kind its description says, unless the description is of a
-	// marshaler's output (describedMarshaler).
+	// encoding/json expands an embedded type by its Go kind, which a described type's declaration
+	// gives where its source can be read; elsewhere the kind its description says stands for it,
+	// unless the description is of a marshaler's output (describedMarshaler).
 	ref = b.aliasTarget(ref)
 	override, described := b.typeSchemas[typeKey(ref)]
-	if described && !isExtension(override) && !b.describedMarshaler(ref) {
+	if described && !isExtension(override) && !b.describedMarshaler(ref) && !b.declaredInSource(ref) {
 		kind, typed := override["type"]
 		return !typed || kind == "object"
 	}
@@ -3001,6 +3112,20 @@ func (b *schemaBuilder) isStructType(expr ast.Expr, imports map[string]string, p
 	}
 
 	return b.isStructType(info.Spec.Type, info.Imports, pkg.ImportPath, depth+1)
+}
+
+// declaredInSource reports a type of a module whose declaration loadPackage reads.
+func (b *schemaBuilder) declaredInSource(ref typeRef) bool {
+	if b.isStandardLibraryImport(ref.ImportPath) {
+		return false
+	}
+	pkg, err := b.loadPackage(ref.ImportPath)
+	if err != nil {
+		return false
+	}
+	_, ok := pkg.Types[ref.Name]
+
+	return ok
 }
 
 // embeddedTypeName is the field name Go gives an embedded field: its type's name.
@@ -3043,8 +3168,9 @@ func jsonFieldName(goName string, field *ast.Field) string {
 	return name
 }
 
-// jsonTagName is the name a field's json tag gives, "" when it names none, and whether the tag
-// is `json:"-"`, which drops the field (`json:"-,"` names it "-" instead).
+// jsonTagName is the name a field's json tag gives, "" when it names none or encoding/json does
+// not take the name it writes (jsonTagKey), and whether the tag is `json:"-"`, which drops the
+// field (`json:"-,"` names it "-" instead).
 func jsonTagName(field *ast.Field) (string, bool) {
 	jsonTag := fieldJSONTag(field)
 	if jsonTag == "-" {
@@ -3052,7 +3178,7 @@ func jsonTagName(field *ast.Field) (string, bool) {
 	}
 
 	name, _, _ := strings.Cut(jsonTag, ",")
-	return name, false
+	return jsonTagKey(name), false
 }
 
 // jsonTagOptions are the options after the name of a field's json tag.
@@ -3379,10 +3505,13 @@ func (b *schemaBuilder) gorootDir() (string, error) {
 
 // parsePackage reads the Go files of the package importPath in dir, leaving out its tests. For
 // the standard library only the files its build constraints select for the platform the
-// generator runs on (GOOS/GOARCH) are read, without comments. A file that cannot be read, whose
-// build constraints cannot be evaluated or that does not parse fails it, with an error whose
-// message names the file and the cause, rather than being left out: a left-out file could hold a
-// method that changes a type's schema.
+// generator runs on (GOOS/GOARCH) are read, without comments. For a module package every file
+// some platform builds is read (filePlatforms), and a marshal method or IsZero declared on fewer
+// platforms than its type is recorded in PlatformMethods; a file no platform builds, such as one
+// marked //go:build ignore, is not read. A file that cannot be read, whose build constraints
+// cannot be evaluated or that does not parse fails it, with an error whose message names the
+// file and the cause, rather than being left out: a left-out file could hold a method that
+// changes a type's schema.
 func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibrary bool) (*packageInfo, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -3406,6 +3535,11 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 	stringConsts := map[string]string{}
 	packageDoc := ""
 	var funcs []funcInfo
+	// The platforms each type and each method of a module package is declared on, and the files
+	// that declare a method.
+	typePlatforms := map[string]platformSet{}
+	methodPlatforms := map[string]map[string]platformSet{}
+	methodFiles := map[string]map[string][]string{}
 
 	for _, filePath := range files {
 		if strings.HasSuffix(filePath, "_test.go") {
@@ -3420,10 +3554,38 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 				continue
 			}
 		}
-		file, err := parser.ParseFile(fset, filePath, nil, mode)
+		// The standard library's files are read by the parser, a module package's here.
+		var source any
+		var platforms platformSet
+		if !standardLibrary {
+			src, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, ez.New(ez.EINTERNAL, "cannot read "+filePath+": "+err.Error(), err)
+			}
+			clauseSet := token.NewFileSet()
+			clause, err := parser.ParseFile(clauseSet, filePath, src, parser.PackageClauseOnly|parser.ParseComments)
+			if err != nil {
+				// The parser's error starts with the file, line and column.
+				return nil, ez.New(ez.EINVALID, "cannot parse "+err.Error(), err)
+			}
+			header := src[:clauseSet.Position(clause.Package).Offset]
+			platforms, err = filePlatforms(dir, filepath.Base(filePath), header)
+			if err != nil {
+				return nil, ez.New(ez.EINVALID, "cannot evaluate the build constraints of "+filePath+": "+err.Error(), err)
+			}
+			if platforms == (platformSet{}) {
+				continue
+			}
+			source = src
+		}
+		file, err := parser.ParseFile(fset, filePath, source, mode)
 		if err != nil {
 			// The parser's error starts with the file, line and column.
 			return nil, ez.New(ez.EINVALID, "cannot parse "+err.Error(), err)
+		}
+		if importsC(file) {
+			// go build leaves a file importing "C" out with cgo off.
+			platforms = platforms.intersect(cgoPlatforms)
 		}
 
 		imports := b.importMap(file)
@@ -3444,6 +3606,12 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 						methods[receiver] = map[string]bool{}
 					}
 					methods[receiver][fn.Name.Name] = true
+					if methodPlatforms[receiver] == nil {
+						methodPlatforms[receiver] = map[string]platformSet{}
+						methodFiles[receiver] = map[string][]string{}
+					}
+					methodPlatforms[receiver][fn.Name.Name] = methodPlatforms[receiver][fn.Name.Name].union(platforms)
+					methodFiles[receiver][fn.Name.Name] = append(methodFiles[receiver][fn.Name.Name], filepath.Base(filePath))
 				}
 				continue
 			}
@@ -3469,6 +3637,7 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 						Imports: imports,
 						Doc:     doc,
 					}
+					typePlatforms[typeSpec.Name.Name] = typePlatforms[typeSpec.Name.Name].union(platforms)
 				}
 			case token.CONST:
 				collectTypedStringConsts(gen, consts)
@@ -3503,6 +3672,36 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 		for method := range methods[name] {
 			methods[target][method] = true
 		}
+		for method, declared := range methodPlatforms[name] {
+			if methodPlatforms[target] == nil {
+				methodPlatforms[target] = map[string]platformSet{}
+				methodFiles[target] = map[string][]string{}
+			}
+			methodPlatforms[target][method] = methodPlatforms[target][method].union(declared)
+			methodFiles[target][method] = append(methodFiles[target][method], methodFiles[name][method]...)
+		}
+	}
+
+	// A method that some platform its type is declared on does not build makes the type's JSON
+	// differ by platform. The standard library is read for one platform, so it has none.
+	watched := append(marshalMethods(), "IsZero")
+	platformMethods := map[string]map[string][]string{}
+	for name, declared := range methodPlatforms {
+		_, ok := types[name]
+		if !ok || standardLibrary {
+			continue
+		}
+		for method, on := range declared {
+			if !slices.Contains(watched, method) || typePlatforms[name].within(on) {
+				continue
+			}
+			if platformMethods[name] == nil {
+				platformMethods[name] = map[string][]string{}
+			}
+			files := slices.Clone(methodFiles[name][method])
+			slices.Sort(files)
+			platformMethods[name][method] = slices.Compact(files)
+		}
 	}
 
 	enums := map[string][]string{}
@@ -3535,7 +3734,20 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 		Methods:    methods,
 		Consts:     stringConsts,
 		Doc:        packageDoc,
+
+		PlatformMethods: platformMethods,
 	}, nil
+}
+
+// importsC reports whether file imports "C", which makes it a cgo file.
+func importsC(file *ast.File) bool {
+	for _, spec := range file.Imports {
+		if spec.Path.Value == `"C"` {
+			return true
+		}
+	}
+
+	return false
 }
 
 // receiverTypeName is the type a method is declared on, T for `(t T)`, `(t *T)`, `(t T[A])` and

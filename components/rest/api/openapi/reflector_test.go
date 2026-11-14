@@ -806,6 +806,8 @@ type uniqueItemsAllowed struct {
 }
 
 func TestErrors(t *testing.T) {
+	// json.RawMessage is an alias of jsontext.Value on encoding/json/v2.
+	rawMessage := reflect.TypeFor[json.RawMessage]().String()
 	tests := []struct {
 		name    string
 		typ     reflect.Type
@@ -880,7 +882,7 @@ func TestErrors(t *testing.T) {
 		{"maxItems on an optional fixed array", reflect.TypeFor[maxItemsOnFixedArray](), true, `openapi.maxItemsOnFixedArray.Codes: maxItems is not supported on types.Optional[[3]int] in a request type: the array always has 3 items`},
 		{"non-null optional struct in a request", reflect.TypeFor[nonNullOptionalStruct](), true, `openapi.nonNullOptionalStruct.Inner: nullable:"false" has no effect on types.Optional[github.com/vanclief/compose/components/rest/api/openapi.ShadowedName] in a request type, whose schema accepts null whatever the tag says; refuse null in Validate()`},
 		{"non-null any in a request", reflect.TypeFor[nonNullAny](), true, `openapi.nonNullAny.Value: the nullable tag is not supported on interface {}, whose schema has no type and accepts null already`},
-		{"non-null raw message in a request", reflect.TypeFor[nonNullRaw](), true, `openapi.nonNullRaw.Value: the nullable tag is not supported on json.RawMessage, whose schema has no type and accepts null already`},
+		{"non-null raw message in a request", reflect.TypeFor[nonNullRaw](), true, `openapi.nonNullRaw.Value: the nullable tag is not supported on ` + rawMessage + `, whose schema has no type and accepts null already`},
 		{"big.Int by value in a response map", reflect.TypeFor[bigByValueInMap](), false, `big.Int is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; hold *big.Int`},
 		{"big.Int in a struct held by value in a response map", reflect.TypeFor[bigNested](), false, `big.Int is held by value in a map of a response type`},
 		{"nullable any in a response", reflect.TypeFor[nullableAny](), false, `openapi.nullableAny.Data: the nullable tag is not supported on interface {}, whose schema has no type and accepts null already`},
@@ -890,7 +892,7 @@ func TestErrors(t *testing.T) {
 		{"parameter tag on an unexported field", reflect.TypeFor[unexportedParam](), true, `openapi.unexportedParam.projectID: the query tag is never read on an unexported or embedded field; declare an exported, named field`},
 		{"parameter tag on an embedded field", reflect.TypeFor[embeddedFieldParam](), true, `openapi.embeddedFieldParam.EmbeddedToken: the query tag is never read on an unexported or embedded field`},
 		{"bound on an any", reflect.TypeFor[boundOnAny](), true, `openapi.boundOnAny.Value: maximum is not supported on interface {} in a request type: its schema has no type, so the tag would check only a number and pass any other value; check the value in Validate()`},
-		{"length on a raw message", reflect.TypeFor[lengthOnRaw](), true, `openapi.lengthOnRaw.Meta: maxLength is not supported on json.RawMessage in a request type: its schema has no type, so the tag would check only a string and pass any other value`},
+		{"length on a raw message", reflect.TypeFor[lengthOnRaw](), true, `openapi.lengthOnRaw.Meta: maxLength is not supported on ` + rawMessage + ` in a request type: its schema has no type, so the tag would check only a string and pass any other value`},
 		{"items on an optional any", reflect.TypeFor[itemsOnAny](), true, `openapi.itemsOnAny.Value: maxItems is not supported on types.Optional[interface {}] in a request type: its schema has no type, so the tag would check only an array and pass any other value`},
 		{"parameter tag on a shadowed field", reflect.TypeFor[shadowedParam](), true, `openapi.ShadowPaging.Limit: the query tag is never read: another field named Limit hides this one in the request type; rename one of them`},
 		{"parameter tags on fields that hide each other", reflect.TypeFor[ambiguousParam](), true, `openapi.ShadowPaging.Limit: the query tag is never read: another field named Limit hides this one in the request type`},
