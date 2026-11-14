@@ -143,6 +143,11 @@ err := relational.Mutate(ctx, db, ticket, func(ctx context.Context, tx bun.Tx) e
 
 - **Set fields inside the function.** Only the primary key of the model you pass in is used:
   every column is replaced by the stored row before the function runs.
+- **Leave the primary key alone.** The model's `Update` finds the row by the key in the model, so
+  a key changed by the function would write a row that was never locked. When the key, any column
+  of a composite key included, differs after the function from the one locked, `Mutate` returns an
+  `EINTERNAL` error whose data names the column, without calling `Update`, and rolls everything
+  back.
 - **Write through `tx`.** Other rows the function inserts or updates through `tx` are saved or
   rolled back together with the model. An error from the function, or from the model's `Update`,
   rolls everything back and is returned with its code.
