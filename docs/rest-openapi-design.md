@@ -846,7 +846,16 @@ Errors
   (location, then name with a run of digits compared as a number, so `steps.2` precedes `steps.10`);
   `fields` lists those and `message` names them and ends with `; and <n> more`. Without the
   cap a 1 MiB body of failing array items was answered with about 15 MB of `message`, and
-  the list would have tripled that.
+  the list would have tripled that. The registry's validation maps violations to fields in
+  that order, one instance location at a time, and stops at the 101st, so a body that fails
+  on millions of fields costs about what the validator's own errors cost (it allocated
+  about 2.5 GB for a 975 KB body before v1.38.0); its `message` then ends with `; and more`,
+  as nothing counted the rest. The walk names a location's keys as the message shows them,
+  every map key as `*` (the nodes under all map keys are walked together), and visits what
+  fails at a key apart from what fails under it, as the name `a.x` sorts after a sibling
+  `a-b` and `a` before it, so past the cap the fields listed are the first 100 in the
+  message's order. Two cases still differ, both on declared property names: names equal as
+  numbers (`01` and `1`), with failures under both, and a name holding a dot.
 
 Types
 

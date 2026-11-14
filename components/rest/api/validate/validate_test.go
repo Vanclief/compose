@@ -324,6 +324,135 @@ func TestFieldsErrorKeepsMaxFields(t *testing.T) {
 	require.NotContains(t, ez.ErrorMessage(err), "more")
 }
 
+func TestValidateStopsAtMaxFields(t *testing.T) {
+	schema := compile(t, "op:strict.json", "fixture.StrictRequest")
+
+	// 150 unknown keys, which the validator lists in map order: the walk
+	// stops past the cap and keeps the first 100 in the order NewFieldsError
+	// sorts by, a run of digits compared as a number, every time, and the
+	// message says there are more without counting them.
+	var keys []string
+	for i := range MaxFields + 50 {
+		keys = append(keys, fmt.Sprintf(`"k%d":1`, i))
+	}
+	raw := `{"path":{"id":"` + validID + `"},"body":{` + strings.Join(keys, ",") + `}}`
+	for range 20 {
+		err := schema.Validate(instance(t, raw))
+		kept := Fields(err)
+		require.Len(t, kept, MaxFields)
+		for i, field := range kept {
+			require.Equal(t, fmt.Sprintf("k%d", i), field.Name)
+		}
+		require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; k99 is not a known field; and more"), ez.ErrorMessage(err))
+	}
+
+	// Exactly MaxFields failing fields are all listed, with nothing appended.
+	raw = `{"path":{"id":"` + validID + `"},"body":{` + strings.Join(keys[:MaxFields], ",") + `}}`
+	err := schema.Validate(instance(t, raw))
+	require.Len(t, Fields(err), MaxFields)
+	require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; k99 is not a known field"), ez.ErrorMessage(err))
+
+	// The caller's fields past the cap are counted: the list is whole.
+	var extra []FieldError
+	for i := range MaxFields + 50 {
+		extra = append(extra, FieldError{In: "body", Name: fmt.Sprintf("x%03d", i), Message: "is invalid"})
+	}
+	err = schema.Validate(instance(t, `{"path":{"id":"`+validID+`"},"body":{}}`), extra...)
+	require.True(t, strings.HasSuffix(ez.ErrorMessage(err), "; x099 is invalid; and 50 more"), ez.ErrorMessage(err))
+}
+
+// Past the cap, the fields kept do not depend on the order the validator
+// lists object properties in, which is map order: three map keys whose
+// values fail on every third item, and a hundred more distinct fields than
+// the cap, answer the same every time.
+func TestValidateAtTheCapIsDeterministic(t *testing.T) {
+	schema := compile(t, "op:createRun.json", "fixture.CreateRequest", "body")
+
+	labels := make([]string, 3)
+	for j := range labels {
+		steps := make([]string, MaxFields+50)
+		for m := range steps {
+			steps[m] = `{}`
+			if m%3 == j {
+				steps[m] = `{"count":-1}`
+			}
+		}
+		labels[j] = fmt.Sprintf(`"l%d":{"steps":[%s]}`, j, strings.Join(steps, ","))
+	}
+	raw := `{"path":{"id":"` + validID + `"},"body":{"name":"abc","config":{"name":"x"},"labels":{` + strings.Join(labels, ",") + `}}}`
+
+	first := ez.ErrorMessage(schema.Validate(instance(t, raw)))
+	require.True(t, strings.HasSuffix(first, "; and more"), first)
+	for range 50 {
+		require.Equal(t, first, ez.ErrorMessage(schema.Validate(instance(t, raw))))
+	}
+}
+
+// orderDoc has the query parameter schema opSchema refers to, and items
+// whose fields share a name: a key that is unknown to
+// one allOf branch and fails its type in the other ("a"), in both branch
+// orders; a value failing two checks ("s"), in both orders; and a key that
+// fails itself while a sibling continues its name with a character that
+// sorts before a dot ("k" and "k-l").
+const orderDoc = `{
+  "openapi": "3.1.0",
+  "info": {"title": "order", "version": "1.0.0"},
+  "paths": {},
+  "components": {
+    "schemas": {
+      "fixture.RunStatus": {"type": "string"},
+      "t.Body": {
+        "type": "object",
+        "properties": {
+          "aa": {"type": "string"},
+          "known": {"type": "array", "items": {"allOf": [{"properties": {"a": {"type": "string"}}}, {"additionalProperties": false}]}},
+          "unknown": {"type": "array", "items": {"allOf": [{"additionalProperties": false}, {"properties": {"a": {"type": "string"}}}]}},
+          "pattern": {"type": "array", "items": {"properties": {"s": {"type": "string", "allOf": [{"pattern": "^x"}, {"minLength": 5}]}}}},
+          "length": {"type": "array", "items": {"properties": {"s": {"type": "string", "allOf": [{"minLength": 5}, {"pattern": "^x"}]}}}},
+          "dash": {"type": "array", "items": {"properties": {"k": {"type": "string", "minLength": 5}, "k-l": {"type": "string"}}}}
+        }
+      }
+    }
+  }
+}`
+
+// TestValidateCutsFieldsOfOneNameInOrder: where the cap falls between two
+// fields that the message orders by their messages, or by a key and a
+// sibling that continues it, the field kept is the one the message lists
+// first, whichever the validator reports first.
+func TestValidateCutsFieldsOfOneNameInOrder(t *testing.T) {
+	compiler, err := NewCompiler(json.RawMessage(orderDoc))
+	require.NoError(t, err)
+	schema, err := compiler.Compile("op:order.json", opSchema("t.Body"))
+	require.NoError(t, err)
+
+	validate := func(list, item string, n int) string {
+		items := make([]string, n)
+		for i := range items {
+			items[i] = item
+		}
+		raw := `{"path":{"id":"` + validID + `"},"body":{"aa":1,"` + list + `":[` + strings.Join(items, ",") + `]}}`
+		return ez.ErrorMessage(schema.Validate(instance(t, raw)))
+	}
+
+	// "aa", which sorts first, and 50 items of two fields each: the cap
+	// falls inside the last item.
+	cases := []struct {
+		list, item, below, last string
+	}{
+		{"known", `{"a":1}`, "a is not a known field; known.0.a must be string", "known.49.a is not a known field"},
+		{"unknown", `{"a":1}`, "a is not a known field; unknown.0.a must be string", "unknown.49.a is not a known field"},
+		{"pattern", `{"s":"ab"}`, "s must be at least 5 characters; pattern.0.s must match the expected format", "pattern.49.s must be at least 5 characters"},
+		{"length", `{"s":"ab"}`, "s must be at least 5 characters; length.0.s must match the expected format", "length.49.s must be at least 5 characters"},
+		{"dash", `{"k":"ab","k-l":1}`, "k must be at least 5 characters; dash.0.k-l must be string", "dash.49.k must be at least 5 characters"},
+	}
+	for _, c := range cases {
+		require.Equal(t, "aa must be string; "+c.list+".0."+c.below, validate(c.list, c.item, 1), c.list)
+		message := validate(c.list, c.item, 50)
+		require.True(t, strings.HasSuffix(message, "; "+c.last+"; and more"), message)
+	}
+}
+
 func TestFieldsErrorOrdersIndicesAsNumbers(t *testing.T) {
 	var fields []FieldError
 	for i := range MaxFields + 50 {
