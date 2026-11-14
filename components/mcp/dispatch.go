@@ -20,8 +20,15 @@ import (
 )
 
 // maxErrorBody bounds the response body quoted in an error that is not the
-// compose error envelope, and the Location quoted for a redirect.
+// compose error envelope, and the Location quoted in an error.
 const maxErrorBody = 300
+
+// maxLocation bounds the Location a redirect result returns. A presigned
+// object URL takes a few hundred bytes to a few KB, 8192 bytes is the URL
+// length many servers and proxies accept, and a result of that size fits the
+// default MaxOutputBytes. A longer location is an error, since a location cut
+// short cannot be followed.
+const maxLocation = 8192
 
 // BearerPassthrough returns an AuthFunc that forwards the bearer token of the
 // MCP request to the REST API unchanged, as "Authorization: Bearer <token>".
@@ -157,6 +164,15 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 			hasBody = true
 		}
 	}
+	// checkArgNames let through only the other keys a body allows.
+	if f.otherArgs {
+		for name, v := range args {
+			if !hasArg(f, name) {
+				body[name] = v
+				hasBody = true
+			}
+		}
+	}
 
 	// A handler that cleans the path before routing drops a . segment and
 	// takes a .. segment with the one before it, so /runs/{id}/logs with an
@@ -227,20 +243,25 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 	}
 
 	// A redirect is not followed: it is the result when it says where the
-	// outcome is, and an error naming the location otherwise.
-	location, cut := cutLocation(rec.Header().Get("Location"))
+	// outcome is, and an error naming the location otherwise or when the
+	// location is longer than maxLocation.
+	location := cleanLocation(rec.Header().Get("Location"))
 	if rec.Code < 400 && location != "" {
 		// The body of a redirect result is not read. The body of a 3xx that
 		// is not a result is read only for the compose error envelope, whose
 		// code and message win over the location.
 		if redirectIsResult(f.Method, rec.Code) {
-			return redirectResult(rec.Code, location, cut)
+			if len(location) > maxLocation {
+				message := fmt.Sprintf("%s; the location has %d bytes, more than the %d a redirect result returns", redirectLine(rec.Code, location), len(location), maxLocation)
+				return nil, ez.New(ez.HTTPStatusToError(rec.Code), message, nil)
+			}
+			return redirectResult(rec.Code, location)
 		}
 		err = envelopeError(rec.Code, data)
 		if err != nil {
 			return nil, ez.Wrap(err)
 		}
-		return nil, redirectError(rec.Code, location, cut)
+		return nil, ez.New(ez.HTTPStatusToError(rec.Code), redirectLine(rec.Code, location), nil)
 	}
 	return nil, responseError(rec.Code, data)
 }
@@ -261,7 +282,12 @@ func redirectIsResult(method string, status int) bool {
 	return false
 }
 
-// checkArgNames rejects argument names the function does not take.
+// checkArgNames rejects argument names the function does not take. A
+// function with otherArgs takes any other name, except one that is an
+// argument name or a body property in another letter case, which a handler
+// decoding JSON without regard to case could read as that one, a read-only
+// body property, or body, the argument that holds a whole body on other
+// functions, which would be sent as a property named body.
 func checkArgNames(f *Function, args map[string]any) error {
 	valid := map[string]bool{}
 	names := make([]string, 0, len(f.Args))
@@ -272,19 +298,59 @@ func checkArgNames(f *Function, args map[string]any) error {
 
 	var unknown []string
 	for name := range args {
-		if !valid[name] {
-			unknown = append(unknown, name)
+		if valid[name] {
+			continue
 		}
+		if f.otherArgs && !reservedArg(f, name) {
+			continue
+		}
+		unknown = append(unknown, name)
 	}
 	if len(unknown) == 0 {
 		return nil
 	}
 	sort.Strings(unknown)
 
+	if f.otherArgs {
+		accepted := "other keys"
+		if len(names) > 0 {
+			accepted = strings.Join(names, ", ") + ", and other keys"
+		}
+		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: arguments %s for %s repeat an argument or a body property in another letter case, name a read-only body property, or are body, whose properties this function takes as arguments; valid: %s, sent in the body", strings.Join(unknown, ", "), f.Name, accepted), nil)
+	}
 	if len(names) == 0 {
 		return ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s takes no arguments, got %s", f.Name, strings.Join(unknown, ", ")), nil)
 	}
 	return ez.New(ez.EINVALID, fmt.Sprintf("mcp: unknown arguments %s for %s; valid: %s", strings.Join(unknown, ", "), f.Name, strings.Join(names, ", ")), nil)
+}
+
+// hasArg reports whether f has an argument named name.
+func hasArg(f *Function, name string) bool {
+	for _, a := range f.Args {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// reservedArg reports whether name, which is not an argument of f, is an
+// argument name or a body property of f in any letter case, or body.
+func reservedArg(f *Function, name string) bool {
+	if strings.EqualFold(name, "body") {
+		return true
+	}
+	for _, a := range f.Args {
+		if strings.EqualFold(a.Name, name) {
+			return true
+		}
+	}
+	for _, key := range f.bodyKeys {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // paramValues renders a path, query or header argument with the style and
@@ -341,18 +407,13 @@ func nonJSONResult(contentType string, size int) (json.RawMessage, error) {
 	return data, nil
 }
 
-// cutLocation returns a Location header kept to valid UTF-8, without the
-// characters dropControl drops or surrounding space, and cut on a character
-// boundary at maxErrorBody bytes, and whether it was cut. Without those
+// cleanLocation returns a Location header kept to valid UTF-8, without the
+// characters dropControl drops or surrounding space. Without those
 // characters the location cannot add a line to the text that quotes it, nor
 // reorder how that text reads.
-func cutLocation(location string) (string, bool) {
+func cleanLocation(location string) string {
 	location = strings.Map(dropControl, strings.ToValidUTF8(location, ""))
-	location = strings.TrimSpace(location)
-	if len(location) <= maxErrorBody {
-		return location, false
-	}
-	return strings.ToValidUTF8(location[:maxErrorBody], ""), true
+	return strings.TrimSpace(location)
 }
 
 // dropControl removes, from a string given to strings.Map, control
@@ -366,18 +427,17 @@ func dropControl(r rune) rune {
 }
 
 // redirectResult describes a redirect as a JSON object, such as
-// {"redirect":{"status":302,"location":"/orders/7"}}, with "truncated":true
-// when the location was cut. HTML characters are not escaped, so the
-// location reads as the handler wrote it.
-func redirectResult(status int, location string, cut bool) (json.RawMessage, error) {
+// {"redirect":{"status":302,"location":"/orders/7"}}, with the whole
+// location. HTML characters are not escaped, so the location reads as the
+// handler wrote it.
+func redirectResult(status int, location string) (json.RawMessage, error) {
 	type redirect struct {
-		Status    int    `json:"status"`
-		Location  string `json:"location"`
-		Truncated bool   `json:"truncated,omitempty"`
+		Status   int    `json:"status"`
+		Location string `json:"location"`
 	}
 	result := struct {
 		Redirect redirect `json:"redirect"`
-	}{redirect{Status: status, Location: location, Truncated: cut}}
+	}{redirect{Status: status, Location: location}}
 
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
@@ -389,16 +449,16 @@ func redirectResult(status int, location string, cut bool) (json.RawMessage, err
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// redirectError is the error of a redirect that is not a result, naming its
-// status and location, such as "307 Temporary Redirect, Location: /orders/7",
-// with a cut location marked [truncated].
-func redirectError(status int, location string, cut bool) error {
+// redirectLine names the status and location of a redirect in an error, such
+// as "307 Temporary Redirect, Location: /orders/7", with a location of more
+// than maxErrorBody bytes cut on a character boundary and marked
+// [truncated].
+func redirectLine(status int, location string) string {
 	statusLine := strings.TrimSpace(fmt.Sprintf("%d %s", status, http.StatusText(status)))
-	message := statusLine + ", Location: " + location
-	if cut {
-		message += " [truncated]"
+	if len(location) <= maxErrorBody {
+		return statusLine + ", Location: " + location
 	}
-	return ez.New(ez.HTTPStatusToError(status), message, nil)
+	return statusLine + ", Location: " + strings.ToValidUTF8(location[:maxErrorBody], "") + " [truncated]"
 }
 
 // responseError converts a REST error response into an ez error: the code

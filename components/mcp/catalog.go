@@ -442,7 +442,8 @@ func firstLine(text string) string {
 // addBodyArgs appends the request body to the arguments: one argument per
 // writable property of an object body, or a single "body" argument when the
 // body is not a plain object or one of its properties shares a parameter
-// name. readOnly properties are left out.
+// name. readOnly properties are left out. A body of arguments whose schema
+// allows other properties takes other argument keys too.
 func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 	body := b.doc.RequestBody(op.RequestBody)
 	if body == nil {
@@ -498,6 +499,30 @@ func (b *catalogBuilder) addBodyArgs(f *Function, op *reference.Operation) {
 		f.Args = append(f.Args, arg)
 		b.indexSchema(b.accepted, prop, f.Name)
 	}
+
+	f.bodyKeys = flat.Properties.Keys
+	if allowsOther(flat) {
+		f.otherArgs = true
+		other := flat.AdditionalSchema()
+		if other != nil {
+			f.otherSchema = b.argSchema(other)
+			b.indexSchema(b.accepted, other, f.Name)
+		}
+	}
+}
+
+// allowsOther reports whether an object schema allows properties it does
+// not declare: additionalProperties is true or a schema that does not
+// refuse every value. Without additionalProperties the object is taken as
+// closed, so a misspelled argument is refused instead of sent.
+func allowsOther(s *reference.Schema) bool {
+	a := s.AdditionalProperties
+	if a == nil || !a.Allowed {
+		return false
+	}
+	// {not: {}} is the schema false.
+	refusesAll := a.Schema != nil && a.Schema.Not != nil && reflect.ValueOf(*a.Schema.Not).IsZero()
+	return !refusesAll
 }
 
 // readOnly reports whether a property is readOnly, on the property itself or
