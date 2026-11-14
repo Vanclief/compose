@@ -168,6 +168,30 @@ module units
 modules: default, packages, units`, c.renderSearch("", " zzz "))
 }
 
+func TestRenderSearchQueryWithoutWords(t *testing.T) {
+	c := smallCatalog(t)
+
+	// Underscores are spaces and a word without a letter or a digit is
+	// dropped, so these queries leave no words; they match nothing rather
+	// than every function.
+	for _, query := range []string{"___", "_ _", ".", "-", ". -", "_._", "()"} {
+		for _, module := range []string{"", "packages"} {
+			assert.Equal(t, `no functions match "`+query+`"
+modules: default, packages, units`, c.renderSearch(module, query), "module %q", module)
+		}
+	}
+
+	// An empty query still lists the modules, or the module's functions.
+	assert.Contains(t, c.renderSearch("", ""), "packages  5 functions")
+	assert.Contains(t, c.renderSearch("packages", ""), "module packages")
+
+	// A dropped word does not change what the other words find, and
+	// punctuation inside a word is still searched for.
+	assert.Equal(t, c.renderSearch("", "package"), c.renderSearch("", ". package -"))
+	assert.NotContains(t, c.renderSearch("", "package"), "no functions match")
+	assert.Equal(t, []string{"packages.register", "v2.1", "get-order"}, searchWords("Packages.Register . v2.1 -- get-order"))
+}
+
 func TestRenderEmmaSearchFolded(t *testing.T) {
 	c := emmaCatalog(t)
 
