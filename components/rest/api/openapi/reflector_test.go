@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"net/netip"
@@ -1444,6 +1445,61 @@ func TestDowngrade(t *testing.T) {
 	// Nullable refs keep the 3.1 anyOf form; huma's Downgrade does not rewrite
 	// {type: null}. The api package owns any 3.0-specific fix-up.
 	require.Equal(t, map[string]any{"type": "null"}, prop(t, update, "status")["anyOf"].([]any)[1])
+}
+
+// The 3.0 document keeps the tighter of an inclusive and an exclusive bound,
+// the exclusive one at equal values; one alone is downgraded as before.
+func TestDowngradeKeepsTighterBound(t *testing.T) {
+	num := func(v float64) *float64 {
+		return &v
+	}
+	tests := []struct {
+		name   string
+		schema huma.Schema
+		want   map[string]any
+	}{
+		{"minimum tighter", huma.Schema{Minimum: num(10), ExclusiveMinimum: num(0)}, map[string]any{"minimum": 10.0}},
+		{"exclusiveMinimum tighter", huma.Schema{Minimum: num(0), ExclusiveMinimum: num(10)}, map[string]any{"minimum": 10.0, "exclusiveMinimum": true}},
+		{"minimum equal", huma.Schema{Minimum: num(5), ExclusiveMinimum: num(5)}, map[string]any{"minimum": 5.0, "exclusiveMinimum": true}},
+		{"minimum alone", huma.Schema{Minimum: num(5)}, map[string]any{"minimum": 5.0}},
+		{"exclusiveMinimum alone", huma.Schema{ExclusiveMinimum: num(5)}, map[string]any{"minimum": 5.0, "exclusiveMinimum": true}},
+		{"maximum tighter", huma.Schema{Maximum: num(5), ExclusiveMaximum: num(100)}, map[string]any{"maximum": 5.0}},
+		{"exclusiveMaximum tighter", huma.Schema{Maximum: num(100), ExclusiveMaximum: num(5)}, map[string]any{"maximum": 5.0, "exclusiveMaximum": true}},
+		{"maximum equal", huma.Schema{Maximum: num(5), ExclusiveMaximum: num(5)}, map[string]any{"maximum": 5.0, "exclusiveMaximum": true}},
+		{"maximum alone", huma.Schema{Maximum: num(5)}, map[string]any{"maximum": 5.0}},
+		{"exclusiveMaximum alone", huma.Schema{ExclusiveMaximum: num(5)}, map[string]any{"maximum": 5.0, "exclusiveMaximum": true}},
+		{"both sides", huma.Schema{Minimum: num(-1), ExclusiveMinimum: num(-3), Maximum: num(7), ExclusiveMaximum: num(7)}, map[string]any{"minimum": -1.0, "maximum": 7.0, "exclusiveMaximum": true}},
+	}
+	for _, tt := range tests {
+		schema := tt.schema
+		schema.Type = "number"
+		want := maps.Clone(tt.want)
+		want["type"] = "number"
+
+		schemas := huma.NewMapRegistry(RefPrefix, huma.DefaultSchemaNamer)
+		schemas.Map()["Bounded"] = &schema
+		doc := &huma.OpenAPI{
+			OpenAPI:    "3.1.0",
+			Info:       &huma.Info{Title: "fixture", Version: "1"},
+			Components: &huma.Components{Schemas: schemas},
+			Extensions: map[string]any{"x-refs": []any{map[string]any{"$ref": ref("Bounded")}}},
+		}
+
+		// The keys of a schema are rewritten in map order: try it often
+		// enough to meet both orders.
+		for range 20 {
+			raw, err := doc.Downgrade()
+			require.NoError(t, err, tt.name)
+			var down struct {
+				Components struct {
+					Schemas map[string]map[string]any `json:"schemas"`
+				} `json:"components"`
+			}
+			err = json.Unmarshal(raw, &down)
+			require.NoError(t, err, tt.name)
+			require.Equal(t, want, down.Components.Schemas["Bounded"], tt.name)
+		}
+	}
 }
 
 func TestOptional(t *testing.T) {

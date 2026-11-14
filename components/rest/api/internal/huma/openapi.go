@@ -1692,14 +1692,26 @@ func downgradeSpec(input any) {
 				}
 			}
 
-			// Exclusive values were bools in 3.0.
+			// Exclusive values were bools in 3.0. compose: a schema that also
+			// holds the inclusive bound keeps the tighter of the two, so
+			// minimum 10 with exclusiveMinimum 0 stays minimum 10.
 			if k == "exclusiveMinimum" && reflect.TypeOf(v).Kind() == reflect.Float64 {
+				minimum, ok := m["minimum"].(float64)
+				if ok && minimum > v.(float64) {
+					delete(m, k)
+					continue
+				}
 				m["minimum"] = v
 				m["exclusiveMinimum"] = true
 				continue
 			}
 
 			if k == "exclusiveMaximum" && reflect.TypeOf(v).Kind() == reflect.Float64 {
+				maximum, ok := m["maximum"].(float64)
+				if ok && maximum < v.(float64) {
+					delete(m, k)
+					continue
+				}
 				m["maximum"] = v
 				m["exclusiveMaximum"] = true
 				continue
