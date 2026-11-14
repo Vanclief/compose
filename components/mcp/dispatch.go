@@ -130,7 +130,12 @@ func (c *caller) callOperation(ctx context.Context, f *Function, args map[string
 		}
 		switch a.In {
 		case "path":
+			// An empty value would leave the segment empty, so /runs/{id}
+			// would reach /runs/ and another route could answer.
 			value := strings.Join(paramValues(a, v), ",")
+			if value == "" {
+				return nil, ez.New(ez.EINVALID, fmt.Sprintf("mcp: %s requires a non-empty path argument %s", f.Name, a.Name), nil)
+			}
 			err = checkLine(f, a, value)
 			if err != nil {
 				return nil, ez.Wrap(err)
@@ -275,7 +280,9 @@ func checkArgNames(f *Function, args map[string]any) error {
 
 // paramValues renders a path, query or header argument with the style and
 // explode of its parameter. Go slices from composites become []any first,
-// with nil elements skipped.
+// with nil elements skipped. reference.ParamValues does not model the label
+// and matrix styles, which would add a prefix, so an empty value renders as
+// "" in every style.
 //
 // Numbers from call_function and promoted tools arrive as float64, except
 // an integer written without a fraction or an exponent whose magnitude is
