@@ -230,6 +230,20 @@ func recoverPanic(err *error) {
 	*err = ez.New(ez.EINVALID, "openapi: "+msg, nil)
 }
 
+// recordedEnums is enums.Values. A test replaces it to reach the guard of
+// enumValues, as enums.Set refuses the types the guard is for.
+var recordedEnums = enums.Values
+
+// enumValues returns the values enums.Set recorded for t. A type without a
+// package path, such as string, is never an enum: enums.Set refuses it, and
+// an entry for one would make every field of that type the enum.
+func enumValues(t reflect.Type) ([]string, bool) {
+	if t.PkgPath() == "" {
+		return nil, false
+	}
+	return recordedEnums(t)
+}
+
 // registry implements huma.Registry. It mirrors huma's map registry, but
 // because huma.SchemaFromType receives this registry, every nested field
 // passes through Schema and gets the compose hooks (builtins and enums).
@@ -270,7 +284,7 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 		return &builtin
 	}
 
-	values, ok := enums.Values(t)
+	values, ok := enumValues(t)
 	if ok {
 		// Always a fresh pointer: a field-level enum tag mutates it.
 		// Pointers are nullable; Finalize rewrites a nullable $ref as

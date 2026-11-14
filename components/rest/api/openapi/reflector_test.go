@@ -19,6 +19,7 @@ import (
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/components/rest/api/openapi/internal/fixture"
+	"github.com/vanclief/compose/primitives/enums"
 	"github.com/vanclief/compose/types"
 )
 
@@ -95,6 +96,26 @@ func TestEnums(t *testing.T) {
 		map[string]any{"$ref": ref("fixture.RunStatus"), "enum": []any{"failed", "cancelled"}},
 		map[string]any{"type": "null"},
 	}}, prop(t, update, "status"))
+}
+
+// An entry for string in the enum registry, which enums.Set refuses to
+// record, leaves every string field, parameter and map key as it was.
+func TestEnumEntryForStringIsIgnored(t *testing.T) {
+	want, _ := buildFixture(t)
+
+	recordedEnums = func(t reflect.Type) ([]string, bool) {
+		if t.Kind() == reflect.String && t.PkgPath() == "" {
+			return []string{"red", "green"}, true
+		}
+		return enums.Values(t)
+	}
+	defer func() {
+		recordedEnums = enums.Values
+	}()
+
+	got, _ := buildFixture(t)
+	require.Equal(t, toMap(t, want.Components), toMap(t, got.Components))
+	require.NotContains(t, got.Components, "string")
 }
 
 func TestListRequestParams(t *testing.T) {

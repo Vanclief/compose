@@ -11,7 +11,6 @@ import (
 	"github.com/vanclief/ez"
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
-	"github.com/vanclief/compose/primitives/enums"
 )
 
 // allowedTags are the struct tag keys accepted on registered types. Anything
@@ -523,7 +522,7 @@ func enumMapKey(t reflect.Type) reflect.Type {
 	case reflect.Slice, reflect.Array:
 		return enumMapKey(t.Elem())
 	case reflect.Map:
-		_, isEnum := enums.Values(t.Key())
+		_, isEnum := enumValues(t.Key())
 		if isEnum {
 			return t.Key()
 		}
