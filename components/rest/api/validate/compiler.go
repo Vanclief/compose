@@ -86,8 +86,11 @@ func (c *Compiler) Compile(name string, schema map[string]any) (*Schema, error) 
 
 // Validate returns nil or an ez.EINVALID error carrying FieldErrors: the
 // schema's violations together with extra, the fields the caller found
-// failing by a check of its own, in one NewFieldsError. Errors that are not
-// schema violations are returned as ez.EINTERNAL, without extra.
+// failing by a check of its own, in one NewFieldsError. It maps violations
+// to fields until more than MaxFields failed, in the order of their
+// locations, and then stops: the message then ends with "; and more"
+// instead of a count. Errors that are not schema violations are returned as
+// ez.EINTERNAL, without extra.
 func (s *Schema) Validate(instance any, extra ...FieldError) error {
 	err := s.schema.Validate(instance)
 	if err == nil {
@@ -99,12 +102,12 @@ func (s *Schema) Validate(instance any, extra ...FieldError) error {
 		return ez.New(ez.EINTERNAL, "request validation failed", err)
 	}
 
-	fields := collect(s.schema, verr)
+	fields, truncated := collect(s.schema, verr)
 	if len(fields) == 0 {
 		return ez.New(ez.EINVALID, "request is invalid", nil)
 	}
 
-	return NewFieldsError(append(fields, extra...))
+	return newFieldsError(append(fields, extra...), truncated)
 }
 
 func validateEmail(v any) error {

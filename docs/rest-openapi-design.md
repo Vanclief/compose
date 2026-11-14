@@ -846,7 +846,11 @@ Errors
   (location, then name with a run of digits compared as a number, so `steps.2` precedes `steps.10`);
   `fields` lists those and `message` names them and ends with `; and <n> more`. Without the
   cap a 1 MiB body of failing array items was answered with about 15 MB of `message`, and
-  the list would have tripled that.
+  the list would have tripled that. The registry's validation stops mapping violations to
+  fields at the 101st, in the order of their locations, so a body that fails on millions of
+  fields costs about what the validator's own errors cost (it allocated about 2.5 GB for a
+  975 KB body before v1.38.0); its `message` then ends with `; and more`, as nothing counted
+  the rest.
 
 Types
 

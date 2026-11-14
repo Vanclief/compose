@@ -14,6 +14,8 @@
 // to use from any number of goroutines.
 //
 // Validation errors become a single ez.EINVALID error whose message lists the
-// failing fields, the first MaxFields of them. Messages never contain the
-// submitted value. Fields returns the same list in structured form.
+// failing fields, at most MaxFields of them: past that many the walk of the
+// violations stops, so a body of many failing values costs about what the
+// validator's own errors cost. Messages never contain the submitted value.
+// Fields returns the same list in structured form.
 package validate

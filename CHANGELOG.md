@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.38.0
+
+### Breaking
+
+- **A request that fails on more than 100 fields ends its `message` with `; and more`, not a count.** The registry's validation mapped every violation of a body to a field before keeping the first `validate.MaxFields` (100), so a 975 KB body of `{}` items, each missing eight required fields, allocated about 2.5 GB, with a heap peak of about 670 MB, and took 1.6 to 2.5 s on a public route. The walk of the violations now stops at the 101st field, in the order of their locations, and the same body allocates about 0.4 GB, with a peak of about 240 MB, in about 0.25 s, most of it the validator's own errors, which it builds for every failing value and which have no cap. Nothing counts the fields past the cap, so `; and <n> more` reads `; and more`; `fields` and the rest of `message` are as before, and a request failing on 100 fields or fewer gets the answer it got in v1.37.0. Where more than 100 failed, the 100 listed are the first in that walk, which for an array are its first items as before but can differ from v1.37.0's where the failing fields mix map keys, shown as `*`, and declared names. `validate.NewFieldsError` keeps its count, and so does a validation whose own violations number 100 or fewer and which the fields of a key-case collision take past the cap.
+
 ## v1.37.0
 
 ### Breaking

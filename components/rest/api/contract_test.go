@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -305,7 +306,8 @@ func TestManyFailingFieldsAreCapped(t *testing.T) {
 	s := newServer(t)
 
 	// 150 array items break the schema: the answer lists the first 100 of
-	// them, in index order, and counts the rest, whatever the request held.
+	// them, in index order, and says there are more, whatever the request
+	// held. The validator stops at the cap, so it has no count of the rest.
 	body := `{"name":"x","steps":[1` + strings.Repeat(",1", 149) + `]}`
 	rec := s.do(http.MethodPost, "/runs", body)
 	resp := requireError(t, rec, http.StatusBadRequest, "steps.0 must be object")
@@ -313,8 +315,68 @@ func TestManyFailingFieldsAreCapped(t *testing.T) {
 	for i, field := range resp.Error.Fields {
 		require.Equal(t, handler.FieldError{In: "body", Name: "steps." + strconv.Itoa(i), Message: "must be object"}, field)
 	}
-	require.True(t, strings.HasSuffix(resp.Error.Message, "; and 50 more"), resp.Error.Message)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; steps.99 must be object; and more"), resp.Error.Message)
 	require.Nil(t, s.app.Last())
+
+	// Exactly 100 failing items are all listed, with nothing appended.
+	body = `{"name":"x","steps":[1` + strings.Repeat(",1", 99) + `]}`
+	rec = s.do(http.MethodPost, "/runs", body)
+	resp = requireError(t, rec, http.StatusBadRequest, "steps.0 must be object")
+	require.Len(t, resp.Error.Fields, 100)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; steps.99 must be object"), resp.Error.Message)
+}
+
+// capRow has eight required fields, so each {} item of capRows fails on
+// eight of them.
+type capRow struct {
+	A string `json:"a" required:"true"`
+	B string `json:"b" required:"true"`
+	C string `json:"c" required:"true"`
+	D string `json:"d" required:"true"`
+	E string `json:"e" required:"true"`
+	F string `json:"f" required:"true"`
+	G string `json:"g" required:"true"`
+	H string `json:"h" required:"true"`
+}
+
+type capRows struct {
+	requests.NoRules
+	Rows []capRow `json:"rows"`
+}
+
+func TestFailingBodyCostStopsAtTheCap(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/cap"), "", "rows", func(ctx context.Context, body *capRows) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	// A body just under the default limit of {} items fails on about 2.6
+	// million fields. Mapping every one of them to a field, before the cap
+	// kept 100, allocated about 2.5 GB; the validator's own errors and the
+	// decoded body take about 0.4 GB.
+	var b strings.Builder
+	b.WriteString(`{"rows":[{}`)
+	for b.Len() < 975*1024 {
+		b.WriteString(",{}")
+	}
+	b.WriteString("]}")
+	body := b.String()
+
+	var rec *httptest.ResponseRecorder
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	rec = s.do(http.MethodPost, "/cap", body)
+	runtime.ReadMemStats(&after)
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	require.Less(t, allocated, uint64(1<<30), "validating a %d-byte body allocated %d bytes", len(body), allocated)
+	resp := requireError(t, rec, http.StatusBadRequest, "rows.0.a is required; rows.0.b is required")
+	require.Len(t, resp.Error.Fields, 100)
+	require.True(t, strings.HasSuffix(resp.Error.Message, "; rows.12.d is required; and more"), resp.Error.Message)
 }
 
 func TestContractHandlerNotInvokedOnFailure(t *testing.T) {
