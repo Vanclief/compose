@@ -638,3 +638,49 @@ func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil,
 		t.Fatalf("expected Get's result, got %v", body)
 	}
 }
+
+// writeGoFile writes source as the Go file path, creating its directory.
+func writeGoFile(t *testing.T, path string, source string) {
+	t.Helper()
+
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(path, []byte(source), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An import path that starts with the module path or a required module's path without a path
+// boundary, example.com/application with module example.com/app, is not a package of that module:
+// it is read from the module it is within, named by its whole import path, and fails generation
+// when no module required holds it, even where a directory of the shorter module's tree would match.
+func TestModulePathIsMatchedOnPathBoundaries(t *testing.T) {
+	repoRoot := t.TempDir()
+	builder := newTestSchemaBuilder(t, repoRoot)
+	builder.moduleVersions["example.com/application"] = "v1.0.0"
+	writeGoFile(t, filepath.Join(repoRoot, "lication", "models", "models.go"), "package models\n\ntype Thing struct {\n\tWrong string `json:\"wrong\"`\n}\n")
+	writeGoFile(t, filepath.Join(builder.modCache, "example.com", "application@v1.0.0", "models", "models.go"), "package models\n\ntype Thing struct {\n\tRight string `json:\"right\"`\n}\n")
+	writeGoFile(t, filepath.Join(builder.modCache, "example.com", "dep@v1.2.3", "endency", "models", "models.go"), "package models\n\ntype Thing struct {\n\tWrong string `json:\"wrong\"`\n}\n")
+
+	ref := builder.schemaRef(typeRef{ImportPath: "example.com/application/models", Name: "Thing"})
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref["$ref"] != schemaRefPrefix+"example_com_application_models_Thing" {
+		t.Fatalf("expected the component named by the whole import path, got %v", ref)
+	}
+	properties := builder.schemas["example_com_application_models_Thing"]["properties"].(map[string]any)
+	if !reflect.DeepEqual(sortedKeys(properties), []string{"right"}) {
+		t.Fatalf("expected the required module's Thing, got %v", properties)
+	}
+
+	builder.schemaRef(typeRef{ImportPath: "example.com/dependency/models", Name: "Thing"})
+	err = builder.unresolvedError()
+	if err == nil || !strings.Contains(err.Error(), "example.com/dependency/models.Thing: ") || !strings.Contains(err.Error(), "module not found for import example.com/dependency/models") {
+		t.Fatalf("expected example.com/dependency/models not found among the modules, got %v", err)
+	}
+}

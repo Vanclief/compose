@@ -16,7 +16,7 @@
 // signature, read within the type's own package, whose aliases it follows, one with another
 // signature still hiding a method of its name promoted from deeper; a signature it cannot read,
 // one that names a type of a package outside the standard library, a type a dot import may
-// declare, a generic alias, a type parameter or a type declared in several files, fails
+// declare, a generic alias, a type parameter or a type declared differently in several files, fails
 // generation for that type until Config.TypeSchemas describes it, and for a struct that embeds
 // the type, described or not. Without the experiment, as on Go 1.26 or with
 // GOEXPERIMENT=nojsonv2, encoding/json writes with MarshalJSON and MarshalText
@@ -31,8 +31,20 @@
 // HandlerGlob matches, test files aside, are read whatever their build constraints, those
 // RoutesGlob matches only when a default build on the platform the generator runs on compiles
 // them (see RoutesGlob), and a file that needs a tag go/build sets for an architecture's feature
-// level, such as amd64.v3, is not read. A marshal
-// method declared on fewer platforms than its type, through a file-name suffix such as
+// level, such as amd64.v3, is not read. A type
+// declared differently in several of the files read, as one declared per platform may be, fails
+// generation wherever the generator builds its schema, not as a map key, which it does not read,
+// until Config.TypeSchemas describes it, as the generator does not pick one of the declarations.
+// Declarations that are the same, in their type parameters and type, an alias or not, field
+// names, field order, struct tags and Deprecated: field comments included, and with DocComments
+// the doc comment and field comments too, leaving out fields neither exported nor embedded, and in
+// the import path of each package name they qualify an identifier with and of a dot import, are
+// read as one, however they are laid out: a struct tag is compared by the value
+// reflect.StructTag reads for each key, a field comment by the description and deprecation the
+// generator reads from it, and parentheses, blank lines and names declared together, as in
+// A, B int, do not count.
+// A type declared in only one of the files read is read from it, whichever platforms build it. A
+// marshal method declared on fewer platforms than its type, through a file-name suffix such as
 // _windows.go, a //go:build line or an import of "C", and not outranked by a marshal method
 // declared on all of them, fails generation wherever the type's methods are read, for the type
 // and for a struct that embeds it, even one whose own method or a tie leaves it uncalled (a type
@@ -41,6 +53,13 @@
 // would write the type differently by platform. The goexperiment.jsonv2 tag files
 // are selected with is the one the generator is built with, its other GOEXPERIMENT tags those of
 // the environment it runs in. The standard library is read for the platform the generator runs on.
+//
+// A json tag with a format: option on an exported or embedded field, which encoding/json refuses
+// for the whole struct on Go 1.27 unless built with GOEXPERIMENT=nojsonv2 and ignores on Go 1.26
+// unless built with GOEXPERIMENT=jsonv2, fails generation on every toolchain for its struct and
+// for a struct it is promoted into, from an embedded struct described or not, unless
+// Config.TypeSchemas describes that struct; an embedded struct declared differently in several
+// files is not read for one. An unsigned integer has minimum 0.
 package generator
 
 import (
@@ -160,7 +179,12 @@ type Config struct {
 	// dependency with a marshal method only some of the platforms it is declared on build must be
 	// described here too wherever its methods are read, for itself and for a struct that embeds
 	// it, and one with such an IsZero() bool where it is the type of an omitzero slice or map field
-	// (see the package doc).
+	// (see the package doc). So must a type declared differently in several files, as one declared
+	// per platform may be (see the package doc), and a struct with an exported or embedded field,
+	// its own or promoted from an embedded struct, described here or not unless declared
+	// differently in several files, whose json tag has a format: option, which encoding/json
+	// refuses for the whole struct on Go 1.27 unless built with GOEXPERIMENT=nojsonv2 and ignores
+	// on Go 1.26 unless built with GOEXPERIMENT=jsonv2.
 	// ExtendGenerated builds an entry from the derived schema.
 	TypeSchemas map[string]map[string]any
 	// SchemaPrefixCollapse maps a module-relative package path prefix to the path every package
@@ -214,13 +238,21 @@ type Config struct {
 	// DefaultQueryGetters; extend that table to add an application's own helpers.
 	QueryGetters map[string]QueryGetter
 	// ParamGetters maps the name of a call reading a path parameter to its schema. Defaults to
-	// DefaultParamGetters.
+	// DefaultParamGetters. A path parameter the handler's body reads with none of them, with
+	// neither echo's PathParam[T] nor PathParamOr[T] (T's schema for bool, string, a float or a
+	// predeclared integer type other than uintptr, with T read only from the type argument or,
+	// for PathParamOr without one, from a default written as a conversion such as int64(0)),
+	// each passing the name as a string literal or a constant declared with one, nor through a
+	// param-tagged field of the request a BodyBinders call binds, is a string, whatever its name;
+	// the Operation hook can set its schema.
 	ParamGetters map[string]ParamGetter
 	// ResponseCalls are the calls whose last argument is the handler's request type. Defaults to
 	// JSONResponse, BindedJSONResponse, BindedXMLResponse and BlobResponse.
 	ResponseCalls []string
 	// BodyBinders are the calls that bind a request body, so DELETE handlers using them get one.
-	// Defaults to BindedJSONResponse and BindedXMLResponse.
+	// Defaults to BindedJSONResponse and BindedXMLResponse. A param-tagged field of the request
+	// such a call binds documents its path parameter as echo's default binder binds it, so an app
+	// whose binder does not bind path values sets the parameter's schema in the Operation hook.
 	BodyBinders []string
 	// Negotiate names the call a handler negotiates its response content type with. Handlers
 	// calling it respond with NegotiatedContentTypes.

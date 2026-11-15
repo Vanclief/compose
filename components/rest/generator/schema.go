@@ -62,8 +62,13 @@ type packageInfo struct {
 	// (parsePackage), and a MarshalJSONTo or AppendText whose signature the generator cannot read
 	// (coderSignature).
 	RefusedMethods map[string]map[string]string
+	// RefusedTypes holds, per type of a module package declared differently in several files
+	// (sameDeclarations), as a type declared per platform may be, why generation fails where its
+	// schema is built (buildSchema), unless Config.TypeSchemas describes it. Such a type is not in
+	// Types (parsePackage).
+	RefusedTypes map[string]string
 	// Redeclared holds the type names declared in more than one file, as a type declared per
-	// platform is.
+	// platform is, with declarations that differ for a module package (sameDeclarations).
 	Redeclared map[string]bool
 	// Consts holds the value of every package-level constant declared with a string literal.
 	Consts map[string]string
@@ -306,18 +311,7 @@ func (g *generator) requestTypeFromHandler(body *ast.BlockStmt, imports map[stri
 			return true
 		}
 
-		arg := call.Args[len(call.Args)-1]
-		ident, isIdent := arg.(*ast.Ident)
-		if isIdent {
-			ref, has := varTypes[ident.Name]
-			if has {
-				found = ref
-				ok = true
-				return false
-			}
-		}
-
-		ref, has := typeRefFromExpr(arg, imports, pkgPath)
+		ref, has := requestArgumentType(call.Args[len(call.Args)-1], varTypes, imports, pkgPath)
 		if has {
 			found = ref
 			ok = true
@@ -328,6 +322,20 @@ func (g *generator) requestTypeFromHandler(body *ast.BlockStmt, imports map[stri
 	})
 
 	return found, ok
+}
+
+// requestArgumentType is the type of a call's request argument: a local variable's (varTypes) or
+// the type the expression names.
+func requestArgumentType(arg ast.Expr, varTypes map[string]typeRef, imports map[string]string, pkgPath string) (typeRef, bool) {
+	ident, isIdent := arg.(*ast.Ident)
+	if isIdent {
+		ref, has := varTypes[ident.Name]
+		if has {
+			return ref, true
+		}
+	}
+
+	return typeRefFromExpr(arg, imports, pkgPath)
 }
 
 func containsString(values []string, value string) bool {
@@ -931,11 +939,15 @@ func (b *schemaBuilder) collisionError() error {
 	return ez.New(ez.EINVALID, "schema name collisions, spec not written:\n  "+strings.Join(collisions, "\n  "), nil)
 }
 
-// defaultSchemaName is a type's import path relative to the module, with SchemaNameAliases and
-// SchemaPrefixCollapse applied, `/ . -` turned into `_`, then the type name.
+// defaultSchemaName is a type's import path, relative to the module for a package of the module
+// (withinModule), with SchemaNameAliases and SchemaPrefixCollapse applied, `/ . -` turned into
+// `_`, then the type name.
 func (b *schemaBuilder) defaultSchemaName(ref typeRef) string {
-	pathPart := strings.TrimPrefix(ref.ImportPath, b.modulePath)
-	pathPart = strings.TrimPrefix(pathPart, "/")
+	pathPart := ref.ImportPath
+	if withinModule(pathPart, b.modulePath) {
+		pathPart = strings.TrimPrefix(pathPart, b.modulePath)
+		pathPart = strings.TrimPrefix(pathPart, "/")
+	}
 	pathPart = aliasedSchemaPath(pathPart, b.nameAliases)
 	for _, prefix := range sortedKeys(b.prefixCollapse) {
 		if strings.HasPrefix(pathPart, prefix) {
@@ -1036,6 +1048,13 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 		}
 	}
 
+	reason, refused := pkg.RefusedTypes[ref.Name]
+	if refused {
+		b.recordUnresolved(ref, reason)
+		return map[string]any{
+			"type": "object",
+		}
+	}
 	info, ok := pkg.Types[ref.Name]
 	if !ok {
 		b.recordUnresolved(ref, "type not declared in "+pkg.Dir)
@@ -1784,6 +1803,12 @@ func (b *schemaBuilder) embeddedTypeOf(ref typeRef, hops int) embeddedType {
 	if err != nil {
 		return embeddedType{unreadable: ref, cause: ez.ErrorMessage(err)}
 	}
+	_, refused := pkg.RefusedTypes[ref.Name]
+	if !found && refused {
+		// A type declared differently in several files has the methods its package declares for
+		// it; which of its declarations Go builds is not read, so neither are the types one embeds.
+		return embeddedType{methods: b.typeMethods(pkg, ref.Name, marshalMethods()), known: true}
+	}
 	if !found {
 		// A predeclared type, error, any or uintptr, has neither marshaler; any is an interface.
 		_, builtin := builtinSchema(ref.Name)
@@ -2361,19 +2386,20 @@ func builtinSchema(name string) (map[string]any, bool) {
 	case "int8", "int16", "int32":
 		return map[string]any{"type": "integer", "format": "int32"}, true
 	case "uint8", "uint16", "uint32":
-		return map[string]any{"type": "integer", "format": "int32"}, true
+		// An unsigned integer is never negative: encoding/json refuses a negative number for one.
+		return map[string]any{"type": "integer", "format": "int32", "minimum": 0}, true
 	case "int", "int64":
 		// Go's int is 64 bits on every platform these servers run on.
 		return map[string]any{"type": "integer", "format": "int64"}, true
 	case "uint", "uint64", "uintptr":
-		return map[string]any{"type": "integer", "format": "int64"}, true
+		return map[string]any{"type": "integer", "format": "int64", "minimum": 0}, true
 	case "float32":
 		return map[string]any{"type": "number", "format": "float"}, true
 	case "float64":
 		return map[string]any{"type": "number", "format": "double"}, true
 	case "byte":
-		// A lone byte is a number; only a []byte is base64 (schemaForExpr).
-		return map[string]any{"type": "integer", "format": "int32"}, true
+		// A lone byte, a uint8, is a number; only a []byte is base64 (schemaForExpr).
+		return map[string]any{"type": "integer", "format": "int32", "minimum": 0}, true
 	case "rune":
 		return map[string]any{"type": "integer", "format": "int32"}, true
 	case "any":
@@ -2460,7 +2486,7 @@ var sqlNullValues = map[string]struct {
 	Schema map[string]any
 }{
 	"NullBool":    {"Bool", map[string]any{"type": "boolean"}},
-	"NullByte":    {"Byte", map[string]any{"type": "integer", "format": "int32"}},
+	"NullByte":    {"Byte", map[string]any{"type": "integer", "format": "int32", "minimum": 0}},
 	"NullFloat64": {"Float64", map[string]any{"type": "number", "format": "double"}},
 	"NullInt16":   {"Int16", map[string]any{"type": "integer", "format": "int32"}},
 	"NullInt32":   {"Int32", map[string]any{"type": "integer", "format": "int32"}},
@@ -2686,8 +2712,8 @@ func cloneSchemaValue(value any) any {
 }
 
 // schemaForStruct is the schema of a struct declaration, of a type with the methods own, and a
-// reason, "embeds ...", when it cannot be described (mergedStructSchema); the caller fails
-// generation with it.
+// reason, "embeds ..." or "has field ...", when it cannot be described (mergedStructSchema); the
+// caller fails generation with it.
 func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]string, pkgPath string, own map[string]bool) (map[string]any, string) {
 	// Embedded structs are allOf members, unless a name collides, a pointer is embedded or an
 	// embedded struct marshals itself: then the struct gets the one property set encoding/json
@@ -3246,13 +3272,45 @@ func jsonTagOptions(field *ast.Field) []string {
 	return parts[1:]
 }
 
+// formatOptionReason says why a struct with field, of its own or promoted, cannot be described
+// when the field's json tag has a format: option, "" for any other field. encoding/json on Go 1.27,
+// unless built with GOEXPERIMENT=nojsonv2, refuses the whole struct for one ("unsupported
+// `format` tag option") and Go 1.26 ignores it unless built with GOEXPERIMENT=jsonv2, so what is
+// written depends on the toolchain, whatever the generator is built with.
+func formatOptionReason(field *ast.Field) string {
+	for _, option := range jsonTagOptions(field) {
+		if !strings.HasPrefix(option, "format:") {
+			continue
+		}
+		name := embeddedTypeName(field.Type)
+		if len(field.Names) > 0 {
+			name = field.Names[0].Name
+		}
+		return "has field " + name + " with the json tag option " + option + ", which encoding/json refuses for the whole struct on Go 1.27 (unsupported `format` tag option) unless built with GOEXPERIMENT=nojsonv2, and ignores on Go 1.26 unless built with GOEXPERIMENT=jsonv2, so the generator cannot tell what is written"
+	}
+
+	return ""
+}
+
+// fieldJSONTag is the json key of a field's tag, written as a raw or an interpreted string
+// literal, `json:"name"` or "json:\"name\"".
 func fieldJSONTag(field *ast.Field) string {
+	return fieldTag(field, "json")
+}
+
+// fieldTag is the value of key in a field's tag, written as a raw or an interpreted string
+// literal.
+func fieldTag(field *ast.Field, key string) string {
 	if field == nil || field.Tag == nil {
 		return ""
 	}
 
-	tag := strings.Trim(field.Tag.Value, "`")
-	return reflect.StructTag(tag).Get("json")
+	tag, err := strconv.Unquote(field.Tag.Value)
+	if err != nil {
+		// The parser only gives a tag that is a valid string literal.
+		return ""
+	}
+	return reflect.StructTag(tag).Get(key)
 }
 
 // hasDeprecatedParagraph reports a field documented the Go way, with a paragraph that starts
@@ -3564,12 +3622,13 @@ func (b *schemaBuilder) gorootDir() (string, error) {
 // parsePackage reads the Go files of the package importPath in dir, leaving out its tests. For
 // the standard library only the files its build constraints select for the platform the
 // generator runs on (GOOS/GOARCH) are read, without comments. For a module package every file
-// some platform builds is read (filePlatforms), and a marshal method or IsZero declared on fewer
-// platforms than its type is recorded in RefusedMethods; a file no platform builds, such as one
-// marked //go:build ignore, is not read. A file that cannot be read, whose build constraints
-// cannot be evaluated or that does not parse fails it, with an error whose message names the
-// file and the cause, rather than being left out: a left-out file could hold a method that
-// changes a type's schema.
+// some platform builds is read (filePlatforms); a type declared differently in several of them
+// is recorded in RefusedTypes, and a marshal method or IsZero declared on fewer platforms than
+// its type is recorded in RefusedMethods; a file no platform builds, such as one marked
+// //go:build ignore, is not read. A file that cannot be read, whose build constraints cannot be
+// evaluated or that does not parse fails it, with an error whose message names the file and the
+// cause, rather than being left out: a left-out file could hold a method that changes a type's
+// schema.
 func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibrary bool) (*packageInfo, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -3597,6 +3656,9 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 	// The platforms each type and each method of a module package is declared on, and the files
 	// that declare a method.
 	typePlatforms := map[string]platformSet{}
+	// The files that declare each type of a module package, and the declarations, in that order.
+	typeFiles := map[string][]string{}
+	typeDecls := map[string][]typeSpecInfo{}
 	methodPlatforms := map[string]map[string]platformSet{}
 	methodFiles := map[string]map[string][]string{}
 	declare := func(receiver string, method string) {
@@ -3723,6 +3785,8 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 						Doc:     doc,
 					}
 					typePlatforms[typeSpec.Name.Name] = typePlatforms[typeSpec.Name.Name].union(platforms)
+					typeFiles[typeSpec.Name.Name] = append(typeFiles[typeSpec.Name.Name], filepath.Base(filePath))
+					typeDecls[typeSpec.Name.Name] = append(typeDecls[typeSpec.Name.Name], types[typeSpec.Name.Name])
 				}
 			case token.CONST:
 				collectTypedStringConsts(gen, consts)
@@ -3731,6 +3795,24 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 				collectClosedSetTypes(gen, closedSets, closedSetMembers)
 			}
 		}
+	}
+
+	// A type of a module package declared in several files, as one declared per platform is, is
+	// refused unless the declarations are the same (sameDeclarations), as the generator does not
+	// pick one: it is left out of types, so no reader takes one declaration for it, and refused
+	// where its schema is built (RefusedTypes). Declarations that
+	// are the same are read as one, the last file's.
+	refusedTypes := map[string]string{}
+	for name, files := range typeFiles {
+		if len(files) < 2 || standardLibrary {
+			continue
+		}
+		if sameDeclarations(typeDecls[name], b.docComments) {
+			delete(redeclared, name)
+			continue
+		}
+		delete(types, name)
+		refusedTypes[name] = "type " + name + " is declared differently in " + strings.Join(files, ", ") + ", one per platform, and the generator does not pick one; describe it with Config.TypeSchemas[" + strconv.Quote(importPath+"."+name) + "]"
 	}
 
 	// A method declared on an alias, `func (a A) M()` with `type A = T`, is T's. Methods are
@@ -3844,6 +3926,7 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 		Doc:        packageDoc,
 
 		RefusedMethods: refused,
+		RefusedTypes:   refusedTypes,
 		Redeclared:     redeclared,
 	}, nil
 }
@@ -4153,9 +4236,13 @@ func collectClosedSetTypes(gen *ast.GenDecl, out map[string]bool, members map[st
 	}
 }
 
+// resolveImportPath is the directory of a package: in the module when the import path is within
+// the module's path (withinModule), even where a required module nested under that path holds
+// it, and otherwise in the required module with the longest module path the import path is
+// within (matchModule).
 func (b *schemaBuilder) resolveImportPath(importPath string) (string, error) {
 
-	if strings.HasPrefix(importPath, b.modulePath) {
+	if withinModule(importPath, b.modulePath) {
 		rel := strings.TrimPrefix(importPath, b.modulePath)
 		rel = strings.TrimPrefix(rel, "/")
 		return filepath.Join(b.repoRoot, filepath.FromSlash(rel)), nil
@@ -4183,7 +4270,7 @@ func (b *schemaBuilder) matchModule(importPath string) (string, string) {
 	version := ""
 
 	for modulePath, moduleVersion := range b.moduleVersions {
-		if !strings.HasPrefix(importPath, modulePath) {
+		if !withinModule(importPath, modulePath) {
 			continue
 		}
 		if len(modulePath) > len(match) {

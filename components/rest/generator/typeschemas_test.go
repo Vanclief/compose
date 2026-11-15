@@ -92,7 +92,7 @@ func Get(ctx context.Context, request *GetRequest) (*Thing, error) { return nil,
 
 	want := map[string]any{
 		"count":    map[string]any{"type": "integer", "format": "int64"},
-		"size":     map[string]any{"type": "integer", "format": "int64"},
+		"size":     map[string]any{"type": "integer", "format": "int64", "minimum": 0},
 		"small":    map[string]any{"type": "integer", "format": "int32"},
 		"raw":      map[string]any{},
 		"anything": map[string]any{},

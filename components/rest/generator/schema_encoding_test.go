@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -388,7 +389,7 @@ type Thing struct {
 }
 `, "Thing")
 
-	byteSchema := map[string]any{"type": "integer", "format": "int32"}
+	byteSchema := map[string]any{"type": "integer", "format": "int32", "minimum": 0}
 	base64 := map[string]any{"type": "string", "format": "byte"}
 	// A nil byte slice is written null, so a []byte field is nullable; an item is not.
 	nullableBase64 := map[string]any{"type": "string", "format": "byte", "nullable": true}
@@ -5901,5 +5902,390 @@ type Slices struct {
 		if len(nonConformities(builder.schemas, property, []any{float64(1)}, "$."+name)) == 0 {
 			t.Errorf("%s: expected an array of numbers refused, got %v", name, property)
 		}
+	}
+}
+
+// quotedTag is a struct whose tags are interpreted string literals, which encoding/json reads as
+// it reads raw ones.
+type quotedTag struct {
+	Name  string "json:\"display_name\""
+	Count int    "json:\"count,omitempty\""
+	Skip  string "json:\"-\""
+}
+
+// A struct tag written as an interpreted string literal is read as the tag it holds.
+func TestQuotedStructTagsAreRead(t *testing.T) {
+	builder := buildThings(t, "package things\n\ntype Thing struct {\n\tName  string \"json:\\\"display_name\\\"\"\n\tCount int    \"json:\\\"count,omitempty\\\"\"\n\tSkip  string \"json:\\\"-\\\"\"\n}\n", "Thing")
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	schema := builder.schemas["things_Thing"]
+	properties := componentProperties(t, builder, "things_Thing")
+	if !reflect.DeepEqual(sortedKeys(properties), []string{"count", "display_name"}) {
+		t.Fatalf("expected count and display_name, got %v", sortedKeys(properties))
+	}
+	if !reflect.DeepEqual(schema["required"], []string{"display_name"}) {
+		t.Fatalf("expected display_name alone required, got %v", schema["required"])
+	}
+	written := marshalled(t, quotedTag{Name: "n", Count: 1, Skip: "s"}).(map[string]any)
+	if !reflect.DeepEqual(sortedKeys(written), sortedKeys(properties)) {
+		t.Fatalf("expected the keys encoding/json writes, %v, got %v", sortedKeys(written), sortedKeys(properties))
+	}
+}
+
+// An unsigned integer is never negative, so its schema has minimum 0 wherever it is written: a
+// field, an item, a map value, a pointer, a named type, sql.NullByte's value. A description in
+// Config.TypeSchemas of a named unsigned type is its schema as given.
+func TestUnsignedIntegersHaveMinimumZero(t *testing.T) {
+	builder := buildThings(t, `package things
+
+import "database/sql"
+
+type Count uint32
+
+type Described uint16
+
+type Thing struct {
+	A uint                 `+"`json:\"a\"`"+`
+	B uint8                `+"`json:\"b\"`"+`
+	C uint16               `+"`json:\"c\"`"+`
+	D uint32               `+"`json:\"d\"`"+`
+	E uint64               `+"`json:\"e\"`"+`
+	F uintptr              `+"`json:\"f\"`"+`
+	G byte                 `+"`json:\"g\"`"+`
+	H []uint32             `+"`json:\"h\"`"+`
+	I map[string]uint16    `+"`json:\"i\"`"+`
+	J *uint                `+"`json:\"j\"`"+`
+	K Count                `+"`json:\"k\"`"+`
+	L Described            `+"`json:\"l\"`"+`
+	M int                  `+"`json:\"m\"`"+`
+	N sql.NullByte         `+"`json:\"n\"`"+`
+	O uint64               `+"`json:\"o,string\"`"+`
+}
+`)
+	builder.typeSchemas = map[string]map[string]any{"example.com/app/things.Described": {"type": "integer", "minimum": 1, "maximum": 9}}
+	builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: "Thing"})
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	int32Unsigned := map[string]any{"type": "integer", "format": "int32", "minimum": 0}
+	int64Unsigned := map[string]any{"type": "integer", "format": "int64", "minimum": 0}
+	want := map[string]any{
+		"a": int64Unsigned,
+		"b": int32Unsigned,
+		"c": int32Unsigned,
+		"d": int32Unsigned,
+		"e": int64Unsigned,
+		"f": int64Unsigned,
+		"g": int32Unsigned,
+		"h": map[string]any{"type": "array", "items": int32Unsigned, "nullable": true},
+		"i": map[string]any{"type": "object", "additionalProperties": int32Unsigned, "nullable": true},
+		"j": map[string]any{"type": "integer", "format": "int64", "minimum": 0, "nullable": true},
+		"k": map[string]any{"$ref": schemaRefPrefix + "things_Count"},
+		"l": map[string]any{"$ref": schemaRefPrefix + "things_Described"},
+		"m": map[string]any{"type": "integer", "format": "int64"},
+		"n": map[string]any{"$ref": schemaRefPrefix + "database_sql_NullByte"},
+		"o": map[string]any{"type": "string"},
+	}
+	properties := componentProperties(t, builder, "things_Thing")
+	for name, schema := range want {
+		if !reflect.DeepEqual(properties[name], schema) {
+			t.Errorf("%s: expected %v, got %v", name, schema, properties[name])
+		}
+	}
+	if !reflect.DeepEqual(builder.schemas["things_Count"], int32Unsigned) {
+		t.Errorf("expected Count to be an unsigned integer, got %v", builder.schemas["things_Count"])
+	}
+	if !reflect.DeepEqual(builder.schemas["things_Described"], map[string]any{"type": "integer", "minimum": 1, "maximum": 9}) {
+		t.Errorf("expected Described's description as given, got %v", builder.schemas["things_Described"])
+	}
+	value := builder.schemas["database_sql_NullByte"]["properties"].(map[string]any)["Byte"]
+	if !reflect.DeepEqual(value, int32Unsigned) {
+		t.Errorf("expected sql.NullByte's Byte to be an unsigned integer, got %v", value)
+	}
+}
+
+// formatEvent has a json tag format: option, which encoding/json refuses on Go 1.27 unless built
+// with GOEXPERIMENT=nojsonv2 and ignores on Go 1.26 unless built with GOEXPERIMENT=jsonv2.
+type formatEvent struct {
+	When time.Time `json:"when,format:unix"`
+}
+
+// encoding/json refuses a struct with a format: json tag option on Go 1.27 unless built with
+// GOEXPERIMENT=nojsonv2, applies an option the field's type takes on Go 1.26 built with
+// GOEXPERIMENT=jsonv2 and ignores it on Go 1.26 otherwise, so the generator refuses such a
+// struct on every toolchain: the struct itself, one that embeds it and an anonymous one, unless
+// Config.TypeSchemas describes it.
+func TestFormatTagOptionIsRefused(t *testing.T) {
+	go126 := strings.HasPrefix(runtime.Version(), "go1.26")
+	out, err := json.Marshal(formatEvent{})
+	if encodingJSONV2 && !go126 && (err == nil || !strings.Contains(err.Error(), "unsupported `format` tag option")) {
+		t.Errorf("expected encoding/json to refuse the format option, got %s, %v", out, err)
+	}
+	if encodingJSONV2 && go126 && (err != nil || string(out) != `{"when":-62135596800}`) {
+		t.Errorf("expected encoding/json to apply the format option, got %s, %v", out, err)
+	}
+	if !encodingJSONV2 && (err != nil || string(out) != `{"when":"0001-01-01T00:00:00Z"}`) {
+		t.Errorf("expected encoding/json to ignore the format option, got %s, %v", out, err)
+	}
+
+	source := `package things
+
+import "time"
+
+type Event struct {
+	Name string    ` + "`json:\"name\"`" + `
+	When time.Time ` + "`json:\"when,omitempty,format:unix\"`" + `
+}
+
+type Outer struct {
+	Event
+	ID int ` + "`json:\"id\"`" + `
+}
+
+type Pointer struct {
+	*Event
+	Name string ` + "`json:\"name\"`" + `
+}
+
+type Holder struct {
+	Inline struct {
+		At time.Time ` + "`json:\"at,format:RFC3339\"`" + `
+	} ` + "`json:\"inline\"`" + `
+}
+
+type Plain struct {
+	When time.Time ` + "`json:\"when,omitempty,string\"`" + `
+}
+`
+	reason := "with the json tag option format:unix, which encoding/json refuses for the whole struct on Go 1.27 (unsupported `format` tag option) unless built with GOEXPERIMENT=nojsonv2, and ignores on Go 1.26 unless built with GOEXPERIMENT=jsonv2, so the generator cannot tell what is written"
+	cases := map[string]string{
+		"Event":   "example.com/app/things.Event: type Event has field When " + reason + "; describe it with Config.TypeSchemas[\"example.com/app/things.Event\"]",
+		"Outer":   "example.com/app/things.Outer: type Outer has field When " + reason + "; describe it with Config.TypeSchemas[\"example.com/app/things.Outer\"]",
+		"Pointer": "example.com/app/things.Pointer: type Pointer has field When " + reason,
+		"Holder":  "anonymous struct has field At with the json tag option format:RFC3339, which encoding/json refuses for the whole struct on Go 1.27",
+	}
+	for name, expected := range cases {
+		builder := buildThings(t, source, name)
+		err := builder.unresolvedError()
+		if err == nil || !strings.Contains(err.Error(), expected) {
+			t.Errorf("%s: expected %q, got %v", name, expected, err)
+		}
+	}
+
+	builder := buildThings(t, source, "Plain")
+	err = builder.unresolvedError()
+	if err != nil {
+		t.Errorf("expected a struct without a format option described, got %v", err)
+	}
+
+	builder = buildThings(t, source)
+	builder.typeSchemas = map[string]map[string]any{"example.com/app/things.Event": {"type": "object"}}
+	builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: "Event"})
+	err = builder.unresolvedError()
+	if err != nil {
+		t.Errorf("expected the description to settle Event, got %v", err)
+	}
+}
+
+// formatShadow embeds formatEvent and declares its own when, which hides the embedded one.
+type formatShadow struct {
+	formatEvent
+	When int `json:"when"`
+}
+
+// A field with a format: option that an embedded struct described in Config.TypeSchemas promotes
+// refuses the struct that embeds it, as encoding/json on Go 1.27, unless built with
+// GOEXPERIMENT=nojsonv2, refuses that struct whatever the description says, even where a field of
+// the same name hides it; the described struct itself keeps its description.
+func TestFormatTagOptionPromotedFromADescribedStruct(t *testing.T) {
+	// Go 1.26 built with GOEXPERIMENT=jsonv2 drops the hidden field, as without the experiment.
+	_, err := json.Marshal(formatShadow{})
+	if encodingJSONV2 && !strings.HasPrefix(runtime.Version(), "go1.26") && (err == nil || !strings.Contains(err.Error(), "unsupported `format` tag option")) {
+		t.Errorf("expected encoding/json to refuse the hidden format option, got %v", err)
+	}
+
+	source := `package things
+
+import "time"
+
+type Event struct {
+	Name string    ` + "`json:\"name\"`" + `
+	When time.Time ` + "`json:\"when,format:unix\"`" + `
+}
+
+type Outer struct {
+	Event
+	N int ` + "`json:\"n\"`" + `
+}
+
+type Shadow struct {
+	Event
+	When int ` + "`json:\"when\"`" + `
+}
+
+type Pointer struct {
+	*Event
+}
+
+type Deeper struct {
+	Outer
+}
+
+type Wrapped struct {
+	Event
+}
+
+type Wrapper struct {
+	Wrapped
+}
+
+type Clean struct {
+	Name string ` + "`json:\"name\"`" + `
+}
+
+type Plain struct {
+	Clean
+	N int ` + "`json:\"n\"`" + `
+}
+`
+	described := map[string]map[string]any{
+		"example.com/app/things.Event":   {"type": "object"},
+		"example.com/app/things.Wrapped": {"type": "object"},
+		"example.com/app/things.Clean":   {"type": "object"},
+	}
+	reason := "has field When with the json tag option format:unix"
+	for _, name := range []string{"Outer", "Shadow", "Pointer", "Deeper", "Wrapper"} {
+		builder := buildThings(t, source)
+		builder.typeSchemas = described
+		builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: name})
+		expected := "example.com/app/things." + name + ": type " + name + " " + reason
+		err := builder.unresolvedError()
+		if err == nil || !strings.Contains(err.Error(), expected) {
+			t.Errorf("%s: expected %q, got %v", name, expected, err)
+		}
+	}
+
+	for _, name := range []string{"Event", "Plain"} {
+		builder := buildThings(t, source)
+		builder.typeSchemas = described
+		builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: name})
+		err := builder.unresolvedError()
+		if err != nil {
+			t.Errorf("%s: expected no refusal, got %v", name, err)
+		}
+	}
+}
+
+// A described type declared from an instantiation of a generic struct, or an alias of one, is
+// read as the generic struct for a format: option it promotes; without one it keeps its
+// description.
+func TestFormatTagOptionPromotedFromADescribedInstantiation(t *testing.T) {
+	source := `package things
+
+import "time"
+
+type Box[T any] struct {
+	When time.Time ` + "`json:\"when,format:unix\"`" + `
+	V    T         ` + "`json:\"v\"`" + `
+}
+
+type IntBox = Box[int]
+
+type IntBoxD Box[int]
+
+type Outer struct {
+	IntBox
+	N int ` + "`json:\"n\"`" + `
+}
+
+type OuterD struct {
+	IntBoxD
+	N int ` + "`json:\"n\"`" + `
+}
+
+type Clean[T any] struct {
+	V T ` + "`json:\"v\"`" + `
+}
+
+type IntClean = Clean[int]
+
+type IntCleanD Clean[int]
+
+type Plain struct {
+	IntClean
+	N int ` + "`json:\"n\"`" + `
+}
+
+type PlainD struct {
+	IntCleanD
+	N int ` + "`json:\"n\"`" + `
+}
+`
+	described := map[string]map[string]any{
+		"example.com/app/things.IntBox":    {"type": "object"},
+		"example.com/app/things.IntBoxD":   {"type": "object"},
+		"example.com/app/things.IntClean":  {"type": "object"},
+		"example.com/app/things.IntCleanD": {"type": "object"},
+	}
+	reason := "has field When with the json tag option format:unix"
+	for _, name := range []string{"Outer", "OuterD"} {
+		builder := buildThings(t, source)
+		builder.typeSchemas = described
+		builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: name})
+		expected := "example.com/app/things." + name + ": type " + name + " " + reason
+		err := builder.unresolvedError()
+		if err == nil || !strings.Contains(err.Error(), expected) {
+			t.Errorf("%s: expected %q, got %v", name, expected, err)
+		}
+	}
+
+	embeds := map[string]string{"Plain": "IntClean", "PlainD": "IntCleanD"}
+	for name, embedded := range embeds {
+		builder := buildThings(t, source)
+		builder.typeSchemas = described
+		builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: name})
+		err := builder.unresolvedError()
+		if err != nil {
+			t.Errorf("%s: expected no refusal, got %v", name, err)
+		}
+		want := map[string]any{"allOf": []any{
+			map[string]any{"$ref": schemaRefPrefix + "things_" + embedded},
+			map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"n": map[string]any{"type": "integer", "format": "int64"}},
+				"required":   []string{"n"},
+			},
+		}}
+		if !reflect.DeepEqual(builder.schemas["things_"+name], want) {
+			t.Errorf("%s: expected %v, got %v", name, want, builder.schemas["things_"+name])
+		}
+	}
+}
+
+// A described struct that embeds itself is read for a format: option once, so a struct that
+// embeds it is described without one.
+func TestFormatTagOptionDescribedSelfEmbedding(t *testing.T) {
+	source := `package things
+
+type Self struct {
+	*Self
+	N int ` + "`json:\"n\"`" + `
+}
+
+type Outer struct {
+	Self
+}
+`
+	builder := buildThings(t, source)
+	builder.typeSchemas = map[string]map[string]any{"example.com/app/things.Self": {"type": "object"}}
+	builder.schemaRef(typeRef{ImportPath: "example.com/app/things", Name: "Outer"})
+	err := builder.unresolvedError()
+	if err != nil {
+		t.Errorf("expected Outer described, got %v", err)
 	}
 }

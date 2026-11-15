@@ -7,6 +7,7 @@ import (
 	"maps"
 	"mime"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -158,10 +159,7 @@ func (g *generator) handlerFacts() handlerFacts {
 				facts.negotiates[name] = struct{}{}
 			}
 
-			pathParams := g.functionPathParameterSchemas(fn.Body)
-			if len(pathParams) > 0 {
-				facts.pathParams[name] = pathParams
-			}
+			pathParams := g.functionPathParameterSchemas(fn.Body, imports, pkgPath)
 
 			response := g.functionResponse(fn.Body, imports, pkgPath)
 			if response.known() || response.open {
@@ -180,6 +178,19 @@ func (g *generator) handlerFacts() handlerFacts {
 				if len(fields) > 0 {
 					facts.pathFields[name] = fields
 				}
+			}
+			// The binder answers 400 for a value its field's type refuses, so a bound field wins
+			// over a plain string read in the body; any other read in the body wins over it.
+			for _, bound := range g.boundRequestTypes(fn.Body, imports, pkgPath, helpersByPackage[pkgPath]) {
+				for param, schema := range g.boundPathParameters(bound) {
+					read, isRead := pathParams[param]
+					if !isRead || plainString(read) {
+						pathParams[param] = schema
+					}
+				}
+			}
+			if len(pathParams) > 0 {
+				facts.pathParams[name] = pathParams
 			}
 		}
 	}
@@ -700,7 +711,7 @@ func (g *generator) queryGetterSchema(getter QueryGetter, call *ast.CallExpr, im
 	return schema, true
 }
 
-func (g *generator) functionPathParameterSchemas(body *ast.BlockStmt) map[string]map[string]any {
+func (g *generator) functionPathParameterSchemas(body *ast.BlockStmt, imports map[string]string, pkgPath string) map[string]map[string]any {
 	params := map[string]map[string]any{}
 
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -709,47 +720,218 @@ func (g *generator) functionPathParameterSchemas(body *ast.BlockStmt) map[string
 			return true
 		}
 
-		name, getter, ok := g.pathParameterCall(call)
+		name, schema, ok := g.pathParameterCall(call, imports, pkgPath)
 		if !ok {
 			return true
 		}
 
-		params[name] = cloneSchema(getter.Schema)
+		// A read that gives a plain string does not undo one that gives another schema, which
+		// the server checks; between two others the last one wins.
+		read, isRead := params[name]
+		if isRead && plainString(schema) && !plainString(read) {
+			return true
+		}
+		params[name] = schema
 		return true
 	})
 
 	return params
 }
 
-// pathParameterCall matches a ParamGetters call with a string-literal parameter name.
-func (g *generator) pathParameterCall(call *ast.CallExpr) (string, ParamGetter, bool) {
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return "", ParamGetter{}, false
+// plainString reports the schema {type: string}, which says nothing of a path segment.
+func plainString(schema map[string]any) bool {
+	return reflect.DeepEqual(schema, map[string]any{"type": "string"})
+}
+
+// echoImportPath is the package of echo's PathParam[T] and PathParamOr[T], which read a path
+// parameter as T.
+const echoImportPath = "github.com/labstack/echo/v5"
+
+// pathParameterCall matches a read of a path parameter whose name is a string literal or a
+// constant declared with one (parameterName): a ParamGetters call, with the getter's schema, or
+// echo's PathParam[T] or PathParamOr[T], with T's (pathValueSchema). T is read from the type
+// argument or, for a PathParamOr without one, from a default written as a conversion, `int64(0)`;
+// any other T inferred from the default is not read.
+func (g *generator) pathParameterCall(call *ast.CallExpr, imports map[string]string, pkgPath string) (string, map[string]any, bool) {
+	fun := call.Fun
+	var typeArgument ast.Expr
+	index, generic := fun.(*ast.IndexExpr)
+	if generic {
+		fun = index.X
+		typeArgument = index.Index
 	}
-	if selector.Sel == nil {
-		return "", ParamGetter{}, false
+	selector, ok := fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel == nil {
+		return "", nil, false
+	}
+
+	if isEchoPathRead(selector, imports) {
+		if len(call.Args) < 2 {
+			return "", nil, false
+		}
+		name, ok := g.parameterName(call.Args[1], imports, pkgPath)
+		if !ok {
+			return "", nil, false
+		}
+		if typeArgument == nil && selector.Sel.Name == "PathParamOr" && len(call.Args) > 2 {
+			conversion, isCall := call.Args[2].(*ast.CallExpr)
+			if isCall && len(conversion.Args) == 1 {
+				typeArgument = conversion.Fun
+			}
+		}
+		return name, pathValueSchema(typeArgument), true
+	}
+	if generic {
+		return "", nil, false
 	}
 
 	getter, ok := g.cfg.ParamGetters[selector.Sel.Name]
 	if !ok {
-		return "", ParamGetter{}, false
+		return "", nil, false
 	}
 
 	if len(call.Args) <= getter.NameArg {
-		return "", ParamGetter{}, false
+		return "", nil, false
 	}
 
-	name, ok := stringLiteralValue(call.Args[getter.NameArg])
-	if !ok || name == "" {
-		return "", ParamGetter{}, false
+	name, ok := g.parameterName(call.Args[getter.NameArg], imports, pkgPath)
+	if !ok {
+		return "", nil, false
 	}
 
-	return name, getter, true
+	return name, cloneSchema(getter.Schema), true
+}
+
+// isEchoPathRead reports echo's PathParam or PathParamOr: the selector's qualifier is an import
+// of echoImportPath, not a name the file declares.
+func isEchoPathRead(selector *ast.SelectorExpr, imports map[string]string) bool {
+	if selector.Sel.Name != "PathParam" && selector.Sel.Name != "PathParamOr" {
+		return false
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+
+	return ok && qualifier.Obj == nil && imports[qualifier.Name] == echoImportPath
+}
+
+// parameterName is the parameter name a read passes, when it is a string literal or a string
+// constant: one declared in the handler's file, the function included, read from its
+// declaration, or one of the handler's package or an imported one (constantString). A
+// variable or a parameter is not read, nor a constant declared without a string literal, nor a
+// field of a variable named like an import.
+func (g *generator) parameterName(expr ast.Expr, imports map[string]string, pkgPath string) (string, bool) {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if ok {
+		qualifier, isIdent := selector.X.(*ast.Ident)
+		if isIdent && qualifier.Obj != nil {
+			// The file declares the qualifier, so it is not a package.
+			return "", false
+		}
+	}
+	ident, ok := expr.(*ast.Ident)
+	if ok && ident.Obj != nil {
+		// The parser resolved the name in the file, where it may shadow a constant of the
+		// package's other files. ast.Object is deprecated in favour of go/types, which the
+		// generator does not run; this is the parser's own scope resolution, so the handler
+		// files must be parsed without parser.SkipObjectResolution.
+		spec, isValue := ident.Obj.Decl.(*ast.ValueSpec)
+		if ident.Obj.Kind != ast.Con || !isValue {
+			return "", false
+		}
+		for i, declared := range spec.Names {
+			if declared.Name != ident.Name || i >= len(spec.Values) {
+				continue
+			}
+			name, ok := stringLiteralValue(spec.Values[i])
+			return name, ok && name != ""
+		}
+		return "", false
+	}
+
+	name, ok := g.constantString(expr, imports, pkgPath)
+
+	return name, ok && name != ""
+}
+
+// pathValueKinds are the predeclared types echo parses a path value into, with PathParam[T] and
+// its binder alike: bool, string, the floats and the integers but uintptr.
+var pathValueKinds = map[string]bool{
+	"bool": true, "string": true, "float32": true, "float64": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true, "rune": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "byte": true,
+}
+
+// pathValueSchema is the schema of a path parameter echo parses into the type expr: a
+// predeclared type of pathValueKinds has its own (builtinSchema), and any other type is a
+// string, as the generator does not resolve it.
+func pathValueSchema(expr ast.Expr) map[string]any {
+	ident, ok := expr.(*ast.Ident)
+	if !ok || !pathValueKinds[ident.Name] {
+		return map[string]any{"type": "string"}
+	}
+	schema, _ := builtinSchema(ident.Name)
+
+	return schema
+}
+
+// boundRequestTypes are the types a handler body's BodyBinders calls bind, their last argument,
+// read as requestTypeFromHandler reads the request type (requestArgumentType).
+func (g *generator) boundRequestTypes(body *ast.BlockStmt, imports map[string]string, pkgPath string, helpers map[string]funcInfo) []typeRef {
+	varTypes := localVariableTypes(body, imports, pkgPath, helpers)
+	var refs []typeRef
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel == nil || !containsString(g.cfg.BodyBinders, selector.Sel.Name) {
+			return true
+		}
+		ref, ok := requestArgumentType(call.Args[len(call.Args)-1], varTypes, imports, pkgPath)
+		if ok {
+			refs = append(refs, ref)
+		}
+		return true
+	})
+
+	return refs
+}
+
+// boundPathParameters are the path parameters echo's binder parses into the request type ref,
+// which a BodyBinders call binds, path parameters first: an exported field of ref's struct
+// declaration whose param tag is a parameter's name has the schema of its type
+// (pathValueSchema). A field of an embedded struct and a tag naming the parameter in other
+// letter case, which the binder also fills, are not read.
+func (g *generator) boundPathParameters(ref typeRef) map[string]map[string]any {
+	pkg, err := g.builder.loadPackage(ref.ImportPath)
+	if err != nil {
+		// Safe to drop: its parameters stay strings, and where ref is the handler's request
+		// type, building the request's schema reports the package that cannot be read.
+		return nil
+	}
+	info, ok := pkg.Types[ref.Name]
+	if !ok {
+		return nil
+	}
+	structure, ok := info.Spec.Type.(*ast.StructType)
+	if !ok {
+		return nil
+	}
+
+	params := map[string]map[string]any{}
+	for _, field := range structure.Fields.List {
+		name := fieldTag(field, "param")
+		if name == "" || len(field.Names) == 0 || !ast.IsExported(field.Names[0].Name) {
+			continue
+		}
+		params[name] = pathValueSchema(field.Type)
+	}
+
+	return params
 }
 
 // pathFilledFields returns the fields of the request type filled from a path parameter, either
-// straight from a ParamGetters call or through a variable assigned from one, in a composite
+// straight from a read (pathParameterCall) or through a variable assigned from one, in a composite
 // literal (`&Request{ID: c.Param("id")}`, `&Request{ComplexID: complexID}`) or an assignment
 // to a request variable (`request.ComplexID = complexID`).
 func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports map[string]string, pkgPath string, helpers map[string]funcInfo) []string {
@@ -762,7 +944,7 @@ func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports m
 		// `id, err := h.GetParameterInt64(c, "id")` and `id := c.Param("id")`.
 		if len(assign.Rhs) == 1 && len(assign.Lhs) >= 1 {
 			ident, isIdent := assign.Lhs[0].(*ast.Ident)
-			if isIdent && g.isPathParameterCall(assign.Rhs[0]) {
+			if isIdent && g.isPathParameterCall(assign.Rhs[0], imports, pkgPath) {
 				pathVars[ident.Name] = true
 			}
 		}
@@ -774,7 +956,7 @@ func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports m
 		if ok {
 			return pathVars[ident.Name]
 		}
-		return g.isPathParameterCall(expr)
+		return g.isPathParameterCall(expr, imports, pkgPath)
 	}
 
 	varTypes := localVariableTypes(body, imports, pkgPath, helpers)
@@ -831,13 +1013,13 @@ func (g *generator) pathFilledFields(body *ast.BlockStmt, ref typeRef, imports m
 	return fields
 }
 
-// isPathParameterCall reports a ParamGetters call with a literal parameter name.
-func (g *generator) isPathParameterCall(expr ast.Expr) bool {
+// isPathParameterCall reports a read of a path parameter (pathParameterCall).
+func (g *generator) isPathParameterCall(expr ast.Expr, imports map[string]string, pkgPath string) bool {
 	call, ok := expr.(*ast.CallExpr)
 	if !ok {
 		return false
 	}
-	_, _, ok = g.pathParameterCall(call)
+	_, _, ok = g.pathParameterCall(call, imports, pkgPath)
 
 	return ok
 }
