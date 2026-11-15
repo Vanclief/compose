@@ -73,6 +73,24 @@ import (
 // document is shaped. Paths are relative to Root. Every hook is optional.
 type Config struct {
 	// Root is the module root, the directory holding go.mod. Defaults to the working directory.
+	// Packages are read from where the go command builds them from, without downloading
+	// anything; the go command is run only as `go env`, to find the module cache and GOROOT
+	// where the environment does not name them. go.mod is read as the go command reads a main module's
+	// (golang.org/x/mod/modfile.Parse). The app's packages are under Root, and those of a module
+	// go.mod requires are in the module cache (GOMODCACHE) at the version go.mod requires, which
+	// is the one the build selects when go.mod is tidy and at go 1.17 or later, unless a replace
+	// directive puts a directory, relative to Root when not absolute, or another module at a
+	// version in the module cache in its place; a replace directive with a version on its left
+	// applies to that version only and wins over one without. Import paths, and so component
+	// names, keep the required module's path. A directory below a go.mod of its own, under Root
+	// or a replacement directory, belongs to that go.mod's module: a package there of the
+	// enclosing module's path is read from the module go.mod requires for it, and a HandlerGlob
+	// file there is in the package of the module that directory replaces; either fails generation
+	// when there is no such module. A package two modules hold, and two replace directives for
+	// one module and version that disagree, fail generation, as they fail the build. A go.work
+	// is not read, nor is a vendor directory: an app built in a workspace or from vendor/ is
+	// documented from its go.mod and the module cache. A package missing from the module cache
+	// fails generation until `go mod download` fetches it.
 	Root string
 	// RoutesGlob matches the files declaring routes, e.g. "application/interfaces/rest/routes_*.go".
 	// Test files and files a default build on the platform the generator runs on leaves out, by

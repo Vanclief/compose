@@ -18,6 +18,8 @@ type handlerSource struct {
 	File      *ast.File
 	Namespace string
 	Path      string
+	// PackagePath is the import path of the file's package (packagePathForFile).
+	PackagePath string
 }
 
 // handlerFacts is what the handler bodies tell about each handler, keyed by handler key.
@@ -97,10 +99,16 @@ func (g *generator) loadHandlerSources() error {
 			namespace = wiredNamespace
 		}
 
+		packagePath, err := g.builder.packagePathForFile(filePath)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+
 		sources = append(sources, handlerSource{
-			File:      file,
-			Namespace: namespace,
-			Path:      filePath,
+			File:        file,
+			Namespace:   namespace,
+			Path:        filePath,
+			PackagePath: packagePath,
 		})
 	}
 
@@ -127,7 +135,7 @@ func (g *generator) handlerFacts() handlerFacts {
 
 	for _, source := range g.sources {
 		imports := g.builder.importMap(source.File)
-		pkgPath := packagePathForFile(g.cfg.Root, g.builder.modulePath, source.Path)
+		pkgPath := source.PackagePath
 
 		packageDoc := commentText(source.File.Doc)
 		if !g.cfg.flat() && packageDoc != "" && facts.namespaceDocs[source.Namespace] == "" {
@@ -230,7 +238,7 @@ func (g *generator) packageHelpers() map[string]map[string]funcInfo {
 
 	for _, source := range g.sources {
 		imports := g.builder.importMap(source.File)
-		pkgPath := packagePathForFile(g.cfg.Root, g.builder.modulePath, source.Path)
+		pkgPath := source.PackagePath
 
 		for _, decl := range source.File.Decls {
 			fn, ok := decl.(*ast.FuncDecl)

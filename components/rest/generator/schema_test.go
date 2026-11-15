@@ -323,7 +323,7 @@ func newTestSchemaBuilder(t *testing.T, repoRoot string) *schemaBuilder {
 	return &schemaBuilder{
 		requiredPackagePrefix: "/application/models/",
 		modulePath:            "example.com/app",
-		moduleVersions:        map[string]string{"example.com/dep": "v1.2.3"},
+		modules:               map[string]moduleSource{"example.com/dep": {Path: "example.com/dep", Version: "v1.2.3"}},
 		repoRoot:              repoRoot,
 		modCache:              t.TempDir(),
 		packages:              map[string]*packageInfo{},
@@ -660,7 +660,7 @@ func writeGoFile(t *testing.T, path string, source string) {
 func TestModulePathIsMatchedOnPathBoundaries(t *testing.T) {
 	repoRoot := t.TempDir()
 	builder := newTestSchemaBuilder(t, repoRoot)
-	builder.moduleVersions["example.com/application"] = "v1.0.0"
+	builder.modules["example.com/application"] = moduleSource{Path: "example.com/application", Version: "v1.0.0"}
 	writeGoFile(t, filepath.Join(repoRoot, "lication", "models", "models.go"), "package models\n\ntype Thing struct {\n\tWrong string `json:\"wrong\"`\n}\n")
 	writeGoFile(t, filepath.Join(builder.modCache, "example.com", "application@v1.0.0", "models", "models.go"), "package models\n\ntype Thing struct {\n\tRight string `json:\"right\"`\n}\n")
 	writeGoFile(t, filepath.Join(builder.modCache, "example.com", "dep@v1.2.3", "endency", "models", "models.go"), "package models\n\ntype Thing struct {\n\tWrong string `json:\"wrong\"`\n}\n")

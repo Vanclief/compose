@@ -219,12 +219,15 @@ type Wrapper struct {
 	}
 }
 
-// A dependency whose module path has no dot (a replaced local module) is not the standard
-// library either.
+// A dependency whose module path has no dot (one a replace directive puts a local directory in
+// place of) is not the standard library either.
 func TestDotlessDependencyIsNotStandardLibrary(t *testing.T) {
 	builder := &schemaBuilder{
-		modulePath:     "app",
-		moduleVersions: map[string]string{"shared": "v0.0.0", "example.com/dep": "v1.0.0"},
+		modulePath: "app",
+		modules: map[string]moduleSource{
+			"shared":          {Dir: "/src/shared"},
+			"example.com/dep": {Path: "example.com/dep", Version: "v1.0.0"},
+		},
 	}
 
 	cases := map[string]bool{
