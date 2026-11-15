@@ -250,10 +250,13 @@ Rules enforced at registration (fail boot):
 - the keys `encoding/json` writes are exactly the schema's properties, at every depth of a
   response type: registration fails for the same shapes (an unexported embedded struct's
   fields are sent but huma does not list them), so the document cannot miss a field the
-  server sends. `hidden` fields stay allowed there: sent, and left out on purpose. Types
-  that encode themselves (`json.Marshaler`, `encoding.TextMarshaler`, and on
-  `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) are not looked into,
-  except that a struct which gets its encoder from an embedded field is refused. Both walks
+  server sends. `hidden` fields stay allowed there: sent, and left out on purpose. A struct
+  that encodes itself (`json.Marshaler`, an `encoding.TextMarshaler`, and on
+  `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) and has no text
+  decoder, which makes it a string, fails registration, since its fields do not describe
+  what it writes, unless a `JSONSchema`
+  method (`api.SchemaProvider`) states that; so does a struct which gets its encoder from
+  an embedded field. A type of another kind that encodes itself is published by its kind. Both walks
   ask `encoding/json` which of those methods it calls and which key a json tag's name gives
   (`openapi/jsonrules.go`), so they follow the toolchain the app is built with. They also
   ask it to decode `{}` into each struct they look into, once per type, which checks the
@@ -276,8 +279,9 @@ Rules enforced at registration (fail boot):
   fails and points at the `query:` tag. The fields of an embedded struct tagged `json:"-"`
   are no body properties, here and in a multipart request
 - param fields are string, bool or number kinds, `encoding.TextUnmarshaler`s or slices of
-  those: no structs, maps, `[]byte`, `types.Optional` or slices of pointers (an item cannot
-  be null), and none reached through an unexported embedded pointer, which reflection
+  those: no structs, maps, `[]byte`, `types.Optional`, slices of pointers (an item cannot
+  be null) or types with a `JSONSchema` method (it describes their JSON, not their text, and
+  is refused as a form value too), and none reached through an unexported embedded pointer, which reflection
   cannot allocate. A `path`, `query`, `header` or `form` tag on an unexported field, or on
   an embedded field itself, is refused: nothing would read it. An array parameter is sent
   as repeated keys or as one comma-separated value, the two forms plain routes take through
@@ -647,10 +651,11 @@ hardcodes `additionalProperties: false` on every struct (`registry.go:216`, appl
 (`registry.go:162`), so a wrapper around it would never see nested fields. The reflector
 therefore implements `huma.Registry` itself (`openapi/reflector.go`), re-implementing huma's
 `mapRegistry`: it matches huma on recursion placeholders, the duplicate-name panic, anonymous
-numbering, `time.Time`, `TextUnmarshaler` and `SchemaProvider`, and every nested field passes
+numbering, `time.Time` and `TextUnmarshaler`, puts compose's own `api.SchemaProvider` where
+huma has its `SchemaProvider`, and every nested field passes
 through it, so compose's hooks apply at every depth. Schema generation stays huma's
 `SchemaFromType` and `SchemaFromField`. The post-pass is a real component: the `openapi`
-package is about 2,300 lines (the reflector, the request variants, the `encoding/json` key
+package is about 3,600 lines (the reflector, the request variants, the `encoding/json` key
 check, the lint and the parameters) plus golden fixtures, in separate walks for parameters,
 lint, key check and variants.
 
@@ -718,9 +723,38 @@ lint, key check and variants.
   `netip.AddrPort` field whose own `minLength` tag is 0, which a response type may carry.
   The registry dereferences pointers
   before the lookup and marks a pointer's schema nullable itself. compose `types/` do not
-  implement `huma.SchemaProvider`: the copy is internal, so `types/` cannot import it, and
-  huma stays confined to `components/rest/api/...`. The copy still honours `SchemaProvider`,
-  but nothing implements it.
+  implement `api.SchemaProvider`, which would make them import the registry, and huma stays
+  confined to `components/rest/api/...`. An app's type states its own schema with a
+  `JSONSchema(refs *api.SchemaRefs) string` method (`api.SchemaProvider`), which returns
+  JSON Schema 2020-12 as JSON text; nothing of the huma copy is part of the public API.
+  The registry parses the text afresh at registration into its own schema, refuses a
+  keyword it cannot publish and validate as written, a key given twice and a `$ref` that
+  `refs.For` did not return during the same call, and names the type and the JSON pointer
+  of the place. The type becomes a named component, and every place that holds it refers
+  to it; a pointer (in a response one without `omitempty`, in a request one that is not
+  required), or a `types.Optional`, adds `null` as `anyOf [ref, null]`, which the 3.0
+  document writes as `nullable` with `allOf [ref]`. Its text is published as written: no
+  request shape is applied to it and its `additionalProperties: false` is not cleared
+  (its `Input` variant, when one exists, differs only in `$ref`s to request variants),
+  and the strict contract does not close its objects.
+  OpenAPI 3.0 has no null type, so `{"type": "null"}` may only be the one null member of
+  an `anyOf`, beside nothing but annotations. Text the 3.0 document would carry otherwise
+  than written is refused too: a number a float64 does not hold, anywhere in the text, a
+  property named `contentEncoding` or `contentMediaType`, `examples` with more than one
+  item, `format` beside `contentEncoding`, a key the 3.0 document would rewrite as a schema
+  keyword inside an example, `default`, `enum`, `const` or `x-` value, an `enum` or `const`
+  in a member of an `anyOf` with a null member, and an `enum` that lists `null` where the
+  type does not (`{"type": ["string", "null"], "enum": ["a", null]}` is the form that
+  lets null through). `refs.For(t)` returns the `$ref` of a component (`anyOf [ref, null]`
+  for a pointer to an enum or a provider, or a `types.Optional` of a component type) or the
+  inline schema of another type, and the types asked are linted and
+  key-checked as fields are. A type that asks for its own schema, directly or through
+  another provider, is refused rather than recursed into, and a type registration that
+  fails leaves no placeholder or partly built component behind. In a request a bound,
+  length, `pattern` or `enum` tag on such a field, or on the items it is in, and a
+  `minItems`, `maxItems` or `uniqueItems` tag on such a field are refused, as huma would
+  write them into that schema whatever its type, and so is a `format` tag, in a request or
+  a response.
 - **Types that decode their own JSON**: a request field whose type is an app's own type
   with an `UnmarshalJSON` and no `UnmarshalText` is published and validated by its Go
   shape, its kind or its struct fields, because the registry cannot know what the method
@@ -734,7 +768,9 @@ lint, key check and variants.
   nothing unvalidated reaches the handler; a request that leaves out an optional field of
   such a type passes, and the handler gets its zero value. Giving the type an
   `UnmarshalText` makes it a plain string in the document and the validator (`isOpaque`),
-  which is the way out when its wire form is a string. A float kind with only an
+  which is a way out when its wire form is a string. A `JSONSchema` method (`api.SchemaProvider`)
+  states the shape instead: the validator checks the schema it returns, and the type's
+  `UnmarshalJSON` reads the value that passed. A float kind with only an
   `UnmarshalJSON` is a float to the lint as well: published and validated as a number by
   its digits, it can round them onto an exclusive bound (`1e-400` passes
   `exclusiveMinimum:"0"` and reads as `0`), so registration refuses `exclusiveMinimum` and

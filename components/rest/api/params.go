@@ -23,6 +23,7 @@ var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 	timeType            = reflect.TypeFor[time.Time]()
 	bigIntType          = reflect.TypeFor[big.Int]()
+	schemaProviderType  = reflect.TypeFor[SchemaProvider]()
 )
 
 // kindOf derives the coercion kind of a parameter schema, resolving $refs
@@ -125,7 +126,8 @@ func fieldOf(v reflect.Value, index []int) reflect.Value {
 // of pointers: the document would publish its items as nullable, which no
 // parameter can carry; and a slice type with a JSON decoder of its own and
 // no text decoder, which setValue would fill item by item without running
-// it.
+// it; and a type with a JSONSchema method, whose schema describes its JSON and
+// not the text of a parameter.
 func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 	var problems []string
 	for _, p := range params {
@@ -137,6 +139,12 @@ func checkParamTypes(reqType reflect.Type, params []openapi.Param) error {
 			continue
 		}
 		t := reqType.FieldByIndex(p.Index).Type
+		if statesSchema(t) {
+			problems = append(problems, fmt.Sprintf(
+				"%s parameter %s: type %s has a JSONSchema method, which is not supported on a parameter: it states the schema of the type's JSON, not of the text a parameter carries (use a string, bool or number kind, an encoding.TextUnmarshaler, or a slice of those)",
+				p.In, p.Name, t))
+			continue
+		}
 		slice := derefType(t)
 		if slice.Kind() == reflect.Slice && !isTextUnmarshaler(slice) && slice.Elem().Kind() == reflect.Pointer {
 			problems = append(problems, fmt.Sprintf(
@@ -173,6 +181,20 @@ func unexportedEmbeddedPointer(t reflect.Type, index []int) reflect.Type {
 		t = f.Type
 	}
 	return nil
+}
+
+// statesSchema reports whether t, or the items of the slice or array t is,
+// behind pointers, has a JSONSchema method (SchemaProvider).
+func statesSchema(t reflect.Type) bool {
+	t = derefType(t)
+	if t.Implements(schemaProviderType) || reflect.PointerTo(t).Implements(schemaProviderType) {
+		return true
+	}
+	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+		return false
+	}
+	elem := derefType(t.Elem())
+	return elem.Implements(schemaProviderType) || reflect.PointerTo(elem).Implements(schemaProviderType)
 }
 
 func paramTypeSupported(t reflect.Type) bool {

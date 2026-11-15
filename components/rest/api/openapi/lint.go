@@ -41,7 +41,8 @@ var allowedTags = map[string]bool{
 // (see refusesEmptyText); exclusiveMinimum or
 // exclusiveMaximum on a float (see floatBounded); a bound, length or item
 // tag huma would put on a schema of another JSON type, where nothing checks
-// it (see misplacedTags); and a nullable tag on the blank field, which makes
+// it (see misplacedTags), or on one a JSONSchema method states (see
+// providedTags); and a nullable tag on the blank field, which makes
 // the whole struct nullable. The structs the type embeds are walked whether
 // or not they are exported or tagged json:"-": buildParams reads their
 // parameters all the same. A request is also refused a path, query, header
@@ -65,6 +66,27 @@ func lintType(t reflect.Type, request bool) error {
 		return nil
 	}
 	return ez.New(ez.EINVALID, "openapi: "+strings.Join(problems, "; "), nil)
+}
+
+// lintAsked lints t, a type the JSONSchema method of owner asked refs.For
+// for, as lintType lints the type of a field, in the same direction: owner's
+// coder reads or writes it with encoding/json, and the document publishes
+// its schema. seen is shared by the types of one check.
+func lintAsked(owner reflect.Type, t reflect.Type, request bool, seen map[reflect.Type]bool, problems *[]string) {
+	problem := unsupportedType(heldType(t), request)
+	if problem != "" {
+		*problems = append(*problems, fmt.Sprintf("%s: refs.For(%s): %s", owner, t, problem))
+	}
+	key := enumMapKey(t)
+	if request && key != nil {
+		*problems = append(*problems, fmt.Sprintf("%s: refs.For(%s): map keys are not validated, so a key of the enum type %s could hold any string; use a string key and check it in Validate()", owner, t, key))
+	}
+	lintWalk(t, request, seen, problems)
+	if request {
+		lintParamTags(t, false, map[paramVisit]bool{}, problems)
+		return
+	}
+	lostMarshalers(t, true, map[marshalVisit]bool{}, problems)
 }
 
 func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems *[]string) {
@@ -140,6 +162,7 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 		*problems = append(*problems, lintField(t, f)...)
 		if request {
 			*problems = append(*problems, misplacedTags(t, f)...)
+			*problems = append(*problems, providedTags(t, f)...)
 		}
 
 		if request && f.Tag.Get("uniqueItems") == "true" && !uniqueItemsApplies(f.Type) {
@@ -169,7 +192,7 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 			}
 			continue
 		}
-		if name == "contentEncoding" || name == "contentMediaType" {
+		if renamedByDowngrade(name) {
 			*problems = append(*problems, fmt.Sprintf("%s.%s: property name %q is renamed by the 3.0 downgrade", t, f.Name, name))
 		}
 		if request {
@@ -199,6 +222,12 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 
 		lintWalk(f.Type, request, seen, problems)
 	}
+}
+
+// renamedByDowngrade reports whether the 3.0 downgrade renames a property
+// of this name, as it does the keyword of that name.
+func renamedByDowngrade(name string) bool {
+	return name == "contentEncoding" || name == "contentMediaType"
 }
 
 // scalarTags are the tags huma puts on a field's schema, or on the items of
@@ -283,6 +312,53 @@ func misplacedTags(t reflect.Type, f reflect.StructField) []string {
 	return problems
 }
 
+// providedTags reports the bound, length, item and enum tags of a request
+// field whose schema a JSONSchema method states (see providesSchema), and
+// the bound, length and enum tags of one whose items' schema it states, the
+// items being such a type or a types.Optional of one. huma writes such a
+// tag beside the $ref to that schema whatever its type, where nothing may
+// check it (minimum on a string, maxLength on a oneOf). misplacedTags cannot
+// tell, as the reflector does not know the schema before it asks the type;
+// formatTagApplies refuses the format tag.
+func providedTags(t reflect.Type, f reflect.StructField) []string {
+	ft := deref(f.Type)
+	elem, ok := optionalElem(ft)
+	if ok {
+		ft = deref(elem)
+	}
+
+	var tags []string
+	for _, st := range scalarTags {
+		tags = append(tags, st.tag)
+	}
+	tags = append(tags, "enum")
+	item := ft
+	if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
+		item = deref(ft.Elem())
+		elem, ok = optionalElem(item)
+		if ok {
+			item = deref(elem)
+		}
+	}
+	switch {
+	case providesSchema(ft):
+		tags = append(tags, arrayTags...)
+	case item != ft && providesSchema(item):
+		ft = item
+	default:
+		return nil
+	}
+
+	var problems []string
+	for _, tag := range tags {
+		_, tagged := f.Tag.Lookup(tag)
+		if tagged {
+			problems = append(problems, fmt.Sprintf("%s.%s: the %s tag is not supported on %s in a request type: %s states its schema with its JSONSchema method, and the tag would be written beside that schema whatever its type, where nothing may check it; state the rule in the schema JSONSchema returns", t, f.Name, tag, f.Type, ft))
+		}
+	}
+	return problems
+}
+
 // arrayType returns the fixed-size array a field of type t is (after a
 // pointer and a types.Optional), or nil.
 func arrayType(t reflect.Type) reflect.Type {
@@ -306,7 +382,7 @@ func article(jsonType string) string {
 
 // jsonKind returns the JSON type of the schema the reflector gives t (after
 // a pointer and a types.Optional), or "" when t decides it itself (a
-// huma.SchemaProvider) or it has none (an interface, a json.RawMessage).
+// SchemaProvider) or it has none (an interface, a json.RawMessage).
 func jsonKind(t reflect.Type) string {
 	t = deref(t)
 	elem, ok := optionalElem(t)
@@ -823,7 +899,8 @@ func lintField(t reflect.Type, f reflect.StructField) []string {
 // formatTagApplies reports whether a format tag on a field of type t (after
 // a pointer and a types.Optional) describes text the registry decodes as it
 // is: a string kind, or a slice of them (huma puts the tag on the items),
-// that has no format in builtinSchemas and does not decode its own text.
+// that has no format in builtinSchemas, does not decode its own text and has
+// no JSONSchema method.
 // Elsewhere the decoder reads the type's own text (RFC 3339 for a
 // time.Time), which the tag would contradict.
 func formatTagApplies(t reflect.Type) bool {
@@ -832,10 +909,10 @@ func formatTagApplies(t reflect.Type) bool {
 	if ok {
 		t = deref(elem)
 	}
-	if t.Kind() == reflect.Slice && !decodesOwnText(t) {
+	if t.Kind() == reflect.Slice && !decodesOwnText(t) && !providesSchema(t) {
 		t = deref(t.Elem())
 	}
-	return t.Kind() == reflect.String && builtinSchemas[t].Format == "" && !decodesOwnText(t)
+	return t.Kind() == reflect.String && builtinSchemas[t].Format == "" && !decodesOwnText(t) && !providesSchema(t)
 }
 
 // refusesEmptyText reports whether a minLength tag on a field of type t

@@ -107,9 +107,9 @@ func fileFields(t reflect.Type) ([]fileField, error) {
 }
 
 // checkFormFields rejects body fields a form value cannot carry: nested
-// objects, maps, byte slices and types.Optional; and a body field named like
-// one of files,
-// whose form part would be read as both the value and the file. The fields
+// objects, maps, byte slices, types.Optional and types with a JSONSchema method;
+// and a body field named like one of files, whose form part would be read
+// as both the value and the file. The fields
 // of an embedded struct tagged json:"-" are no body fields.
 func checkFormFields(t reflect.Type, files []fileField) error {
 	var problems []string
@@ -131,6 +131,12 @@ func checkFormFields(t reflect.Type, files []fileField) error {
 			problems = append(problems, fmt.Sprintf(
 				"multipart body field %s (%s): types.Optional is a JSON body field; use a pointer for an optional form value",
 				f.Name, name))
+			continue
+		}
+		if statesSchema(f.Type) {
+			problems = append(problems, fmt.Sprintf(
+				"multipart body field %s (%s): type %s has a JSONSchema method, which is not supported in a form: it states the schema of the type's JSON, not of the text a form value carries (use a string, bool or number kind, an encoding.TextUnmarshaler, or a slice of those)",
+				f.Name, name, f.Type))
 			continue
 		}
 		if !paramTypeSupported(f.Type) {

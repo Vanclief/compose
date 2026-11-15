@@ -4,6 +4,7 @@ import (
 	"encoding"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"net"
@@ -27,7 +28,7 @@ const RefPrefix = "#/components/schemas/"
 
 var (
 	timeType            = reflect.TypeFor[time.Time]()
-	schemaProviderType  = reflect.TypeFor[huma.SchemaProvider]()
+	schemaProviderType  = reflect.TypeFor[SchemaProvider]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 	rawMessageType      = reflect.TypeFor[json.RawMessage]()
 	optionalTypeType    = reflect.TypeFor[optionalType]()
@@ -120,11 +121,13 @@ func WithNamer(namer func(t reflect.Type) string) Option {
 func NewReflector(opts ...Option) *Reflector {
 	r := &Reflector{
 		reg: &registry{
-			schemas: map[string]*huma.Schema{},
-			types:   map[string]reflect.Type{},
-			names:   map[reflect.Type]string{},
-			aliases: map[reflect.Type]reflect.Type{},
-			namer:   DefaultNamer,
+			schemas:  map[string]*huma.Schema{},
+			types:    map[string]reflect.Type{},
+			names:    map[reflect.Type]string{},
+			aliases:  map[reflect.Type]reflect.Type{},
+			namer:    DefaultNamer,
+			building: map[reflect.Type]bool{},
+			asks:     map[reflect.Type][]reflect.Type{},
 		},
 		requests:  map[reflect.Type]*requestRoot{},
 		responses: map[reflect.Type]*huma.Schema{},
@@ -138,7 +141,7 @@ func NewReflector(opts ...Option) *Reflector {
 // AddResponse registers t (struct, pointer to struct, or slice/map thereof)
 // as a response type. Idempotent. Returns lint errors, and an error when a
 // struct it reaches sends a JSON key its schema does not list (see
-// checkKeys).
+// checkKeys). A call that fails leaves no component behind.
 func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 	if t == nil {
 		return ez.New(ez.EINVALID, "openapi: nil response type", nil)
@@ -158,6 +161,8 @@ func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 		return ez.Wrap(err)
 	}
 
+	done := false
+	defer r.reg.rollback(&done)()
 	defer recoverPanic(&err)
 	s := r.reg.Schema(t, true, "Response")
 	err = r.reg.checkKeys(t, false)
@@ -167,12 +172,14 @@ func (r *Reflector) AddResponse(t reflect.Type) (err error) {
 
 	r.responses[t] = s
 	r.respOrder = append(r.respOrder, t)
+	done = true
 
 	return nil
 }
 
 // AddRequest registers t (struct or pointer to struct) as a request root,
-// lints it, and returns its parameters. Idempotent for the same t.
+// lints it, and returns its parameters. Idempotent for the same t. A call
+// that fails leaves no component behind.
 func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 	if t == nil {
 		return nil, ez.New(ez.EINVALID, "openapi: nil request type", nil)
@@ -195,6 +202,8 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 		return nil, ez.Wrap(err)
 	}
 
+	done := false
+	defer r.reg.rollback(&done)()
 	defer recoverPanic(&err)
 
 	params, err = buildParams(r.reg, t)
@@ -211,16 +220,41 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 	root = &requestRoot{name: strings.TrimPrefix(s.Ref, RefPrefix), params: params}
 	r.requests[t] = root
 	r.reqOrder = append(r.reqOrder, t)
+	done = true
 
 	return copyParams(params), nil
 }
 
+// rollback returns a function that, unless *done is true by the time it
+// runs, puts back the components the registry held when rollback was
+// called: a registration that fails, or panics, leaves no placeholder or
+// partial component that a later one would publish. Components are only
+// ever added, so copies of the maps are enough.
+func (r *registry) rollback(done *bool) func() {
+	schemas := maps.Clone(r.schemas)
+	types := maps.Clone(r.types)
+	names := maps.Clone(r.names)
+	return func() {
+		if *done {
+			return
+		}
+		r.schemas = schemas
+		r.types = types
+		r.names = names
+	}
+}
+
 // recoverPanic turns a huma panic (duplicate names, malformed tag values)
-// into an error.
+// into an error. A panic of an app's JSONSchema method goes on as it is
+// (see callProvider).
 func recoverPanic(err *error) {
 	rec := recover()
 	if rec == nil {
 		return
+	}
+	app, ok := rec.(appPanic)
+	if ok {
+		panic(app.value)
 	}
 	msg := fmt.Sprint(rec)
 	ezErr, ok := rec.(*ez.Error)
@@ -253,6 +287,11 @@ type registry struct {
 	names   map[reflect.Type]string // the component of each type, see Schema
 	aliases map[reflect.Type]reflect.Type
 	namer   func(reflect.Type) string
+	// building holds the types whose JSONSchema method is running (see
+	// providedSchema).
+	building map[reflect.Type]bool
+	// asks holds the types each JSONSchema method asked refs.For for.
+	asks map[reflect.Type][]reflect.Type
 }
 
 // collisionHint is appended to duplicate component name errors.
@@ -285,6 +324,9 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 	}
 
 	values, ok := enumValues(t)
+	if ok && providesSchema(t) {
+		panic(ez.New(ez.EINVALID, fmt.Sprintf("%s is an enum (enums.Set) and has a JSONSchema method, which would state its schema twice; drop one of them", t), nil))
+	}
 	if ok {
 		// Always a fresh pointer: a field-level enum tag mutates it.
 		// Pointers are nullable; Finalize rewrites a nullable $ref as
@@ -295,6 +337,10 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 	elem, ok := optionalElem(t)
 	if ok {
 		return r.optionalSchema(elem, hint)
+	}
+
+	if providesSchema(t) {
+		return r.providedSchema(t, pointer, hint)
 	}
 
 	getsRef := t.Kind() == reflect.Struct && !isOpaque(t)
@@ -546,10 +592,19 @@ func deref(t reflect.Type) reflect.Type {
 // unmarshalers.
 func isOpaque(t reflect.Type) bool {
 	_, ok := builtinSchemas[t]
-	if ok || t == timeType || t.Implements(optionalTypeType) {
+	if ok || t == timeType || t.Implements(optionalTypeType) || providesSchema(t) {
 		return true
 	}
 	ptr := reflect.PointerTo(t)
-	return t.Implements(schemaProviderType) || ptr.Implements(schemaProviderType) ||
-		t.Implements(textUnmarshalerType) || ptr.Implements(textUnmarshalerType)
+	return t.Implements(textUnmarshalerType) || ptr.Implements(textUnmarshalerType)
+}
+
+// providesSchema reports whether t, or a pointer to it, has a JSONSchema
+// method (SchemaProvider) that states its schema. An interface type never
+// does: encoding/json writes the value it holds, whatever its methods.
+func providesSchema(t reflect.Type) bool {
+	if t.Kind() == reflect.Interface {
+		return false
+	}
+	return t.Implements(schemaProviderType) || reflect.PointerTo(t).Implements(schemaProviderType)
 }

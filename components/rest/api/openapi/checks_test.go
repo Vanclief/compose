@@ -217,7 +217,8 @@ func TestRequestKeyErrors(t *testing.T) {
 }
 
 // TestResponseKeyErrors: a response type that sends a key its schema does
-// not list fails at any depth; one that encodes itself is not looked into.
+// not list fails at any depth, and so does a struct that encodes itself
+// without a JSONSchema method, whose fields do not describe what it sends.
 func TestResponseKeyErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -233,6 +234,8 @@ func TestResponseKeyErrors(t *testing.T) {
 		{"pointer sent as null through a map value", reflect.TypeFor[nullPointerMap](), `openapi: openapi.nullPointer: field Owner (json "owner") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
 		{"hidden pointer sent as null", reflect.TypeFor[nullHidden](), `openapi: openapi.nullHidden: field Owner (json "owner") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
 		{"non-null scalar pointer sent as null", reflect.TypeFor[nullScalar](), `openapi: openapi.nullScalar: field Note (json "note") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
+		{"own MarshalJSON", reflect.TypeFor[fixture.JSONStampedRun](), `openapi: fixture.JSONStampedRun writes its own JSON with MarshalJSON, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what MarshalJSON writes`},
+		{"own MarshalText", reflect.TypeFor[fixture.TextStampedRun](), `openapi: fixture.TextStampedRun writes its own JSON with MarshalText, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what MarshalText writes`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -241,11 +244,6 @@ func TestResponseKeyErrors(t *testing.T) {
 			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 			require.Equal(t, tt.want, ez.ErrorMessage(err))
 		})
-	}
-
-	for _, typ := range []reflect.Type{reflect.TypeFor[fixture.JSONStampedRun](), reflect.TypeFor[fixture.TextStampedRun]()} {
-		err := NewReflector().AddResponse(typ)
-		require.NoError(t, err, typ.String())
 	}
 }
 
@@ -317,7 +315,8 @@ func (o *pcOwn) UnmarshalJSON(raw []byte) error {
 // TestPromotedCoder: a struct documented by its fields that gets a JSON
 // decoder (request) or encoder (response) from an embedded field is refused
 // at any depth: encoding/json would hand it the whole value. One that holds
-// such a type as a named field, or declares its own, is not looked into.
+// such a type as a named field, or declares its own decoder, is not looked
+// into; a named field that encodes itself is refused for its own sake.
 func TestPromotedCoder(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -348,9 +347,12 @@ func TestPromotedCoder(t *testing.T) {
 	for _, typ := range []reflect.Type{reflect.TypeFor[pcNamed](), reflect.TypeFor[pcOwn]()} {
 		_, err := NewReflector().AddRequest(typ)
 		require.NoError(t, err, typ.String())
-		err = NewReflector().AddResponse(typ)
-		require.NoError(t, err, typ.String())
 	}
+	err := NewReflector().AddResponse(reflect.TypeFor[pcOwn]())
+	require.NoError(t, err)
+	err = NewReflector().AddResponse(reflect.TypeFor[pcNamed]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcStamp writes its own JSON with MarshalJSON, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what MarshalJSON writes`, ez.ErrorMessage(err))
 }
 
 // PCAppend writes itself with AppendText alone, which encoding/json calls on
@@ -442,13 +444,18 @@ type nullScalar struct {
 	Note *string `json:"note" nullable:"false"`
 }
 
-// nullSelfCoded encodes itself, so its fields are not looked into.
+// nullSelfCoded encodes itself and states its schema, so its fields are not
+// looked into.
 type nullSelfCoded struct {
 	Owner *nullOwner `json:"owner"`
 }
 
 func (nullSelfCoded) MarshalJSON() ([]byte, error) {
 	return []byte(`{}`), nil
+}
+
+func (nullSelfCoded) JSONSchema(*SchemaRefs) string {
+	return `{"type": "object"}`
 }
 
 // nullAllowed holds pointers that send no null their schema refuses.
@@ -747,13 +754,18 @@ func TestTagNamesEncodingJSONRenames(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// tnCustom codes its own JSON, so encoding/json never reads its json tags.
+// tnCustom codes its own JSON, so encoding/json never reads its json tags,
+// and states its schema.
 type tnCustom struct {
 	Its int `json:"it's"`
 }
 
 func (tnCustom) MarshalJSON() ([]byte, error) {
 	return []byte(`"custom"`), nil
+}
+
+func (tnCustom) JSONSchema(*SchemaRefs) string {
+	return `{"type": "string"}`
 }
 
 func (*tnCustom) UnmarshalJSON([]byte) error {

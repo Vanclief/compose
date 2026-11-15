@@ -527,7 +527,10 @@ func SchemaFromField(registry Registry, f reflect.StructField, hint string) *Sch
 	}
 
 	fs.Nullable = boolTag(f, "nullable", fs.Nullable)
-	if fs.Nullable && fs.Ref != "" && registry.SchemaFromRef(fs.Ref).Type == "object" {
+	// compose: only a nullable tag is refused. A $ref the registry marks
+	// nullable itself (a pointer to a type with a JSONSchema method) is
+	// rewritten as anyOf [ref, null], whatever the type of its schema.
+	if fs.Nullable && f.Tag.Get("nullable") == "true" && fs.Ref != "" && registry.SchemaFromRef(fs.Ref).Type == "object" {
 		// Nullability is only supported for scalar types for now. Objects are
 		// much more complicated. The `null` type lives within the object
 		// definition (requiring multiple copies of the object) or needs to use

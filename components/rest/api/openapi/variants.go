@@ -15,7 +15,9 @@ import (
 
 // Finalize runs the request-variant pass, clears additionalProperties and
 // returns the result. Call once after all Add* calls; later calls return the
-// same Result. Errors on duplicate component names.
+// same Result. Errors on duplicate component names. The component of a type
+// with a JSONSchema method is published as its text says: it is not
+// reopened, and no request shape is applied to it.
 func (r *Reflector) Finalize() (res *Result, err error) {
 	if r.result != nil {
 		return r.result, nil
@@ -27,6 +29,11 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 	strict := map[string]bool{}
 	for name, s := range r.reg.schemas {
 		c := copySchema(s)
+		base[name] = c
+		t := r.reg.types[name]
+		if t != nil && providesSchema(t) {
+			continue
+		}
 		walkSchema(c, func(n *huma.Schema) {
 			normalizeNull(n)
 			closed, isBool := n.AdditionalProperties.(bool)
@@ -37,7 +44,6 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 				}
 			}
 		})
-		base[name] = c
 	}
 
 	var reqRoots, respRoots []*huma.Schema
@@ -56,6 +62,11 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 	variant := map[string]bool{}
 	for name := range reqReach {
 		t := r.reg.types[name]
+		if t != nil && providesSchema(t) {
+			// Only its $refs may need a variant.
+			local[name] = copySchema(base[name])
+			continue
+		}
 		if t == nil || t.Kind() != reflect.Struct {
 			continue
 		}

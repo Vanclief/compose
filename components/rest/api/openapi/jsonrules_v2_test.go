@@ -84,3 +84,24 @@ func TestStreamMethodsNeedTheirSignature(t *testing.T) {
 func TestFormatOptionRefusedOnV2(t *testing.T) {
 	require.Contains(t, refusedTags(reflect.TypeFor[probeFormat]()), "Go struct field At has unsupported `format` tag option")
 }
+
+type pcStreamField struct {
+	Stream PCStream `json:"stream"`
+}
+
+type pcAppendField struct {
+	Append PCAppend `json:"append"`
+}
+
+// TestOwnEncoderNamed: a response struct encoding/json/v2 writes with
+// MarshalJSONTo or AppendText, and which has no JSONSchema method, is refused
+// naming the method.
+func TestOwnEncoderNamed(t *testing.T) {
+	err := NewReflector().AddResponse(reflect.TypeFor[pcStreamField]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.PCStream writes its own JSON with MarshalJSONTo, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what MarshalJSONTo writes`, ez.ErrorMessage(err))
+
+	err = NewReflector().AddResponse(reflect.TypeFor[pcAppendField]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.PCAppend writes its own JSON with AppendText, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what AppendText writes`, ez.ErrorMessage(err))
+}

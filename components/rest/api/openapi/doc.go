@@ -6,7 +6,8 @@
 // specifics: package-qualified component names, uuid and compose types
 // formats, enums.Set types as named enum components, request parameters from
 // path/query/header tags, presence-required request variants, a struct tag
-// lint and the removal of additionalProperties:false from published schemas.
+// lint and the removal of additionalProperties:false from published schemas
+// (except in the schema a type states with its JSONSchema method).
 //
 // Usage: create a Reflector, call AddRequest/AddResponse for every operation
 // type, then Finalize once to obtain the Result.

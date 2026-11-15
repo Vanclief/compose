@@ -166,9 +166,16 @@ func lessIndex(a, b []int) bool {
 // sentNulls). A struct encoding/json refuses for the json tags of its
 // fields, whatever the value, is refused (see refusedTags), as every request
 // or response holding it would fail. Types encoding/json hands to their own
-// decoder (request) or encoder (response) are not looked into, unless a
-// struct documented by its fields gets that decoder or encoder from an
-// embedded field (see promotedCoder), which is an error.
+// decoder (request) are not looked into; a struct that encoding/json hands
+// to its own encoder (response) is an error unless a JSONSchema method
+// states its schema or a text decoder makes it a string (isOpaque). A struct
+// documented by its fields that gets that decoder or encoder from an
+// embedded field is an error too (see promotedCoder). A type with a
+// JSONSchema method is not looked into either; it is an error unless it
+// decodes (request) or encodes (response) its own JSON as its schema says,
+// and a struct that gets the method or its coder from an embedded field is
+// one (see providerProblems). The types its JSONSchema method asked refs.For
+// for are linted and walked as fields are (see lintAsked).
 func (r *registry) checkKeys(t reflect.Type, request bool) error {
 	schemas := map[reflect.Type]string{}
 	for name, typ := range r.types {
@@ -177,6 +184,7 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 
 	var problems []string
 	seen := map[reflect.Type]bool{}
+	linted := map[reflect.Type]bool{}
 	var walk func(t reflect.Type)
 	walk = func(t reflect.Type) {
 		t = deref(t)
@@ -189,6 +197,15 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 		elem, ok := optionalElem(t)
 		if ok {
 			walk(elem)
+			return
+		}
+
+		if providesSchema(t) {
+			problems = append(problems, r.providerProblems(t, request)...)
+			for _, asked := range r.asks[t] {
+				lintAsked(t, asked, request, linted, &problems)
+				walk(asked)
+			}
 			return
 		}
 
@@ -207,14 +224,17 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 		}
 		embedded, ok := promotedCoder(t, request)
 		if ok {
-			coder := "decoder"
-			if !request {
-				coder = "encoder"
-			}
-			problems = append(problems, fmt.Sprintf("%s: the JSON %s of embedded field %s would take over the whole value, not the fields the schema lists; make it a named field", t, coder, embedded))
+			problems = append(problems, promotedCoderProblem(t, embedded, request))
 			return
 		}
 		if codesOwnJSON(t, request) {
+			if !request {
+				method := ownEncoder(t)
+				if method == "" {
+					method = ownEncoder(reflect.PointerTo(t))
+				}
+				problems = append(problems, fmt.Sprintf("%s writes its own JSON with %s, which the schema of its fields would not describe; add a JSONSchema method (api.SchemaProvider) that returns the schema of what %s writes", t, method, method))
+			}
 			return
 		}
 		// A response type that decodes itself is not asked (see
@@ -292,6 +312,75 @@ func promotedCoder(t reflect.Type, request bool) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// promotedCoderProblem explains the promotedCoder finding of embedded in t.
+func promotedCoderProblem(t reflect.Type, embedded string, request bool) string {
+	coder := "decoder"
+	if !request {
+		coder = "encoder"
+	}
+	return fmt.Sprintf("%s: the JSON %s of embedded field %s would take over the whole value, not the fields the schema lists; make it a named field", t, coder, embedded)
+}
+
+// promotedSchema returns the name of the first embedded field of the struct
+// t that has a JSONSchema method (providesSchema): t then has that method by
+// promotion, and the registry would publish the whole value by it. As with
+// promotedCoder, a t that declares its own JSONSchema method while also
+// embedding such a field is reported too.
+func promotedSchema(t reflect.Type) (string, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous && providesSchema(f.Type) {
+			return f.Name, true
+		}
+	}
+	return "", false
+}
+
+// promotedSchemaProblem explains the promotedSchema finding of embedded in t.
+func promotedSchemaProblem(t reflect.Type, embedded string) string {
+	return fmt.Sprintf("%s: the JSONSchema method of embedded field %s would state the schema of the whole value; make it a named field", t, embedded)
+}
+
+// providerProblems reports why the registry cannot publish t, a type with a
+// JSONSchema method, by the schema the method states: t is a struct that
+// gets its JSON coder (see promotedCoder) or its JSONSchema method from an
+// embedded field; encoding/json reads (request) or writes (response) t by
+// its Go type, which the schema does not describe, as t has no JSON decoder
+// or encoder of its own; or it codes t as text, always a JSON string, and
+// the schema is not of type string.
+func (r *registry) providerProblems(t reflect.Type, request bool) []string {
+	if t.Kind() == reflect.Struct {
+		embedded, ok := promotedCoder(t, request)
+		if ok {
+			return []string{promotedCoderProblem(t, embedded, request)}
+		}
+		embedded, ok = promotedSchema(t)
+		if ok {
+			return []string{promotedSchemaProblem(t, embedded)}
+		}
+	}
+
+	ptr := reflect.PointerTo(t)
+	method := ""
+	switch {
+	case request && !decodesOwnText(t):
+		return []string{fmt.Sprintf("%s has a JSONSchema method but no JSON decoder of its own: encoding/json reads it by its Go type, which the JSONSchema method does not change; add an UnmarshalJSON that reads what the schema describes, or remove the JSONSchema method", t)}
+	case !request && !codesOwnJSON(t, false):
+		return []string{fmt.Sprintf("%s has a JSONSchema method but no JSON encoder of its own: encoding/json writes it by its Go type, which the JSONSchema method does not change; add a MarshalJSON that writes what the schema describes, or remove the JSONSchema method", t)}
+	case request && !decodesOwnJSON(ptr):
+		method = "UnmarshalText"
+	case !request && (ownEncoder(ptr) == "MarshalText" || ownEncoder(ptr) == "AppendText"):
+		method = ownEncoder(ptr)
+	default:
+		return nil
+	}
+	s := r.schemas[r.names[t]]
+	if s.Type != huma.TypeString || s.Nullable {
+		return []string{fmt.Sprintf("%s codes its JSON as text with %s, which is always a JSON string, and its JSONSchema text does not say so; give it \"type\": \"string\"", t, method)}
+	}
+	return nil
 }
 
 // compareKeys reports keys bound (request) or sent (response) by
