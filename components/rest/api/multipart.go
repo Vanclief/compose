@@ -181,12 +181,7 @@ func (op *operation) formBody(form *multipart.Form) (body, decode map[string]any
 	body = map[string]any{}
 	decode = map[string]any{}
 	for name, kind := range op.formKinds {
-		var values []string
-		for _, v := range form.Value[name] {
-			if v != "" {
-				values = append(values, v)
-			}
-		}
+		values := nonEmpty(form.Value[name])
 		coerced := validate.Coerce(values, kind)
 		if coerced != nil {
 			body[name] = coerced
@@ -204,6 +199,36 @@ func (op *operation) formBody(form *multipart.Form) (body, decode map[string]any
 		}
 	}
 	return body, decode, fields
+}
+
+// formValueCount returns how many values the body formBody builds from form
+// holds, counted as in a JSON body, without splitting any: the body object,
+// one for each declared property with a non-empty value and, for an array,
+// as many items as validate.Coerce makes of its values (see arrayItems).
+func (op *operation) formValueCount(form *multipart.Form) int {
+	count := 1
+	for name, kind := range op.formKinds {
+		values := nonEmpty(form.Value[name])
+		if len(values) == 0 {
+			continue
+		}
+		count++
+		if kind.Type == "array" {
+			count += arrayItems(values)
+		}
+	}
+	return count
+}
+
+// nonEmpty returns the values that are not empty.
+func nonEmpty(values []string) []string {
+	var out []string
+	for _, v := range values {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // decodeValue returns what decodeForm decodes for form values that

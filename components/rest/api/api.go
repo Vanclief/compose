@@ -65,6 +65,20 @@ const securitySchemeName = "apiKey"
 // MaxBodyBytes applies to.
 const DefaultMaxBody = 1 << 20
 
+// DefaultMaxBodyValues is the most values the request body of an operation
+// that no MaxBodyValues applies to may hold.
+const DefaultMaxBodyValues = 10000
+
+// MaxParameterValues is the most items the array parameters of one request
+// may hold together, in its path, query and headers: a path or query
+// parameter given once holds the items its commas separate, one given
+// several times one item per value, and a header the non-empty items of the
+// comma-separated lists on all its lines. A request that holds more is a 400
+// before any parameter is coerced or validated. The limit is fixed: the
+// validator builds an error of about 1.5 KB for every item that fails, so 1
+// MB of failing query items allocated about 0.5 GB.
+const MaxParameterValues = 10000
+
 var errorResponseType = reflect.TypeFor[handler.ErrorResponse]()
 
 // Registry holds every registered operation of an Echo instance.

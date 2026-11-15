@@ -75,10 +75,27 @@ func (op *operation) serve(c *echo.Context) error {
 		}
 	}
 
-	instance := map[string]any{}
+	// Count the items of array parameters before they are split: the
+	// validator's cost follows them, not the bytes of the URL and headers.
 	values := make([][]string, len(op.params))
+	items := 0
 	for i, p := range op.params {
 		values[i] = paramValues(c, p.In, p.Name)
+		if op.kinds[i].Type != "array" {
+			continue
+		}
+		if p.In == "header" {
+			items += headerItems(values[i])
+		} else {
+			items += arrayItems(values[i])
+		}
+	}
+	if items > MaxParameterValues {
+		return ez.New(ez.EINVALID, fmt.Sprintf("parameters hold more than %d values", MaxParameterValues), nil)
+	}
+
+	instance := map[string]any{}
+	for i, p := range op.params {
 		if p.In == "header" && op.kinds[i].Type == "array" {
 			values[i] = headerListItems(values[i])
 		}
@@ -109,6 +126,10 @@ func (op *operation) serve(c *echo.Context) error {
 		// the request is answered, and nothing can act on a temporary file
 		// that would not go.
 		defer form.RemoveAll()
+		// The form is the body, its values counted before they are split.
+		if op.formValueCount(form) > op.maxValues {
+			return ez.New(ez.EINVALID, fmt.Sprintf("body holds more than %d values", op.maxValues), nil)
+		}
 		formValues, formDecode, collisions = op.formBody(form)
 		if op.hasBody {
 			instance["body"] = formValues
@@ -194,14 +215,31 @@ func paramValues(c *echo.Context, in, name string) []string {
 	case "header":
 		values = c.Request().Header.Values(name)
 	}
+	return nonEmpty(values)
+}
 
-	var out []string
-	for _, v := range values {
-		if v != "" {
-			out = append(out, v)
+// arrayItems returns how many items validate.Coerce makes of the non-empty
+// values of an array, without splitting them: the values when they are
+// several, else the comma-separated items of the one.
+func arrayItems(values []string) int {
+	if len(values) == 1 {
+		return strings.Count(values[0], ",") + 1
+	}
+	return len(values)
+}
+
+// headerItems returns how many items headerListItems returns for lines,
+// without allocating them.
+func headerItems(lines []string) int {
+	n := 0
+	for _, line := range lines {
+		for item := range strings.SplitSeq(line, ",") {
+			if strings.Trim(item, " \t") != "" {
+				n++
+			}
 		}
 	}
-	return out
+	return n
 }
 
 // headerListItems splits the lines of an array header into its items: each
@@ -224,9 +262,10 @@ func headerListItems(lines []string) []string {
 // body. It returns nil for an empty body, whatever the Content-Type, and for
 // a JSON null. It rejects a non-empty body whose Content-Type is missing or
 // not JSON (rest.RejectNUL scans only bodies that declare JSON or a form),
-// bodies nested deeper than maxBodyDepth and bodies in which an object
-// repeats a key. The decoded body carries every number in
-// the text validate.CanonicalNumber gives it. It also returns the raw bytes,
+// bodies holding more values than the operation's limit, bodies nested
+// deeper than maxBodyDepth and bodies in which an object repeats a key. The
+// decoded body carries every number in the text validate.CanonicalNumber
+// gives it. It also returns the raw bytes,
 // unchanged, for decoding.
 func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, op.maxBody))
@@ -244,6 +283,12 @@ func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	contentType := c.Request().Header.Get(echo.HeaderContentType)
 	if !isJSON(contentType) {
 		return nil, nil, ez.New(ez.EINVALID, "content type must be application/json", nil)
+	}
+
+	// Before decoding: the decoder and the validator cost what the body's
+	// values cost, not its bytes.
+	if moreValuesThan(raw, op.maxValues) {
+		return nil, nil, ez.New(ez.EINVALID, fmt.Sprintf("body holds more than %d values", op.maxValues), nil)
 	}
 
 	body, err := validate.DecodeBytes(raw)
@@ -264,6 +309,56 @@ func (op *operation) readBody(c *echo.Context) (any, []byte, error) {
 	}
 
 	return body, raw, nil
+}
+
+// moreValuesThan reports whether the JSON text raw, which is not empty,
+// holds more than limit values, every string, number, boolean, null, array
+// and object counting one and an object's keys none. It counts, in one pass
+// and without allocating, the top-level value, the first element or member
+// of every array and object that has one, and every comma outside a string,
+// which a further element or member follows, and stops once past limit. The
+// count is exact for valid JSON; on other text it can be anything, and the
+// decoder refuses that text when it is not over limit.
+func moreValuesThan(raw []byte, limit int) bool {
+	count := 1
+	inString := false
+	escaped := false
+	// The last byte outside whitespace opened an array or object.
+	opened := false
+	for _, b := range raw {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			continue
+		}
+
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		}
+		if opened && b != ']' && b != '}' {
+			count++
+		}
+		opened = false
+		switch b {
+		case '"':
+			inString = true
+		case '[', '{':
+			opened = true
+		case ',':
+			count++
+		}
+		if count > limit {
+			return true
+		}
+	}
+	return false
 }
 
 // maxBodyDepth bounds how deep the arrays and objects of a JSON body nest.

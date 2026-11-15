@@ -357,12 +357,35 @@ as unknown keys, then bind). Decode once instead.
    past the float64 range. If
    parsing fails keep the raw string so santhosh reports `kind.Type` like any other type
    error. Header keys lowercased, only declared `header:` fields included.
-   Missing stays missing (presence semantics).
+   Missing stays missing (presence semantics). Before any parameter is coerced, the items
+   of the array parameters are counted, all locations together: a path or query parameter
+   given once holds the items its commas separate, one given several times one item per
+   value, and a header the non-empty items of all its lines. More than
+   `api.MaxParameterValues` (10,000, fixed) is a 400 `parameters hold more than 10000
+   values`. Neither the 10,000 query parameters `net/url` parses nor the server's header
+   size limit (1 MB by default) bounds the items of one comma-separated value, and the
+   validator builds an error of about 1.5 KB for every failing item: 1 MB of them in a
+   query allocated about 540 MB, and 500,000 valid header items about 200 MB. The count
+   splits nothing, and runs after the authenticator, like the coercion it guards.
 6. Read the body through `http.MaxBytesReader` under the operation's limit
    (`api.MaxBodyBytes`, the nearest of `api.New`, the groups and the operation, else
    `api.DefaultMaxBody`, 1 MiB); a larger body is a 400 `body exceeds N bytes`. An app
    under `rest.Configure` keeps `rest.WithBodyLimit` all the same: `rest.RejectNUL` runs in
-   front of the registry and reads up to 32 MiB of a body before this limit applies. Decode with `jsonschema.UnmarshalJSON`
+   front of the registry and reads up to 32 MiB of a body before this limit applies. A
+   JSON body that holds more values than the operation's value limit (`api.MaxBodyValues`,
+   found the same way, else `api.DefaultMaxBodyValues`, 10,000) is a 400 `body holds
+   more than N values`, before it is decoded: every string, number, boolean, null, array
+   and object counts one, an object's keys none. One pass over the bytes counts the
+   top-level value, the first item of every non-empty array or object and every comma
+   outside a string, and stops past the limit; the count is exact for valid JSON, and a
+   malformed body within the limit is refused by the decoder as before. Validation costs
+   what the values cost, not the bytes: santhosh builds an error for every failing value,
+   1.5 to about 8 KB of allocation as its path is short or long and runs through nullable
+   structs, and loops over every array item, so 1 MiB of failing values allocated about
+   1 GB before the limit, and within the default 9,937 failing strings at the deepest path
+   the depth limit below admits allocate about 40 MB, or about 85 MB where that path runs
+   through nullable structs, the costliest schema measured. A multipart form counts toward the same limit ("Multipart
+   uploads", below). Decode with `jsonschema.UnmarshalJSON`
    (`loader.go:255-265`: `UseNumber`, rejects trailing data). A body in which an object
    repeats a key is a 400: the validator would keep only the last occurrence, while
    `encoding/json` decodes each one into the same struct, map or slice, so the earlier,
@@ -615,7 +638,12 @@ a number from the client's own literal (an integer written `007` or `+5`, which 
 not allow, from its value; a number field refuses those two forms, here as in a query).
 File fields are checked for presence (`required:"true"`), and a single-file field rejects
 repeated parts. The body limit wraps `ParseMultipartForm` (32 MiB in memory, the rest spills
-to temporary files). Registration fails for file fields without both tags, `form` tags on
+to temporary files). The form is the body, so `api.MaxBodyValues` bounds its values, counted
+as a JSON body's after parsing and before any value is split or coerced: the body object,
+each declared field sent with a non-empty value and each item of an array field, the items
+the commas of a single value separate or one per repeated value; files do not count. More is
+a 400 `body holds more than N values`: `mime/multipart` caps a form at 1,000 parts, not the
+items one value splits into, and 1 MB of failing items allocated about 550 MB. Registration fails for file fields without both tags, `form` tags on
 the request type's other fields or in a struct it does not embed (or embeds with a JSON
 name), a file field reached
 through an unexported embedded pointer, a file field named like a body property (one form

@@ -137,6 +137,31 @@ func MaxBodyBytes(n int64) Option {
 	}}
 }
 
+// MaxBodyValues sets how many values a request body may hold
+// (DefaultMaxBodyValues when no MaxBodyValues applies): in a JSON body every
+// string, number, boolean, null, array and object counts one, an object's
+// keys do not. A multipart form is the body and counts the same way: the
+// body object, each declared field sent with a non-empty value and each item
+// of an array field, the items the commas of a single value separate or one
+// per repeated value; files do not count. Passed to New it sets the default
+// of every operation, which a group's or the operation's own overrides. A
+// body that holds more is a 400 before it is decoded or validated, a form
+// before its values are split. Panics when n is not positive. What a body
+// costs follows its values, not its bytes: the validator builds an error for
+// every value that fails, before the registry keeps the first 100 fields, of
+// 1.5 KB to about 8 KB of allocation as the value's path is short or long
+// and runs through nullable structs, so a failing body allocates about 85 MB
+// at the default in the costliest schema measured, and about 1 GB at the
+// 250,000 to 500,000 values 1 MiB of JSON can hold.
+func MaxBodyValues(n int) Option {
+	if n <= 0 {
+		panic(ez.New(ez.EINVALID, "api: MaxBodyValues must be positive", nil))
+	}
+	return Option{name: "api.MaxBodyValues", op: func(op *operation) {
+		op.maxValues = n
+	}}
+}
+
 // Hidden registers the operation on Echo but omits it from the spec.
 func Hidden() Option {
 	return Option{name: "api.Hidden", op: func(op *operation) {
