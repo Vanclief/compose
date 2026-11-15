@@ -3,12 +3,14 @@ package reference
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/ez"
+	"gopkg.in/yaml.v3"
 )
 
 func loadEmma(t *testing.T, name string) *Document {
@@ -728,4 +730,303 @@ components:
 			require.Contains(t, html, `id="model/Holder"`)
 		})
 	}
+}
+
+// TestSchemaUnmodelled checks that Parse keeps in Unmodelled, sorted, the
+// schema keywords no field holds, in JSON and YAML alike, as compact JSON
+// with object keys sorted and numbers written one way, and leaves out the
+// keywords a field holds, the annotations and the extensions.
+func TestSchemaUnmodelled(t *testing.T) {
+	const schema = `{"type": "object", "title": "t", "x-a": 1, "$comment": "c", "$id": "i", "$schema": "s", "$anchor": "a", "externalDocs": {"url": "u"}, "xml": {"name": "n"},` +
+		` "patternProperties": {"^b": {"type": "string", "minLength": 1.0}, "^a": {"maxLength": 1e1}}, "if": {"$ref": "#/components/schemas/S"}, "$defs": {}, "dependentRequired": {"a": ["b"]}}`
+	want := []RawKeyword{
+		{Name: "$defs", Value: `{}`},
+		{Name: "dependentRequired", Value: `{"a":["b"]}`},
+		{Name: "if", Value: `{"$ref":"#/components/schemas/S"}`},
+		{Name: "patternProperties", Value: `{"^a":{"maxLength":10},"^b":{"minLength":1,"type":"string"}}`},
+	}
+	for format, s := range parseSchemaBothWays(t, "3.1.0", schema) {
+		require.Equal(t, want, s.Unmodelled, format)
+	}
+	for format, s := range parseSchemaBothWays(t, "3.0.3", `{"type": "string", "properties": {"p": {"items": {"contentEncoding": "base64"}}}}`) {
+		require.Nil(t, s.Unmodelled, format)
+		require.Equal(t, []RawKeyword{{Name: "contentEncoding", Value: `"base64"`}}, s.Properties.Map["p"].Items.Unmodelled, format)
+	}
+	for format, s := range parseSchemaBothWays(t, "3.1.0", `{"type": "string", "maxLength": 3, "x-b": {"if": 1}}`) {
+		require.Nil(t, s.Unmodelled, format)
+	}
+	// encoding/json matches a key to a field regardless of case, YAML does
+	// not.
+	schemas := parseSchemaBothWays(t, "3.1.0", `{"maxlength": 3}`)
+	require.Equal(t, 3, *schemas["json"].MaxLength)
+	require.Nil(t, schemas["json"].Unmodelled)
+	require.Nil(t, schemas["yaml"].MaxLength)
+	require.Equal(t, []RawKeyword{{Name: "maxlength", Value: "3"}}, schemas["yaml"].Unmodelled)
+
+	// A YAML merge key brings keywords in, a keyword written in the mapping
+	// wins over a merged one, and a value JSON cannot hold is a string.
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    S:
+      <<: &base {if: {const: 1}, then: {const: 2}}
+      then: {const: 3}
+      else: .nan
+    T: *base
+    U:
+      items: *base
+`)
+	require.Equal(t, []RawKeyword{{Name: "else", Value: `"NaN"`}, {Name: "if", Value: `{"const":1}`}, {Name: "then", Value: `{"const":3}`}}, doc.Components.Schemas.Map["S"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"const":1}`}, {Name: "then", Value: `{"const":2}`}}, doc.Components.Schemas.Map["T"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"const":1}`}, {Name: "then", Value: `{"const":2}`}}, doc.Components.Schemas.Map["U"].Items.Unmodelled)
+}
+
+// TestSchemaUnmodelledYAMLAliases checks that Parse reads the keywords
+// Unmodelled keeps from their own value nodes, never decoding a schema
+// mapping whole: a large anchor merged into a schema or used under
+// properties beside such a keyword, which yaml.v3 refuses to decode in one
+// mapping as excessive aliasing, parses, as do a deeply nested schema and a
+// long chain of anchors with such a keyword at every level.
+func TestSchemaUnmodelledYAMLAliases(t *testing.T) {
+	const head = "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n"
+	var pet strings.Builder
+	pet.WriteString("    Pet: &pet\n      type: object\n      properties:\n")
+	for i := range 300 {
+		fmt.Fprintf(&pet, "        p%d: {type: string, maxLength: 10}\n", i)
+	}
+	for _, c := range []struct {
+		schema string
+		want   []RawKeyword
+	}{
+		{"    S: {<<: *pet, description: a cat}\n", nil},
+		{"    S: {type: object, unevaluatedProperties: false, properties: {data: *pet}}\n", []RawKeyword{{Name: "unevaluatedProperties", Value: "false"}}},
+		{"    S: {type: object, additionalProperty: false, properties: {data: *pet}}\n", []RawKeyword{{Name: "additionalProperty", Value: "false"}}},
+	} {
+		doc, err := Parse([]byte(head + pet.String() + c.schema))
+		require.NoError(t, err, c.schema)
+		require.Equal(t, c.want, doc.Components.Schemas.Map["S"].Unmodelled, c.schema)
+	}
+
+	const depth = 2000
+	deep := head + "    Deep: " + strings.Repeat("{if: {const: 1}, properties: {a: ", depth) + "{}" + strings.Repeat("}}", depth) + "\n"
+	doc, err := Parse([]byte(deep))
+	require.NoError(t, err)
+	s := doc.Components.Schemas.Map["Deep"]
+	for range depth {
+		require.Equal(t, []RawKeyword{{Name: "if", Value: `{"const":1}`}}, s.Unmodelled)
+		s = s.Properties.Map["a"]
+	}
+
+	var chain strings.Builder
+	chain.WriteString(head + "    S0: &a0 {type: object, if: {const: 1}}\n")
+	for i := 1; i < 300; i++ {
+		fmt.Fprintf(&chain, "    S%d: &a%d {type: object, if: {const: 1}, properties: {a: *a%d}}\n", i, i, i-1)
+	}
+	doc, err = Parse([]byte(chain.String()))
+	require.NoError(t, err)
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"const":1}`}}, doc.Components.Schemas.Map["S299"].Properties.Map["a"].Unmodelled)
+}
+
+// TestSchemaUnmodelledYAMLMerge checks that keywords a YAML merge key
+// brings in are kept where the schema has none of its own, and that, as
+// YAML merge defines, the mapping's own keys win over merged ones, an
+// earlier merged mapping over a later one, and a merged mapping's own keys
+// over those of its merge keys.
+func TestSchemaUnmodelledYAMLMerge(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+components:
+  schemas:
+    A: &a {if: {const: 1}, then: {const: 1}}
+    B: &b {if: {const: 2}, else: {const: 2}, <<: {contains: {const: 2}, else: {const: 4}}}
+    S: {type: object, <<: *a}
+    T: {<<: [*a, *b]}
+    U: {<<: [*b, *a], else: {const: 3}}
+`)
+	schemas := doc.Components.Schemas.Map
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"const":1}`}, {Name: "then", Value: `{"const":1}`}}, schemas["S"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "contains", Value: `{"const":2}`}, {Name: "else", Value: `{"const":2}`}, {Name: "if", Value: `{"const":1}`}, {Name: "then", Value: `{"const":1}`}}, schemas["T"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "contains", Value: `{"const":2}`}, {Name: "else", Value: `{"const":3}`}, {Name: "if", Value: `{"const":2}`}, {Name: "then", Value: `{"const":1}`}}, schemas["U"].Unmodelled)
+}
+
+// TestSchemaUnmodelledNumbers checks how Parse writes a number inside a
+// value Unmodelled keeps: as its float64 where it has at most 15
+// significant digits in the normal float64 range, and as written
+// otherwise, never failing on one. yaml.v3 reads 1e400, which overflows a
+// float64, as a string.
+func TestSchemaUnmodelledNumbers(t *testing.T) {
+	for _, c := range []struct{ number, want string }{
+		{"1", "1"},
+		{"1.0", "1"},
+		{"-0", "0"},
+		{"-0.0", "0"},
+		{"1e2", "100"},
+		{"-0.5", "-0.5"},
+		{"1e21", "1e+21"},
+		{"0e999", "0"},
+		{"123456789012345", "123456789012345"},
+		{"9007199254740993", "9007199254740993"},
+		{"9007199254740992", "9007199254740992"},
+		{"0.30000000000000001", "0.30000000000000001"},
+		{"1e400", "1e400"},
+		{"1e-400", "1e-400"},
+	} {
+		for format, s := range parseSchemaBothWays(t, "3.1.0", `{"if": {"maximum": `+c.number+`}}`) {
+			want := c.want
+			if format == "yaml" && c.number == "1e400" {
+				want = `"1e400"`
+			}
+			require.Equal(t, []RawKeyword{{Name: "if", Value: `{"maximum":` + want + `}`}}, s.Unmodelled, "%s %s", format, c.number)
+		}
+	}
+}
+
+// TestSchemaUnmodelledYAMLKeys checks that a YAML value whose mapping keys
+// yaml.v3 would decode to the same key, or refuses as given twice, parses
+// and is written the same on every parse.
+func TestSchemaUnmodelledYAMLKeys(t *testing.T) {
+	for _, c := range []struct{ value, want string }{
+		{`{1: a, 1.0: b}`, `{"1":"a","1.0":"b"}`},
+		{`{1: a, "1": b}`, `{"1":"a","1":"b"}`},
+		{`{"1": b, 1: a}`, `{"1":"b","1":"a"}`},
+	} {
+		for range 20 {
+			doc := parseYAML(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n    S: {if: "+c.value+"}\n")
+			require.Equal(t, []RawKeyword{{Name: "if", Value: c.want}}, doc.Components.Schemas.Map["S"].Unmodelled, c.value)
+		}
+	}
+}
+
+// TestParseRejectsYAMLAliasText checks that Parse refuses a YAML document
+// whose aliases repeat more scalar text than the budget allows, though it
+// has few nodes, and still parses one whose aliases repeat modest text.
+func TestParseRejectsYAMLAliasText(t *testing.T) {
+	doc := func(size, count int) string {
+		return "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n" +
+			"    Big: {type: string, description: &s \"" + strings.Repeat("a", size) + "\"}\n" +
+			"    S: {type: object, if: [" + strings.TrimSuffix(strings.Repeat("*s,", count), ",") + "]}\n"
+	}
+	_, err := Parse([]byte(doc(1<<20, 100)))
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "YAML alias expansion too large")
+
+	parsed, err := Parse([]byte(doc(1<<10, 1000)))
+	require.NoError(t, err)
+	require.Len(t, parsed.Components.Schemas.Map["S"].Unmodelled[0].Value, 1000*(1<<10+3)+1)
+
+	// A control character is written as six bytes, \u0001, and counted so.
+	spec := "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n" +
+		"    Big: {description: &s \"" + strings.Repeat(`\x01`, 1000) + "\"}\n" +
+		"    S: {type: object, if: [" + strings.TrimSuffix(strings.Repeat("*s,", 66000), ",") + "]}\n"
+	require.Less(t, len(spec), 210_000)
+	_, err = Parse([]byte(spec))
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "YAML alias expansion too large")
+}
+
+// TestSchemaUnmodelledYAMLBinary checks that a !!binary value is kept as
+// its text, so two values whose bytes are not UTF-8 differ.
+func TestSchemaUnmodelledYAMLBinary(t *testing.T) {
+	doc := parseYAML(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n    A: {if: !!binary gIGC}\n    B: {if: !!binary g4SF}\n")
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `"gIGC"`}}, doc.Components.Schemas.Map["A"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `"g4SF"`}}, doc.Components.Schemas.Map["B"].Unmodelled)
+}
+
+// TestSchemaUnmodelledYAMLKeyNotScalar checks that a mapping key that is a
+// mapping, which JSON cannot hold, inside a value Unmodelled keeps is an
+// error naming the keyword, nested or as an alias inside its own anchor,
+// while a key that is an alias of a scalar is read as that scalar.
+func TestSchemaUnmodelledYAMLKeyNotScalar(t *testing.T) {
+	key := "{a: 1}"
+	for range 20 {
+		key = "{? " + key + " : 1}"
+	}
+	_, err := Parse([]byte("openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\ncomponents:\n  schemas:\n    S: {type: object, if: " + key + "}\n"))
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "schema keyword if has a key that is not a scalar")
+
+	var s Schema
+	err = yaml.Unmarshal([]byte("type: object\nif: &a {? *a : 1}\n"), &s)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "schema keyword if has a key that is not a scalar")
+
+	doc := parseYAML(t, "openapi: 3.1.0\ninfo: {title: t, version: \"1\"}\nx-key: &k b\ncomponents:\n  schemas:\n    S: {if: {*k : 1, a: *k}}\n")
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"a":"b","b":1}`}}, doc.Components.Schemas.Map["S"].Unmodelled)
+}
+
+// TestSchemaUnmodelledYAMLAliasCycle checks that a value holding an alias
+// inside its own anchor is an error where a Schema is decoded without Parse,
+// which refuses it first.
+func TestSchemaUnmodelledYAMLAliasCycle(t *testing.T) {
+	var s Schema
+	err := yaml.Unmarshal([]byte("type: object\nif: &a [*a]\n"), &s)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), `anchor "a" contains itself`)
+}
+
+// TestSchemaUnmodelledYAMLAliasText checks that a value whose aliases fan
+// out, ten times per level, is an error once it is written longer than
+// maxYAMLAliasText where a Schema is decoded without Parse, which yaml.v3's
+// own alias check never sees, stopping the expansion before it allocates
+// more than a small multiple of the limit, while a value under the limit is
+// read as before.
+func TestSchemaUnmodelledYAMLAliasText(t *testing.T) {
+	fanOut := func(levels int) []byte {
+		doc := "type: object\n$comment:\n  - &l0 [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]\n"
+		for i := 1; i <= levels; i++ {
+			doc += fmt.Sprintf("  - &l%d [%s]\n", i, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*l%d, ", i-1), 10), ", "))
+		}
+		return []byte(doc + fmt.Sprintf("if: *l%d\n", levels))
+	}
+	var want Schema
+	err := yaml.Unmarshal(fanOut(2), &want)
+	require.NoError(t, err)
+	require.Len(t, want.Unmodelled[0].Value, 2221)
+
+	previous := maxYAMLAliasText
+	maxYAMLAliasText = 4 << 10
+	t.Cleanup(func() {
+		maxYAMLAliasText = previous
+	})
+
+	var got Schema
+	err = yaml.Unmarshal(fanOut(2), &got)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
+	bomb := fanOut(7)
+	require.Less(t, len(bomb), 500)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	var s Schema
+	err = yaml.Unmarshal(bomb, &s)
+	runtime.ReadMemStats(&after)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Contains(t, err.Error(), "schema keyword if is longer than 4096 bytes written as JSON with its YAML aliases expanded")
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(64*maxYAMLAliasText))
+}
+
+// TestSchemaUnmodelledYAMLAliasKeys checks that a schema key written as an
+// alias is read as the key its anchor holds, as yaml.v3 reads it into a
+// field, in the schema and in a merged mapping.
+func TestSchemaUnmodelledYAMLAliasKeys(t *testing.T) {
+	doc := parseYAML(t, `
+openapi: 3.1.0
+info: {title: t, version: "1"}
+x-keys: [&t type, &m maxLength, &p patternProperties]
+components:
+  schemas:
+    S: {*t : string, *m : 3}
+    T: {type: object, *p : {a: 2}}
+    U: {type: object, <<: {*p : {a: 3}}}
+`)
+	schemas := doc.Components.Schemas.Map
+	require.Nil(t, schemas["S"].Unmodelled)
+	require.Equal(t, 3, *schemas["S"].MaxLength)
+	require.Equal(t, []RawKeyword{{Name: "patternProperties", Value: `{"a":2}`}}, schemas["T"].Unmodelled)
+	require.Equal(t, []RawKeyword{{Name: "patternProperties", Value: `{"a":3}`}}, schemas["U"].Unmodelled)
 }

@@ -55,8 +55,8 @@ type Change struct {
 	model string
 	via   []string
 	more  int
-	// parts is Detail, when it names models, as text and model names in
-	// turn, text first, so Markdown can write exactly those names as code.
+	// parts is Detail, when it names models or a keyword, as text and names
+	// in turn, text first, so Markdown can write exactly those names as code.
 	parts []string
 }
 
@@ -659,6 +659,33 @@ func (p *diffPath) String() string {
 // U a oneOf, to the same list with a variant added reads one of variants
 // changed to any of, breaking both, though it only widens.
 //
+// The keys of a schema fall in three classes. The keywords Schema has a
+// field for are compared as described here. Extensions, the keys that start
+// with x-, and the annotations no field holds, $comment, $id, $schema,
+// $anchor, externalDocs, xml and patternDescription, are not compared at
+// all, as they cannot change what a schema accepts. Every other key, such as
+// patternProperties, propertyNames, prefixItems, contains, if, then, else,
+// dependentRequired, dependentSchemas, unevaluatedProperties, $defs,
+// $dynamicRef or a misspelled keyword, is kept by Parse in Schema.Unmodelled
+// and compared by its value only, as JSON, so that key order, spacing and
+// the spelling of a number of at most 15 significant digits within the
+// normal float64 range do not count, any other number is compared as
+// written, or by value where YAML spells it in a form JSON has not, a YAML
+// mapping key is compared as written, and a $ref inside it is its text.
+// Wherever two schemas are compared, after flattening, which gathers the
+// keys of every allOf member, and beside a $ref as any keyword there, a key
+// whose values differ, given, dropped or changed, reads schema keyword K
+// differs and is not compared, once per key, breaking both, as which way
+// the change moves is not worked out, though, as flattening gathers these
+// keys by name, keys that work together inside one allOf member, such as
+// if, then and else, moved or swapped between members are not seen. A key
+// with the same values on both sides reports nothing. Under a not, and in
+// variants judged as written, these keys are part of what is written. Such
+// a key beside a $ref is a keyword there like any other, so a component
+// written so is a model of its own. In a JSON
+// document a key that matches a field's key in another case, such as
+// maxlength, is read into that field, as encoding/json does.
+//
 // The other breaking changes: a removed operation; a removed (or renamed)
 // response property, or a property removed from an object that allows no
 // other properties, or whose additionalProperties schema limits values and
@@ -674,16 +701,27 @@ func (p *diffPath) String() string {
 // parameter or request body made required, also a name required where no
 // property of that name is declared. A response header named Content-Type is
 // not compared, as OpenAPI says its definition is ignored. A discriminator
-// is compared where both sides declare one, not where an allOf member
-// passes it on to a subtype, and is given or dropped where one side
-// declares one and only that side's flattened schema has one. One given
-// where there was none breaks a request, one dropped a response, and its
+// is compared where both sides declare one, on the schema or in an inline
+// allOf member where no earlier member passes one on, as Flatten then
+// keeps it, and as the flattened schemas have it where one side
+// declares one and both flattened schemas have one, as where it moved into
+// or out of a referenced allOf member, not where an allOf member passes it
+// on to a subtype on both sides, and is given or dropped where one side
+// declares one and only that side's flattened schema has one, or the one
+// that side declares shadows one its allOf members still pass on and has
+// another propertyName than the other side's flattened one. One given where
+// there was none breaks a request, one dropped a response, and its
 // propertyName changed both; of its mapping, compared as written, a value
 // added breaks neither, one removed breaks a request and one that names
-// another component both. A parameter's style or explode changed, each with
-// the default of its location where unset, breaks a request, except explode
-// where both sides state only types that the style writes the same either
-// way: any but an array or an object, and an array too in style simple.
+// another component both, as does a value added or removed whose entry
+// names another component than the one of that name, which the value
+// selects without an entry where that component exists and is a
+// variant listed by reference, or there are no variants. A parameter's
+// style or explode changed, each with the default of its location where
+// unset, breaks a request, except explode where each side is in style
+// deepObject, which writes a parameter one way, or states only types that
+// its style writes the same either way: any but an array or an object, and
+// an array too in style simple.
 // Everything else is a non-breaking change.
 func Diff(base, head *Document) *Report {
 	if base == nil {
@@ -1436,8 +1474,13 @@ func parameterStyle(p *Parameter) (string, bool) {
 // style simple, which writes an array blue,black,brown either way. An
 // object is written otherwise in every style, and an array in every other
 // style: label, as RFC 6570 says, writes .blue,black,brown unexploded and
-// .blue.black.brown exploded.
+// .blue.black.brown exploded. Style deepObject, which OpenAPI defines for
+// explode true only, has one way to write a parameter, so explode is moot
+// there whatever the schema.
 func (w *walk) explodeMoot(doc *Document, s *Schema, style string) bool {
+	if style == "deepObject" {
+		return true
+	}
 	f := w.d.flatten(doc, s)
 	if f == nil || hasVariants(f) || typeText(f) == "" {
 		return false
@@ -1648,6 +1691,9 @@ func (w *walk) schema(b, h *Schema, path *diffPath, rec bool) schemaResult {
 	if w.validation(bf, hf, path) {
 		res.head = true
 	}
+	if w.uncompared(bf, hf, path) {
+		res.head = true
+	}
 
 	if w.enum(bf.Enum, hf.Enum, path) {
 		res.enum = true
@@ -1655,16 +1701,26 @@ func (w *walk) schema(b, h *Schema, path *diffPath, rec bool) schemaResult {
 	if w.not(bf.Not, hf.Not, path) {
 		res.head = true
 	}
-	// A discriminator declared on one side only is given or dropped where
-	// the flattened schema, which also takes one from an allOf member, gains
-	// or loses one too; otherwise it only moved into or out of a member.
-	bd := ownDiscriminator(b, br)
-	hd := ownDiscriminator(h, hr)
+	// A discriminator declared on one side only, see ownDiscriminator, is
+	// given or dropped where the flattened schema, which also takes one from
+	// an allOf member, gains or loses one too, or where it shadows one an
+	// allOf member of that side still passes on with another propertyName
+	// than the other side's; otherwise it moved into or out of a member, or
+	// kept its propertyName, and the flattened ones are compared.
+	bd := ownDiscriminator(w.d.base, b, br)
+	hd := ownDiscriminator(w.d.head, h, hr)
 	if (bd == nil) != (hd == nil) && (bf.Discriminator == nil) == (hf.Discriminator == nil) {
-		bd = nil
-		hd = nil
+		declared, own, doc := b, bd, w.d.base
+		if hd != nil {
+			declared, own, doc = h, hd, w.d.head
+		}
+		sameName := bf.Discriminator != nil && hf.Discriminator != nil && bf.Discriminator.PropertyName == hf.Discriminator.PropertyName
+		if sameName || !memberDiscriminator(doc, declared, own) {
+			bd = bf.Discriminator
+			hd = hf.Discriminator
+		}
 	}
-	if w.discriminator(bd, hd, path) {
+	if w.discriminator(bd, hd, bf, hf, path) {
 		res.head = true
 	}
 
@@ -1776,7 +1832,7 @@ func sameKeywords(b, h *Schema) bool {
 		samePtr(b.MinItems, h.MinItems) && samePtr(b.MaxItems, h.MaxItems) &&
 		samePtr(b.MinProperties, h.MinProperties) && samePtr(b.MaxProperties, h.MaxProperties) &&
 		reflect.DeepEqual(b.Const, h.Const) && b.ConstNull == h.ConstNull && reflect.DeepEqual(b.Default, h.Default) && reflect.DeepEqual(b.Example, h.Example) &&
-		(b.Examples == nil && h.Examples == nil || reflect.DeepEqual(b.Examples, h.Examples))
+		(b.Examples == nil && h.Examples == nil || reflect.DeepEqual(b.Examples, h.Examples)) && slices.Equal(b.Unmodelled, h.Unmodelled)
 }
 
 func samePtr[T comparable](a, b *T) bool {
@@ -1840,6 +1896,15 @@ func siteBefore(bh, bb, hf *Schema) *Schema {
 			out.Field(i).Set(base.Field(i))
 		}
 	}
+	// Each keyword Parse does not model is one keyword here.
+	before.Unmodelled = nil
+	for _, name := range keywordNames(bh.Unmodelled, bb.Unmodelled, hf.Unmodelled) {
+		from := hf
+		if !slices.Equal(keywordValues(bh.Unmodelled, name), keywordValues(hf.Unmodelled, name)) {
+			from = bb
+		}
+		before.Unmodelled = append(before.Unmodelled, keywordValues(from.Unmodelled, name)...)
+	}
 	return &before
 }
 
@@ -1876,6 +1941,9 @@ func (w *walk) keywords(b, h *Schema, path *diffPath) bool {
 		changed = true
 	}
 	if w.validation(b, h, path) {
+		changed = true
+	}
+	if w.uncompared(b, h, path) {
 		changed = true
 	}
 	return changed
@@ -2078,11 +2146,13 @@ func (w *walk) not(b, h *Schema, path *diffPath) bool {
 // reports whether there is one. A discriminator given where there was none
 // narrows the values accepted, as the property it names must then pick a
 // variant, and one dropped widens them; a changed propertyName breaks both.
-// The mapping is compared as written, by the component each value names,
-// and the names of variants it leaves implicit are not compared: a value
-// added, like an enum value added, breaks neither, one removed narrows, and
-// one that names another component breaks both.
-func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
+// The mapping is compared as written, by the component each value names: a
+// value added, like an enum value added, breaks neither, one removed
+// narrows, and one that names another component breaks both, as does a
+// value added or removed that, with no entry, selects another component on
+// the other side, see redirects. bf and hf are the flattened schemas the
+// discriminators are on.
+func (w *walk) discriminator(b, h *Discriminator, bf, hf *Schema, path *diffPath) bool {
 	switch {
 	case b == nil && h == nil:
 		return false
@@ -2110,8 +2180,12 @@ func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
 		ht, inHead := h.Mapping[key]
 		value := valueText(key)
 		switch {
+		case !inBase && redirects(w.d.base, bf, key, ht):
+			w.add(Changed, path, "discriminator mapping added: "+value+" → "+mappingName(ht)+" (was "+key+")", true, true)
 		case !inBase:
 			w.addStrict(Changed, path, "discriminator mapping added: "+value+" → "+mappingName(ht), false, false, false, true)
+		case !inHead && redirects(w.d.head, hf, key, bt):
+			w.add(Changed, path, "discriminator mapping removed: "+value+" → "+mappingName(bt)+" (now "+key+")", true, true)
 		case !inHead:
 			w.add(Changed, path, "discriminator mapping removed: "+value+" → "+mappingName(bt), true, false)
 		case mappingName(bt) != mappingName(ht):
@@ -2121,16 +2195,85 @@ func (w *walk) discriminator(b, h *Discriminator, path *diffPath) bool {
 	return len(w.changes) > n
 }
 
-// ownDiscriminator is the discriminator schema s declares itself, written on
-// s or on resolved, the schema its $ref leads to, and not one an allOf
-// member passes on: Flatten gives a subtype its parent's discriminator
-// unless a mapping value names the subtype, so whether the subtype has one
-// would turn on mapping values that change nothing about it.
-func ownDiscriminator(s, resolved *Schema) *Discriminator {
+// ownDiscriminator is the discriminator schema s of doc declares itself,
+// written on s or on resolved, the schema its $ref leads to, or else in the
+// first inline allOf member of either that has one, where no earlier member
+// passes a discriminator on, as Flatten, which takes the first it finds,
+// then keeps that member's; it is not one a referenced allOf member passes
+// on: Flatten gives a subtype its parent's discriminator unless a mapping
+// value names the subtype, so whether the subtype has one would turn on
+// mapping values that change nothing about it.
+func ownDiscriminator(doc *Document, s, resolved *Schema) *Discriminator {
 	if s.Discriminator != nil || resolved == nil {
 		return s.Discriminator
 	}
-	return resolved.Discriminator
+	if resolved.Discriminator != nil {
+		return resolved.Discriminator
+	}
+	members := slices.Concat(s.AllOf, resolved.AllOf)
+	i := slices.IndexFunc(members, func(m *Schema) bool {
+		return m != nil && m.Ref == "" && m.Discriminator != nil
+	})
+	if i < 0 {
+		return nil
+	}
+	for _, m := range members[:i] {
+		if passesDiscriminator(doc, s, m) {
+			return nil
+		}
+	}
+	return members[i].Discriminator
+}
+
+// memberDiscriminator reports whether an allOf member of s, other than the
+// inline one own, the discriminator s declares, is written in, passes a
+// discriminator on to s when doc flattens it, as it would where s declared
+// none, see passesDiscriminator.
+func memberDiscriminator(doc *Document, s *Schema, own *Discriminator) bool {
+	f := &flattener{doc: doc, siblings: true}
+	_, src := f.resolve(s)
+	if src == nil {
+		return false
+	}
+	return slices.ContainsFunc(src.AllOf, func(m *Schema) bool {
+		return m != nil && m.Discriminator != own && passesDiscriminator(doc, s, m)
+	})
+}
+
+// passesDiscriminator reports whether the allOf member m of s, flattened in
+// doc, has a discriminator that Flatten keeps for s: it keeps a member's
+// discriminator unless its oneOf, anyOf or mapping points back at s.
+func passesDiscriminator(doc *Document, s, m *Schema) bool {
+	f := &flattener{doc: doc, siblings: true, visiting: map[*Schema]bool{}, done: map[*Schema]flattened{}}
+	key, _ := f.resolve(s)
+	f.visiting[key] = true
+	flat, _ := f.flatten(m)
+	return flat != nil && flat.Discriminator != nil && !f.anyInChain(doc.polymorphicTargets(flat))
+}
+
+// redirects reports whether the mapping entry key → target, written on one
+// side only, points the value key at another schema than the one key
+// selects with no entry on the other side, the schema s of doc: the
+// component named key, where it exists and, if s lists variants, is one of
+// them by reference.
+func redirects(doc *Document, s *Schema, key, target string) bool {
+	if mappingName(target) == key {
+		return false
+	}
+	_, ok := doc.Components.Schemas.Get(key)
+	if !ok {
+		return false
+	}
+	variants := slices.Concat(s.OneOf, s.AnyOf)
+	if len(variants) == 0 {
+		return true
+	}
+	for _, v := range variants {
+		if RefName(v.Ref, refSchemas) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // mappingName is the component a discriminator mapping value names: the
@@ -2317,6 +2460,50 @@ func (w *walk) validation(b, h *Schema, path *diffPath) bool {
 	w.keyword(path, "const", constText(b), constText(h), true)
 	w.keyword(path, "default", valueText(b.Default), valueText(h.Default), false)
 	return len(w.changes) > n
+}
+
+// uncompared records, for each keyword Parse does not model, see
+// Schema.Unmodelled, whose values differ between the flattened b and h, one
+// change saying so, and reports whether there is any. The values are
+// compared as written, never as schemas, and which way such a change moves
+// is not worked out, so it breaks both.
+func (w *walk) uncompared(b, h *Schema, path *diffPath) bool {
+	changed := false
+	for _, name := range keywordNames(b.Unmodelled, h.Unmodelled) {
+		if slices.Equal(keywordValues(b.Unmodelled, name), keywordValues(h.Unmodelled, name)) {
+			continue
+		}
+		parts := []string{"schema keyword ", name, " differs and is not compared"}
+		w.add(Changed, path, strings.Join(parts, ""), true, true)
+		w.changes[len(w.changes)-1].parts = parts
+		changed = true
+	}
+	return changed
+}
+
+// keywordNames returns the names of the keywords in lists, sorted, each
+// once.
+func keywordNames(lists ...[]RawKeyword) []string {
+	var out []string
+	for _, list := range lists {
+		for _, k := range list {
+			out = append(out, k.Name)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// keywordValues returns the keywords of list, sorted by name, named name.
+func keywordValues(list []RawKeyword, name string) []RawKeyword {
+	start, _ := slices.BinarySearchFunc(list, name, func(k RawKeyword, name string) int {
+		return strings.Compare(k.Name, name)
+	})
+	end := start
+	for end < len(list) && list[end].Name == name {
+		end++
+	}
+	return list[start:end]
 }
 
 // numBound is an effective numeric bound: its value and whether the value

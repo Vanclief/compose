@@ -3706,6 +3706,309 @@ func TestDiffDiscriminator(t *testing.T) {
 	}
 }
 
+// TestDiffDiscriminatorMovedIntoMember checks that a discriminator that
+// moves into or out of an allOf member is compared as where it stays put,
+// as the schema's own where the member is inline and as the flattened
+// schema has it where the member is a reference, also between a referenced
+// member and an inline one: a propertyName or a mapping changed on the way
+// is reported once, and a discriminator that only moved is not reported.
+func TestDiffDiscriminatorMovedIntoMember(t *testing.T) {
+	const variants = `"Cat": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Dog": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}`
+	const oneOf = `"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}]`
+	own := func(discriminator string) string {
+		return variants + `, "Pet": {` + oneOf + `, "discriminator": ` + discriminator + `}`
+	}
+	member := func(discriminator string) string {
+		return variants + `, "Pet": {` + oneOf + `, "allOf": [{"discriminator": ` + discriminator + `}]}`
+	}
+	referenced := func(discriminator string) string {
+		return variants + `, "Base": {"discriminator": ` + discriminator + `}, "Pet": {` + oneOf + `, "allOf": [{"$ref": "#/components/schemas/Base"}]}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	const kind = `{"propertyName": "kind"}`
+	const typ = `{"propertyName": "type"}`
+	const mapped = `{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Dog"}}`
+	const remapped = `{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Cat"}}`
+	for _, c := range []struct {
+		base, head string
+		want       []string
+	}{
+		{own(kind), member(typ), []string{"Pet | discriminator property changed from kind to type"}},
+		{member(kind), own(typ), []string{"Pet | discriminator property changed from kind to type"}},
+		{own(mapped), member(remapped), []string{`Pet | discriminator mapping "dog" changed from Dog to Cat`}},
+		{own(kind), member(kind), nil},
+		{member(kind), own(kind), nil},
+		{own(mapped), member(mapped), nil},
+		{own(kind), referenced(typ), []string{"Pet | discriminator property changed from kind to type"}},
+		{referenced(typ), own(kind), []string{"Pet | discriminator property changed from type to kind"}},
+		{own(mapped), referenced(remapped), []string{`Pet | discriminator mapping "dog" changed from Dog to Cat`}},
+		{referenced(remapped), own(mapped), []string{`Pet | discriminator mapping "dog" changed from Cat to Dog`}},
+		{referenced(kind), member(typ), []string{"Pet | discriminator property changed from kind to type"}},
+		{member(typ), referenced(kind), []string{"Pet | discriminator property changed from type to kind"}},
+		{referenced(remapped), member(mapped), []string{`Pet | discriminator mapping "dog" changed from Cat to Dog`}},
+		{member(mapped), referenced(remapped), []string{`Pet | discriminator mapping "dog" changed from Dog to Cat`}},
+	} {
+		r := Diff(opsSpec(t, paths, c.base), opsSpec(t, paths, c.head))
+		var got []string
+		for _, line := range changeLines(r) {
+			if strings.Contains(line, "discriminator") {
+				got = append(got, line)
+			}
+		}
+		require.Equal(t, c.want, got, "%s to %s\n%s", c.base, c.head, r.Markdown())
+		require.Equal(t, c.want != nil, r.Breaking(), r.Markdown())
+	}
+
+	// Used in a response only, a discriminator moved between a referenced
+	// member and an inline one reads as one moved between that referenced
+	// member and the schema itself, and breaks it.
+	const response = `"/w": {"get": {"responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	for _, c := range []struct{ base, head, ownBase, ownHead string }{
+		{referenced(kind), member(typ), referenced(kind), own(typ)},
+		{member(typ), referenced(kind), own(typ), referenced(kind)},
+	} {
+		r := Diff(opsSpec(t, response, c.base), opsSpec(t, response, c.head))
+		want := Diff(opsSpec(t, response, c.ownBase), opsSpec(t, response, c.ownHead))
+		require.Equal(t, publicChanges(want.Changes), publicChanges(r.Changes), r.Markdown())
+		require.True(t, r.Breaking(), r.Markdown())
+	}
+}
+
+// TestDiffDiscriminatorInMember checks that a discriminator an inline allOf
+// member declares on both sides is compared as the schema's own: a
+// propertyName or a mapping value changed there is reported as where the
+// discriminator is on the schema itself.
+func TestDiffDiscriminatorInMember(t *testing.T) {
+	const variants = `"Cat": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}, "Dog": {"type": "object", "properties": {"kind": {"type": "string"}, "type": {"type": "string"}}}`
+	pet := func(discriminator string) string {
+		return variants + `, "Pet": {"allOf": [{"discriminator": ` + discriminator + `, "oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}]}]}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	for _, c := range []struct {
+		base, head string
+		detail     string
+	}{
+		{`{"propertyName": "kind"}`, `{"propertyName": "type"}`, "discriminator property changed from kind to type"},
+		{`{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Dog"}}`, `{"propertyName": "kind", "mapping": {"dog": "#/components/schemas/Cat"}}`, `discriminator mapping "dog" changed from Dog to Cat`},
+	} {
+		r := Diff(opsSpec(t, paths, pet(c.base)), opsSpec(t, paths, pet(c.head)))
+		require.Equal(t, []Change{
+			{Kind: Changed, Path: "POST /w › request body", Detail: "model Pet changed", Breaking: true},
+			{Kind: Changed, Path: "POST /w › response 200", Detail: "model Pet changed", Breaking: true},
+			{Kind: Changed, Path: "Pet", Detail: c.detail, Breaking: true},
+		}, publicChanges(r.Changes), r.Markdown())
+	}
+}
+
+// TestDiffDiscriminatorMappingImplicitTarget checks that a mapping entry
+// added or removed for a value that, with no entry, selects the component of
+// that name is compared with that component: an entry that points elsewhere
+// changes which schema the value selects, which breaks a request and a
+// response, while one that spells out the implicit target or names no
+// component is reported as before.
+func TestDiffDiscriminatorMappingImplicitTarget(t *testing.T) {
+	const variants = `"Cat": {"type": "object", "properties": {"kind": {"type": "string"}}}, "Dog": {"type": "object", "properties": {"kind": {"type": "string"}}}, "Wolf": {"type": "object", "properties": {"kind": {"type": "string"}}}`
+	pet := func(mapping string) string {
+		return variants + `, "Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}], "discriminator": {"propertyName": "kind"` + mapping + `}}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	for _, c := range []struct {
+		why        string
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{"kind: Cat selected Cat and now selects Dog", ``, `, "mapping": {"Cat": "#/components/schemas/Dog"}`, `discriminator mapping added: "Cat" → Dog (was Cat)`, true, true},
+		{"kind: Cat selected Dog and now selects Cat", `, "mapping": {"Cat": "#/components/schemas/Dog"}`, ``, `discriminator mapping removed: "Cat" → Dog (now Cat)`, true, true},
+		{"the entry spells out the target kind: Cat already selected", ``, `, "mapping": {"Cat": "#/components/schemas/Cat"}`, `discriminator mapping added: "Cat" → Cat`, false, false},
+		{"a new alias, as no component is named feline", ``, `, "mapping": {"feline": "#/components/schemas/Cat"}`, `discriminator mapping added: "feline" → Cat`, false, false},
+		{"Wolf is not a variant, so kind: Wolf selected nothing before", ``, `, "mapping": {"Wolf": "#/components/schemas/Dog"}`, `discriminator mapping added: "Wolf" → Dog`, false, false},
+		{"a removed alias is refused as before", `, "mapping": {"feline": "#/components/schemas/Cat"}`, ``, `discriminator mapping removed: "feline" → Cat`, true, false},
+	} {
+		r := Diff(opsSpec(t, paths, pet(c.base)), opsSpec(t, paths, pet(c.head)))
+		require.Equal(t, []Change{
+			{Kind: Changed, Path: "POST /w › request body", Detail: "model Pet changed", Breaking: c.req},
+			{Kind: Changed, Path: "POST /w › response 200", Detail: "model Pet changed", Breaking: c.resp},
+			{Kind: Changed, Path: "Pet", Detail: c.detail, Breaking: c.req || c.resp},
+		}, publicChanges(r.Changes), "%s\n%s", c.why, r.Markdown())
+	}
+}
+
+// TestDiffDiscriminatorShadowsMember checks that a subtype that declares a
+// discriminator of its own, shadowing the one its allOf parent still passes
+// on with another propertyName, reads as a discriminator given, and one that
+// stops declaring it as a discriminator dropped, rather than as a
+// discriminator moved out of the parent and renamed, while with the same
+// propertyName nothing is reported.
+func TestDiffDiscriminatorShadowsMember(t *testing.T) {
+	const pet = `"Pet": {"type": "object", "properties": {"petType": {"type": "string"}, "catKind": {"type": "string"}}, "discriminator": {"propertyName": "petType"}}`
+	const cat = `"Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"type": "object", "properties": {"name": {"type": "string"}}}]`
+	const plain = pet + `, ` + cat + `}`
+	own := func(property string) string {
+		return pet + `, ` + cat + `, "discriminator": {"propertyName": "` + property + `"}}, "Lion": {"allOf": [{"$ref": "#/components/schemas/Cat"}]}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}}}}`
+	for _, c := range []struct {
+		base, head string
+		detail     string
+		req, resp  bool
+	}{
+		{plain, own("catKind"), "discriminator added: catKind", true, false},
+		{own("catKind"), plain, "discriminator removed (was catKind)", false, true},
+	} {
+		r := Diff(opsSpec(t, paths, c.base), opsSpec(t, paths, c.head))
+		var got []Change
+		for _, change := range publicChanges(r.Changes) {
+			if change.Path != "Lion" {
+				got = append(got, change)
+			}
+		}
+		require.Equal(t, []Change{
+			{Kind: Changed, Path: "POST /w › request body", Detail: "model Cat changed", Breaking: c.req},
+			{Kind: Changed, Path: "POST /w › response 200", Detail: "model Cat changed", Breaking: c.resp},
+			{Kind: Changed, Path: "Cat", Detail: c.detail, Breaking: true},
+		}, got, r.Markdown())
+	}
+	r := Diff(opsSpec(t, paths, plain), opsSpec(t, paths, own("petType")))
+	require.Equal(t, []Change{{Kind: Added, Path: "Lion", Detail: "model added"}}, publicChanges(r.Changes), r.Markdown())
+	r = Diff(opsSpec(t, paths, own("petType")), opsSpec(t, paths, plain))
+	require.Equal(t, []Change{{Kind: Removed, Path: "Lion", Detail: "model removed"}}, publicChanges(r.Changes), r.Markdown())
+
+	// A parent whose oneOf lists the subtype passes it no discriminator, so
+	// one the subtype moves from an inline member onto itself, renamed on
+	// the way, moved and is compared.
+	const parent = `"Dog": {"type": "object"}, "Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}], "discriminator": {"propertyName": "petType"}}`
+	const member = parent + `, "Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"type": "object", "discriminator": {"propertyName": "catKind"}}]}`
+	const moved = parent + `, "Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}, {"type": "object"}], "discriminator": {"propertyName": "kittyKind"}}`
+	r = Diff(opsSpec(t, paths, member), opsSpec(t, paths, moved))
+	require.Contains(t, changeLines(r), "Cat | discriminator property changed from catKind to kittyKind", r.Markdown())
+	r = Diff(opsSpec(t, paths, moved), opsSpec(t, paths, member))
+	require.Contains(t, changeLines(r), "Cat | discriminator property changed from kittyKind to catKind", r.Markdown())
+}
+
+// TestDiffDiscriminatorMovedIntoLaterMember checks that a subtype's own
+// discriminator that moves into an inline allOf member before the parent
+// that passes on a discriminator of its own, or out of one, reports
+// nothing, while one that moves into a member after that parent, or out of
+// one, reads as where the subtype stops or starts declaring one, as Flatten
+// keeps the parent's discriminator over that member's; a discriminator so
+// shadowed that changes or goes away reports nothing.
+func TestDiffDiscriminatorMovedIntoLaterMember(t *testing.T) {
+	const pet = `"Pet": {"type": "object", "properties": {"petType": {"type": "string"}}, "discriminator": {"propertyName": "petType"}}`
+	const parent = `{"$ref": "#/components/schemas/Pet"}`
+	const own = `{"type": "object", "discriminator": {"propertyName": "catKind"}}`
+	cat := func(members, extra string) string {
+		return pet + `, "Cat": {"allOf": [` + members + `]` + extra + `}`
+	}
+	const discriminator = `, "discriminator": {"propertyName": "catKind"}`
+	const paths = `"/c": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}}}}`
+	declared := cat(parent+`, {"type": "object"}`, discriminator)
+	shadowed := cat(parent+`, `+own, "")
+	plain := cat(parent+`, {"type": "object"}`, "")
+	for _, pair := range [][2]string{
+		{declared, shadowed},
+		{cat(`{"type": "object"}, `+parent, discriminator), cat(own+`, `+parent, "")},
+		{shadowed, cat(parent+`, {"type": "object", "discriminator": {"propertyName": "kittyKind"}}`, "")},
+		{shadowed, plain},
+	} {
+		for _, swap := range []bool{false, true} {
+			base, head := pair[0], pair[1]
+			if swap {
+				base, head = head, base
+			}
+			want := []Change{}
+			switch {
+			case base == declared:
+				want = publicChanges(Diff(opsSpec(t, paths, declared), opsSpec(t, paths, plain)).Changes)
+			case head == declared:
+				want = publicChanges(Diff(opsSpec(t, paths, plain), opsSpec(t, paths, declared)).Changes)
+			}
+			r := Diff(opsSpec(t, paths, base), opsSpec(t, paths, head))
+			require.Equal(t, want, publicChanges(r.Changes), "%s to %s\n%s", base, head, r.Markdown())
+		}
+	}
+	r := Diff(opsSpec(t, paths, declared), opsSpec(t, paths, plain))
+	require.Contains(t, changeLines(r), "Cat | discriminator removed (was catKind)", r.Markdown())
+}
+
+// TestDiffDiscriminatorMovedIntoInlineMemberChanged checks that a subtype's
+// own discriminator that moves into an inline allOf member after the parent
+// that passes one on, or out of one, with a mapping value changed on the
+// way, reads as where the subtype stops or starts declaring one: Flatten
+// keeps the parent's discriminator over that member's, so it is not the
+// subtype's own.
+func TestDiffDiscriminatorMovedIntoInlineMemberChanged(t *testing.T) {
+	const others = `"Pet": {"type": "object", "properties": {"petType": {"type": "string"}, "catKind": {"type": "string"}}, "discriminator": {"propertyName": "petType"}}, "Lion": {"allOf": [{"$ref": "#/components/schemas/Cat"}]}, "Tiger": {"allOf": [{"$ref": "#/components/schemas/Cat"}]}`
+	const pet = `{"$ref": "#/components/schemas/Pet"}`
+	discriminator := func(target string) string {
+		return `"discriminator": {"propertyName": "catKind", "mapping": {"big": "#/components/schemas/` + target + `"}}`
+	}
+	own := func(target string) string {
+		return others + `, "Cat": {"allOf": [` + pet + `, {"type": "object"}], ` + discriminator(target) + `}`
+	}
+	member := func(target string) string {
+		return others + `, "Cat": {"allOf": [` + pet + `, {"type": "object", ` + discriminator(target) + `}]}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}}}}`
+	discriminatorChanges := func(r *Report) []Change {
+		var out []Change
+		for _, change := range publicChanges(r.Changes) {
+			if change.Path == "Cat" {
+				out = append(out, change)
+			}
+		}
+		return out
+	}
+	const plain = others + `, "Cat": {"allOf": [` + pet + `, {"type": "object"}]}`
+	for _, c := range []struct {
+		base, head         string
+		wantBase, wantHead string
+		detail             string
+	}{
+		{own("Lion"), member("Tiger"), own("Lion"), plain, "discriminator removed (was catKind)"},
+		{member("Tiger"), own("Lion"), plain, own("Lion"), "discriminator added: catKind"},
+	} {
+		want := Diff(opsSpec(t, paths, c.wantBase), opsSpec(t, paths, c.wantHead))
+		require.Equal(t, []Change{{Kind: Changed, Path: "Cat", Detail: c.detail, Breaking: true}}, discriminatorChanges(want))
+		r := Diff(opsSpec(t, paths, c.base), opsSpec(t, paths, c.head))
+		require.Equal(t, publicChanges(want.Changes), publicChanges(r.Changes), r.Markdown())
+	}
+}
+
+// TestDiffDiscriminatorDeclaredWithInheritedName checks that a subtype that
+// starts declaring the discriminator its allOf parent passes on, with the
+// same propertyName and a mapping, reads as that mapping added, not as a
+// discriminator given.
+func TestDiffDiscriminatorDeclaredWithInheritedName(t *testing.T) {
+	const pet = `"Pet": {"type": "object", "properties": {"kind": {"type": "string"}}, "discriminator": {"propertyName": "kind"}}, "Dog": {"type": "object"}`
+	const cat = `"Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}]`
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Cat"}}}}}}}`
+	base := opsSpec(t, paths, pet+`, `+cat+`}`)
+	head := opsSpec(t, paths, pet+`, `+cat+`, "discriminator": {"propertyName": "kind", "mapping": {"x": "#/components/schemas/Dog"}}}`)
+	r := Diff(base, head)
+	require.Equal(t, []Change{
+		{Kind: Changed, Path: "POST /w › request body", Detail: "model Cat changed"},
+		{Kind: Changed, Path: "POST /w › response 200", Detail: "model Cat changed"},
+		{Kind: Changed, Path: "Cat", Detail: `discriminator mapping added: "x" → Dog`},
+	}, publicChanges(r.Changes), r.Markdown())
+}
+
+// TestDiffDiscriminatorMappingImplicitTargetInheritance checks that, for a
+// discriminator on a parent its subtypes extend with allOf, which lists no
+// variants, a mapping entry added that points a value at another component
+// than the one of that name is compared with that component.
+func TestDiffDiscriminatorMappingImplicitTargetInheritance(t *testing.T) {
+	pet := func(mapping string) string {
+		return `"Pet": {"type": "object", "properties": {"petType": {"type": "string"}}, "discriminator": {"propertyName": "petType"` + mapping + `}}, "Cat": {"allOf": [{"$ref": "#/components/schemas/Pet"}]}, "Dog": {"allOf": [{"$ref": "#/components/schemas/Pet"}]}`
+	}
+	const paths = `"/w": {"post": {"requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}}}}`
+	r := Diff(opsSpec(t, paths, pet("")), opsSpec(t, paths, pet(`, "mapping": {"Cat": "#/components/schemas/Dog"}`)))
+	require.Contains(t, publicChanges(r.Changes), Change{Kind: Changed, Path: "Pet", Detail: `discriminator mapping added: "Cat" → Dog (was Cat)`, Breaking: true}, r.Markdown())
+	for _, path := range []string{"POST /w › request body", "POST /w › response 200"} {
+		require.Contains(t, publicChanges(r.Changes), Change{Kind: Changed, Path: path, Detail: "model Pet changed", Breaking: true}, r.Markdown())
+	}
+}
+
 // TestDiffParameterSerialization checks that a parameter's style or explode
 // changed is reported, compared with the defaults of its location filled
 // in, with the reason for each flag.
@@ -3742,6 +4045,11 @@ func TestDiffParameterSerialization(t *testing.T) {
 		{"style matrix writes an array ;p=a,b or ;p=a;p=b", "path", array, `, "style": "matrix"`, `, "style": "matrix", "explode": true`, []string{"explode changed from false to true"}, true},
 		{"style simple writes an object R,100 or R=100", "header", `{"type": "object"}`, ``, `, "explode": true`, []string{"explode changed from false to true"}, true},
 		{"a cookie parameter is form by default, so writing that out is no change", "cookie", array, ``, `, "style": "form", "explode": true`, nil, false},
+		{"style deepObject writes an object p[a]=1 whatever explode says", "query", `{"type": "object"}`, `, "style": "deepObject", "explode": true`, `, "style": "deepObject", "explode": false`, []string{"explode changed from true to false"}, false},
+		{"also where explode is left unset", "query", `{"type": "object"}`, `, "style": "deepObject"`, `, "style": "deepObject", "explode": true`, []string{"explode changed from false to true"}, false},
+		{"an object written p=a,1 is now sent as p[a]=1", "query", `{"type": "object"}`, `, "explode": false`, `, "style": "deepObject", "explode": false`, []string{"style changed from form to deepObject"}, true},
+		{"an object written a=1 is now sent as p[a]=1, and the form side writes it otherwise unexploded", "query", `{"type": "object"}`, ``, `, "style": "deepObject"`, []string{"style changed from form to deepObject", "explode changed from true to false"}, true},
+		{"and back", "query", `{"type": "object"}`, `, "style": "deepObject"`, ``, []string{"style changed from deepObject to form", "explode changed from false to true"}, true},
 	} {
 		r := Diff(opsSpec(t, param(c.in, c.schema, c.base), ``), opsSpec(t, param(c.in, c.schema, c.head), ``))
 		want := []Change{}
@@ -3902,4 +4210,256 @@ func TestDiffRedefinedPropertyKeepsItsModel(t *testing.T) {
 	}
 	r := diffWithin(t, spec("4"), spec("5"))
 	require.Equal(t, []string{"POST /w › request body | model Sub changed (through User)", "User › name | maxLength raised from 4 to 5", "Base › owner | model User changed", "Sub › owner | model User changed"}, changeLines(r))
+}
+
+// TestDiffUnmodelledKeywords checks that a schema keyword Parse does not
+// model, given, dropped or changed, reads as differing and not compared,
+// breaking a request and a response, wherever a schema is compared: in a
+// parameter, a request body and a response, in a nested property, in
+// items, in an allOf member and beside a $ref.
+func TestDiffUnmodelledKeywords(t *testing.T) {
+	const pp = `"patternProperties": {"^a": {"type": "string"}}`
+	for _, tt := range []struct{ name, base, head, sub, keyword string }{
+		{"given", `{"type": "object"}`, `{"type": "object", ` + pp + `}`, "", "patternProperties"},
+		{"dropped", `{"type": "object", ` + pp + `}`, `{"type": "object"}`, "", "patternProperties"},
+		{"changed", `{"type": "array", "prefixItems": [{"type": "string"}]}`, `{"type": "array", "prefixItems": [{"type": "integer"}]}`, "", "prefixItems"},
+		{"a $ref inside is its text", `{"if": {"$ref": "#/components/schemas/Code"}}`, `{"if": {"$ref": "#/components/schemas/Code2"}}`, "", "if"},
+		{"in items", `{"type": "array", "items": {"type": "object"}}`, `{"type": "array", "items": {"type": "object", ` + pp + `}}`, "[]", "patternProperties"},
+		{"in a nested property", `{"type": "object", "properties": {"p": {"type": "object"}}}`, `{"type": "object", "properties": {"p": {"type": "object", ` + pp + `}}}`, " › p", "patternProperties"},
+		{"in an allOf member", `{"allOf": [{"type": "object"}, {"minProperties": 1}]}`, `{"allOf": [{"type": "object"}, {"minProperties": 1, ` + pp + `}]}`, "", "patternProperties"},
+		{"beside a $ref", `{"$ref": "#/components/schemas/Code"}`, `{"$ref": "#/components/schemas/Code", "contentMediaType": "text/plain"}`, "", "contentMediaType"},
+		{"a misspelled keyword", `{"type": "string", "maxLen": 3}`, `{"type": "string", "maxLen": 4}`, "", "maxLen"},
+	} {
+		r := Diff(keywordSpec(t, "", tt.base), keywordSpec(t, "", tt.head))
+		od := r.Operation("POST", "/things")
+		require.NotNil(t, od, tt.name)
+		for path := range directionPaths {
+			require.Equal(t, []Change{{Kind: Changed, Path: path + tt.sub, Detail: "schema keyword " + tt.keyword + " differs and is not compared", Breaking: true}}, publicChanges(changesAt(od, path+tt.sub)), "%s\n%s", tt.name, r.Markdown())
+		}
+		require.Len(t, od.Changes, len(directionPaths), "%s\n%s", tt.name, r.Markdown())
+	}
+
+	// One change per keyword, in the order of their names, in 3.0 as in 3.1.
+	for _, version := range []string{"3.0.3", "3.1.0"} {
+		r := Diff(keywordSpecWith(t, version, `{"type": "string", "if": 1, "then": 2}`, ""), keywordSpecWith(t, version, `{"type": "string", "if": 3, "then": 2, "else": 4}`, ""))
+		od := r.Operation("POST", "/things")
+		require.NotNil(t, od, version)
+		for path := range directionPaths {
+			require.Equal(t, []Change{
+				{Kind: Changed, Path: path, Detail: "schema keyword else differs and is not compared", Breaking: true},
+				{Kind: Changed, Path: path, Detail: "schema keyword if differs and is not compared", Breaking: true},
+			}, publicChanges(changesAt(od, path)), "%s\n%s", version, r.Markdown())
+		}
+		require.Len(t, od.Changes, 2*len(directionPaths), r.Markdown())
+	}
+}
+
+// TestDiffUnmodelledKeywordsSame checks that a schema keyword Parse does not
+// model reports nothing where its values are the same on both sides,
+// whatever the order of their keys and the spelling of their numbers, or
+// where it moved into an allOf member, and that the annotations no field
+// holds and the extensions are not compared.
+func TestDiffUnmodelledKeywordsSame(t *testing.T) {
+	for _, pair := range [][2]string{
+		{`{"if": {"type": "string"}}`, `{"if": {"type": "string"}}`},
+		{`{"if": {"minimum": 1, "type": "integer"}}`, `{"if": {"type": "integer", "minimum": 1.0e0}}`},
+		{`{"type": "object", "propertyNames": {"maxLength": 3}}`, `{"allOf": [{"type": "object"}, {"propertyNames": {"maxLength": 3}}]}`},
+		{`{"$comment": "a", "$id": "a", "$schema": "a", "$anchor": "a", "externalDocs": {"url": "a"}, "xml": {"name": "a"}, "x-a": 1}`,
+			`{"$comment": "b", "$id": "b", "$schema": "b", "$anchor": "b", "externalDocs": {"url": "b"}, "xml": {"name": "b"}, "x-a": 2}`},
+		{`{"type": "string", "pattern": "^a", "patternDescription": "starts with a"}`, `{"type": "string", "pattern": "^a", "patternDescription": "begins with a"}`},
+	} {
+		for _, version := range []string{"3.0.3", "3.1.0"} {
+			r := Diff(keywordSpecWith(t, version, pair[0], ""), keywordSpecWith(t, version, pair[1], ""))
+			require.True(t, r.Empty(), "%s to %s\n%s", pair[0], pair[1], r.Markdown())
+		}
+	}
+
+	// The same keyword written in YAML and in JSON.
+	const tail = `info: {title: t, version: "1"}
+paths:
+  /w:
+    post:
+      requestBody: {content: {application/json: {schema: {type: object, propertyNames: {maxLength: 3.0, pattern: "^a"}}}}}
+      responses: {"200": {description: ok}}
+`
+	yamlDoc := parseYAML(t, "openapi: 3.1.0\n"+tail)
+	jsonDoc := opsSpec(t, bodyPath(`{"type": "object", "propertyNames": {"pattern": "^a", "maxLength": 3}}`), "")
+	require.True(t, Diff(yamlDoc, jsonDoc).Empty(), Diff(yamlDoc, jsonDoc).Markdown())
+}
+
+// TestDiffUnmodelledKeywordInModel checks that a schema keyword Parse does
+// not model, changed in a component two operations use, is reported where
+// a changed maxLength there is: in the model, with each operation reading
+// model M changed.
+func TestDiffUnmodelledKeywordInModel(t *testing.T) {
+	const ref = `{"$ref": "#/components/schemas/M"}`
+	paths := bodyPath(ref) + ", " + respPath(ref)
+	report := func(base, head string) *Report {
+		return Diff(opsSpec(t, paths, `"M": `+base), opsSpec(t, paths, `"M": `+head))
+	}
+	modelled := report(`{"type": "string", "maxLength": 5}`, `{"type": "string", "maxLength": 3}`)
+	r := report(`{"type": "string", "contentEncoding": "base64"}`, `{"type": "string", "contentEncoding": "base32"}`)
+	require.Equal(t, []Change{
+		{Kind: Changed, Path: "POST /w › request body", Detail: "model M changed", Breaking: true},
+		{Kind: Changed, Path: "GET /r › response 200", Detail: "model M changed", Breaking: true},
+		{Kind: Changed, Path: "M", Detail: "schema keyword contentEncoding differs and is not compared", Breaking: true},
+	}, publicChanges(r.Changes), r.Markdown())
+	require.Len(t, modelled.Changes, len(r.Changes), modelled.Markdown())
+	for i, c := range modelled.Changes {
+		require.Equal(t, c.Path, r.Changes[i].Path, modelled.Markdown())
+	}
+	require.True(t, r.Breaking())
+
+	// Keywords beside the reference that stay the same report nothing at the
+	// use, while the model's own change is reported in the model.
+	const site = `{"$ref": "#/components/schemas/M", "if": {"const": 1}}`
+	paths = bodyPath(site)
+	r = report(`{"type": "string", "if": {"const": 2}, "then": 1}`, `{"type": "string", "if": {"const": 2}, "then": 2}`)
+	require.Equal(t, []Change{
+		{Kind: Changed, Path: "POST /w › request body", Detail: "model M changed", Breaking: true},
+		{Kind: Changed, Path: "M", Detail: "schema keyword then differs and is not compared", Breaking: true},
+	}, publicChanges(r.Changes), r.Markdown())
+
+	// Where the use site changed something else, a keyword beside the
+	// reference it kept, and the model's keyword, are still not reported
+	// at the use.
+	paths = bodyPath(`{"$ref": "#/components/schemas/M", "if": 1, "description": "a"}`)
+	base := opsSpec(t, paths, `"M": {"type": "string", "then": 1}`)
+	paths = bodyPath(`{"$ref": "#/components/schemas/M", "if": 1, "description": "b"}`)
+	r = Diff(base, opsSpec(t, paths, `"M": {"type": "string", "then": 2}`))
+	require.Equal(t, []Change{
+		{Kind: Changed, Path: "POST /w › request body", Detail: "description changed", Breaking: false},
+		{Kind: Changed, Path: "POST /w › request body", Detail: "model M changed", Breaking: true},
+		{Kind: Changed, Path: "M", Detail: "schema keyword then differs and is not compared", Breaking: true},
+	}, publicChanges(r.Changes), r.Markdown())
+}
+
+// TestDiffUnmodelledKeywordsRecursive checks that a comparison ends, and
+// reports the keyword, where a component holding a keyword Parse does not
+// model refers back to itself through additionalProperties, allOf, not,
+// oneOf or the keyword's own value, and where a chain of components each
+// joins the next twice through allOf, which would double the keywords at
+// each link if they were not kept once.
+func TestDiffUnmodelledKeywordsRecursive(t *testing.T) {
+	const a = `{"$ref": "#/components/schemas/A"}`
+	models := []string{
+		`"A": {"type": "object", "additionalProperties": ` + a + `, "propertyNames": {"maxLength": %d}}`,
+		`"A": {"allOf": [{"$ref": "#/components/schemas/B"}], "if": {"const": %d}}, "B": {"allOf": [` + a + `], "then": {"const": 1}}`,
+		`"A": {"not": {"not": ` + a + `}, "$defs": {"n": %d}}`,
+		`"A": {"oneOf": [` + a + `, {"type": "string"}], "unevaluatedProperties": {"maxProperties": %d}}`,
+		`"A": {"type": "object", "properties": {"a": ` + a + `}, "dependentSchemas": {"a": {"allOf": [` + a + `], "minProperties": %d}}}`,
+	}
+	paths := bodyPath(a) + ", " + respPath(a)
+	for _, m := range models {
+		r := diffWithin(t, opsSpec(t, paths, fmt.Sprintf(m, 1)), opsSpec(t, paths, fmt.Sprintf(m, 2)))
+		require.NotNil(t, r.Model("A"), m)
+		require.True(t, r.Breaking(), m)
+		require.Contains(t, r.Markdown(), "differs and is not compared", m)
+	}
+
+	chain := func(last int) string {
+		var defs []string
+		for i := range 40 {
+			next := `{"$ref": "#/components/schemas/M` + strconv.Itoa(i+1) + `"}`
+			defs = append(defs, `"M`+strconv.Itoa(i)+`": {"allOf": [`+next+`, `+next+`], "if": {"const": `+strconv.Itoa(i)+`}}`)
+		}
+		defs = append(defs, `"M40": {"type": "object", "then": {"const": `+strconv.Itoa(last)+`}}`)
+		return strings.Join(defs, ", ")
+	}
+	m0 := `{"$ref": "#/components/schemas/M0"}`
+	head := opsSpec(t, bodyPath(m0), chain(2))
+	r := diffWithin(t, opsSpec(t, bodyPath(m0), chain(1)), head)
+	require.Equal(t, []Change{{Kind: Changed, Path: "M40", Detail: "schema keyword then differs and is not compared", Breaking: true}}, publicChanges(r.Model("M40").Changes), r.Markdown())
+	require.True(t, r.Operation("POST", "/w").Breaking, r.Markdown())
+	require.Len(t, head.Flatten(head.Components.Schemas.Map["M0"]).Unmodelled, 41)
+}
+
+// TestDiffUnmodelledKeywordMarkdown checks that the name of a schema keyword
+// Parse does not model, which the document chooses, is a code span in the
+// markdown summary, so it can neither break out of its line nor mention an
+// account, link or reference an issue, and that the reference page lists
+// the change with the name escaped.
+func TestDiffUnmodelledKeywordMarkdown(t *testing.T) {
+	const key = "@team <img src=x onerror=alert(1)> `x` #12\\n## injected GH-1"
+	spec := func(value string) string {
+		return `{"openapi": "3.1.0", "info": {"title": "t", "version": "1"}, "paths": {` + bodyPath(`{"type": "object", "`+key+`": `+value+`}`) + `}}`
+	}
+	base := mustParse(t, []byte(spec("1")))
+	head := mustParse(t, []byte(spec("2")))
+	r := Diff(base, head)
+	require.Equal(t, []Change{{Kind: Changed, Path: "POST /w › request body", Detail: "schema keyword @team <img src=x onerror=alert(1)> `x` #12\n## injected GH-1 differs and is not compared", Breaking: true}}, publicChanges(r.Changes))
+	md := r.Markdown()
+	require.Contains(t, md, "- `POST /w` › request body: schema keyword ``@team <img src=x onerror=alert(1)> `x` #12 ## injected GH-1`` differs and is not compared\n", md)
+
+	html := string(markdown(md))
+	require.Contains(t, html, "<code>@team &lt;img src=x onerror=alert(1)&gt; `x` #12 ## injected GH-1</code>", html)
+	require.NotContains(t, html, "<img")
+	require.NotRegexp(t, `<h[1-6][^>]*>[^<]*injected`, html)
+
+	out, err := Render(head, Options{Base: []byte(spec("1"))})
+	require.NoError(t, err)
+	require.Contains(t, string(out), "schema keyword @team &lt;img src=x onerror=alert(1)&gt; `x` #12\n## injected GH-1 differs and is not compared")
+	require.NotContains(t, string(out), "<img src=x")
+}
+
+// TestDiffUnmodelledKeywordNumbers checks that a number inside a schema
+// keyword Parse does not model is compared as its float64 where that tells
+// it from every other number of at most 15 significant digits, so 1 and
+// 1.0 are the same, and as written otherwise, so two integers past 2^53 that
+// round to the same float64, or two decimals of 17 digits, differ.
+func TestDiffUnmodelledKeywordNumbers(t *testing.T) {
+	const tail = "info: {title: t, version: \"1\"}\npaths:\n  /w:\n    post:\n      requestBody: {content: {application/json: {schema: {type: integer, if: {maximum: %s}}}}}\n      responses: {\"200\": {description: ok}}\n"
+	for _, c := range []struct {
+		base, head string
+		same       bool
+	}{
+		{"1", "1.0", true},
+		{"100", "1e2", true},
+		{"9007199254740992", "9007199254740993", false},
+		{"0.3", "0.30000000000000001", false},
+		{"1e400", "1e401", false},
+		{"0", "-0", true},
+		{"-0", "-0.0", true},
+	} {
+		jsonDoc := func(number string) *Document {
+			return opsSpec(t, bodyPath(`{"type": "integer", "if": {"maximum": `+number+`}}`), "")
+		}
+		yamlDoc := func(number string) *Document {
+			return parseYAML(t, "openapi: 3.1.0\n"+fmt.Sprintf(tail, number))
+		}
+		for format, doc := range map[string]func(string) *Document{"json": jsonDoc, "yaml": yamlDoc} {
+			r := Diff(doc(c.base), doc(c.head))
+			require.Equal(t, c.same, r.Empty(), "%s %s to %s\n%s", format, c.base, c.head, r.Markdown())
+		}
+	}
+	// yaml.v3 reads 1_000.5 as 1000.5, and a number with underscores and
+	// more than 15 significant digits is compared as written without them.
+	yamlDoc := func(number string) *Document {
+		return parseYAML(t, "openapi: 3.1.0\n"+fmt.Sprintf(tail, number))
+	}
+	r := Diff(yamlDoc("1_000.5"), yamlDoc("1000.5"))
+	require.True(t, r.Empty(), r.Markdown())
+	r = Diff(yamlDoc("12_345_678_901_234_567_890_123"), yamlDoc("12345678901234567890123"))
+	require.True(t, r.Empty(), r.Markdown())
+	r = Diff(yamlDoc("1_0.000000000000001"), yamlDoc("10.000000000000001"))
+	require.True(t, r.Empty(), r.Markdown())
+	r = Diff(yamlDoc("1_0.000000000000001"), yamlDoc("10.000000000000002"))
+	require.False(t, r.Empty(), r.Markdown())
+	schema := yamlDoc("1_0.000000000000001").Paths.Map["/w"].Post.RequestBody.Content.Map["application/json"].Schema
+	require.Equal(t, []RawKeyword{{Name: "if", Value: `{"maximum":10.000000000000001}`}}, schema.Unmodelled)
+}
+
+// TestDiffUnmodelledKeywordYAMLKeysStable checks that a schema keyword whose
+// YAML value holds mapping keys yaml.v3 decodes to the same key, or refuses
+// as given twice, reads the same on every parse, so a document diffed
+// against itself has no changes.
+func TestDiffUnmodelledKeywordYAMLKeysStable(t *testing.T) {
+	const tail = "info: {title: t, version: \"1\"}\npaths:\n  /w:\n    post:\n      requestBody: {content: {application/json: {schema: {type: object, if: %s}}}}\n      responses: {\"200\": {description: ok}}\n"
+	for _, value := range []string{`{1: a, 1.0: b}`, `{1: a, "1": b}`} {
+		input := "openapi: 3.1.0\n" + fmt.Sprintf(tail, value)
+		for range 50 {
+			r := Diff(parseYAML(t, input), parseYAML(t, input))
+			require.True(t, r.Empty(), "%s\n%s", value, r.Markdown())
+		}
+	}
 }
