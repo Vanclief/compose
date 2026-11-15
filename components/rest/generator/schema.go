@@ -20,6 +20,9 @@ import (
 	"unicode"
 
 	"github.com/vanclief/ez"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 const schemaRefPrefix = "#/components/schemas/"
@@ -94,12 +97,25 @@ type funcInfo struct {
 	Imports map[string]string
 }
 
+// moduleSource is where the go command reads the source of a module the app's go.mod requires
+// from (readModuleInfo).
+type moduleSource struct {
+	// Dir is the directory a replace directive puts in the module's place, "" when the source
+	// is in the module cache.
+	Dir string
+	// Path and Version name the module cache directory of the source: the module required, or
+	// the module a replace directive puts in its place.
+	Path    string
+	Version string
+}
+
 type schemaBuilder struct {
-	modulePath     string
-	moduleVersions map[string]string
-	repoRoot       string
-	modCache       string
-	packages       map[string]*packageInfo
+	modulePath string
+	// modules maps the path of each module the app's go.mod requires to where its source is.
+	modules  map[string]moduleSource
+	repoRoot string
+	modCache string
+	packages map[string]*packageInfo
 	// packageNames caches, per import path, the name an unnamed import of it is referred to by
 	// (see packageName).
 	packageNames map[string]string
@@ -139,7 +155,7 @@ type schemaBuilder struct {
 }
 
 func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
-	modulePath, moduleVersions, err := readModuleInfo(filepath.Join(cfg.Root, "go.mod"))
+	modulePath, modules, err := readModuleInfo(filepath.Join(cfg.Root, "go.mod"))
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
@@ -166,7 +182,7 @@ func newSchemaBuilder(cfg Config) (*schemaBuilder, error) {
 
 	return &schemaBuilder{
 		modulePath:            modulePath,
-		moduleVersions:        moduleVersions,
+		modules:               modules,
 		repoRoot:              cfg.Root,
 		modCache:              modCache,
 		packages:              map[string]*packageInfo{},
@@ -506,16 +522,57 @@ func typeRefFromExpr(expr ast.Expr, imports map[string]string, pkgPath string) (
 	return typeRef{}, false
 }
 
-func packagePathForFile(repoRoot string, modulePath string, filePath string) string {
-	rel, err := filepath.Rel(repoRoot, filePath)
-	if err != nil {
-		return ""
+// packagePathForFile is the import path of the package of a file read by its name (HandlerGlob),
+// the one resolveImportPath finds the file's directory for: the nearest go.mod above the file
+// is the app's, at Root, or one in a directory a replace directive puts in place of a required
+// module, and the import path is that module's path joined with the file's directory under it.
+// A file whose nearest go.mod is neither, or that has none, is not compiled as part of the app.
+func (b *schemaBuilder) packagePathForFile(filePath string) (string, error) {
+	dir := filepath.Dir(filepath.Clean(filePath))
+	root := filepath.Clean(b.repoRoot)
+
+	moduleDir := dir
+	for {
+		modulePath := ""
+		if moduleDir == root {
+			modulePath = b.modulePath
+		} else if isFile(filepath.Join(moduleDir, "go.mod")) {
+			for path, source := range b.modules {
+				if source.Dir == "" || filepath.Clean(source.Dir) != moduleDir {
+					continue
+				}
+				if modulePath != "" {
+					return "", ez.New(ez.EINVALID, filePath+": the directory "+moduleDir+" replaces both "+min(path, modulePath)+" and "+max(path, modulePath)+" in go.mod, which the go command refuses", nil)
+				}
+				modulePath = path
+			}
+			if modulePath == "" {
+				return "", ez.New(ez.EINVALID, filePath+": the file is in the module of "+filepath.Join(moduleDir, "go.mod")+", which is not the app's and replaces no module the app's go.mod requires, so the build does not compile it", nil)
+			}
+		}
+		if modulePath != "" {
+			rel, err := filepath.Rel(moduleDir, dir)
+			if err != nil {
+				return "", ez.Wrap(err)
+			}
+			if rel == "." {
+				return modulePath, nil
+			}
+			return modulePath + "/" + filepath.ToSlash(rel), nil
+		}
+
+		parent := filepath.Dir(moduleDir)
+		if parent == moduleDir {
+			return "", ez.New(ez.EINVALID, filePath+": the file is in no module of the app, neither under "+root+" nor under a directory that go.mod puts in place of a required module", nil)
+		}
+		moduleDir = parent
 	}
-	dir := filepath.Dir(rel)
-	if dir == "." {
-		return modulePath
-	}
-	return modulePath + "/" + filepath.ToSlash(dir)
+}
+
+// isFile reports a regular file, or a symbolic link to one, at path.
+func isFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // importMap maps each name a file refers to an import by to its import path.
@@ -578,7 +635,7 @@ func (b *schemaBuilder) declaredPackageName(importPath string) string {
 	if b.isStandardLibraryImport(importPath) {
 		return ""
 	}
-	dir, err := b.resolveImportPath(importPath)
+	dir, _, err := b.resolveImportPath(importPath)
 	if err != nil {
 		return ""
 	}
@@ -2216,8 +2273,8 @@ func (b *schemaBuilder) unresolvedError() error {
 
 // isStandardLibraryImport follows Go's rule: the first path element of a module path
 // carries a dot, the standard library's never does. The module's own packages and those of the
-// modules it requires are never the standard library, dot or not (module app, a replaced local
-// module).
+// modules it requires are never the standard library, dot or not (module app, a required module
+// shared that a replace directive puts a local directory in place of).
 func (b *schemaBuilder) isStandardLibraryImport(importPath string) bool {
 	if importPath == "" {
 		return false
@@ -2225,7 +2282,7 @@ func (b *schemaBuilder) isStandardLibraryImport(importPath string) bool {
 	if withinModule(importPath, b.modulePath) {
 		return false
 	}
-	for modulePath := range b.moduleVersions {
+	for modulePath := range b.modules {
 		if withinModule(importPath, modulePath) {
 			return false
 		}
@@ -3459,76 +3516,68 @@ func schemaType(schema map[string]any, schemas map[string]map[string]any, seen m
 	return ""
 }
 
-func readModuleInfo(path string) (string, map[string]string, error) {
-
+// readModuleInfo reads the app's go.mod with modfile.Parse, as the go command reads a main
+// module's, and returns its module path and where the source of each module it requires is
+// (moduleSource). A module required at several versions is required at the highest, as the go
+// command takes it. A replace directive with a version on its left applies to that version of the
+// module alone and wins over one without, which applies to every version; on its right, a
+// directory, relative to go.mod's own when not absolute, holds the module's source, and a module
+// path and version name the module cache directory that does. Import paths keep the required
+// module's path either way. Two replace directives for one module and version that disagree fail,
+// as the go command refuses them. A replace directive for a module go.mod does not require is not
+// used: the go command builds no package of such a module either.
+func readModuleInfo(path string) (string, map[string]moduleSource, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", nil, ez.Wrap(err)
 	}
-
-	lines := strings.Split(string(data), "\n")
-	modulePath := ""
-	requires := map[string]string{}
-	inRequireBlock := false
-
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "//") {
-			continue
-		}
-
-		if strings.HasPrefix(line, "module ") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				modulePath = fields[1]
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "require (") {
-			inRequireBlock = true
-			continue
-		}
-
-		if inRequireBlock {
-			if line == ")" {
-				inRequireBlock = false
-				continue
-			}
-			line = stripInlineComment(line)
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				requires[fields[0]] = fields[1]
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "require ") {
-			line = strings.TrimPrefix(line, "require ")
-			line = stripInlineComment(line)
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				requires[fields[0]] = fields[1]
-			}
-		}
+	file, err := modfile.Parse(path, data, nil)
+	if err != nil {
+		return "", nil, ez.New(ez.EINVALID, "go.mod could not be read", err)
 	}
-
-	if modulePath == "" {
+	if file.Module == nil || file.Module.Mod.Path == "" {
 		return "", nil, ez.New(ez.EINTERNAL, "module path not found", nil)
 	}
 
-	return modulePath, requires, nil
-}
-
-func stripInlineComment(line string) string {
-	idx := strings.Index(line, "//")
-	if idx < 0 {
-		return line
+	replacements := map[module.Version]module.Version{}
+	for _, replace := range file.Replace {
+		previous, ok := replacements[replace.Old]
+		if ok && previous != replace.New {
+			return "", nil, ez.New(ez.EINVALID, path+": conflicting replacements for "+replace.Old.String()+": "+previous.String()+" and "+replace.New.String(), nil)
+		}
+		replacements[replace.Old] = replace.New
 	}
-	return strings.TrimSpace(line[:idx])
+
+	required := map[string]string{}
+	for _, require := range file.Require {
+		previous, ok := required[require.Mod.Path]
+		if ok && semver.Compare(previous, require.Mod.Version) >= 0 {
+			continue
+		}
+		required[require.Mod.Path] = require.Mod.Version
+	}
+
+	modules := map[string]moduleSource{}
+	for modulePath, version := range required {
+		replacement, ok := replacements[module.Version{Path: modulePath, Version: version}]
+		if !ok {
+			replacement, ok = replacements[module.Version{Path: modulePath}]
+		}
+		switch {
+		case !ok:
+			modules[modulePath] = moduleSource{Path: modulePath, Version: version}
+		case replacement.Version == "":
+			dir := replacement.Path
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(filepath.Dir(path), dir)
+			}
+			modules[modulePath] = moduleSource{Dir: dir}
+		default:
+			modules[modulePath] = moduleSource{Path: replacement.Path, Version: replacement.Version}
+		}
+	}
+
+	return file.Module.Mod.Path, modules, nil
 }
 
 func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
@@ -3542,7 +3591,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 		return pkg, nil
 	}
 
-	dir, err := b.resolveImportPath(importPath)
+	dir, advice, err := b.resolveImportPath(importPath)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
@@ -3550,7 +3599,7 @@ func (b *schemaBuilder) loadPackage(importPath string) (*packageInfo, error) {
 	_, err = os.Stat(dir)
 	if err != nil {
 		// No cause: ez renders the cause instead of the message, and the hint matters more.
-		return nil, ez.New(ez.ENOTFOUND, "package source not found at "+dir+" (run `go mod download` for dependencies)", nil)
+		return nil, ez.New(ez.ENOTFOUND, "package source not found at "+dir+" ("+advice+")", nil)
 	}
 
 	pkg, err = b.parsePackage(importPath, dir, false)
@@ -4236,64 +4285,142 @@ func collectClosedSetTypes(gen *ast.GenDecl, out map[string]bool, members map[st
 	}
 }
 
-// resolveImportPath is the directory of a package: in the module when the import path is within
-// the module's path (withinModule), even where a required module nested under that path holds
-// it, and otherwise in the required module with the longest module path the import path is
-// within (matchModule).
-func (b *schemaBuilder) resolveImportPath(importPath string) (string, error) {
-
+// resolveImportPath is the directory of a package, found as the go command finds it, and the
+// advice for when that directory does not exist. It looks in each module whose path the import
+// path is within (withinModule), the app's and those its go.mod requires, in the directory the
+// module's source is in (moduleSource). A module holds the package where that directory has a .go
+// file and, in a tree on disk rather than the module cache, no go.mod lies between the module's
+// root and it, which would make it another module's (moduleBoundary). The one module holding the
+// package gives its directory, and several fail, as the go command refuses an ambiguous import.
+// Where none holds it, the directory is the one in the module with the longest path that no go.mod
+// cuts off, so that the error says where the package was looked for.
+func (b *schemaBuilder) resolveImportPath(importPath string) (string, string, error) {
+	var modulePaths []string
 	if withinModule(importPath, b.modulePath) {
-		rel := strings.TrimPrefix(importPath, b.modulePath)
-		rel = strings.TrimPrefix(rel, "/")
-		return filepath.Join(b.repoRoot, filepath.FromSlash(rel)), nil
+		modulePaths = append(modulePaths, b.modulePath)
+	}
+	for modulePath := range b.modules {
+		if withinModule(importPath, modulePath) {
+			modulePaths = append(modulePaths, modulePath)
+		}
+	}
+	if len(modulePaths) == 0 {
+		return "", "", ez.New(ez.EINTERNAL, "module not found for import "+importPath, nil)
+	}
+	// The paths are all prefixes of the import path, so no two have the same length.
+	sort.Slice(modulePaths, func(i, j int) bool {
+		return len(modulePaths[i]) > len(modulePaths[j])
+	})
+
+	holder, holderDir, holderAdvice := "", "", ""
+	fallbackDir, fallbackAdvice, boundary := "", "", ""
+	var rootErr error
+	for _, modulePath := range modulePaths {
+		root, local, advice, err := b.moduleRoot(modulePath)
+		if err != nil {
+			// A module whose directory cannot be named may still hold the package,
+			// so the error is returned unless another module is found to hold it.
+			if rootErr == nil {
+				rootErr = err
+			}
+			continue
+		}
+		rel := strings.TrimPrefix(strings.TrimPrefix(importPath, modulePath), "/")
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+
+		if local {
+			cut := moduleBoundary(root, dir)
+			if cut != "" {
+				boundary = cut
+				continue
+			}
+		}
+		if !hasGoFiles(dir) {
+			if fallbackDir == "" {
+				fallbackDir = dir
+				fallbackAdvice = advice
+			}
+			continue
+		}
+		if holder != "" {
+			return "", "", ez.New(ez.EINVALID, "ambiguous import: package "+importPath+" is in module "+holder+" at "+holderDir+" and in module "+modulePath+" at "+dir+", which the go command refuses", nil)
+		}
+		holder = modulePath
+		holderDir = dir
+		holderAdvice = advice
 	}
 
+	if holder != "" {
+		return holderDir, holderAdvice, nil
+	}
+	if rootErr != nil {
+		return "", "", ez.Wrap(rootErr)
+	}
+	if fallbackDir != "" {
+		return fallbackDir, fallbackAdvice, nil
+	}
+	return "", "", ez.New(ez.EINTERNAL, "module not found for import "+importPath+": "+filepath.Join(boundary, "go.mod")+" makes "+boundary+" a module of its own, and no module the app's go.mod requires holds the package", nil)
+}
+
+// moduleRoot is the root directory of the app's module or of one its go.mod requires, whether
+// it is a tree on disk (the app's, or a directory a replace directive names) rather than the module
+// cache, and the advice for when a package directory under it does not exist.
+func (b *schemaBuilder) moduleRoot(modulePath string) (string, bool, string, error) {
+	download := "run `go mod download` for dependencies"
+	if modulePath == b.modulePath {
+		return b.repoRoot, true, download, nil
+	}
+
+	source := b.modules[modulePath]
+	if source.Dir != "" {
+		return source.Dir, true, "go.mod replaces " + modulePath + " with the directory " + source.Dir, nil
+	}
 	if b.modCache == "" {
-		return "", ez.New(ez.EINTERNAL, "module cache path not set", nil)
+		return "", false, "", ez.New(ez.EINTERNAL, "module cache path not set", nil)
+	}
+	escapedPath, err := module.EscapePath(source.Path)
+	if err != nil {
+		return "", false, "", ez.New(ez.EINVALID, "go.mod names the module "+source.Path+", whose path is not valid", err)
+	}
+	escapedVersion, err := module.EscapeVersion(source.Version)
+	if err != nil {
+		return "", false, "", ez.New(ez.EINVALID, "go.mod names the module "+source.Path+" at "+source.Version+", which is not a valid version", err)
 	}
 
-	modulePath, version := b.matchModule(importPath)
-	if modulePath == "" || version == "" {
-		return "", ez.New(ez.EINTERNAL, "module not found for import "+importPath, nil)
-	}
-
-	rel := strings.TrimPrefix(importPath, modulePath)
-	rel = strings.TrimPrefix(rel, "/")
-	escaped := escapeModulePath(modulePath)
-
-	dir := filepath.Join(b.modCache, escaped+"@"+version, filepath.FromSlash(rel))
-	return dir, nil
+	return filepath.Join(b.modCache, escapedPath+"@"+escapedVersion), false, download, nil
 }
 
-func (b *schemaBuilder) matchModule(importPath string) (string, string) {
-	match := ""
-	version := ""
-
-	for modulePath, moduleVersion := range b.moduleVersions {
-		if !withinModule(importPath, modulePath) {
-			continue
+// moduleBoundary is the directory from dir up to root, root left out, that holds a go.mod, ""
+// when none does: a directory at or below it belongs to that go.mod's module, not to root's.
+func moduleBoundary(root string, dir string) string {
+	root = filepath.Clean(root)
+	current := filepath.Clean(dir)
+	for current != root {
+		if isFile(filepath.Join(current, "go.mod")) {
+			return current
 		}
-		if len(modulePath) > len(match) {
-			match = modulePath
-			version = moduleVersion
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
 		}
+		current = parent
 	}
 
-	return match, version
+	return ""
 }
 
-func escapeModulePath(modulePath string) string {
-	var out strings.Builder
-	out.Grow(len(modulePath))
-
-	for _, r := range modulePath {
-		if r >= 'A' && r <= 'Z' {
-			out.WriteByte('!')
-			out.WriteRune(r + ('a' - 'A'))
-			continue
+// hasGoFiles reports a directory holding a .go file, which is what the go command looks for in
+// a module's directory for a package, whatever the files' build constraints.
+func hasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+			return true
 		}
-		out.WriteRune(r)
 	}
 
-	return out.String()
+	return false
 }
