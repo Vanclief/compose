@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"go/build"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vanclief/ez"
 )
@@ -90,8 +92,6 @@ e.PATCH("/raw-string/:id", h.UpdateThing)
 	if false {
 		e.PUT("/dead-code/:id", h.ReplaceThing)
 	}
-
-	e.Add("OPTIONS", "/options/:id", h.GetThing)
 }
 `,
 	})
@@ -779,16 +779,11 @@ func leak(h *Handler) {
 // The finder never documents a group a variable may not hold at the route: a body left early
 // by break, continue, return or fallthrough, a goto, a pointer to the variable and a route
 // method used as a value make the route unresolved. Right-hand sides are read before any
-// variable is set, and a RootGroups name set to a Group call or a variable the finder cannot
-// resolve is not taken for its root group.
+// variable is set, and a RootGroups name set to a Group call or a variable whose group the
+// finder cannot tell, such as a parameter a branch may have set to a group, is not taken for its
+// root group, nor is one that is a range variable, a type switch variable or a named result.
 func TestParseRoutesKnowsNoGroupAVariableMayNotHold(t *testing.T) {
-	cases := []struct {
-		name       string
-		body       string
-		rootGroups map[string]string
-		routes     []string
-		unresolved []string
-	}{
+	runRouteCases(t, []routeCase{
 		{
 			name: "break",
 			body: `func f(e *echo.Echo, h *Handler, xs []bool) {
@@ -946,6 +941,18 @@ again:
 			unresolved: []string{`api.GET("/alias")`},
 		},
 		{
+			name: "root name set to a parameter a branch may have set to a group",
+			body: `func f(e *echo.Echo, srv *echo.Group, h *Handler, c bool) {
+	if c {
+		srv = e.Group("/x")
+	}
+	api := srv
+	api.GET("/y", h.GetThing)
+}`,
+			rootGroups: map[string]string{"e": "", "api": "/api"},
+			unresolved: []string{`api.GET("/y")`},
+		},
+		{
 			name: "root name set in a branch to a group of an unknown prefix",
 			body: `func f(e *echo.Echo, api *echo.Group, h *Handler, c bool, prefix string) {
 	if c {
@@ -989,7 +996,7 @@ again:
 	e.GET("/called", h.GetThing)
 }`,
 			routes:     []string{"GET /called"},
-			unresolved: []string{`e.GET()`, `e.POST()`},
+			unresolved: []string{`e.Add("/constant")`, `e.GET()`, `e.POST()`},
 		},
 		{
 			name: "method value on a variable shadowing an import",
@@ -1049,34 +1056,6 @@ again:
 			unresolved: []string{`g.GET("/x")`},
 		},
 		{
-			name: "root name set to a field",
-			body: `func f(e *echo.Echo, h *Handler, s *Server) {
-	api := s.v2
-	api.GET("/x", h.GetThing)
-}`,
-			rootGroups: map[string]string{"e": "", "api": "/api"},
-			unresolved: []string{`api.GET("/x")`},
-		},
-		{
-			name: "root name set to an element",
-			body: `func f(e *echo.Echo, h *Handler, gs []*echo.Group) {
-	api := (gs[1])
-	api.GET("/x", h.GetThing)
-}`,
-			rootGroups: map[string]string{"e": "", "api": "/api"},
-			unresolved: []string{`api.GET("/x")`},
-		},
-		{
-			name: "root name as a range value",
-			body: `func f(e *echo.Echo, h *Handler) {
-	for _, api := range []*echo.Group{e.Group("/v1"), e.Group("/v2")} {
-		api.GET("/x", h.GetThing)
-	}
-}`,
-			rootGroups: map[string]string{"e": "", "api": "/api"},
-			unresolved: []string{`api.GET("/x")`},
-		},
-		{
 			name: "root name bound by a type switch",
 			body: `func f(e *echo.Echo, h *Handler, v any) {
 	switch api := v.(type) {
@@ -1088,11 +1067,11 @@ again:
 			unresolved: []string{`api.GET("/x")`},
 		},
 		{
-			name: "root name set from a call with two results",
+			name: "root name as a range value",
 			body: `func f(e *echo.Echo, h *Handler) {
-	var api, other = two(e)
-	_ = other
-	api.GET("/x", h.GetThing)
+	for _, api := range []*echo.Group{e.Group("/v1"), e.Group("/v2")} {
+		api.GET("/x", h.GetThing)
+	}
 }`,
 			rootGroups: map[string]string{"e": "", "api": "/api"},
 			unresolved: []string{`api.GET("/x")`},
@@ -1309,7 +1288,21 @@ func f(e *echo.Echo, h *Handler) {
 }`,
 			unresolved: []string{`e.GET(p)`},
 		},
-	}
+	})
+}
+
+// routeCase is a route file of one package api importing echo, the RootGroups it is read with
+// (the default when nil), and the routes and unresolved registrations it declares, in order.
+type routeCase struct {
+	name       string
+	body       string
+	rootGroups map[string]string
+	routes     []string
+	unresolved []string
+}
+
+func runRouteCases(t *testing.T, cases []routeCase) {
+	t.Helper()
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1341,6 +1334,576 @@ func f(e *echo.Echo, h *Handler) {
 				t.Fatalf("routes %q, unresolved %q\nwant routes %q, unresolved %q", got, unresolved, tc.routes, tc.unresolved)
 			}
 		})
+	}
+}
+
+// A RootGroups name set to a call of anything but Group or to a field is its root group, also
+// when the value is one of several results of a call. v1.38.0 refused all but a call with one
+// result.
+func TestParseRoutesTakesARootNameSetToACallOrAFieldForItsRoot(t *testing.T) {
+	apiGroups := map[string]string{"e": "", "api": "/api"}
+	runRouteCases(t, []routeCase{
+		{
+			name: "call with several results",
+			body: `func newEcho() (*echo.Echo, error) { return echo.New(), nil }
+
+func f(h *Handler) error {
+	e, err := newEcho()
+	if err != nil {
+		return err
+	}
+	e.GET("/x", h.GetThing)
+	return nil
+}`,
+			routes: []string{"GET /x"},
+		},
+		{
+			name: "var from a call with several results",
+			body: `func f(h *Handler) {
+	var api, other = two()
+	_ = other
+	api.GET("/x", h.GetThing)
+}`,
+			rootGroups: apiGroups,
+			routes:     []string{"GET /api/x"},
+		},
+		{
+			name: "assigned from a call with several results",
+			body: `func f(e *echo.Echo, h *Handler) error {
+	api := e.Group("/v1")
+	var err error
+	api, err = newAPI()
+	if err != nil {
+		return err
+	}
+	api.GET("/x", h.GetThing)
+	return nil
+}`,
+			rootGroups: apiGroups,
+			routes:     []string{"GET /api/x"},
+		},
+		{
+			name: "field",
+			body: `type server struct {
+	echo *echo.Echo
+}
+
+func (s *server) addRoutes(h *Handler) {
+	e := s.echo
+	e.GET("/x", h.GetThing)
+}`,
+			routes: []string{"GET /x"},
+		},
+		{
+			name: "field assigned and declared with var",
+			body: `func f(e *echo.Echo, h *Handler, s *Server) {
+	e = s.echo
+	e.GET("/x", h.GetThing)
+	var api = s.v2
+	api.GET("/y", h.GetThing)
+}`,
+			rootGroups: apiGroups,
+			routes:     []string{"GET /api/y", "GET /x"},
+		},
+	})
+}
+
+// A RootGroups name set to a variable holds what the variable holds, so a route on it fails
+// generation, with the variable's reason, when the finder does not know that group: a parameter
+// not named in RootGroups, a package variable, a variable set to a field or to a Group call on a
+// group the finder does not know, or one a branch may have set to a group. So does a RootGroups
+// name set to an element, a type assertion or a pointer read, as on v1.38.0.
+func TestParseRoutesRefusesARootNameSetToAVariableOrAnElement(t *testing.T) {
+	src := `package api
+
+import "github.com/labstack/echo/v5"
+
+var api = echo.New().Group("/api")
+
+func register(g *echo.Group, h *Handler) {
+	v1 := g.Group("/v1")
+	e := v1
+	e.GET("/group-of-parameter", h.GetThing)
+}
+
+func (s *Server) groupOfField(h *Handler) {
+	x := s.api
+	v1 := x.Group("/v1")
+	e := v1
+	e.GET("/group-of-field", h.GetThing)
+}
+
+func groupAssigned(h *Handler) {
+	x := echo.New()
+	x = x.Group("/v1")
+	e := x
+	e.GET("/group-assigned", h.GetThing)
+}
+
+func groupAssignedInABranch(h *Handler, c bool) {
+	x := echo.New()
+	if c {
+		x = x.Group("/v1")
+	}
+	e := x
+	e.GET("/group-assigned-in-a-branch", h.GetThing)
+}
+
+func addV1(g *echo.Group, h *Handler) {
+	e := g
+	e.GET("/parameter", h.GetThing)
+}
+
+func packageVariable(h *Handler) {
+	e := api
+	e.GET("/package-variable", h.GetThing)
+}
+
+func element(h *Handler, gs []*echo.Echo) {
+	e := (gs[1])
+	e.GET("/element", h.GetThing)
+}
+
+func typeAssertion(h *Handler, v any) {
+	e := v.(*echo.Echo)
+	e.GET("/type-assertion", h.GetThing)
+}
+
+func pointer(h *Handler, p **echo.Echo) {
+	e := *p
+	e.GET("/pointer", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"}
+
+	_, err := ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("expected an invalid error, got %v", err)
+	}
+
+	got := map[string]string{}
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		got[route.Path] = route.Reason
+		return true
+	}
+	_, err = ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.ENOTFOUND {
+		t.Fatalf("expected no routes once every unresolved one is skipped, got %v", err)
+	}
+
+	parameter := `unknown route group "g", a function parameter not named in RootGroups`
+	newEcho := `echo.New() is not a group the route finder can follow`
+	want := map[string]string{
+		`"/group-of-parameter"`:         parameter,
+		`"/group-of-field"`:             `s.api is not a group the route finder can follow`,
+		`"/group-assigned"`:             newEcho,
+		`"/group-assigned-in-a-branch"`: newEcho,
+		`"/parameter"`:                  parameter,
+		`"/package-variable"`:           `unknown route group "api"`,
+		`"/element"`:                    `gs[1] is not a group the route finder can follow`,
+		`"/type-assertion"`:             `v.(*echo.Echo) is not a group the route finder can follow`,
+		`"/pointer"`:                    `*p is not a group the route finder can follow`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolved routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A handler method named like a route method, h.Things.GET, is a handler wherever the route call
+// reads it, not a route method used as a value; a route method of a group used as a value still
+// is one.
+func TestParseRoutesReadsHandlersNamedLikeRouteMethods(t *testing.T) {
+	src := `package api
+
+func addRoutes(e *echo.Echo, h *Handlers, s *Server) {
+	e.GET("/things/:id", h.Things.GET)
+	e.POST("/things", withLog(h.Things.POST), h.Auth.HEAD)
+	e.PUT("/things/:id", s.h.Things.PUT)
+	e.DELETE("/things/:id", func(c *echo.Context) error {
+		remove := h.Things.DELETE
+		return remove(c)
+	})
+	g := e.Group("/g")
+	get := g.GET
+	get("/value", h.Things.Get)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlersFile: "handlers.go", HandlerGlob: "*.go"}
+
+	_, err := ParseRoutes(cfg)
+	want := routeFile(root, "routes.go") + `:12: g.GET: the method GET is used as a value, not called, so the routes registered through it are not known`
+	if err == nil || !strings.Contains(filepath.ToSlash(ez.ErrorMessage(err)), want) {
+		t.Fatalf("expected the error to contain %q, got %v", want, err)
+	}
+	if strings.Contains(err.Error(), "h.Things") || strings.Contains(err.Error(), "h.Auth") {
+		t.Fatalf("a handler was taken for a route method value: %v", err)
+	}
+
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		return route.Receiver == "g"
+	}
+	// The DELETE handler is a function literal, so the route has no handler method.
+	cfg.Skip = func(method string, path string) bool {
+		return method == "DELETE"
+	}
+	routes, err := ParseRoutes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Method+" "+r.Path+" "+r.HandlerKey())
+	}
+	wantRoutes := []string{"POST /things things.POST", "DELETE /things/:id ", "GET /things/:id things.GET", "PUT /things/:id things.PUT"}
+	if !reflect.DeepEqual(got, wantRoutes) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, wantRoutes)
+	}
+}
+
+// Only a selector written as a route call reads a handler, h.Method in flat mode and
+// h.Namespace.Method in nested mode, through the receiver variable or a field holding it, is a
+// handler named like a route method; any other selector through the receiver variable, such as
+// a route method of a field, h.echo.GET, is a route method used as a value, and so is h.GET where
+// a group shadows the receiver variable.
+func TestParseRoutesTakesOnlyHandlerSelectorsForHandlers(t *testing.T) {
+	cases := []struct {
+		name         string
+		handlersFile string
+		body         string
+		routes       []string
+		unresolved   []string
+	}{
+		{
+			name: "flat",
+			body: `func (h *Server) routes(s *Server) {
+	e := h.echo
+	e.GET("/x", h.X)
+	e.GET("/head", h.HEAD)
+	e.POST("/post", s.h.POST)
+	get := h.echo.GET
+	get("/y", h.Y)
+	put := h.Things.PUT
+	_ = put
+}`,
+			routes:     []string{"GET /head", "POST /post", "GET /x"},
+			unresolved: []string{"h.Things.PUT", "h.echo.GET"},
+		},
+		{
+			name: "flat receiver shadowed by a group",
+			body: `func (h *Server) routes(e *echo.Echo, hh *Server) {
+	e.GET("/before", h.GET)
+	{
+		h := e.Group("/admin")
+		register(h.GET, hh)
+	}
+	e.GET("/after", h.HEAD)
+}`,
+			routes:     []string{"GET /after", "GET /before"},
+			unresolved: []string{"h.GET"},
+		},
+		{
+			name:         "nested",
+			handlersFile: "handlers.go",
+			body: `func addRoutes(e *echo.Echo, h *Handlers, s *Server) {
+	e.GET("/things/:id", h.Things.GET)
+	e.PUT("/things/:id", s.h.Things.PUT)
+	head := h.HEAD
+	post := h.Things.Sub.POST
+	_, _ = head, post
+}`,
+			routes:     []string{"GET /things/:id", "PUT /things/:id"},
+			unresolved: []string{"h.HEAD", "h.Things.Sub.POST"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package api\n\nimport \"github.com/labstack/echo/v5\"\n\n" + tc.body + "\n"
+			root := writeFixture(t, map[string]string{"routes.go": src})
+			var unresolved []string
+			cfg := Config{
+				Root:         root,
+				RoutesGlob:   "routes.go",
+				HandlersFile: tc.handlersFile,
+				HandlerGlob:  "*.go",
+				SkipUnresolved: func(route UnresolvedRoute) bool {
+					unresolved = append(unresolved, route.Receiver+"."+route.Method)
+					return true
+				},
+			}
+
+			routes, err := ParseRoutes(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var got []string
+			for _, r := range routes {
+				got = append(got, r.Method+" "+r.Path)
+			}
+			sort.Strings(unresolved)
+			if !reflect.DeepEqual(got, tc.routes) || !reflect.DeepEqual(unresolved, tc.unresolved) {
+				t.Fatalf("routes %q, unresolved %q\nwant routes %q, unresolved %q", got, unresolved, tc.routes, tc.unresolved)
+			}
+		})
+	}
+}
+
+// A route registered on a known group with Any, Match, Add, AddRoute, CONNECT, OPTIONS, TRACE or
+// QUERY fails generation, as the document would leave it out, unless SkipUnresolved does. RouteNotFound,
+// Use, Static and File are not API routes, and these methods on a receiver the finder does not
+// take for a group are not routes at all.
+func TestParseRoutesReportsRoutesOfMethodsItDoesNotDocument(t *testing.T) {
+	src := `package api
+
+func addRoutes(e *echo.Echo, h *Handler, s *Server, z *big.Int) {
+	e.GET("/things", h.GetThing)
+	e.Any("/any", h.GetThing)
+	e.Match([]string{"GET", "POST"}, "/match", h.GetThing)
+	e.Add("GET", "/add", h.GetThing)
+	e.CONNECT("/connect", h.GetThing)
+	e.OPTIONS("/options", h.GetThing)
+	e.TRACE("/trace", h.GetThing)
+	g := e.Group("/g")
+	g.Any("/any", h.GetThing)
+	g.AddRoute(echo.Route{Method: "GET", Path: "/route", Handler: h.GetThing})
+	e.RouteNotFound("/*", h.GetThing)
+	e.Use(mw)
+	e.Static("/static", "public")
+	e.File("/favicon.ico", "favicon.ico")
+	s.api.Any("/unknown", h.GetThing)
+	s.api.AddRoute(route)
+	ok, _ := regexp.Match("a", []byte("a"))
+	z.Add(z, big.NewInt(1))
+	_ = ok
+	e.QUERY("/query", h.GetThing)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"}
+
+	_, err := ParseRoutes(cfg)
+	if err == nil || ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("expected an invalid error, got %v", err)
+	}
+	reason := "the generator documents only routes registered with GET, POST, PUT, PATCH, DELETE or HEAD"
+	file := routeFile(root, "routes.go")
+	for _, line := range []string{
+		file + `:5: e.Any("/any", ...): ` + reason,
+		file + `:6: e.Match("/match", ...): ` + reason,
+		file + `:7: e.Add("/add", ...): ` + reason,
+		file + `:12: g.Any("/any", ...): ` + reason,
+		file + `:13: g.AddRoute(...): ` + reason,
+	} {
+		if !strings.Contains(filepath.ToSlash(ez.ErrorMessage(err)), line) {
+			t.Errorf("error does not contain %q: %v", line, err)
+		}
+	}
+
+	var skipped []UnresolvedRoute
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		skipped = append(skipped, route)
+		return true
+	}
+	routes, err := ParseRoutes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Path != "/things" {
+		t.Fatalf("routes: %+v, want only GET /things", routes)
+	}
+	unresolved := func(method string, receiver string, path string, line int) UnresolvedRoute {
+		return UnresolvedRoute{Method: method, Receiver: receiver, Path: path, File: "routes.go", Line: line, Reason: reason}
+	}
+	wantSkipped := []UnresolvedRoute{
+		unresolved("Any", "e", `"/any"`, 5),
+		unresolved("Match", "e", `"/match"`, 6),
+		unresolved("Add", "e", `"/add"`, 7),
+		unresolved("CONNECT", "e", `"/connect"`, 8),
+		unresolved("OPTIONS", "e", `"/options"`, 9),
+		unresolved("TRACE", "e", `"/trace"`, 10),
+		unresolved("Any", "g", `"/any"`, 12),
+		unresolved("AddRoute", "g", "", 13),
+		unresolved("QUERY", "e", `"/query"`, 23),
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Fatalf("SkipUnresolved received:\n got %+v\nwant %+v", skipped, wantSkipped)
+	}
+}
+
+// A route registered with a method the generator does not document on a group the finder cannot
+// resolve, a Group call whose prefix is not a constant or a variable that held a known group
+// before a branch reassigned it or its address was taken, or that each branch set to another
+// known group, fails generation with the reason a GET there gives. A call of one of these methods
+// with other arguments than Echo's, on a root group or on a parameter or variable of a RootGroups
+// name, is not a route, nor is one on a range variable.
+func TestParseRoutesReportsUndocumentedMethodsOnGroupsItCannotResolve(t *testing.T) {
+	src := `package api
+
+import "github.com/labstack/echo/v5"
+
+func addRoutes(e *echo.Echo, h *Handler, prefix string, debug bool, regexes []*regexp.Regexp, b []byte, cs []*Calls) {
+	e.GET("/things", h.GetThing)
+	e.Group(prefix).Any("/hook", h.GetThing)
+	g := e.Group("/v1")
+	if debug {
+		g = e.Group("/debug")
+	}
+	g.Match([]string{"GET"}, "/m", h.GetThing)
+	g.OPTIONS("/o", h.GetThing)
+	for _, r := range regexes {
+		r.Match(b)
+	}
+	for _, c := range cs {
+		c.Add("GET", "/range", h.GetThing)
+	}
+}
+
+func tally(e *big.Int, x *big.Int) {
+	e.Add(e, x)
+}
+
+func match(b []byte) bool {
+	e := regexp.MustCompile("a")
+	return e.Match(b)
+}
+
+func count() {
+	each(func(e *Counter) {
+		e.Add(1)
+	})
+}
+
+func lostByPointer(e *echo.Echo, h *Handler) {
+	g := e.Group("/a")
+	p := &g
+	_ = p
+	g.Any("/pointer", h.GetThing)
+}
+
+func setInBothBranches(e *echo.Echo, h *Handler, c bool) {
+	var g *echo.Group
+	if c {
+		g = e.Group("/a")
+	} else {
+		g = e.Group("/b")
+	}
+	g.Any("/both", h.GetThing)
+}
+
+func otherArguments(e *echo.Echo, x any, a any, b any) {
+	e.Any(x)
+	e.AddRoute(a, b)
+}
+`
+	root := writeFixture(t, map[string]string{"routes.go": src})
+	cfg := Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"}
+
+	var skipped []UnresolvedRoute
+	cfg.SkipUnresolved = func(route UnresolvedRoute) bool {
+		skipped = append(skipped, route)
+		return true
+	}
+	routes, err := ParseRoutes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Path != "/things" {
+		t.Fatalf("routes: %+v, want only GET /things", routes)
+	}
+
+	undocumented := "the generator documents only routes registered with GET, POST, PUT, PATCH, DELETE or HEAD"
+	reassigned := `"g" is reassigned at routes.go:10 in a branch, a loop or a function literal, so the group it holds here is not known; ` + undocumented
+	want := []UnresolvedRoute{
+		{Method: "Any", Receiver: "e.Group(prefix)", Path: `"/hook"`, File: "routes.go", Line: 7, Reason: "group prefix prefix is not a string constant; " + undocumented},
+		{Method: "Match", Receiver: "g", Path: `"/m"`, File: "routes.go", Line: 12, Reason: reassigned},
+		{Method: "OPTIONS", Receiver: "g", Path: `"/o"`, File: "routes.go", Line: 13, Reason: reassigned},
+		{Method: "Any", Receiver: "g", Path: `"/pointer"`, File: "routes.go", Line: 41, Reason: `"g" may be set through a pointer from routes.go:39 on, so the group it holds is not known; ` + undocumented},
+		{Method: "Any", Receiver: "g", Path: `"/both"`, File: "routes.go", Line: 51, Reason: `"g" is reassigned at routes.go:47 in a branch, a loop or a function literal, so the group it holds here is not known; ` + undocumented},
+	}
+	for i := range skipped {
+		skipped[i].Reason = filepath.ToSlash(skipped[i].Reason)
+	}
+	if !reflect.DeepEqual(skipped, want) {
+		t.Fatalf("SkipUnresolved received:\n got %+v\nwant %+v", skipped, want)
+	}
+}
+
+// Echo serves a path that does not start with a slash under one, so the document does too; an
+// empty path stays as written.
+func TestParseRoutesDocumentsAPathWithALeadingSlash(t *testing.T) {
+	root := writeFixture(t, map[string]string{"routes.go": `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.GET("things", h.GetThing)
+	g := e.Group("v1")
+	g.GET("things/:id", h.GetThing)
+	e.GET("", h.GetThing)
+	items := e.Group("/items")
+	items.GET("", h.GetThing)
+}
+`})
+
+	routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, r := range routes {
+		got = append(got, r.Method+" "+r.OpenAPIPath()+" "+r.Namespace)
+	}
+	want := []string{"GET  ", "GET /items items", "GET /things things", "GET /v1things/{id} v1things"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// Two paths in the document that differ only in the names of their parameters are one OpenAPI
+// path, so generation fails naming both routes, unless Skip leaves one of them out.
+func TestGenerateRefusesOnePathWithTwoParameterNames(t *testing.T) {
+	files := map[string]string{}
+	for name, contents := range requiredFixture {
+		files[name] = contents
+	}
+	files["api/routes.go"] = `package api
+
+func addRoutes(e *echo.Echo, h *Handler) {
+	e.GET("/invoices/:id", h.GetInvoice)
+	e.DELETE("/invoices/:invoice", h.CreateInvoice)
+}
+`
+	root := writeFixture(t, files)
+
+	_, err := Generate(Config{Root: root, RoutesGlob: "api/routes.go", HandlerGlob: "api/*.go"})
+	if err == nil || ez.ErrorCode(err) != ez.EINVALID {
+		t.Fatalf("expected an invalid error, got %v", err)
+	}
+	file := routeFile(root, "api/routes.go")
+	want := "routes GET /invoices/{id} (" + file + ":4) and DELETE /invoices/{invoice} (" + file + ":5) are one OpenAPI path with differently named parameters; use one parameter name in both"
+	if filepath.ToSlash(ez.ErrorMessage(err)) != want {
+		t.Fatalf("error message:\n got %q\nwant %q", ez.ErrorMessage(err), want)
+	}
+
+	// A route Skip leaves out is not in the document, so the other is the only one on the path.
+	spec, err := Generate(Config{
+		Root:        root,
+		RoutesGlob:  "api/routes.go",
+		HandlerGlob: "api/*.go",
+		Skip: func(method string, path string) bool {
+			return method == "DELETE"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, _ := spec.Document["paths"].(map[string]any)
+	item, _ := paths["/invoices/{id}"].(map[string]any)
+	if len(paths) != 1 || len(item) != 1 || item["get"] == nil {
+		t.Fatalf("paths: %v, want only GET /invoices/{id}", paths)
 	}
 }
 
@@ -1421,6 +1984,121 @@ func TestParseRoutesReadsOnlyBuiltFiles(t *testing.T) {
 	want := []string{"/from-this-platform", "/from-this-platform-name", "/real"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("routes:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A route file that imports "C" is built only with cgo on, so with cgo off it declares nothing.
+func TestParseRoutesReadsCgoFilesOnlyWithCgoOn(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"routes.go":     "package api\n\nfunc addRoutes(e *echo.Echo, h *Handler) {\n\te.GET(\"/plain\", h.GetThing)\n}\n",
+		"routes_cgo.go": "package api\n\n// #include <stdlib.h>\nimport \"C\"\n\nfunc addCgoRoutes(e *echo.Echo, h *Handler) {\n\te.GET(\"/cgo\", h.GetThing)\n}\n",
+	})
+	enabled := build.Default.CgoEnabled
+	t.Cleanup(func() {
+		build.Default.CgoEnabled = enabled
+	})
+
+	for _, tc := range []struct {
+		cgo  bool
+		want []string
+	}{
+		{cgo: true, want: []string{"/cgo", "/plain"}},
+		{cgo: false, want: []string{"/plain"}},
+	} {
+		build.Default.CgoEnabled = tc.cgo
+		routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes*.go", HandlerGlob: "*.go"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got []string
+		for _, r := range routes {
+			got = append(got, r.Path)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("cgo %v: routes %q, want %q", tc.cgo, got, tc.want)
+		}
+	}
+}
+
+// Function literals and loops nested deep are read in time: each level is walked a bounded
+// number of times, not twice as often as the level around it.
+func TestParseRoutesReadsDeepNestingInTime(t *testing.T) {
+	const depth = 32
+	src := "package api\n\nfunc addRoutes(e *echo.Echo, h *Handler, n int) {\n"
+	src += strings.Repeat("\t_ = func() {\n", depth)
+	src += "\tg := e.Group(\"/literals\")\n\tg.GET(\"/deep\", h.GetThing)\n"
+	src += strings.Repeat("\t}\n", depth)
+	src += strings.Repeat("\tfor i := 0; i < n; i++ {\n", depth)
+	src += "\tg := e.Group(\"/loops\")\n\tg.GET(\"/deep\", h.GetThing)\n"
+	src += strings.Repeat("\t}\n", depth)
+	src += "}\n"
+	root := writeFixture(t, map[string]string{"routes.go": src})
+
+	type result struct {
+		routes []Route
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		routes, err := ParseRoutes(Config{Root: root, RoutesGlob: "routes.go", HandlerGlob: "*.go"})
+		done <- result{routes: routes, err: err}
+	}()
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("reading %d nested function literals and %d nested loops took more than 20s", depth, depth)
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	var paths []string
+	for _, r := range got.routes {
+		paths = append(paths, r.Path)
+	}
+	want := []string{"/literals/deep", "/loops/deep"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("routes %q, want %q", paths, want)
+	}
+}
+
+// A long chain of selectors named like a route method is read in time: each selector's chain is
+// walked once, not rebuilt name by name.
+func TestParseRoutesReadsLongSelectorChainsInTime(t *testing.T) {
+	const length = 3000
+	src := "package api\n\nfunc addRoutes(e *echo.Echo, h *Handler) {\n\te.GET(\"/x\", h.GetThing)\n\t_ = h" + strings.Repeat(".GET", length) + "\n}\n"
+	root := writeFixture(t, map[string]string{"routes.go": src})
+
+	type result struct {
+		routes []Route
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		routes, err := ParseRoutes(Config{
+			Root:        root,
+			RoutesGlob:  "routes.go",
+			HandlerGlob: "*.go",
+			SkipUnresolved: func(route UnresolvedRoute) bool {
+				return true
+			},
+		})
+		done <- result{routes: routes, err: err}
+	}()
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("reading a chain of %d selectors took more than 5s", length)
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if len(got.routes) != 1 || got.routes[0].Path != "/x" {
+		t.Fatalf("routes: %+v, want only GET /x", got.routes)
 	}
 }
 

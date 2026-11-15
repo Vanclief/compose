@@ -28,8 +28,10 @@
 // Of the packages it reads types and module functions from, the app's and its dependencies', the
 // generator reads every file that some GOOS/GOARCH, with cgo on or off, builds, and leaves out one
 // that none builds, such as one marked //go:build ignore or needing a custom build tag; the files
-// RoutesGlob and HandlerGlob match are read whatever their build constraints, and a file that needs
-// a tag go/build sets for an architecture's feature level, such as amd64.v3, is not read. A marshal
+// HandlerGlob matches, test files aside, are read whatever their build constraints, those
+// RoutesGlob matches only when a default build on the platform the generator runs on compiles
+// them (see RoutesGlob), and a file that needs a tag go/build sets for an architecture's feature
+// level, such as amd64.v3, is not read. A marshal
 // method declared on fewer platforms than its type, through a file-name suffix such as
 // _windows.go, a //go:build line or an import of "C", and not outranked by a marshal method
 // declared on all of them, fails generation wherever the type's methods are read, for the type
@@ -55,13 +57,15 @@ type Config struct {
 	Root string
 	// RoutesGlob matches the files declaring routes, e.g. "application/interfaces/rest/routes_*.go".
 	// Test files and files a default build on the platform the generator runs on leaves out, by
-	// their name (routes_windows.go) or their build constraints (//go:build ignore), are not
-	// read, so the document is the one of that platform. Each other file is parsed as Go, and
-	// routes are the calls `group.GET(path, h.Method, ...)` (or POST, PUT, PATCH, DELETE, HEAD),
-	// on one line or several. A path or Group prefix is a string constant: a literal, a constant
-	// declared in the function or at the top level of the file's package, or such strings joined
-	// with +. A group is a RootGroups variable, a variable set with `:=`, `=` or var to a group,
-	// or a Group call on a group, chained as deep as written: `e.Group("/v1").GET("/x", ...)`.
+	// their name (routes_windows.go), their build constraints (//go:build ignore) or, with cgo
+	// off, an import of "C", are not read, so the document is the one of that platform. Each
+	// other file is parsed as Go, and routes are the calls `group.GET(path, h.Method, ...)` (or
+	// POST, PUT, PATCH, DELETE, HEAD), on one line or several. A non-empty path written without
+	// a leading slash is documented with one, as Echo serves it. A path or Group prefix is a
+	// string constant: a literal, a constant declared in the function or at the top level of the
+	// file's package, or such strings joined with +. A group is a RootGroups variable, a variable
+	// set with `:=`, `=` or var to a group, or a Group call on a group, chained as deep as
+	// written: `e.Group("/v1").GET("/x", ...)`.
 	// Group variables follow Go's scopes: one declared in a block or another function is not seen
 	// outside it, and `=` changes the prefix from that statement on. A route call whose path or
 	// group the finder cannot resolve fails generation unless SkipUnresolved leaves it out: among
@@ -72,12 +76,24 @@ type Config struct {
 	// break, continue, goto, fallthrough or a return from a function literal may leave early,
 	// reassigned anywhere in a function that has a goto, assigned in a loop or a function
 	// literal, written through as `*g = ...`, whose address is taken, or used in a function
-	// literal while `=` assigns it anywhere in the function. A RootGroups name that is a parameter, declared without
-	// a value or set to the result of a call other than Group, such as `e := echo.New()`, stays
-	// its root group; a named result does not. A route method used as a value, `get := e.GET`,
-	// fails the same way, so does a field named like one (`p.GET`), which SkipUnresolved can
-	// leave out. Not seen: a function literal that sets a group and sets it back around a call
-	// that panics under a recover, or that runs in a goroutine; and a group written through a
+	// literal while `=` assigns it anywhere in the function. A RootGroups name that is a
+	// parameter, declared without a value or set to a call other than Group or to a field, such
+	// as `e := echo.New()`, `e, err := newEcho()` or `e := s.echo`, stays its root group; one set
+	// to a variable holds what the variable holds, and a named result, a range variable or one
+	// set to anything else holds no known group. The finder does not follow calls or fields, so a
+	// RootGroups name set to a call other than Group or to a field is taken for its root group
+	// whatever the call or field returns: such a name must only ever be set to a root group. A
+	// route method used as a value, `get := e.GET`, fails the same way, so does a field named like
+	// one (`p.GET`) other than a handler written as a route call reads one (`h.GET` in flat mode,
+	// `h.Things.GET` in nested mode), and a route registered with Any, Match, Add, AddRoute,
+	// CONNECT, OPTIONS, TRACE or QUERY, with the arguments Echo takes, on a known group, a Group
+	// call or a variable that has held a known group, which the document would leave out;
+	// SkipUnresolved can leave them out.
+	// RouteNotFound, Use, Static, File and other calls that register no API route are not read.
+	// Two routes in the document, those Skip does not leave out, whose paths differ only in the
+	// names of their parameters, /things/:id and /things/:name, fail generation, as OpenAPI takes
+	// them for one path. Not seen: a function literal that sets a group and sets it back around a
+	// call that panics under a recover, or that runs in a goroutine; and a group written through a
 	// copy of its pointer (`p := g` then `*p = ...`).
 	RoutesGlob string
 	// HandlersFile holds the struct whose `Name *pkg.Handler` fields are the handler namespaces,
@@ -93,6 +109,9 @@ type Config struct {
 	// ReceiverVar is the variable route files call handlers through. Defaults to "h".
 	ReceiverVar string
 	// RootGroups maps the route files' root variables to their base path. Defaults to {"e": ""}.
+	// A name set to a call other than Group or to a field is taken for its root group whatever
+	// the call or field returns (see RoutesGlob), so such a name must only ever be set to a root
+	// group.
 	RootGroups map[string]string
 	// OutDir is where Run writes openapi.json and openapi.yaml (the public spec) and
 	// openapi.internal.json and openapi.internal.yaml (the full spec), relative to Root.
@@ -221,7 +240,8 @@ type Config struct {
 	Skip func(method string, path string) bool
 	// SkipUnresolved leaves out a route registration the route finder cannot resolve (see
 	// RoutesGlob), which has no path Skip could be asked about: a route call, a route call
-	// whose only argument is a call, or a route method used as a value, for which
+	// whose only argument is a call, a route registered with a method the generator does not
+	// document, such as Any, or a route method used as a value, for which, as for AddRoute,
 	// UnresolvedRoute.Path is empty. Without it, or when it returns
 	// false, generation fails and names the registration, its file and line, and what was not
 	// resolved. Leaving one out keeps it out of Spec.Routes too.
