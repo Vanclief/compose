@@ -10,6 +10,7 @@ import (
 	"math"
 	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -306,13 +307,18 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 // defaults, or the text of the tool error the SDK's typed tools answer when
 // they break the schema.
 //
-// The schema is checked on the arguments decoded with every number as a
-// float64, the SDK's way: the validator reads a float64 as an integer or a
-// number and a json.Number as a string. The arguments returned hold each
-// number as the SDK's typed tools write it again, 1.0 as 1, except an
-// integer exactNumbers keeps, which keeps its digits. A number no float64
-// holds, such as 1e400, is refused here as the SDK's typed tools refuse it,
-// in the words of encoding/json.
+// The schema is checked on the arguments with every number as a float64,
+// the SDK's way: the validator reads a float64 as an integer or a number and
+// a json.Number as a string. The arguments returned hold each number as the
+// SDK's typed tools write it again, 1.0 as 1, except an integer exactNumbers
+// keeps, which keeps its digits. A number no float64 holds, such as 1e400,
+// is refused here as the SDK's typed tools refuse it, in the words of
+// encoding/json.
+//
+// The arguments are decoded once, with unmarshalExact, into one tree that
+// floatNumbers turns into the checked one and keptNumbers.restore turns
+// back, so a large call holds one tree of its arguments rather than two,
+// and a record of where each integer of 2^53 or more was.
 //
 // The JSON-RPC layer of the SDK decodes the whole message with its own
 // decoder, which refuses JSON nested more than 1000 levels deep, so the
@@ -322,25 +328,27 @@ func addTool[In any](s *Server, tool *mcp.Tool, handle func(context.Context, *mc
 // the schema, which allows no other properties.
 func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, string) {
 	object := map[string]any{}
-	exact := map[string]any{}
+	var kept keptNumbers
 	if len(args) > 0 {
-		err := json.Unmarshal(args, &object)
-		if err != nil {
-			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
+		err := unmarshalExact(args, &object)
+		if err == nil {
+			err = checkNumbers(args)
 		}
-		err = unmarshalExact(args, &exact)
+		if err == nil {
+			err = floatNumbers(object, &kept)
+		}
 		if err != nil {
-			return nil, `validating "arguments": unmarshaling arguments: ` + err.Error()
+			return nil, `validating "arguments": unmarshaling arguments: ` + unmarshalRefusal(args, err).Error()
 		}
 	}
-	// Arguments of null leave both maps nil, and a default cannot be set in
-	// a nil map, so null is read as no arguments.
+	// Arguments of null leave the map nil, and a default cannot be set in a
+	// nil map, so null is read as no arguments.
 	if object == nil {
 		object = map[string]any{}
 	}
-	if exact == nil {
-		exact = map[string]any{}
-	}
+	// Defaults are decoded from the schema with every number as a float64,
+	// and set only where a property is missing, whatever the numbers are, so
+	// the integers put back below are the ones the arguments brought.
 	var value any = object
 	err := resolved.ApplyDefaults(&value)
 	if err != nil {
@@ -350,18 +358,146 @@ func applyInputSchema(args json.RawMessage, resolved *jsonschema.Resolved) (json
 	if err != nil {
 		return nil, `validating "arguments": ` + err.Error()
 	}
-	// Defaults are set where a property is missing, whatever the numbers
-	// are, so they fill the exact arguments as they filled the checked ones.
-	var input any = exact
-	err = resolved.ApplyDefaults(&input)
-	if err != nil {
-		return nil, "validating \"arguments\": applying schema defaults:\n" + err.Error()
-	}
-	data, err := json.Marshal(exactNumbers(input))
+	kept.restore()
+	data, err := json.Marshal(value)
 	if err != nil {
 		return nil, `validating "arguments": marshalling with defaults: ` + err.Error()
 	}
 	return data, ""
+}
+
+// unmarshalRefusal returns the error json.Unmarshal gives decoding args into
+// a map, the words arguments have always been refused in, or cause when it
+// gives none. It runs only once unmarshalExact, checkNumbers or floatNumbers
+// has refused args: unmarshalExact refuses what json.Unmarshal refuses but a
+// number no float64 holds, which the other two refuse with the
+// strconv.ParseFloat json.Unmarshal calls, so json.Unmarshal refuses args
+// too.
+func unmarshalRefusal(args json.RawMessage, cause error) error {
+	err := json.Unmarshal(args, &map[string]any{})
+	if err != nil {
+		return err
+	}
+	return cause
+}
+
+// checkNumbers returns the error of strconv.ParseFloat for a number in data,
+// valid JSON, that no float64 holds. json.Unmarshal refuses such a number
+// wherever it is, also as the value of a key repeated later, which leaves
+// it out of the decoded arguments that floatNumbers walks. Only a number
+// with an exponent or of more than 308 characters can be one: written
+// without an exponent, the smallest a float64 cannot hold has 309 digits.
+func checkNumbers(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c != '-' && (c < '0' || c > '9') {
+			continue
+		}
+		end := i + 1
+		for end < len(data) && strings.IndexByte("+-.0123456789eE", data[end]) >= 0 {
+			end++
+		}
+		number := data[i:end]
+		if len(number) > 308 || bytes.ContainsAny(number, "eE") {
+			_, err := strconv.ParseFloat(string(number), 64)
+			if err != nil {
+				return err
+			}
+		}
+		i = end - 1
+	}
+	return nil
+}
+
+// keptNumbers are the integers floatNumbers replaced that exactNumbers
+// keeps, with where each was.
+type keptNumbers struct {
+	items  []keptItem  // in a slice
+	fields []keptField // in a map
+}
+
+type keptItem struct {
+	slot   *any // the element of the slice
+	number json.Number
+}
+
+type keptField struct {
+	object map[string]any
+	key    string
+	number json.Number
+}
+
+// restore puts back every integer kept, after which the arguments are what
+// exactNumbers makes of them.
+func (kept *keptNumbers) restore() {
+	for _, item := range kept.items {
+		*item.slot = item.number
+	}
+	for _, field := range kept.fields {
+		field.object[field.key] = field.number
+	}
+}
+
+// floatNumbers replaces, in arguments decoded by unmarshalExact, each
+// json.Number by the float64 json.Unmarshal would have given, and records in
+// kept each integer exactNumbers keeps, for kept.restore to put back. It
+// fails on a number no float64 holds, which checkNumbers has refused before
+// it runs, and changes maps and slices in place.
+func floatNumbers(v any, kept *keptNumbers) error {
+	switch t := v.(type) {
+	case map[string]any:
+		for key, item := range t {
+			n, isNumber := item.(json.Number)
+			if !isNumber {
+				err := floatNumbers(item, kept)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			f, err := n.Float64()
+			if err != nil {
+				return err
+			}
+			t[key] = f
+			if keepsDigits(n, f) {
+				kept.fields = append(kept.fields, keptField{object: t, key: key, number: n})
+			}
+		}
+	case []any:
+		for i, item := range t {
+			n, isNumber := item.(json.Number)
+			if !isNumber {
+				err := floatNumbers(item, kept)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			f, err := n.Float64()
+			if err != nil {
+				return err
+			}
+			t[i] = f
+			if keepsDigits(n, f) {
+				kept.items = append(kept.items, keptItem{slot: &t[i], number: n})
+			}
+		}
+	}
+	return nil
 }
 
 // unmarshalExact decodes data into v as json.Unmarshal does, except that a
@@ -393,11 +529,11 @@ func unmarshalExact(data []byte, v any) error {
 func exactNumbers(v any) any {
 	switch t := v.(type) {
 	case json.Number:
-		// The float64 decode before this refuses a number no float64 holds,
-		// so Float64 does not fail here; if it did, the number would stay
-		// as written.
+		// applyInputSchema, or for a promoted tool the float64 decode
+		// before this, refuses a number no float64 holds, so Float64 does
+		// not fail here; if it did, the number would stay as written.
 		f, err := t.Float64()
-		if err != nil || (isIntegerLiteral(t.String()) && math.Abs(f) >= 1<<53) {
+		if err != nil || keepsDigits(t, f) {
 			return t
 		}
 		return f
@@ -411,6 +547,13 @@ func exactNumbers(v any) any {
 		}
 	}
 	return v
+}
+
+// keepsDigits reports whether n, whose float64 is f, is an integer written
+// without a fraction or an exponent whose magnitude is 2^53 or more, which
+// stays a json.Number.
+func keepsDigits(n json.Number, f float64) bool {
+	return isIntegerLiteral(n.String()) && math.Abs(f) >= 1<<53
 }
 
 // isIntegerLiteral reports whether a JSON number is written as an integer:
