@@ -271,6 +271,9 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 				problems = append(problems, r.sentNulls(t, fields, r.schemas[name])...)
 			}
 		}
+		if request {
+			problems = append(problems, r.providedFieldProblems(t, fields)...)
+		}
 
 		for _, f := range fields {
 			walk(f.typ)
@@ -282,6 +285,42 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 		return nil
 	}
 	return ez.New(ez.EINVALID, "openapi: "+strings.Join(problems, "; "), nil)
+}
+
+// providedFieldProblems reports the fields of the request struct t that
+// hold a type with a JSONSchema method, by value, behind a pointer or in a
+// types.Optional, and cannot do what its text says: encoding/json calls no
+// decoder for an absent key, so a default at the root of the text never
+// reaches the handler, and none for null into a pointer, which it sets to
+// nil, so a required:"true" pointer would be nil where the text lets null
+// through at its root.
+func (r *registry) providedFieldProblems(t reflect.Type, fields []jsonField) []string {
+	var problems []string
+	for _, f := range fields {
+		pt := deref(f.typ)
+		elem, ok := optionalElem(pt)
+		if ok {
+			pt = deref(elem)
+		}
+		if !providesSchema(pt) {
+			continue
+		}
+		s := r.schemas[r.names[pt]]
+		if s == nil {
+			continue
+		}
+		if s.Default != nil {
+			problems = append(problems, fmt.Sprintf("%s.%s: the default at the root of the JSONSchema text of %s is not supported on a request field, the registry does not apply it and encoding/json calls no decoder for an absent key; set the default in the handler and describe it in the text's description", t, f.path, pt))
+		}
+		sf := t.FieldByIndex(f.index)
+		nullMember := slices.ContainsFunc(s.AnyOf, func(m *huma.Schema) bool {
+			return m.Type == "null" && !m.Nullable
+		})
+		if sf.Type.Kind() == reflect.Pointer && sf.Tag.Get("required") == "true" && (s.Nullable || nullMember) {
+			problems = append(problems, fmt.Sprintf("%s.%s: required:\"true\" on a pointer to %s is not supported in a request type: its JSONSchema text lets null through, and encoding/json sets the pointer to nil for null without calling the decoder; declare the field by value, whose decoder reads the null, or drop required:\"true\" so that the document says null leaves it nil", t, f.path, pt))
+		}
+	}
+	return problems
 }
 
 // codesOwnJSON reports whether encoding/json hands t, or a pointer to it, to

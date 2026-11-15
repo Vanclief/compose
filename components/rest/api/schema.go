@@ -41,7 +41,8 @@ import "github.com/vanclief/compose/components/rest/api/openapi"
 // Registration fails as well for what the OpenAPI 3.0 document would carry
 // otherwise than written: a number a float64 does not hold as written,
 // anywhere in the text, a property named contentEncoding or
-// contentMediaType, examples with more than one item, format beside
+// contentMediaType, a property named application/octet-stream with the
+// empty schema {}, examples with more than one item, format beside
 // contentEncoding, a key the 3.0 document would rewrite as a schema keyword
 // inside an example, default, enum, const or x- value, an enum or const in
 // a member of an anyOf with a null member, and an enum that lists null
@@ -61,11 +62,17 @@ import "github.com/vanclief/compose/components/rest/api/openapi"
 // schema does not describe, a format tag on it or on its items, and in a
 // request a bound, length, pattern or enum tag on it or on its items and a
 // minItems, maxItems or uniqueItems tag on it, which belong in the schema.
+// A request field fails too when the text states a default at its root,
+// which the registry does not apply and encoding/json never decodes for an
+// absent key, and when it is a required:"true" pointer and the text lets
+// null through at its root, as encoding/json then sets the pointer to nil.
 //
 // The types JSONSchema asks refs.For for are linted and key-checked as the
 // fields of a type that holds the provider are, in the same direction. It
-// cannot ask for its own type's schema, directly or through another type's
-// JSONSchema method. JSONSchema is called at registration, possibly more
+// cannot ask for its own type's schema, directly or through other types'
+// JSONSchema methods alone; where the ask reaches the type through the
+// properties of a struct documented by its fields, it gets the type's $ref,
+// whichever route registers first. JSONSchema is called at registration, possibly more
 // than once, and must return the same text every time. A panic in it is not
 // recovered.
 //
@@ -103,12 +110,14 @@ type SchemaProvider = openapi.SchemaProvider
 // SchemaRefs gives a SchemaProvider the schema of another Go type:
 // refs.For(t) returns, as JSON text, the schema of the Go type t as the
 // registry publishes it. For a type the document holds as a component (a
-// struct, an enums.Set type, a type with a JSONSchema method) that is
-// {"$ref":"#/components/schemas/<Name>"}, and the document then holds it;
-// a pointer to an enums.Set type or to a type with a JSONSchema method, or
-// a types.Optional of any of these, gives
-// anyOf [{"$ref": ...}, {"type": "null"}];
-// for any other it is the type's inline schema. A nil *SchemaRefs, as in a
+// struct documented by its fields, an enums.Set type, a type with a
+// JSONSchema method) that is {"$ref":"#/components/schemas/<Name>"}, which
+// the document holds when the text uses it; a pointer to an enums.Set type
+// or to a type with a JSONSchema method, or a types.Optional of any of
+// these, gives anyOf [{"$ref": ...}, {"type": "null"}]; for any other, a
+// struct with a text decoder among them, it is the type's inline schema. A
+// type asked for is linted and key-checked whether or not the text uses its
+// schema. A nil *SchemaRefs, as in a
 // unit test of a JSONSchema method, returns {}, and so does one kept past
 // the JSONSchema call it was passed to.
 type SchemaRefs = openapi.SchemaRefs

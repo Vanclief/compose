@@ -121,7 +121,7 @@ func (op *operation) serve(c *echo.Context) error {
 		if body != nil {
 			instance["body"] = body
 			raw = bodyRaw
-			collisions = bodyCollisions(body, op.bodySchema, op.reg.result.Components)
+			collisions = bodyCollisions(body, op.bodySchema, op.reg.result.Components, op.reg.result.Provided)
 		}
 	}
 

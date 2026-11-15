@@ -125,6 +125,17 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 	res = &Result{
 		bodies:    map[reflect.Type]body{},
 		responses: map[reflect.Type]*huma.Schema{},
+		provided:  map[string]bool{},
+	}
+	for name := range base {
+		t := r.reg.types[name]
+		if t == nil || !providesSchema(t) {
+			continue
+		}
+		res.provided[name] = true
+		if variant[name] {
+			res.provided[variantName(name)] = true
+		}
 	}
 
 	published := append([]*huma.Schema{}, respRoots...)

@@ -16,6 +16,9 @@ type Result struct {
 	bodies    map[reflect.Type]body
 	responses map[reflect.Type]*huma.Schema
 	strict    []string
+	// provided holds the components that hold the text of a JSONSchema
+	// method, and their request variants.
+	provided map[string]bool
 }
 
 type body struct {
@@ -29,6 +32,12 @@ type body struct {
 func (res *Result) BodyRef(t reflect.Type) (ref string, required bool, ok bool) {
 	b, ok := res.bodies[deref(t)]
 	return b.ref, b.required, ok
+}
+
+// Provided reports whether the component name holds the text of a type's
+// JSONSchema method, or is the request variant of one.
+func (res *Result) Provided(name string) bool {
+	return res.provided[name]
 }
 
 // ResponseSchema returns a copy of the schema for a response root type: a

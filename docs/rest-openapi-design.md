@@ -400,7 +400,9 @@ as unknown keys, then bind). Decode once instead.
    case-collision check: a body key that matches a declared property ignoring case but not
    exactly is an error at every depth, because `encoding/json` matches case-insensitively at
    every depth (`config.Retries is not a known field, did you mean "retries"`,
-   `api/collisions.go`). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
+   `api/collisions.go`), except against the properties a `JSONSchema` method's text
+   declares, which the type's own decoder reads (the structs its `$ref`s lead to are still
+   checked). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
    joins `<field> <reason>` with `; `, parameters prefixed with their location
    (`query limit must be <= 1000`), never echoing submitted values (400 under
    `rest.ErrorHandler`, same envelope, which also lists the failing fields under `fields`;
@@ -655,7 +657,7 @@ numbering, `time.Time` and `TextUnmarshaler`, puts compose's own `api.SchemaProv
 huma has its `SchemaProvider`, and every nested field passes
 through it, so compose's hooks apply at every depth. Schema generation stays huma's
 `SchemaFromType` and `SchemaFromField`. The post-pass is a real component: the `openapi`
-package is about 3,600 lines (the reflector, the request variants, the `encoding/json` key
+package is about 3,700 lines (the reflector, the request variants, the `encoding/json` key
 check, the lint and the parameters) plus golden fixtures, in separate walks for parameters,
 lint, key check and variants.
 
@@ -740,7 +742,8 @@ lint, key check and variants.
   OpenAPI 3.0 has no null type, so `{"type": "null"}` may only be the one null member of
   an `anyOf`, beside nothing but annotations. Text the 3.0 document would carry otherwise
   than written is refused too: a number a float64 does not hold, anywhere in the text, a
-  property named `contentEncoding` or `contentMediaType`, `examples` with more than one
+  property named `contentEncoding` or `contentMediaType`, a property named
+  `application/octet-stream` with the empty schema `{}`, `examples` with more than one
   item, `format` beside `contentEncoding`, a key the 3.0 document would rewrite as a schema
   keyword inside an example, `default`, `enum`, `const` or `x-` value, an `enum` or `const`
   in a member of an `anyOf` with a null member, and an `enum` that lists `null` where the
@@ -749,12 +752,17 @@ lint, key check and variants.
   for a pointer to an enum or a provider, or a `types.Optional` of a component type) or the
   inline schema of another type, and the types asked are linted and
   key-checked as fields are. A type that asks for its own schema, directly or through
-  another provider, is refused rather than recursed into, and a type registration that
+  other providers alone, is refused rather than recursed into; where the ask reaches it
+  through the properties of a struct documented by its fields it gets the `$ref`,
+  whichever route registers first. A type registration that
   fails leaves no placeholder or partly built component behind. In a request a bound,
   length, `pattern` or `enum` tag on such a field, or on the items it is in, and a
   `minItems`, `maxItems` or `uniqueItems` tag on such a field are refused, as huma would
   write them into that schema whatever its type, and so is a `format` tag, in a request or
-  a response.
+  a response. A request field of such a type is refused when its text states a `default`
+  at its root, which the registry does not apply and `encoding/json` never decodes for an
+  absent key, and as a `required:"true"` pointer when its text lets `null` through at its
+  root, which `encoding/json` decodes as a nil pointer without calling the decoder.
 - **Types that decode their own JSON**: a request field whose type is an app's own type
   with an `UnmarshalJSON` and no `UnmarshalText` is published and validated by its Go
   shape, its kind or its struct fields, because the registry cannot know what the method

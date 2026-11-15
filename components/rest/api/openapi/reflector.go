@@ -126,7 +126,7 @@ func NewReflector(opts ...Option) *Reflector {
 			names:    map[reflect.Type]string{},
 			aliases:  map[reflect.Type]reflect.Type{},
 			namer:    DefaultNamer,
-			building: map[reflect.Type]bool{},
+			building: map[reflect.Type]int{},
 			asks:     map[reflect.Type][]reflect.Type{},
 		},
 		requests:  map[reflect.Type]*requestRoot{},
@@ -288,8 +288,11 @@ type registry struct {
 	aliases map[reflect.Type]reflect.Type
 	namer   func(reflect.Type) string
 	// building holds the types whose JSONSchema method is running (see
-	// providedSchema).
-	building map[reflect.Type]bool
+	// providedSchema), each with the value structs had when the method was
+	// called.
+	building map[reflect.Type]int
+	// structs counts the struct components whose fields are being built.
+	structs int
 	// asks holds the types each JSONSchema method asked refs.For for.
 	asks map[reflect.Type][]reflect.Type
 }
@@ -371,6 +374,10 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 		r.schemas[name] = &huma.Schema{}
 		r.types[name] = t
 		r.names[t] = name
+		r.structs++
+		defer func() {
+			r.structs--
+		}()
 	}
 
 	s := huma.SchemaFromType(r, origType)

@@ -38,8 +38,9 @@ type SchemaRefs struct {
 }
 
 // For returns, as JSON text, the schema of the Go type t as the registry
-// publishes it: for a type the document holds as a component (a struct, an
-// enum, a type with a JSONSchema method), {"$ref":"#/components/schemas/<Name>"},
+// publishes it: for a type the document holds as a component (a struct
+// documented by its fields, an enum, a type with a JSONSchema method),
+// {"$ref":"#/components/schemas/<Name>"},
 // and for a pointer to an enum or to a type with a JSONSchema method, or a
 // types.Optional of any of these, anyOf [{"$ref": ...}, {"type": "null"}];
 // for any other, its inline schema, whose $refs the text may use as well. A
@@ -78,8 +79,10 @@ func (r *SchemaRefs) For(t reflect.Type) string {
 // published documents write it (see normalizeNull). A panic of the registry
 // is returned as an error, so it does not cross the app's method; one of
 // another JSONSchema method goes on. A schema that refers to a type whose
-// JSONSchema method is running is refused: the type would ask for its own
-// schema.
+// JSONSchema method is running is refused when no struct component has
+// begun to be built since that method was called: the type would ask for
+// its own schema. Through the properties of a struct the reference is the
+// struct's, as it would be had the struct been built first.
 func (r *registry) schemaFor(t reflect.Type, owner reflect.Type) (s *huma.Schema, err error) {
 	defer func() {
 		rec := recover()
@@ -105,7 +108,8 @@ func (r *registry) schemaFor(t reflect.Type, owner reflect.Type) (s *huma.Schema
 	walkSchema(s, normalizeNull)
 	for _, name := range refsOf(s) {
 		running := r.types[name]
-		if r.building[running] {
+		structs, ok := r.building[running]
+		if ok && structs == r.structs {
 			return nil, ez.New(ez.EINVALID, fmt.Sprintf("%s: its JSONSchema method asked refs.For for %s, which refers to %s, whose JSONSchema method is running; a JSONSchema method cannot ask for its own type's schema, directly or through another type's JSONSchema method", owner, t, running), nil)
 		}
 	}
@@ -143,7 +147,7 @@ func (r *registry) providedSchema(t reflect.Type, pointer bool, hint string) *hu
 	r.types[name] = t
 	r.names[t] = name
 
-	r.building[t] = true
+	r.building[t] = r.structs
 	defer delete(r.building, t)
 	refs := &SchemaRefs{reg: r, owner: t, refs: map[string]bool{}}
 	text := callProvider(t, refs)
@@ -440,6 +444,10 @@ func (p *textParser) schema(v any, pointer string, nullMember bool) *huma.Schema
 				if renamedByDowngrade(name) {
 					fail(at+"/"+escapePointer(name), renamedPropertyProblem, name)
 				}
+				empty, isObject := props[name].(map[string]any)
+				if name == "application/octet-stream" && isObject && len(empty) == 0 {
+					fail(at+"/"+escapePointer(name), "the property %q with the empty schema {} is not supported: the OpenAPI 3.0 document would rewrite it as a binary upload; give it a schema that is not empty, or use another name", name)
+				}
 				s.Properties[name] = p.schema(props[name], at+"/"+escapePointer(name), false)
 			}
 		case "additionalProperties":
@@ -692,8 +700,13 @@ func exactNumber(n json.Number, at string) float64 {
 	if err != nil {
 		fail(at, "the number %s cannot be published as written, as a float64 does not hold it", n)
 	}
-	// Both are decimal numbers: encoding/json checked n, and f is finite.
-	written, _ := new(big.Rat).SetString(n.String())
+	// big.Rat refuses an exponent past its limit, as in 1e-99999999, which
+	// a float64 does not hold as written either.
+	written, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		fail(at, "the number %s cannot be published as written, as a float64 does not hold it", n)
+	}
+	// The shortest text of a finite float64 always parses.
 	published, _ := new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, 64))
 	if written.Cmp(published) != 0 {
 		fail(at, "the number %s cannot be published as written, as a float64 does not hold it", n)

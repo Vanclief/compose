@@ -547,6 +547,15 @@ type (
 	negativeCount    struct{}
 	zeroMultipleOf   struct{}
 	numberRequired   struct{}
+	hugeExponent     struct{}
+	octetProperty    struct{}
+	typeInDefault    struct{}
+	encodingInEnum   struct{}
+	nullInConst      struct{}
+	refWithSibling   struct{}
+	openapiInX       struct{}
+	octetInX         struct{}
+	examplesInItem   struct{}
 )
 
 func (notJSON) text() string        { return `{"type": "string"` }
@@ -617,6 +626,21 @@ func (emptyOneOf) text() string      { return `{"oneOf": []}` }
 func (negativeCount) text() string   { return `{"type": "array", "maxItems": -1}` }
 func (zeroMultipleOf) text() string  { return `{"type": "number", "multipleOf": 0}` }
 func (numberRequired) text() string  { return `{"type": "object", "required": ["a", 1]}` }
+func (hugeExponent) text() string    { return `{"type": "number", "maximum": 1e-99999999}` }
+func (octetProperty) text() string {
+	return `{"type": "object", "properties": {"application/octet-stream": {}}}`
+}
+func (typeInDefault) text() string  { return `{"type": "object", "default": {"type": ["a", "null"]}}` }
+func (encodingInEnum) text() string { return `{"enum": [{"contentEncoding": "x"}]}` }
+func (nullInConst) text() string {
+	return `{"const": {"anyOf": [{"type": "null"}, {}]}}`
+}
+func (refWithSibling) text() string { return `{"type": "object", "x-a": {"$ref": "r", "b": 1}}` }
+func (openapiInX) text() string     { return `{"type": "object", "x-a": {"openapi": "3.1.0"}}` }
+func (octetInX) text() string {
+	return `{"type": "object", "x-a": {"application/octet-stream": {}}}`
+}
+func (examplesInItem) text() string { return `{"type": "object", "examples": [{"examples": ["x"]}]}` }
 
 // TestSchemaProviderText: registration fails, naming the type and the JSON
 // pointer of the place, for a text that is not one JSON object or holds a
@@ -679,6 +703,15 @@ func TestSchemaProviderText(t *testing.T) {
 		{"negative count", refusedText[negativeCount], `the JSONSchema text at /maxItems: it must be a whole number of 0 or more, written without a fraction or an exponent, not -1`},
 		{"multipleOf 0", refusedText[zeroMultipleOf], `the JSONSchema text at /multipleOf: multipleOf must be greater than 0`},
 		{"number in required", refusedText[numberRequired], `the JSONSchema text at /required/1: required lists property names, which are strings`},
+		{"huge exponent", refusedText[hugeExponent], `the JSONSchema text at /maximum: the number 1e-99999999 cannot be published as written, as a float64 does not hold it`},
+		{"octet-stream property", refusedText[octetProperty], `the JSONSchema text at /properties/application~1octet-stream: the property "application/octet-stream" with the empty schema {} is not supported: the OpenAPI 3.0 document would rewrite it as a binary upload; give it a schema that is not empty, or use another name`},
+		{"type list in default", refusedText[typeInDefault], `the JSONSchema text at /default/type: the key "type" ` + rewritten},
+		{"contentEncoding in enum", refusedText[encodingInEnum], `the JSONSchema text at /enum/0/contentEncoding: the key "contentEncoding" ` + rewritten},
+		{"null anyOf in const", refusedText[nullInConst], `the JSONSchema text at /const/anyOf: the key "anyOf" ` + rewritten},
+		{"$ref with a sibling", refusedText[refWithSibling], `the JSONSchema text at /x-a/$ref: the key "$ref" ` + rewritten},
+		{"openapi 3.1.0", refusedText[openapiInX], `the JSONSchema text at /x-a/openapi: the key "openapi" ` + rewritten},
+		{"octet-stream in a value", refusedText[octetInX], `the JSONSchema text at /x-a/application~1octet-stream: the key "application/octet-stream" ` + rewritten},
+		{"examples in an example", refusedText[examplesInItem], `the JSONSchema text at /examples/0/examples: the key "examples" ` + rewritten},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, tt.got(t))
@@ -848,7 +881,7 @@ func (s *Sticker) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-const stickerText = `{"title": "A sticker", "type": "object", "properties": {"a": {"type": "string", "readOnly": true}}, "required": ["a"], "additionalProperties": false, "x-kind": "sticker", "example": {"a": "x"}, "default": {"a": "y"}, "maxProperties": 3}`
+const stickerText = `{"title": "A sticker", "type": "object", "properties": {"a": {"type": "string", "readOnly": true, "default": "y"}}, "required": ["a"], "additionalProperties": false, "x-kind": "sticker", "example": {"a": "x"}, "maxProperties": 3}`
 
 func (Sticker) JSONSchema(refs *api.SchemaRefs) string {
 	return stickerText
@@ -1924,4 +1957,273 @@ func TestSchemaProviderAskedLint(t *testing.T) {
 
 	msg = refused(t, func(g *api.Group) { api.GET[fixture.HealthRequest, askerResponse[map[string]Tally]](g, "", "op", stub) })
 	require.Equal(t, refusedGet+`openapi: api_test.Tally is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; hold *api_test.Tally`, msg)
+}
+
+// Left asks for Middle, a struct documented by its fields that holds a
+// Right, which asks for Left: the cycle passes through Middle's properties.
+type Left struct{}
+
+func (Left) MarshalJSON() ([]byte, error) {
+	return []byte(`{"r":null}`), nil
+}
+
+func (Left) JSONSchema(refs *api.SchemaRefs) string {
+	return refs.For(reflect.TypeFor[Middle]())
+}
+
+type Middle struct {
+	R *Right `json:"r"`
+}
+
+type Right struct{}
+
+func (Right) MarshalJSON() ([]byte, error) {
+	return []byte(`{"r":null}`), nil
+}
+
+func (Right) JSONSchema(refs *api.SchemaRefs) string {
+	return refs.For(reflect.TypeFor[Left]())
+}
+
+type leftResponse struct {
+	L Left `json:"l"`
+}
+
+type rightResponse struct {
+	R Right `json:"r"`
+}
+
+// Rock, Paper and Scissors ask for each other's schema in a ring, with no
+// struct between them.
+type Rock struct{}
+
+func (Rock) MarshalJSON() ([]byte, error) {
+	return []byte(`"rock"`), nil
+}
+
+func (Rock) JSONSchema(refs *api.SchemaRefs) string {
+	return refs.For(reflect.TypeFor[Paper]())
+}
+
+type Paper struct{}
+
+func (Paper) MarshalJSON() ([]byte, error) {
+	return []byte(`"paper"`), nil
+}
+
+func (Paper) JSONSchema(refs *api.SchemaRefs) string {
+	return refs.For(reflect.TypeFor[Scissors]())
+}
+
+type Scissors struct{}
+
+func (Scissors) MarshalJSON() ([]byte, error) {
+	return []byte(`"scissors"`), nil
+}
+
+func (Scissors) JSONSchema(refs *api.SchemaRefs) string {
+	return refs.For(reflect.TypeFor[*Rock]())
+}
+
+type rockResponse struct {
+	R Rock `json:"r"`
+}
+
+// TestSchemaProviderCycleOrder: a cycle of JSONSchema methods that passes
+// through the properties of a struct registers whichever route comes first,
+// with the same documents; one with no struct in it is refused.
+func TestSchemaProviderCycleOrder(t *testing.T) {
+	specs := func(leftFirst bool) [][]byte {
+		reg := api.New(newEcho(), api.Public())
+		left := func() { api.GET[fixture.HealthRequest, leftResponse](reg.Group("/lefts"), "", "get", stub) }
+		right := func() { api.GET[fixture.HealthRequest, rightResponse](reg.Group("/rights"), "", "get", stub) }
+		if leftFirst {
+			left()
+			right()
+		} else {
+			right()
+			left()
+		}
+		reg.Ready()
+		var out [][]byte
+		for _, v := range []api.Version{api.V31, api.V30} {
+			raw, err := reg.Spec(v)
+			require.NoError(t, err)
+			out = append(out, raw)
+		}
+		return out
+	}
+	leftFirst := specs(true)
+	require.Equal(t, specs(false), leftFirst)
+	schemas := dig(t, decode(t, leftFirst[0]), "components", "schemas")
+	require.Equal(t, map[string]any{"$ref": "#/components/schemas/api_test.Middle"}, dig(t, schemas, "api_test.Left"))
+	require.Equal(t, map[string]any{"$ref": "#/components/schemas/api_test.Left"}, dig(t, schemas, "api_test.Right"))
+
+	msg := refused(t, func(g *api.Group) { api.GET[fixture.HealthRequest, rockResponse](g, "", "op", stub) })
+	require.Equal(t, refusedGet+`openapi: api_test.Scissors: its JSONSchema method asked refs.For for *api_test.Rock, which refers to api_test.Rock, whose JSONSchema method is running; a JSONSchema method cannot ask for its own type's schema, directly or through another type's JSONSchema method`, msg)
+}
+
+// Bag reads itself into a map, keys as they are.
+type Bag struct {
+	m map[string]string
+}
+
+func (b *Bag) UnmarshalJSON(raw []byte) error {
+	return json.Unmarshal(raw, &b.m)
+}
+
+func (Bag) JSONSchema(refs *api.SchemaRefs) string {
+	return `{"type": "object", "properties": {"name": {"type": "string"}}}`
+}
+
+type bagRequest struct {
+	requests.NoRules
+	Bag Bag `json:"bag"`
+}
+
+// Wallet reads itself as an object whose account encoding/json binds to an
+// Account.
+type Wallet struct {
+	v struct {
+		Account Account `json:"account"`
+	}
+}
+
+func (w *Wallet) UnmarshalJSON(raw []byte) error {
+	return json.Unmarshal(raw, &w.v)
+}
+
+func (Wallet) JSONSchema(refs *api.SchemaRefs) string {
+	return `{"type": "object", "properties": {"account": ` + refs.For(reflect.TypeFor[Account]()) + `}}`
+}
+
+type walletRequest struct {
+	requests.NoRules
+	W Wallet `json:"w"`
+}
+
+// TestSchemaProviderCollisions: a key that differs only in case from a
+// property a JSONSchema method's text declares reaches the type's own
+// decoder, which does not match keys that way; a struct the text refers to
+// with a $ref is bound by encoding/json, and such a key in it is refused.
+func TestSchemaProviderCollisions(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *bagRequest
+	api.POST(reg.Group("/bags"), "", "create", func(ctx context.Context, req *bagRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	api.POST[transferRequest, transferResponse](reg.Group("/transfers"), "", "create", stub)
+	api.POST[walletRequest, nodeResponse](reg.Group("/wallets"), "", "create", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/bags", `{"bag":{"name":"a","Name":"b"}}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, map[string]string{"name": "a", "Name": "b"}, got.Bag.m)
+
+	rec = s.do(http.MethodPost, "/transfers", `{"t":{"number":"1","Number":"2"}}`)
+	requireError(t, rec, http.StatusBadRequest, `t.Number is not a known field, did you mean "number"`)
+	rec = s.do(http.MethodPost, "/wallets", `{"w":{"account":{"number":"1","Number":"2"}}}`)
+	requireError(t, rec, http.StatusBadRequest, `w.account.Number is not a known field, did you mean "number"`)
+}
+
+// Defaulted states a default at the root of its text.
+type Defaulted struct {
+	raw json.RawMessage
+}
+
+func (d Defaulted) MarshalJSON() ([]byte, error) {
+	return []byte(`"x"`), nil
+}
+
+func (d *Defaulted) UnmarshalJSON(raw []byte) error {
+	d.raw = append(json.RawMessage(nil), raw...)
+	return nil
+}
+
+func (Defaulted) JSONSchema(refs *api.SchemaRefs) string {
+	return `{"type": "string", "default": "x"}`
+}
+
+type defaultedRequest struct {
+	requests.NoRules
+	D types.Optional[Defaulted] `json:"d"`
+}
+
+type defaultedResponse struct {
+	D Defaulted `json:"d"`
+}
+
+type requiredBlankRequest struct {
+	requests.NoRules
+	B *Blank `json:"b" required:"true"`
+}
+
+type requiredMaybeRequest struct {
+	requests.NoRules
+	M *Maybe `json:"m" required:"true"`
+}
+
+// TestSchemaProviderRequestField: a request field cannot hold a type whose
+// text states a default at its root, which the handler would never get, nor
+// be a required pointer to one whose text lets null through at its root,
+// which encoding/json would set to nil. A default in a response, and one
+// inside the text, are accepted.
+func TestSchemaProviderRequestField(t *testing.T) {
+	msg := refused(t, func(g *api.Group) { api.POST[defaultedRequest, nodeResponse](g, "", "op", stub) })
+	require.Equal(t, refusedPost+`openapi: api_test.defaultedRequest.D: the default at the root of the JSONSchema text of api_test.Defaulted is not supported on a request field, the registry does not apply it and encoding/json calls no decoder for an absent key; set the default in the handler and describe it in the text's description`, msg)
+
+	nullable := `: its JSONSchema text lets null through, and encoding/json sets the pointer to nil for null without calling the decoder; declare the field by value, whose decoder reads the null, or drop required:"true" so that the document says null leaves it nil`
+	msg = refused(t, func(g *api.Group) { api.POST[requiredBlankRequest, nodeResponse](g, "", "op", stub) })
+	require.Equal(t, refusedPost+`openapi: api_test.requiredBlankRequest.B: required:"true" on a pointer to api_test.Blank is not supported in a request type`+nullable, msg)
+	msg = refused(t, func(g *api.Group) { api.POST[requiredMaybeRequest, nodeResponse](g, "", "op", stub) })
+	require.Equal(t, refusedPost+`openapi: api_test.requiredMaybeRequest.M: required:"true" on a pointer to api_test.Maybe is not supported in a request type`+nullable, msg)
+
+	reg := api.New(newEcho(), api.Public())
+	api.GET[fixture.HealthRequest, defaultedResponse](reg.Group("/defaults"), "", "get", stub)
+	api.POST[stickerRequest, nodeResponse](reg.Group("/stickers"), "", "create", stub)
+	reg.Ready()
+}
+
+// TestSchemaRefsNoSchema: refs.For of a type with no JSON schema fails
+// registration, naming the type that asked.
+func TestSchemaRefsNoSchema(t *testing.T) {
+	msg := refused(t, func(g *api.Group) { api.GET[fixture.HealthRequest, askerResponse[chan int]](g, "", "op", stub) })
+	require.Equal(t, refusedGet+`openapi: `+reflect.TypeFor[Asker[chan int]]().String()+`: its JSONSchema method asked refs.For for chan int, which has no JSON schema`, msg)
+}
+
+// Gauge holds a null exclusive bound in an x- value and an example.
+type Gauge struct{}
+
+func (Gauge) MarshalJSON() ([]byte, error) {
+	return []byte(`{}`), nil
+}
+
+const gaugeText = `{"type": "object", "x-meta": {"exclusiveMinimum": null}, "example": {"exclusiveMaximum": null}}`
+
+func (Gauge) JSONSchema(refs *api.SchemaRefs) string {
+	return gaugeText
+}
+
+type gaugeResponse struct {
+	G Gauge `json:"g"`
+}
+
+// TestSchemaProviderNullBound: an exclusive bound of null in a value is
+// published as written in both documents.
+func TestSchemaProviderNullBound(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	api.GET[fixture.HealthRequest, gaugeResponse](reg.Group("/gauges"), "", "get", stub)
+	reg.Ready()
+
+	var want map[string]any
+	err := json.Unmarshal([]byte(gaugeText), &want)
+	require.NoError(t, err)
+	for _, v := range []api.Version{api.V31, api.V30} {
+		raw, err := reg.Spec(v)
+		require.NoError(t, err)
+		require.Equal(t, want, dig(t, decode(t, raw), "components", "schemas", "api_test.Gauge"))
+	}
 }
