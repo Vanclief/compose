@@ -133,3 +133,29 @@ func taggedKey(goName string, name string) string {
 	}
 	return ""
 }
+
+// tagRefusals caches refusedTags by type.
+var tagRefusals sync.Map
+
+// refusedTags returns the error encoding/json gives for the json tags of the struct t's fields,
+// whatever the value, or "" when it gives none: encoding/json/v2, Go 1.27's default, refuses to
+// read or write any value of a struct a field of which has a json format: option, which
+// encoding/json on Go 1.26 ignores. It asks encoding/json, once per type, to decode {} into a t:
+// that checks the tags of every field, promoted ones included, and decodes none, so no method of
+// a field's type runs. t must be a struct encoding/json decodes by its fields (not
+// decodesOwnJSON), so that no method of t's runs either. Decoding is asked for a response type as
+// well, as encoding a zero value would call the field types' encoders; both check the tags alike.
+func refusedTags(t reflect.Type) string {
+	cached, ok := tagRefusals.Load(t)
+	if ok {
+		return cached.(string)
+	}
+
+	refusal := ""
+	err := json.Unmarshal([]byte("{}"), reflect.New(t).Interface())
+	if err != nil {
+		refusal = err.Error()
+	}
+	tagRefusals.Store(t, refusal)
+	return refusal
+}

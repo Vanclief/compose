@@ -166,7 +166,7 @@ func (r *Registry) finalize() error {
 		return ez.New(ez.EINTERNAL, "could not encode the validation document", err)
 	}
 
-	compiler, err := validate.NewCompiler(compileDoc)
+	compiler, err := validate.NewRequestCompiler(compileDoc)
 	if err != nil {
 		return ez.Wrap(err)
 	}

@@ -78,3 +78,9 @@ func TestStreamMethodsNeedTheirSignature(t *testing.T) {
 	_, err = NewReflector().AddRequest(reflect.TypeFor[pcWrongStreamHolder]())
 	require.NoError(t, err)
 }
+
+// TestFormatOptionRefusedOnV2: encoding/json/v2 refuses a struct with a json
+// format: option for every value, so the probe reports it here.
+func TestFormatOptionRefusedOnV2(t *testing.T) {
+	require.Contains(t, refusedTags(reflect.TypeFor[probeFormat]()), "Go struct field At has unsupported `format` tag option")
+}

@@ -177,7 +177,12 @@ Rules enforced at registration (fail boot):
   `nullable:"true"` on a `json:"-"` field of struct type, `hidden:"true"` on any field
   of a request type, `uniqueItems` with any value where it is misplaced, and `uniqueItems:"true"` on a
   type it is not supported on). The lint also rejects the `json` `string` option (the schema and `encoding/json` would disagree
-  on the value's type), the `format` tag on anything but a plain string or a slice of them
+  on the value's type), a `json` `format:` option such as `json:"at,format:unix"`, which
+  `encoding/json` reads differently or not at all depending on the Go version (Go 1.26
+  ignores it, so `format:hex` bytes are read as base64; Go 1.27 refuses every value of the
+  struct, so every request would be a 400 and every response a 500), also on a struct
+  with its own `UnmarshalJSON` or `MarshalJSON`, which may read the tags through a
+  conversion of the type, the `format` tag on anything but a plain string or a slice of them
   (on a `time.Time`, a number, a `uuid.UUID` or any type that sets its own format or reads
   its own text, the schema and the decoder would disagree on the value's text), property names
   `contentEncoding` and `contentMediaType` (section 8), a `nullable` tag on an object
@@ -203,9 +208,12 @@ Rules enforced at registration (fail boot):
   anything but plain strings, integers and booleans (no type with a schema or decoder of
   its own, no floats, no objects): the schema compares the items as the client wrote them,
   so one `uuid.UUID` in upper and lower case passes as two. `exclusiveMinimum` and
-  `exclusiveMaximum` on a `float32` or `float64`, the field or the items of its slice: the
+  `exclusiveMaximum` on a `float32` or `float64`, the field or the items of its slice or
+  array, also behind a `types.Optional`, and on a type of float kind that has only an
+  `UnmarshalJSON`, which is published and validated as a number: the
   schema checks the digits the client sent and the decoder then rounds them, so
-  `1.00000000000000000001` passes `exclusiveMinimum:"1"` and reaches the handler as `1`.
+  `1.00000000000000000001` passes `exclusiveMinimum:"1"` and reaches the handler as `1`, and
+  `1e-400` passes `exclusiveMinimum:"0"` and reaches it as `0`.
   An inclusive bound holds through the rounding; a `json.Number` field keeps the digits.
   A bound, length or item tag is refused on a request field where huma would put it on a
   schema of another JSON type, which the validator does not constrain: `maximum` on a map
@@ -247,7 +255,11 @@ Rules enforced at registration (fail boot):
   `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) are not looked into,
   except that a struct which gets its encoder from an embedded field is refused. Both walks
   ask `encoding/json` which of those methods it calls and which key a json tag's name gives
-  (`openapi/jsonrules.go`), so they follow the toolchain the app is built with.
+  (`openapi/jsonrules.go`), so they follow the toolchain the app is built with. They also
+  ask it to decode `{}` into each struct they look into, once per type, which checks the
+  json tags of every field and decodes none, so no method of the app's runs: a struct it
+  refuses for its tags, whatever the value, fails registration, as every request or
+  response holding it would fail. A response type that decodes its own JSON is not asked.
   The same walk refuses a pointer field that Go would send as `null` where its schema
   refuses null: one with neither `omitempty` nor `omitzero` whose schema is not nullable,
   which in practice is a pointer to a struct (a pointer to a scalar, a `time.Time`, a
@@ -359,9 +371,21 @@ as unknown keys, then bind). Decode once instead.
    that text as with the client's number, which is an integer exactly when the text is.
    An ordinary number is validated as the client wrote it. So a bound on a `json.Number`
    or `big.Int` field holds for the value the handler receives, at any length and
-   exponent; `multipleOf` does for a number of at most 64 significant digits within the
-   float64 range, and is checked on that text for any other. A `float32` or `float64` field
-   rounds them, which is why registration refuses an exclusive bound on one. The handler
+   exponent; `multipleOf` does for a number of at most 64 significant digits, trailing
+   zeros not counted, within the float64 range, so a 73-digit multiple of `1000000000`
+   whose first 64 digits are followed by nine zeros passes. Any other number is a 400
+   where its schema has `multipleOf`, `has too many digits to be checked as a multiple of
+   <n>`, as the text does not hold its remaining digits, unless `multipleOf` is 1, or 1/k
+   and the number an integer: the text is an integer exactly when the number is, which
+   decides those; a number
+   closer to 0 than any float64 is checked on `1e-325`, a multiple of no `multipleOf` a
+   document can state, as it is not either. The validator's `multipleOf` check refuses it
+   (`validate.NewRequestCompiler`), so a schema without `multipleOf` costs nothing more,
+   and `apitest`, which checks responses on the numbers as written, is not affected. A
+   `float32` or `float64` field rounds them, which is why registration refuses an exclusive
+   bound on one. An inclusive bound on a `float32` holds in float32: `maximum:"0.1"` passes
+   `0.1`, which the field holds as `float32(0.1)`, 0.10000000149 once widened to float64, so
+   a handler compares the value with `float32(0.1)`, not with `0.1`. The handler
    always decodes the client's own bytes. A non-empty body needs a JSON content type: a missing or non-JSON
    one returns `EINVALID`, since Echo's binder no longer produces the 415. A body without
    the header is not decoded as JSON, because `rest.RejectNUL` scans only bodies it knows to
@@ -710,7 +734,11 @@ lint, key check and variants.
   nothing unvalidated reaches the handler; a request that leaves out an optional field of
   such a type passes, and the handler gets its zero value. Giving the type an
   `UnmarshalText` makes it a plain string in the document and the validator (`isOpaque`),
-  which is the way out when its wire form is a string.
+  which is the way out when its wire form is a string. A float kind with only an
+  `UnmarshalJSON` is a float to the lint as well: published and validated as a number by
+  its digits, it can round them onto an exclusive bound (`1e-400` passes
+  `exclusiveMinimum:"0"` and reads as `0`), so registration refuses `exclusiveMinimum` and
+  `exclusiveMaximum` on it, as on a `float64`.
 - **Enums as named components**: `enums.Set[T]` records the values by `reflect.Type`
   (`enums.Values`); repeated `Set` calls for one type record the union in first-seen order,
   and a field narrows with the `enum:"a,b"` tag. `Set` panics for `string` itself (or an

@@ -449,25 +449,33 @@ type marshalVisit struct {
 }
 
 // floatBounded reports whether a bound tag on a field of type t (after a
-// pointer and a types.Optional) lands on a float32 or float64, the field
-// itself or the items of its slice or array, where huma puts the tag. The
-// schema checks the digits the client wrote (see validate.MaxExactNumber)
+// pointer and a types.Optional) lands on a number the schema publishes for a
+// float32 or float64 kind, the field itself or the items of its slice or
+// array (after a pointer and a types.Optional), where huma puts the tag. The
+// schema checks the digits the client wrote (see validate.CanonicalNumber)
 // and the decoder then rounds them, so 1.00000000000000000001 passes
-// exclusiveMinimum 1 and reaches the handler as 1. An inclusive bound holds
-// through the rounding. A type with a schema or decoder of its own
-// (json.Number) is not a float here.
+// exclusiveMinimum 1 and reaches the handler as 1, and 1e-400 passes
+// exclusiveMinimum 0 and reaches it as 0. An inclusive bound holds through
+// the rounding. A float type with only an UnmarshalJSON is published and
+// checked by its kind (see jsonKind), so it counts here whatever its method
+// reads; a type isOpaque names does not, as its schema is its own
+// (json.Number) or a string (a text decoder).
 func floatBounded(t reflect.Type) bool {
 	t = deref(t)
 	elem, ok := optionalElem(t)
 	if ok {
 		t = deref(elem)
 	}
-	if isOpaque(t) || decodesOwnText(t) {
+	if isOpaque(t) {
 		return false
 	}
 	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
 		t = deref(t.Elem())
-		if isOpaque(t) || decodesOwnText(t) {
+		elem, ok = optionalElem(t)
+		if ok {
+			t = deref(elem)
+		}
+		if isOpaque(t) {
 			return false
 		}
 	}
@@ -715,6 +723,11 @@ func tagKeys(tag reflect.StructTag) []string {
 // lintField rejects a nullable tag on a type whose schema has no type (see
 // typeless), the json string option (the schema would describe the
 // value unquoted while encoding/json reads and writes it as a string), a
+// json format: option, also on a struct with its own UnmarshalJSON or
+// MarshalJSON, which may read its tags through a conversion of the type
+// (encoding/json on Go 1.26 ignores it, and on Go 1.27 refuses to read or
+// write any value of the struct wherever it reads its tags, so it means
+// another thing on each toolchain and the schema would describe neither), a
 // format tag on a type that sets its own format or reads its own text (see
 // formatTagApplies), a nullable tag on a struct reference or a
 // types.Optional of a struct (huma cannot express it) and minimum/maximum
@@ -726,6 +739,13 @@ func lintField(t reflect.Type, f reflect.StructField) []string {
 	_, options, _ := strings.Cut(f.Tag.Get("json"), ",")
 	if slices.Contains(strings.Split(options, ","), "string") {
 		problems = append(problems, fmt.Sprintf("%s.%s: the json string option is not supported; the schema and encoding/json would disagree on the value's type", t, f.Name))
+	}
+	for _, option := range strings.Split(options, ",") {
+		// encoding/json takes a format: with no value for no format.
+		if strings.HasPrefix(option, "format:") && option != "format:" {
+			problems = append(problems, fmt.Sprintf("%s.%s: the json option %s is not supported: encoding/json reads it differently or not at all depending on the Go version (Go 1.26 ignores it, Go 1.27 refuses every value of the struct wherever it reads the struct's tags, also through a conversion in the type's own UnmarshalJSON or MarshalJSON); drop it, and give the field a type that reads and writes the form you want", t, f.Name, option))
+			break
+		}
 	}
 	if f.Tag.Get("format") != "" && !formatTagApplies(f.Type) {
 		problems = append(problems, fmt.Sprintf("%s.%s: the format tag is not supported on %s, whose format is set by the type; the schema and the decoder would disagree on the value's text", t, f.Name, f.Type))

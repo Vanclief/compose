@@ -54,6 +54,30 @@ func NewCompiler(doc json.RawMessage) (*Compiler, error) {
 	return &Compiler{compiler: compiler}, nil
 }
 
+// NewRequestCompiler is NewCompiler for the requests the api registry
+// validates, whose numbers carry the text CanonicalNumber gives them, which
+// past MaxExactNumber significant digits or 10^309 does not hold all of the
+// number: where a schema has multipleOf, it also refuses a number
+// multipleOf cannot be checked on there (see multipleOfChecks), with the
+// message "has too many digits to be checked as a multiple of <n>". Inside
+// not, if and the oneOf branches after the first match, where santhosh asks
+// only whether a value passes, such a number fails multipleOf like any
+// other failure, so not: {multipleOf: 2} accepts a 70-digit even number.
+// The document is checked against the core, applicator, unevaluated and
+// validation vocabularies only, so an annotation keyword of the wrong type,
+// such as description: 5, which NewCompiler refuses, compiles here.
+func NewRequestCompiler(doc json.RawMessage) (*Compiler, error) {
+	c, err := NewCompiler(doc)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
+	// santhosh applies a vocabulary of its own on draft 2020-12 only when
+	// vocabularies are asserted.
+	c.compiler.RegisterVocabulary(multipleOfVocabulary)
+	c.compiler.AssertVocabs()
+	return c, nil
+}
+
 // Compile compiles a synthetic operation schema. name must be unique per call
 // (for example "op:<operationId>") and must not be "spec.json".
 func (c *Compiler) Compile(name string, schema map[string]any) (*Schema, error) {
