@@ -402,7 +402,10 @@ as unknown keys, then bind). Decode once instead.
    every depth (`config.Retries is not a known field, did you mean "retries"`,
    `api/collisions.go`), except against the properties a `JSONSchema` method's text
    declares, which the type's own decoder reads (the structs its `$ref`s lead to are still
-   checked). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
+   checked, also through `allOf`, `anyOf` and `oneOf`: a key is reported when no schema that
+   applies to its object declares it as written and it matches, ignoring case, a property
+   of one that is not such a text; in a request a text that refers to such a struct under a
+   `not` is refused at registration, as the check does not look there). Collect every error. Map `kind.*` to one ez `EINVALID` whose message
    joins `<field> <reason>` with `; `, parameters prefixed with their location
    (`query limit must be <= 1000`), never echoing submitted values (400 under
    `rest.ErrorHandler`, same envelope, which also lists the failing fields under `fields`;
@@ -732,7 +735,9 @@ lint, key check and variants.
   The registry parses the text afresh at registration into its own schema, refuses a
   keyword it cannot publish and validate as written, a key given twice and a `$ref` that
   `refs.For` did not return during the same call, and names the type and the JSON pointer
-  of the place. The type becomes a named component, and every place that holds it refers
+  of the place; `readOnly` and `writeOnly` are refused, as the validator reads them as
+  annotations while the 3.0 document tells clients a request or a response leaves the
+  property out. The type becomes a named component, and every place that holds it refers
   to it; a pointer (in a response one without `omitempty`, in a request one that is not
   required), or a `types.Optional`, adds `null` as `anyOf [ref, null]`, which the 3.0
   document writes as `nullable` with `allOf [ref]`. Its text is published as written: no
@@ -758,11 +763,16 @@ lint, key check and variants.
   fails leaves no placeholder or partly built component behind. In a request a bound,
   length, `pattern` or `enum` tag on such a field, or on the items it is in, and a
   `minItems`, `maxItems` or `uniqueItems` tag on such a field are refused, as huma would
-  write them into that schema whatever its type, and so is a `format` tag, in a request or
-  a response. A request field of such a type is refused when its text states a `default`
-  at its root, which the registry does not apply and `encoding/json` never decodes for an
-  absent key, and as a `required:"true"` pointer when its text lets `null` through at its
-  root, which `encoding/json` decodes as a nil pointer without calling the decoder.
+  write them into that schema whatever its type, and so is a `format` or `example` tag, in
+  a request or a response, and a `default` or `enum` tag in a response: huma reads their
+  value by the type's schema, which may still be the empty placeholder while the type's
+  method runs. Where a `nullable:"true"` tag on such a field is accepted, it is written as
+  `anyOf [ref, null]` whatever the type's text holds. A request field of such a type is refused when its text
+  states a `default` at its root, which the registry does not apply and `encoding/json`
+  never decodes for an absent key, and as a `required:"true"` pointer unless its text
+  states, at its root, a type without `null` or an `enum` or `const` without `null`, as
+  `encoding/json` decodes `null` as a nil pointer without calling the decoder; a `$ref` at
+  the root is followed for both.
 - **Types that decode their own JSON**: a request field whose type is an app's own type
   with an `UnmarshalJSON` and no `UnmarshalText` is published and validated by its Go
   shape, its kind or its struct fields, because the registry cannot know what the method

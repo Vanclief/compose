@@ -202,6 +202,9 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 
 		if providesSchema(t) {
 			problems = append(problems, r.providerProblems(t, request)...)
+			if request {
+				problems = append(problems, r.notStructProblems(t)...)
+			}
 			for _, asked := range r.asks[t] {
 				lintAsked(t, asked, request, linted, &problems)
 				walk(asked)
@@ -292,8 +295,9 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 // types.Optional, and cannot do what its text says: encoding/json calls no
 // decoder for an absent key, so a default at the root of the text never
 // reaches the handler, and none for null into a pointer, which it sets to
-// nil, so a required:"true" pointer would be nil where the text lets null
-// through at its root.
+// nil, so a required:"true" pointer would be nil unless the text refuses
+// null at its root (see refusesNull). The root is followed through its
+// $refs (see rootChain).
 func (r *registry) providedFieldProblems(t reflect.Type, fields []jsonField) []string {
 	var problems []string
 	for _, f := range fields {
@@ -305,22 +309,87 @@ func (r *registry) providedFieldProblems(t reflect.Type, fields []jsonField) []s
 		if !providesSchema(pt) {
 			continue
 		}
-		s := r.schemas[r.names[pt]]
-		if s == nil {
-			continue
-		}
-		if s.Default != nil {
+		chain := r.rootChain(r.schemas[r.names[pt]])
+		defaulted := slices.ContainsFunc(chain, func(s *huma.Schema) bool {
+			return s.Default != nil
+		})
+		if defaulted {
 			problems = append(problems, fmt.Sprintf("%s.%s: the default at the root of the JSONSchema text of %s is not supported on a request field, the registry does not apply it and encoding/json calls no decoder for an absent key; set the default in the handler and describe it in the text's description", t, f.path, pt))
 		}
 		sf := t.FieldByIndex(f.index)
-		nullMember := slices.ContainsFunc(s.AnyOf, func(m *huma.Schema) bool {
-			return m.Type == "null" && !m.Nullable
-		})
-		if sf.Type.Kind() == reflect.Pointer && sf.Tag.Get("required") == "true" && (s.Nullable || nullMember) {
-			problems = append(problems, fmt.Sprintf("%s.%s: required:\"true\" on a pointer to %s is not supported in a request type: its JSONSchema text lets null through, and encoding/json sets the pointer to nil for null without calling the decoder; declare the field by value, whose decoder reads the null, or drop required:\"true\" so that the document says null leaves it nil", t, f.path, pt))
+		if sf.Type.Kind() == reflect.Pointer && sf.Tag.Get("required") == "true" && !slices.ContainsFunc(chain, refusesNull) {
+			problems = append(problems, fmt.Sprintf("%s.%s: required:\"true\" on a pointer to %s is not supported in a request type unless its JSONSchema text states, at its root, a type without null or an enum or const without null: encoding/json sets the pointer to nil for null without calling the decoder; state such a type in the text, declare the field by value, whose decoder reads the null, or drop required:\"true\"", t, f.path, pt))
 		}
 	}
 	return problems
+}
+
+// rootChain returns s and the components its root $refs lead to, one after
+// the other: every schema of the chain applies to the value at the root.
+func (r *registry) rootChain(s *huma.Schema) []*huma.Schema {
+	var chain []*huma.Schema
+	for s != nil && !slices.Contains(chain, s) {
+		chain = append(chain, s)
+		if s.Ref == "" {
+			break
+		}
+		s = r.SchemaFromRef(s.Ref)
+	}
+	return chain
+}
+
+// refusesNull reports whether s refuses null by a keyword of its own: a
+// type without null, or an enum or const without null. Any other schema
+// may let null through, as {}, a not, or an anyOf with a nullable member
+// does, and is not looked into.
+func refusesNull(s *huma.Schema) bool {
+	if s.Type != "" && s.Type != "null" && !s.Nullable {
+		return true
+	}
+	if len(s.Enum) > 0 && !slices.Contains(s.Enum, nil) {
+		return true
+	}
+	return s.Const != nil
+}
+
+// notStructProblems reports, for t, a type with a JSONSchema method in a
+// request, each struct documented by its fields that its text names with a
+// $ref under a not (see structRefs): encoding/json binds that struct's keys
+// ignoring case, and bodyCollisions, which refuses a key that differs from a
+// property only in case, does not look under a not.
+func (r *registry) notStructProblems(t reflect.Type) []string {
+	var problems []string
+	walkSchema(r.schemas[r.names[t]], func(n *huma.Schema) {
+		if n.Not == nil {
+			return
+		}
+		for _, st := range r.structRefs(n.Not, map[string]bool{}) {
+			problems = append(problems, fmt.Sprintf("%s: its JSONSchema text refers to %s under a not, which is not supported in a request: encoding/json binds the keys of %s ignoring case, and the registry does not look under a not for a key that differs from a property only in case; leave %s out of the not", t, st, st, st))
+		}
+	})
+	return problems
+}
+
+// structRefs returns the structs documented by their fields whose
+// components s refers to, following the $refs of the text of a type with a
+// JSONSchema method that s refers to.
+func (r *registry) structRefs(s *huma.Schema, seen map[string]bool) []reflect.Type {
+	var out []reflect.Type
+	for _, name := range refsOf(s) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		t := r.types[name]
+		switch {
+		case t == nil:
+		case providesSchema(t):
+			out = append(out, r.structRefs(r.schemas[name], seen)...)
+		case t.Kind() == reflect.Struct && !isOpaque(t):
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // codesOwnJSON reports whether encoding/json hands t, or a pointer to it, to
@@ -388,12 +457,16 @@ func promotedSchemaProblem(t reflect.Type, embedded string) string {
 // embedded field; encoding/json reads (request) or writes (response) t by
 // its Go type, which the schema does not describe, as t has no JSON decoder
 // or encoder of its own; or it codes t as text, always a JSON string, and
-// the schema is not of type string.
+// the schema is not of type string or lets null through.
 func (r *registry) providerProblems(t reflect.Type, request bool) []string {
 	if t.Kind() == reflect.Struct {
 		embedded, ok := promotedCoder(t, request)
 		if ok {
-			return []string{promotedCoderProblem(t, embedded, request)}
+			coder := "decoder"
+			if !request {
+				coder = "encoder"
+			}
+			return []string{fmt.Sprintf("%s: the JSON %s of embedded field %s would code the whole value as that field's type, not as the JSONSchema text of %s says; make it a named field", t, coder, embedded, t)}
 		}
 		embedded, ok = promotedSchema(t)
 		if ok {
@@ -416,8 +489,11 @@ func (r *registry) providerProblems(t reflect.Type, request bool) []string {
 		return nil
 	}
 	s := r.schemas[r.names[t]]
-	if s.Type != huma.TypeString || s.Nullable {
+	if s.Type != huma.TypeString {
 		return []string{fmt.Sprintf("%s codes its JSON as text with %s, which is always a JSON string, and its JSONSchema text does not say so; give it \"type\": \"string\"", t, method)}
+	}
+	if s.Nullable {
+		return []string{fmt.Sprintf("%s codes its JSON as text with %s, which is always a JSON string, and its JSONSchema text lets null through too; give it \"type\": \"string\", without null", t, method)}
 	}
 	return nil
 }

@@ -162,8 +162,8 @@ func lintWalk(t reflect.Type, request bool, seen map[reflect.Type]bool, problems
 		*problems = append(*problems, lintField(t, f)...)
 		if request {
 			*problems = append(*problems, misplacedTags(t, f)...)
-			*problems = append(*problems, providedTags(t, f)...)
 		}
+		*problems = append(*problems, providedTags(t, f, request)...)
 
 		if request && f.Tag.Get("uniqueItems") == "true" && !uniqueItemsApplies(f.Type) {
 			*problems = append(*problems, fmt.Sprintf("%s.%s: uniqueItems is not supported on %s in a request type: the schema compares the items' text, which the decoder may read as equal values; check uniqueness in Validate()", t, f.Name, f.Type))
@@ -319,8 +319,11 @@ func misplacedTags(t reflect.Type, f reflect.StructField) []string {
 // tag beside the $ref to that schema whatever its type, where nothing may
 // check it (minimum on a string, maxLength on a oneOf). misplacedTags cannot
 // tell, as the reflector does not know the schema before it asks the type;
-// formatTagApplies refuses the format tag.
-func providedTags(t reflect.Type, f reflect.StructField) []string {
+// formatTagApplies refuses the format tag. In both directions it reports
+// the tags whose value huma reads by the schema of the field's type (see
+// valueTags), which may still be the empty placeholder while the type's
+// JSONSchema method runs.
+func providedTags(t reflect.Type, f reflect.StructField, request bool) []string {
 	ft := deref(f.Type)
 	elem, ok := optionalElem(ft)
 	if ok {
@@ -328,10 +331,12 @@ func providedTags(t reflect.Type, f reflect.StructField) []string {
 	}
 
 	var tags []string
-	for _, st := range scalarTags {
-		tags = append(tags, st.tag)
+	if request {
+		for _, st := range scalarTags {
+			tags = append(tags, st.tag)
+		}
+		tags = append(tags, "enum")
 	}
-	tags = append(tags, "enum")
 	item := ft
 	if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
 		item = deref(ft.Elem())
@@ -341,8 +346,9 @@ func providedTags(t reflect.Type, f reflect.StructField) []string {
 		}
 	}
 	switch {
-	case providesSchema(ft):
+	case providesSchema(ft) && request:
 		tags = append(tags, arrayTags...)
+	case providesSchema(ft):
 	case item != ft && providesSchema(item):
 		ft = item
 	default:
@@ -356,7 +362,24 @@ func providedTags(t reflect.Type, f reflect.StructField) []string {
 			problems = append(problems, fmt.Sprintf("%s.%s: the %s tag is not supported on %s in a request type: %s states its schema with its JSONSchema method, and the tag would be written beside that schema whatever its type, where nothing may check it; state the rule in the schema JSONSchema returns", t, f.Name, tag, f.Type, ft))
 		}
 	}
+	for _, tag := range valueTags(request) {
+		_, tagged := f.Tag.Lookup(tag)
+		if tagged {
+			problems = append(problems, fmt.Sprintf("%s.%s: the %s tag is not supported on %s: %s states its schema with its JSONSchema method, and the registry would read the tag's value by that schema, which may not be built yet; write it in the schema JSONSchema returns", t, f.Name, tag, f.Type, ft))
+		}
+	}
 	return problems
+}
+
+// valueTags are the tags whose value huma reads by the schema of the
+// field's type, which providedTags does not report already: in a request
+// the enum tag is reported with the bounds and the default tag on every
+// field (see lintWalk).
+func valueTags(request bool) []string {
+	if request {
+		return []string{"example"}
+	}
+	return []string{"example", "default", "enum"}
 }
 
 // arrayType returns the fixed-size array a field of type t is (after a

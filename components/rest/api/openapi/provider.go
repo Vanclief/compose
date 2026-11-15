@@ -209,7 +209,7 @@ func fail(pointer string, format string, args ...any) {
 // accepts.
 var annotations = map[string]bool{
 	"title": true, "description": true, "default": true, "examples": true, "example": true,
-	"deprecated": true, "readOnly": true, "writeOnly": true,
+	"deprecated": true,
 }
 
 // parseSchemaText builds the schema the JSONSchema text describes, refusing
@@ -334,7 +334,7 @@ func (p *textParser) schema(v any, pointer string, nullMember bool) *huma.Schema
 			}
 			_, encoded := obj["contentEncoding"]
 			if encoded {
-				fail(at, "format and contentEncoding together are not supported: the OpenAPI 3.0 document writes a contentEncoding of base64 as the format, in place of this one; use one of them")
+				fail(at, "format and contentEncoding together are not supported: the OpenAPI 3.0 document writes a contentEncoding of base64 as the format, in place of this one, and the registry refuses the pair for any contentEncoding; use one of them")
 			}
 		case "contentEncoding":
 			s.ContentEncoding = p.text(val, at)
@@ -414,10 +414,8 @@ func (p *textParser) schema(v any, pointer string, nullMember bool) *huma.Schema
 			s.MaxProperties = p.count(val, at)
 		case "uniqueItems":
 			s.UniqueItems = p.flag(val, at)
-		case "readOnly":
-			s.ReadOnly = p.flag(val, at)
-		case "writeOnly":
-			s.WriteOnly = p.flag(val, at)
+		case "readOnly", "writeOnly":
+			fail(at, "%s is not supported: the validator reads it as an annotation, so a required property it marks is still asked of a request (readOnly) or a response (writeOnly) while the OpenAPI 3.0 document tells clients otherwise; leave it out, and list the property in required only where it is always sent", key)
 		case "deprecated":
 			s.Deprecated = p.flag(val, at)
 		case "required":
@@ -592,7 +590,7 @@ func (p *textParser) nullAnyOf(obj map[string]any, members []*huma.Schema, at st
 	}
 	for _, key := range sortedKeys(obj) {
 		if key != "anyOf" && !annotations[key] && !strings.HasPrefix(key, "x-") {
-			fail(at, "a schema with an anyOf that holds null may hold only annotations (title, description, default, examples, example, deprecated, readOnly, writeOnly, x-) beside it, not %q: OpenAPI 3.0 writes it as nullable, which would let null past %q", key, key)
+			fail(at, "a schema with an anyOf that holds null may hold only annotations (title, description, default, examples, example, deprecated, x-) beside it, not %q: OpenAPI 3.0 writes it as nullable, which would let null past %q", key, key)
 		}
 	}
 	if len(others) > 1 {

@@ -29,15 +29,16 @@ import "github.com/vanclief/compose/components/rest/api/openapi"
 // exclusiveMinimum, exclusiveMaximum, multipleOf, minLength, maxLength,
 // minItems, maxItems, uniqueItems, minProperties, maxProperties, required,
 // properties, additionalProperties, items (one schema), allOf, anyOf,
-// oneOf, not, readOnly, writeOnly, deprecated, $ref and keys that start
-// with x-. Registration fails, naming the type and the JSON pointer of the
-// place, for any other keyword, a schema that is not an object (true,
-// false), an empty enum, a const or default of null, both example and
+// oneOf, not, deprecated, $ref and keys that start with x-. Registration
+// fails, naming the type and the JSON pointer of the place, for any other
+// keyword, readOnly and writeOnly among them (the validator reads them as
+// annotations, so a required property they mark is still asked of a request
+// or a response), a schema that is not an object (true, false), an empty
+// enum, a const or default of null, both example and
 // examples, and a $ref beside an allOf. OpenAPI 3.0 has no null type, so
 // {"type": "null"} may only be the one null member of an anyOf with other
 // members, whose schema holds nothing but annotations (title, description,
-// default, examples, example, deprecated, readOnly, writeOnly, x-) beside
-// it. A $ref must be one that refs.For returned during the same call.
+// default, examples, example, deprecated, x-) beside it. A $ref must be one that refs.For returned during the same call.
 // Registration fails as well for what the OpenAPI 3.0 document would carry
 // otherwise than written: a number a float64 does not hold as written,
 // anywhere in the text, a property named contentEncoding or
@@ -55,17 +56,26 @@ import "github.com/vanclief/compose/components/rest/api/openapi"
 // change: in a request a decoder (UnmarshalJSON or UnmarshalText, and on
 // encoding/json/v2 UnmarshalJSONFrom), in a response an encoder
 // (MarshalJSON or MarshalText, and on encoding/json/v2 MarshalJSONTo or
-// AppendText). One that codes it as text states a schema of type "string".
+// AppendText). One that codes it as text states a schema of type "string",
+// without null.
 // Registration fails for a struct that gets JSONSchema or its coder from an
 // embedded field, an enums.Set type with a JSONSchema method, such a type
 // as a path, query or header parameter or a form value, whose text the
-// schema does not describe, a format tag on it or on its items, and in a
-// request a bound, length, pattern or enum tag on it or on its items and a
-// minItems, maxItems or uniqueItems tag on it, which belong in the schema.
-// A request field fails too when the text states a default at its root,
-// which the registry does not apply and encoding/json never decodes for an
-// absent key, and when it is a required:"true" pointer and the text lets
-// null through at its root, as encoding/json then sets the pointer to nil.
+// schema does not describe, a format or example tag on it or on its items,
+// in a response a default or enum tag on it or on its items, whose value
+// would be read by a schema that may not be built yet, and in a request a
+// bound, length, pattern or enum tag on it or on its items and a minItems,
+// maxItems or uniqueItems tag on it, which belong in the schema. A request
+// field fails too when the text states a default at its root, which the
+// registry does not apply and encoding/json never decodes for an absent
+// key, and when it is a required:"true" pointer and the text does not
+// state, at its root, a type without null or an enum or const without null,
+// as encoding/json sets the pointer to nil for null without calling the
+// decoder; a $ref at the root is followed for both. In a request, a text
+// that refers under a not to a struct documented by its fields, directly or
+// through another type's text, fails as well: encoding/json binds that
+// struct's keys ignoring case, and the check for such keys does not look
+// under a not.
 //
 // The types JSONSchema asks refs.For for are linted and key-checked as the
 // fields of a type that holds the provider are, in the same direction. It

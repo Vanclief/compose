@@ -526,19 +526,12 @@ func SchemaFromField(registry Registry, f reflect.StructField, hint string) *Sch
 		s.Const = jsonTagValue(registry, f.Name, s, constValue)
 	}
 
+	// compose: a nullable $ref is rewritten as anyOf [ref, null] whatever
+	// its component holds, which is not read here: the component of a type
+	// with a JSONSchema method may still be its empty placeholder while the
+	// method runs. compose's lint refuses a nullable tag on a reference to a
+	// struct documented by its fields before the schema is built.
 	fs.Nullable = boolTag(f, "nullable", fs.Nullable)
-	// compose: only a nullable tag is refused. A $ref the registry marks
-	// nullable itself (a pointer to a type with a JSONSchema method) is
-	// rewritten as anyOf [ref, null], whatever the type of its schema.
-	if fs.Nullable && f.Tag.Get("nullable") == "true" && fs.Ref != "" && registry.SchemaFromRef(fs.Ref).Type == "object" {
-		// Nullability is only supported for scalar types for now. Objects are
-		// much more complicated. The `null` type lives within the object
-		// definition (requiring multiple copies of the object) or needs to use
-		// `anyOf` or `not` which is not supported by all code generators, or is
-		// supported poorly & generates hard-to-use code. This is less than ideal
-		// but a compromise for now to support some nullability built-in.
-		panic(fmt.Errorf("nullable is not supported for field '%s' which is type '%s'", f.Name, fs.Ref))
-	}
 
 	if v := floatTag(f, "minimum"); v != nil {
 		targetSchema(fs).Minimum = v
