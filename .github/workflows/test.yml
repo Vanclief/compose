@@ -42,6 +42,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Building and testing do not build the module zip that go get downloads,
+      # so a commit Go's zip rules refuse, such as one holding a file named
+      # nul.go, would pass and could be tagged. A release that cannot be
+      # downloaded can only be retracted
+      - name: Module zip
+        working-directory: .github/tools/modzip
+        run: go run . "$GITHUB_WORKSPACE"
+
       - name: Build
         run: go build ./...
 
