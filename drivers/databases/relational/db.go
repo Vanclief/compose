@@ -3,7 +3,9 @@ package relational
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 	"github.com/vanclief/ez"
@@ -15,6 +17,26 @@ import (
 // object, so a call loses at most once per object its statement and the
 // model's hooks create.
 const createAttempts = 20
+
+// createLockKey - The key of the PostgreSQL advisory lock one instance holds
+// while it runs CreateTables or CreateExtensions ("creates" in ASCII). It is
+// not migrationLockKey, so a migration can call CreateTables and table
+// creation does not wait for another instance's migrations. A migration that
+// calls it inside a transaction holding a table lock can still stall the
+// instance that holds this lock, see docs/migrations.md.
+const createLockKey int64 = 0x63726561746573
+
+// createLockWait - How long CreateTables and CreateExtensions wait for the
+// create lock before they go on without it. It bounds a boot behind an
+// instance that holds the lock and does not finish, and a call made from a
+// model's hook while the outer call holds the lock. A variable so tests can
+// shorten it.
+var createLockWait = 30 * time.Second
+
+// createLockPoll - How long an instance waits between two tries of the create
+// lock. Creating what already exists takes milliseconds, so the instances
+// queued behind one another try often rather than every migrationLockPoll.
+const createLockPoll = 20 * time.Millisecond
 
 type DB struct {
 	*bun.DB
@@ -52,19 +74,36 @@ func (db *DB) Close() error {
 }
 
 // CreateTables - Creates the database schema if it doesn't already exist.
-// Every instance can call it at startup: on PostgreSQL concurrent CREATE TABLE
-// IF NOT EXISTS statements, and the statements of a model's create-table
-// hooks, can fail on the catalog when another instance creates the same
-// object at the same moment, and the model's statement is then run again, up
-// to createAttempts attempts in all. A model's create-table hooks run on every
+// Every instance can call it at startup: on PostgreSQL it holds the create
+// lock for the whole call (see lockCreate), so instances booting together
+// create their tables one at a time, while the statements and the models'
+// create-table hooks run on the main pool as without it. The lock takes one
+// connection of its own for the call, out of the migration pool when there is
+// one. Where an instance runs without the lock, concurrent CREATE TABLE IF
+// NOT EXISTS statements, and the statements of a model's create-table hooks,
+// can fail on the catalog when another instance creates the same object at
+// the same moment, and the model's statement is then run again, up to
+// createAttempts attempts in all. A model's create-table hooks run on every
 // attempt, since bun runs them inside the statement's Exec, AfterCreateTable
 // also when the table already exists, so they must tolerate being run again,
 // as they already must on every boot. A hook statement that rewrites an
 // existing catalog row, such as CREATE OR REPLACE FUNCTION or GRANT, can still
-// fail when instances run it at the same moment, with an error that is not
-// retried.
+// fail with an error that is not retried when instances run it at the same
+// moment without all holding the lock: an instance on a compose older than
+// v1.39.0 during a rolling deploy, one whose wait for the lock ran out or
+// that could not take it, or one that does not take it because the lock
+// would come out of a main pool with a connection limit. A hook that calls
+// CreateTables or CreateExtensions itself waits the whole createLockWait,
+// since the outer call holds the lock on another session.
 func (db *DB) CreateTables(models []interface{}) error {
 	ctx := context.Background()
+
+	if len(models) == 0 {
+		return nil
+	}
+
+	unlock := db.lockCreate()
+	defer unlock()
 
 	for _, model := range models {
 		err := retryCreate(func() error {
@@ -80,6 +119,41 @@ func (db *DB) CreateTables(models []interface{}) error {
 	}
 
 	return nil
+}
+
+// lockCreate - Takes the create lock for CreateTables and CreateExtensions
+// and returns the function that releases it: lockAdvisory on createLockKey,
+// tried every createLockPoll. It waits for the lock up to createLockWait,
+// then logs a warning and returns without it, as it does when taking the lock
+// fails: the lock only spares the retries, so it is never a reason for the
+// call to fail. It does not take it when the lock would come out of the main
+// pool and that pool has a connection limit: the lock would hold one of the
+// connections the statements then wait for, with no bound. On any dialect but
+// PostgreSQL there is no lock.
+// Without the lock the release does nothing.
+func (db *DB) lockCreate() func() {
+	if db.Dialect().Name() != dialect.PG {
+		return func() {}
+	}
+
+	if db.migrationDB().DB == db.DB.DB && db.DB.Stats().MaxOpenConnections != 0 {
+		return func() {}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), createLockWait)
+	defer cancel()
+
+	unlock, err := db.lockAdvisory(ctx, createLockKey, createLockPoll, "Waiting for another instance to finish creating tables or extensions")
+	if err != nil && ctx.Err() != nil {
+		log.Warn().Dur("Waited", createLockWait).Msg("Did not get the create lock in time, creating tables or extensions without it")
+		return func() {}
+	}
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not take the create lock, creating tables or extensions without it")
+		return func() {}
+	}
+
+	return unlock
 }
 
 // retryCreate - Runs create again while it fails with a catalog race, up to
@@ -159,9 +233,11 @@ func (db *DB) ResetTables(models []interface{}) error {
 // CreateExtensions - Creates a database extension if it doesn't already
 // exist. Extensions are a Postgres concept, so requesting any on another
 // dialect is an error rather than a silent no-op. Every instance can call it
-// at startup: a CREATE EXTENSION IF NOT EXISTS that fails on the catalog
-// because another instance created the extension at the same moment is run
-// again, up to createAttempts attempts in all.
+// at startup: it holds the create lock for the whole call, as CreateTables
+// does, and a CREATE EXTENSION IF NOT EXISTS that fails on the catalog
+// because another instance created the extension at the same moment, which
+// takes an instance without the lock, is run again, up to createAttempts
+// attempts in all.
 func (db *DB) CreateExtensions(extensions []string) error {
 	ctx := context.Background()
 
@@ -172,6 +248,9 @@ func (db *DB) CreateExtensions(extensions []string) error {
 	if db.Dialect().Name() != dialect.PG {
 		return ez.New(ez.ENOTIMPLEMENTED, "Database extensions are only supported by PostgreSQL", nil)
 	}
+
+	unlock := db.lockCreate()
+	defer unlock()
 
 	for _, extension := range extensions {
 		err := retryCreate(func() error {
