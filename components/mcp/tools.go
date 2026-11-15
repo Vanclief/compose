@@ -45,13 +45,13 @@ type explainInput struct {
 // maxLength error would quote the whole string back, uncut.
 const (
 	// maxListItems is the most names describe_function, or terms
-	// explain_term, takes in one call. The describe blocks of the emma
+	// explain_term, takes in one call. The describe blocks of the sample
 	// catalog average about 500 bytes, so fewer than 50 of them fill the
 	// default 24000-byte output.
 	maxListItems = 50
 	// maxNameLength is the most characters of one name or term, or of the
 	// module search_functions is given, whitespace around it aside. The
-	// names of the emma catalog run under 100.
+	// names of the sample catalog run under 100.
 	maxNameLength = 256
 	// maxQueryLength is the most characters of a search_functions query.
 	maxQueryLength = 256

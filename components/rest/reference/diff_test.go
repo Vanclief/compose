@@ -20,7 +20,7 @@ import (
 
 func loadDiffFixtures(t *testing.T) *Report {
 	t.Helper()
-	return Diff(loadEmma(t, "diff-base.yaml"), loadEmma(t, "diff-head.yaml"))
+	return Diff(loadSample(t, "diff-base.yaml"), loadSample(t, "diff-head.yaml"))
 }
 
 // change returns the change at path whose detail starts with detail.
@@ -168,17 +168,17 @@ func TestDiffMarkdown(t *testing.T) {
 	require.Contains(t, md[other:], "### Models\n")
 	require.NotContains(t, md[other:], "operation removed")
 
-	require.Equal(t, "# API changes\n\nNo changes.\n", Diff(loadEmma(t, "diff-head.yaml"), loadEmma(t, "diff-head.yaml")).Markdown())
+	require.Equal(t, "# API changes\n\nNo changes.\n", Diff(loadSample(t, "diff-head.yaml"), loadSample(t, "diff-head.yaml")).Markdown())
 }
 
-func TestDiffEmmaWithItself(t *testing.T) {
-	r := Diff(loadEmma(t, "emma.yaml"), loadEmma(t, "emma.yaml"))
+func TestDiffSampleWithItself(t *testing.T) {
+	r := Diff(loadSample(t, "sample.yaml"), loadSample(t, "sample.yaml"))
 	require.True(t, r.Empty(), r.Markdown())
 	require.Empty(t, r.Operations)
 	require.Empty(t, r.Models)
 
-	r = Diff(loadEmma(t, "emma.yaml"), loadEmma(t, "emma.json"))
-	require.True(t, r.Empty(), "the YAML and JSON forms of emma are the same API: "+r.Markdown())
+	r = Diff(loadSample(t, "sample.yaml"), loadSample(t, "sample.json"))
+	require.True(t, r.Empty(), "the YAML and JSON forms of the sample are the same API: "+r.Markdown())
 }
 
 var componentRefPattern = regexp.MustCompile(`#/components/schemas/([^"]+)"`)
@@ -196,9 +196,9 @@ func refsIn(t *testing.T, v any) []string {
 	return out
 }
 
-func TestDiffEmmaRemovedPropertyMarksEveryUser(t *testing.T) {
-	base := loadEmma(t, "emma.yaml")
-	head := loadEmma(t, "emma.yaml")
+func TestDiffSampleRemovedPropertyMarksEveryUser(t *testing.T) {
+	base := loadSample(t, "sample.yaml")
+	head := loadSample(t, "sample.yaml")
 
 	model := head.Components.Schemas.Map["StandardError"]
 	require.NotNil(t, model)
@@ -256,7 +256,7 @@ func TestDiffEmmaRemovedPropertyMarksEveryUser(t *testing.T) {
 func TestRenderDiff(t *testing.T) {
 	base, err := os.ReadFile("testdata/diff-base.yaml")
 	require.NoError(t, err)
-	head := loadEmma(t, "diff-head.yaml")
+	head := loadSample(t, "diff-head.yaml")
 
 	out, err := Render(head, Options{Base: base, AssetsURL: "/assets"})
 	require.NoError(t, err)
@@ -308,7 +308,7 @@ func TestRenderDiff(t *testing.T) {
 }
 
 func TestRenderDiffBadBase(t *testing.T) {
-	head := loadEmma(t, "diff-head.yaml")
+	head := loadSample(t, "diff-head.yaml")
 	_, err := Render(head, Options{Base: []byte("swagger: '2.0'\n")})
 	require.Error(t, err)
 	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
@@ -322,7 +322,7 @@ func TestRenderDiffBadBase(t *testing.T) {
 // TestRenderWithoutBase checks that a page without Base carries no diff
 // markup at all, so the plain page is byte for byte what it was.
 func TestRenderWithoutBase(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+	doc := loadSample(t, "sample.yaml")
 	out, err := Render(doc, Options{AssetsURL: "/assets"})
 	require.NoError(t, err)
 	html := string(out)
@@ -856,7 +856,7 @@ func TestDiffAdditionalPropertiesAny(t *testing.T) {
 		}
 	}
 
-	// An emma-style map: a free-form metadata object on a model.
+	// A production-style map: a free-form metadata object on a model.
 	yamlSpec := func(additional string) *Document {
 		return parseYAML(t, `openapi: 3.0.3
 info: {title: t, version: "1"}
@@ -924,7 +924,7 @@ func TestDiffAdditionalPropertiesSchemas(t *testing.T) {
 		})
 	}
 
-	// emma's Profile.metadata went from a map of objects to a map of any
+	// A production app's Profile.metadata went from a map of objects to a map of any
 	// value, which a client reading it as objects can no longer rely on.
 	yamlSpec := func(additional string) *Document {
 		return parseYAML(t, `openapi: 3.0.3
@@ -2582,10 +2582,10 @@ func TestDiffNotAsWritten(t *testing.T) {
 	requireAt(t, `{"anyOf": [{"not": {"enum": ["x"]}}, {"type": "integer"}]}`, `{"anyOf": [{"not": {"enum": ["x", "y"]}}, {"type": "integer"}]}`, " › any of #1", "not changed", true, true)
 }
 
-// TestDiffNotInVariantLikeEmma checks the shape of the nots in Emma's
+// TestDiffNotInVariantLikeSample checks the shape of the nots in the sample
 // document, a not of a required name in a oneOf variant: the same, it
 // reports nothing, and with the name changed, not changed breaks both.
-func TestDiffNotInVariantLikeEmma(t *testing.T) {
+func TestDiffNotInVariantLikeSample(t *testing.T) {
 	spec := func(name string) string {
 		return `{"oneOf": [{"type": "object", "properties": {"space_id": {"type": "string"}}, "required": ["space_id"]}, {"type": "object", "properties": {"space_id": {"type": "string"}, "unit_id": {"type": "string"}}, "required": ["unit_id"], "not": {"required": ["` + name + `"]}}]}`
 	}

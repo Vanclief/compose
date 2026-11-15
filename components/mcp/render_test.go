@@ -192,8 +192,8 @@ modules: default, packages, units`, c.renderSearch(module, query), "module %q", 
 	assert.Equal(t, []string{"packages.register", "v2.1", "get-order"}, searchWords("Packages.Register . v2.1 -- get-order"))
 }
 
-func TestRenderEmmaSearchFolded(t *testing.T) {
-	c := emmaCatalog(t)
+func TestRenderSampleSearchFolded(t *testing.T) {
+	c := sampleCatalog(t)
 
 	// One match: the route and the arguments follow the search line, and the
 	// summary is not repeated.
@@ -607,19 +607,19 @@ func TestTypeNameTermOfAlternatives(t *testing.T) {
 	assert.Equal(t, "string|integer", c.inlineType(mustTerm(t, c, "Severity").Schema))
 }
 
-func TestRenderEmmaGolden(t *testing.T) {
-	c := emmaCatalog(t)
+func TestRenderSampleGolden(t *testing.T) {
+	c := sampleCatalog(t)
 
 	f := mustFunction(t, c, "finance.list_billing_profiles")
 	require.NotEmpty(t, f.Returns)
 
 	outputs := map[string]string{
-		"emma_search_modules": c.renderSearch("", ""),
-		"emma_search_finance": c.renderSearch("finance", ""),
-		"emma_search_billing": c.renderSearch("", "billing"),
-		"emma_search_folded":  c.renderSearch("", "fingerprint"),
-		"emma_describe":       c.renderDescribe([]string{"finance.list_billing_profiles", "auth.login", "nope.missing"}),
-		"emma_explain":        c.renderExplain([]string{f.Returns, "nope"}),
+		"sample_search_modules": c.renderSearch("", ""),
+		"sample_search_finance": c.renderSearch("finance", ""),
+		"sample_search_billing": c.renderSearch("", "billing"),
+		"sample_search_folded":  c.renderSearch("", "fingerprint"),
+		"sample_describe":       c.renderDescribe([]string{"finance.list_billing_profiles", "auth.login", "nope.missing"}),
+		"sample_explain":        c.renderExplain([]string{f.Returns, "nope"}),
 	}
 	for name, got := range outputs {
 		t.Run(name, func(t *testing.T) {
@@ -629,8 +629,8 @@ func TestRenderEmmaGolden(t *testing.T) {
 	}
 }
 
-func TestRenderEmmaSearchLineLength(t *testing.T) {
-	c := emmaCatalog(t)
+func TestRenderSampleSearchLineLength(t *testing.T) {
+	c := sampleCatalog(t)
 
 	// Small modules fold, so the dense line of every function is measured
 	// as a large listing prints it.

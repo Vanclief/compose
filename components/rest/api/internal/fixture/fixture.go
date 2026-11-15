@@ -1,4 +1,4 @@
-// Package fixture mirrors auditor3's runs module for api registry tests.
+// Package fixture mirrors the runs module of a production app for api registry tests.
 package fixture
 
 import (

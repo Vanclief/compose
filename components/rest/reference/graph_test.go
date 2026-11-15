@@ -67,7 +67,7 @@ func TestSchemaExtensions(t *testing.T) {
 	}
 }
 
-func TestGraphEmma(t *testing.T) {
+func TestGraphSample(t *testing.T) {
 	const (
 		ticket   = "application_models_coordination_Ticket"
 		category = "application_models_coordination_TicketCategory"
@@ -78,8 +78,8 @@ func TestGraphEmma(t *testing.T) {
 		user     = "application_models_user_User"
 	)
 
-	for _, file := range []string{"emma.yaml", "emma.json"} {
-		g := loadEmma(t, file).Graph()
+	for _, file := range []string{"sample.yaml", "sample.json"} {
+		g := loadSample(t, file).Graph()
 
 		for _, name := range []string{ticket, category, cluster, complex, org, unit, user} {
 			require.NotNil(t, graphNode(g, name), "%s: %s", file, name)
@@ -148,7 +148,7 @@ func TestGraphEmma(t *testing.T) {
 }
 
 func TestGraphPetstoreFixture(t *testing.T) {
-	g := loadEmma(t, "petstore-3.1.yaml").Graph()
+	g := loadSample(t, "petstore-3.1.yaml").Graph()
 	require.NotNil(t, graphNode(g, "Pet"))
 	require.Equal(t, "", graphNode(g, "Pet").Group)
 	require.Nil(t, graphNode(g, "Dog"), "a oneOf variant without id is not an entity")
@@ -326,8 +326,8 @@ func TestGraphHubs(t *testing.T) {
 	require.NotNil(t, graphEdge(g, "Thing0", "Org", "org_id"), "hub edges stay in the graph")
 }
 
-func TestGraphHubsEmma(t *testing.T) {
-	g := loadEmma(t, "emma.yaml").Graph()
+func TestGraphHubsSample(t *testing.T) {
+	g := loadSample(t, "sample.yaml").Graph()
 	var hubs []string
 	for _, n := range g.Nodes {
 		if n.Hub {

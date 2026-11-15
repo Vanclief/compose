@@ -40,7 +40,7 @@ var pageTemplate = template.Must(template.New("reference").Funcs(template.FuncMa
 //
 // # Embedding
 //
-// To show the page inside another app (emma-webapp does), fetch the HTML
+// To show the page inside another app, fetch the HTML
 // with the user's credentials and put it in
 // <iframe srcdoc="..." sandbox="allow-scripts allow-popups">. Leave out
 // allow-same-origin so the docs cannot read the host's cookies or storage;
@@ -558,7 +558,7 @@ func (t *tree) row(r rowSpec, depth int) {
 	// Named schemas are never written twice: a row that references one
 	// expands by cloning that model card's tree in the browser. Rows on the
 	// first level start open and are filled as they scroll into view. Writing
-	// every reference inline made emma's page 16 MB.
+	// every reference inline made a production app's page 16 MB.
 	lazy := ""
 	if hasKids && kidName != "" {
 		anchor, ok := t.b.models[kidName]

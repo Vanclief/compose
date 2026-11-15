@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func loadEmma(t *testing.T, name string) *Document {
+func loadSample(t *testing.T, name string) *Document {
 	t.Helper()
 	data, err := os.ReadFile("testdata/" + name)
 	require.NoError(t, err)
@@ -22,12 +22,12 @@ func loadEmma(t *testing.T, name string) *Document {
 	return doc
 }
 
-func TestParseEmmaYAMLAndJSONAgree(t *testing.T) {
-	yamlDoc := loadEmma(t, "emma.yaml")
-	jsonDoc := loadEmma(t, "emma.json")
+func TestParseSampleYAMLAndJSONAgree(t *testing.T) {
+	yamlDoc := loadSample(t, "sample.yaml")
+	jsonDoc := loadSample(t, "sample.json")
 
 	require.Equal(t, "3.0.3", yamlDoc.OpenAPI)
-	require.Equal(t, "Emma API", yamlDoc.Info.Title)
+	require.Equal(t, "Sample API", yamlDoc.Info.Title)
 	require.ElementsMatch(t, yamlDoc.Paths.Keys, jsonDoc.Paths.Keys)
 	require.ElementsMatch(t, yamlDoc.Components.Schemas.Keys, jsonDoc.Components.Schemas.Keys)
 	require.Len(t, yamlDoc.Paths.Keys, 180)
@@ -445,7 +445,7 @@ func TestParseErrorMessagesLocateTheProblem(t *testing.T) {
 }
 
 func TestParsePetstore31(t *testing.T) {
-	doc := loadEmma(t, "petstore-3.1.yaml")
+	doc := loadSample(t, "petstore-3.1.yaml")
 	require.Equal(t, "3.1.0", doc.OpenAPI)
 	require.Empty(t, unresolvedRefs(doc))
 
@@ -498,7 +498,7 @@ func TestParsePetstore31(t *testing.T) {
 }
 
 func TestParseCompose31Golden(t *testing.T) {
-	doc := loadEmma(t, "compose-3.1.json")
+	doc := loadSample(t, "compose-3.1.json")
 	require.Equal(t, "3.1.0", doc.OpenAPI)
 	require.Empty(t, unresolvedRefs(doc))
 	require.Equal(t, []string{"/health", "/legacy/{id}", "/runs", "/runs/{id}"}, doc.Paths.Keys)

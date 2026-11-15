@@ -119,8 +119,8 @@ func TestRenderReferenceInvalidSchema(t *testing.T) {
 	assert.Contains(t, ez.ErrorMessage(err), "describe_function")
 }
 
-func TestRenderReferenceEmma(t *testing.T) {
-	c := emmaCatalog(t)
+func TestRenderReferenceSample(t *testing.T) {
+	c := sampleCatalog(t)
 	info := referenceInfo{Name: "Large API", Version: "2.0", Instructions: "Read the catalog.", Tools: testReferenceInfo().Tools}
 
 	start := time.Now()

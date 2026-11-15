@@ -296,7 +296,7 @@ type builder struct {
 // every operation writes its own copy, so a component with a 1 MB explicit
 // example that 100 operations return would otherwise put 100 MB on the
 // page. A sample that no longer fits is written as the empty value of its
-// schema. emma's samples total about 577 KB, far below it.
+// schema. A production app's samples total about 577 KB, far below it.
 const maxPageExampleBytes = 8 << 20
 
 // pageExamples is what is left of maxPageExampleBytes, and the JSON of each

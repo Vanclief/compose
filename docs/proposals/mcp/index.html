@@ -356,8 +356,8 @@ footer.sources a { color: var(--muted); word-break: break-all; }
   <rect x="760" y="16" width="304" height="120" rx="14" style="fill:var(--sv-strong);stroke:var(--sv-strong-line)"/>
   <text x="780" y="46" font-size="16" font-weight="700" style="fill:var(--sv-on-strong)">OpenAPI registry</text>
   <text x="780" y="68" font-size="12.5" style="fill:var(--mod-on-code)">tags = modules &#183; schemas = terms</text>
-  <text x="780" y="94" font-size="11.5" class="mono" style="fill:var(--sv-muted)">emma 302 ops &#183; 16 tags</text>
-  <text x="780" y="113" font-size="11.5" class="mono" style="fill:var(--sv-faint)">auditor3 ~40 ops &#183; 6 tags</text>
+  <text x="780" y="94" font-size="11.5" class="mono" style="fill:var(--sv-muted)">larger app 302 ops &#183; 16 tags</text>
+  <text x="780" y="113" font-size="11.5" class="mono" style="fill:var(--sv-faint)">smaller app ~40 ops &#183; 6 tags</text>
   <!-- registry bus to tools -->
   <polyline points="860,136 860,158" fill="none" stroke-width="1.6" stroke-dasharray="5 4" style="stroke:var(--sv-faint)"/>
   <line x1="285" y1="158" x2="965" y2="158" stroke-width="1.6" stroke-dasharray="5 4" style="stroke:var(--sv-faint)"/>
@@ -438,8 +438,8 @@ footer.sources a { color: var(--muted); word-break: break-all; }
 <section id="cost">
 <h2><span class="num">2</span>The problem: one tool per endpoint does not scale</h2>
 <figure class="fig">
-<svg viewBox="0 0 960 310" role="img" aria-label="Bar chart of tool definition tokens for emma">
-  <text x="0" y="18" font-size="13" font-weight="700" style="fill:var(--sv-text)">Tokens of tool definitions loaded on every turn, emma (302 operations)</text>
+<svg viewBox="0 0 960 310" role="img" aria-label="Bar chart of tool definition tokens for the larger app">
+  <text x="0" y="18" font-size="13" font-weight="700" style="fill:var(--sv-text)">Tokens of tool definitions loaded on every turn, larger app (302 operations)</text>
   <g stroke-width="1" style="stroke:var(--sv-grid)">
     <line x1="300" y1="34" x2="300" y2="284"/>
     <line x1="410.7" y1="34" x2="410.7" y2="284"/>
@@ -474,7 +474,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
   <!-- cliff note -->
   <rect x="560" y="92" width="380" height="50" rx="8" style="fill:var(--bad-soft);stroke:var(--bad-line)"/>
   <text x="574" y="112" font-size="12" font-weight="700" style="fill:var(--bad)">Accuracy cliff: ~30-50 loaded tools</text>
-  <text x="574" y="130" font-size="11.5" style="fill:var(--sv-muted)">Tool choice degrades past it. emma 302 ops, auditor3 ~40.</text>
+  <text x="574" y="130" font-size="11.5" style="fill:var(--sv-muted)">Tool choice degrades past it. Larger app 302 ops, smaller app ~40.</text>
   <!-- zoom inset -->
   <rect x="560" y="152" width="380" height="124" rx="8" style="fill:var(--sv-surface);stroke:var(--sv-border)"/>
   <text x="574" y="170" font-size="11" font-weight="700" style="fill:var(--sv-faint)">ZOOM &#183; 0 to 2k tokens</text>
@@ -525,7 +525,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     <text xml:space="preserve" x="34" y="316" style="fill:var(--sv-faint)">         tags: [<tspan style="fill:var(--mod-on-code)">packages</tspan>]</text>
     <text xml:space="preserve" x="34" y="342" style="fill:var(--sv-muted)">  ... 3 more ops tagged packages</text>
   </g>
-  <text x="16" y="384" font-size="12" style="fill:var(--sv-muted)">emma: 302 ops, 16 tags. auditor3: ~40 ops, 6 tags.</text>
+  <text x="16" y="384" font-size="12" style="fill:var(--sv-muted)">Larger app: 302 ops, 16 tags. Smaller app: ~40 ops, 6 tags.</text>
   <text x="16" y="402" font-size="12" font-weight="700" style="fill:var(--ok)">Already there. Zero extra configuration.</text>
   <!-- arrow -->
   <line x1="386" y1="198" x2="426" y2="198" stroke-width="2" marker-end="url(#ahm3)" style="stroke:var(--mod)"/>
@@ -661,11 +661,11 @@ footer.sources a { color: var(--muted); word-break: break-all; }
 </div>
 <div class="tabs">
 <div class="tab-buttons" role="tablist">
-  <button class="active" data-tab="pal-emma" role="tab">emma</button>
-  <button data-tab="pal-aud" role="tab">auditor3</button>
+  <button class="active" data-tab="pal-large" role="tab">larger app</button>
+  <button data-tab="pal-aud" role="tab">smaller app</button>
 </div>
 
-<div class="tab-panel active" id="pal-emma" role="tabpanel">
+<div class="tab-panel active" id="pal-large" role="tabpanel">
   <div class="mod-row"><span class="lbl">16 modules in instructions</span>
     <span class="mod-chip">complexes</span><span class="mod-chip">units</span><span class="mod-chip">residents</span><span class="mod-chip">packages</span><span class="mod-chip">visitors</span><span class="mod-chip">meters</span><span class="mod-chip">services</span><span class="mod-chip">payments</span><span class="mod-chip">access</span><span class="mod-chip">incidents</span><span class="mod-chip">notices</span><span class="mod-chip">amenities</span><span class="mod-chip">staff</span><span class="mod-chip">devices</span><span class="mod-chip">reports</span><span class="mod-chip">settings</span>
   </div>
@@ -682,7 +682,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     <div class="card k-call"><div class="name">call_function</div><div class="desc">Run <code>module.function</code> through the REST path. Bad args return its description.</div><div class="badges"><span class="badge b-de">destructive (worst case)</span></div><div class="args"><b>name</b> <b>args</b></div></div>
     <div class="card k-script"><div class="name">run_script</div><div class="desc">JavaScript with <code>api.&lt;module&gt;.&lt;function&gt;(args)</code>. console.log lines and the return value come back.</div><div class="badges"><span class="badge b-op">opt-in</span><span class="badge b-ro">read-only in v1</span></div><div class="args"><b>code</b></div><div class="lim">QuickJS on wazero &middot; 5 s &middot; 200 calls &middot; 64 MiB &middot; ~6k out &middot; no network, no fs</div></div>
   </div>
-  <details><summary>Full tools/list JSON for emma (illustrative; <code>Server.Snapshot()</code> is the contract)</summary><pre><code class="language-json">{
+  <details><summary>Full tools/list JSON for the larger app (illustrative; <code>Server.Snapshot()</code> is the contract)</summary><pre><code class="language-json">{
   "tools": [
     {
       "name": "whoami",
@@ -694,7 +694,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     {
       "name": "search_functions",
       "title": "Search functions",
-      "description": "Find functions in the Emma API: what exists, what each one does and what it returns. Pass module (one of the modules in the server instructions) to list every function in it, query for a free-text search across all modules, or both. Returns one line per function: name, read, write or destructive, a short description and the return type, e.g. -&gt; Page&lt;Package&gt;. It does not show arguments: call describe_function before the first call of a function.",
+      "description": "Find functions in the Sample API: what exists, what each one does and what it returns. Pass module (one of the modules in the server instructions) to list every function in it, query for a free-text search across all modules, or both. Returns one line per function: name, read, write or destructive, a short description and the return type, e.g. -&gt; Page&lt;Package&gt;. It does not show arguments: call describe_function before the first call of a function.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -786,7 +786,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     <span class="mod-chip">projects</span><span class="mod-chip">snapshots</span><span class="mod-chip">audits</span><span class="mod-chip">findings</span><span class="mod-chip">reports</span><span class="mod-chip">api_keys</span>
   </div>
   <div class="disc">
-    <div class="disc-head"><span>Discovery &middot; three layers</span><span>same contract as emma</span></div>
+    <div class="disc-head"><span>Discovery &middot; three layers</span><span>same contract as the larger app</span></div>
     <div class="cards">
       <div class="card k-search"><div class="layer">layer 1 &middot; what exists</div><div class="name">search_functions</div><div class="desc"><code>audits.run_audit</code> shows up here as a composite.</div><div class="badges"><span class="badge b-ro">read-only</span><span class="badge b-id">idempotent</span></div><div class="args">module? query?<br>none lists the modules</div></div>
       <div class="card k-search"><div class="layer">layer 2 &middot; how to call it</div><div class="name">describe_function</div><div class="desc">Typed args and return type, batched.</div><div class="badges"><span class="badge b-ro">read-only</span><span class="badge b-id">idempotent</span></div><div class="args"><b>names</b> string[]</div></div>
@@ -798,7 +798,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     <div class="card k-call"><div class="name">call_function</div><div class="desc">Same contract as in every compose project.</div><div class="badges"><span class="badge b-de">destructive (worst case)</span></div><div class="args"><b>name</b> <b>args</b></div></div>
     <div class="card ghost">run_script<br>off in v1</div>
   </div>
-  <details><summary>Full tools/list JSON for auditor3 (illustrative; <code>Server.Snapshot()</code> is the contract)</summary><pre><code class="language-json">{
+  <details><summary>Full tools/list JSON for the smaller app (illustrative; <code>Server.Snapshot()</code> is the contract)</summary><pre><code class="language-json">{
   "tools": [
     {
       "name": "whoami",
@@ -808,7 +808,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
     },
     {
       "name": "search_functions",
-      "description": "Find functions in the auditor3 API: what exists, what each one does and what it returns. Pass module, query, or both. Does not show arguments: call describe_function first.",
+      "description": "Find functions in the Sample API: what exists, what each one does and what it returns. Pass module, query, or both. Does not show arguments: call describe_function first.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -869,7 +869,7 @@ footer.sources a { color: var(--muted); word-break: break-all; }
 <p class="cap">Returned by <code>server/discover</code>, built from tag descriptions. No <code>list_modules</code> tool.</p>
 <div class="note">
 <span class="tag">server/discover &rarr; instructions</span>
-Emma manages residential complexes: units, residents, dues, packages, visitors.<br>
+The app manages residential complexes: units, residents, dues, packages, visitors.<br>
 <span class="sec">Modules (pass one to search_functions):</span>
 <div class="mods">
   <div><b>complexes</b> complexes, buildings, contacts</div>
@@ -899,10 +899,10 @@ Money is integer cents (MXN). Dates YYYY-MM-DD.
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "serverInfo": { "name": "emma", "title": "Emma HOA management", "version": "2026.10.20-4f1c2ab" },
+    "serverInfo": { "name": "app", "title": "HOA management", "version": "2026.10.20-4f1c2ab" },
     "supportedVersions": ["2026-07-28"],
     "capabilities": { "tools": {}, "resources": {}, "prompts": {} },
-    "instructions": "Emma manages residential complexes: units, residents, dues, packages, visitors.\nModules (pass one to search_functions):\ncomplexes: complexes, buildings, contacts\nunits: units, owners, occupancy\nresidents: residents, invites, app access\npackages: parcels at the front desk\nvisitors: visitor passes, guest log\nmeters: water, gas, power readings\nservices: utility contracts, consumption\npayments: dues, invoices, balances\naccess: gates, tags, access log\nincidents: maintenance reports\nnotices: announcements, polls\namenities: bookings and rules\nstaff: staff, shifts\ndevices: intercoms, cameras, gates\nreports: monthly and financial reports\nsettings: complex settings, charge categories\n1. search_functions, then describe_function before the first call. Names are module.function.\n2. explain_term for any concept you are unsure about. Spanish terms work.\n3. whoami for complex_id. No session: pass it every time.\n4. Destructive: fetch, summarize, wait for a yes, then call.\nMoney is integer cents (MXN). Dates YYYY-MM-DD."
+    "instructions": "The app manages residential complexes: units, residents, dues, packages, visitors.\nModules (pass one to search_functions):\ncomplexes: complexes, buildings, contacts\nunits: units, owners, occupancy\nresidents: residents, invites, app access\npackages: parcels at the front desk\nvisitors: visitor passes, guest log\nmeters: water, gas, power readings\nservices: utility contracts, consumption\npayments: dues, invoices, balances\naccess: gates, tags, access log\nincidents: maintenance reports\nnotices: announcements, polls\namenities: bookings and rules\nstaff: staff, shifts\ndevices: intercoms, cameras, gates\nreports: monthly and financial reports\nsettings: complex settings, charge categories\n1. search_functions, then describe_function before the first call. Names are module.function.\n2. explain_term for any concept you are unsure about. Spanish terms work.\n3. whoami for complex_id. No session: pass it every time.\n4. Destructive: fetch, summarize, wait for a yes, then call.\nMoney is integer cents (MXN). Dates YYYY-MM-DD."
   }
 }</code></pre></details>
 </section>
@@ -970,7 +970,7 @@ Money is integer cents (MXN). Dates YYYY-MM-DD.
 
 <!-- A -->
 <div class="tx">
-  <div class="tx-head"><span class="pill dark">A</span>emma &middot; whoami &rarr; search &rarr; describe &rarr; call a composite</div>
+  <div class="tx-head"><span class="pill dark">A</span>larger app &middot; whoami &rarr; search &rarr; describe &rarr; call a composite</div>
   <div class="user"><div>Register a package for unit 4B from Amazon.</div></div>
   <ol class="steps">
     <li><div class="step-n">1</div><div class="io">
@@ -1025,7 +1025,7 @@ returns Package</code></pre></div></div></li>
 
 <!-- B -->
 <div class="tx">
-  <div class="tx-head"><span class="pill dark">B</span>emma &middot; search by query &rarr; describe &rarr; call with cursor</div>
+  <div class="tx-head"><span class="pill dark">B</span>larger app &middot; search by query &rarr; describe &rarr; call with cursor</div>
   <div class="user"><div>What were last month's water readings?</div></div>
   <span class="aside-chip mod">complex_id 14 came from whoami earlier in the conversation</span>
   <ol class="steps">
@@ -1084,7 +1084,7 @@ returns Page&lt;Reading&gt;</code></pre></div></div></li>
 
 <!-- C -->
 <div class="tx">
-  <div class="tx-head"><span class="pill dark">C</span>emma &middot; search &rarr; explain &rarr; describe two in one hop &rarr; run_script</div>
+  <div class="tx-head"><span class="pill dark">C</span>larger app &middot; search &rarr; explain &rarr; describe two in one hop &rarr; run_script</div>
   <div class="user"><div>Top 10 debtors by unit.</div></div>
   <ol class="steps">
     <li><div class="step-n">1</div><div class="io stack">
@@ -1152,7 +1152,7 @@ return { top10: top10, units_scanned: units.length, api_calls: calls };</code></
 
 <!-- D -->
 <div class="tx">
-  <div class="tx-head"><span class="pill dark">D</span>auditor3 &middot; composite in its module</div>
+  <div class="tx-head"><span class="pill dark">D</span>smaller app &middot; composite in its module</div>
   <div class="user"><div>Audit https://github.com/acme-finance/vault-contracts and show me high-severity findings.</div></div>
   <ol class="steps">
     <li><div class="step-n">1</div><div class="io stack">
@@ -1217,7 +1217,7 @@ returns Run</code></pre></div></div></li>
 
 <!-- E -->
 <div class="tx">
-  <div class="tx-head"><span class="pill dark">E</span>emma &middot; explain_term resolves a Spanish alias</div>
+  <div class="tx-head"><span class="pill dark">E</span>larger app &middot; explain_term resolves a Spanish alias</div>
   <div class="user"><div>&iquest;Qu&eacute; paquetes llegaron hoy?</div></div>
   <ol class="steps">
     <li><div class="step-n">1</div><div class="io stack">
@@ -1234,7 +1234,7 @@ functions packages.list_packages, packages.get_package, packages.register_packag
 
 <!-- bad args -->
 <div class="tx">
-  <div class="tx-head"><span class="pill bad">bad args</span>emma &middot; the error is the documentation</div>
+  <div class="tx-head"><span class="pill bad">bad args</span>larger app &middot; the error is the documentation</div>
   <div class="user"><div>Gas readings for September.</div></div>
   <ol class="steps">
     <li><div class="step-n">1</div><div class="io">
@@ -1414,11 +1414,11 @@ functions packages.list_packages, packages.get_package, packages.register_packag
 
 <!-- 10 CODE -->
 <section id="code">
-<h2><span class="num">10</span>How emma declares it <span style="font-size:13px;font-weight:600;color:var(--faint)">shape, not final API</span></h2>
+<h2><span class="num">10</span>How the larger app declares it <span style="font-size:13px;font-weight:600;color:var(--faint)">shape, not final API</span></h2>
 <pre><code class="language-go">func MountMCP(e *echo.Echo, registry *api.Registry, pkgs *packages.Service) error {
 	server, err := mcp.New(registry, mcp.Config{
-		Name:         "emma",
-		Instructions: emmaIdentity,
+		Name:         "app",
+		Instructions: appIdentity,
 		Modules:      mcp.FromTags,
 		Script:       mcp.ScriptConfig{Enabled: true, Timeout: 5 * time.Second},
 		Composites: []mcp.Function{
@@ -1464,7 +1464,7 @@ func registerPackage(pkgs *packages.Service) func(context.Context, RegisterPacka
     <div class="flow">
       <div>HTTP &nbsp;Authorization: Bearer api_key:api_secret</div>
       <div>&rarr; existing compose API-KEY / API-SECRET auth</div>
-      <div>stdio &nbsp;EMMA_API_KEY, EMMA_API_SECRET from env</div>
+      <div>stdio &nbsp;APP_API_KEY, APP_API_SECRET from env</div>
     </div>
     <div class="clients">
       <span class="client">Claude Code</span>
@@ -1490,7 +1490,7 @@ func registerPackage(pkgs *packages.Service) func(context.Context, RegisterPacka
     </div>
   </div>
 </div>
-<p>The backend keeps its users and credentials; compose keeps the protocol. Each backend supplies three things: a <code>Store</code> (one table, bun-backed), a <code>Login</code> (how the user proves who they are: emma sends a code and verifies it, auditor3 checks an API key and secret) and, from <code>Verify</code>, the <code>Grant</code>: the REST headers the MCP server sends on that user's behalf. Both kinds of client work side by side: a token the store does not know falls back to the <code>key:secret</code> mapping when <code>Fallback</code> is set.</p>
+<p>The backend keeps its users and credentials; compose keeps the protocol. Each backend supplies three things: a <code>Store</code> (one table, bun-backed), a <code>Login</code> (how the user proves who they are: the larger app sends a code and verifies it, the smaller app checks an API key and secret) and, from <code>Verify</code>, the <code>Grant</code>: the REST headers the MCP server sends on that user's behalf. Both kinds of client work side by side: a token the store does not know falls back to the <code>key:secret</code> mapping when <code>Fallback</code> is set.</p>
 </section>
 
 <!-- 12 REFERENCE -->
@@ -1503,9 +1503,9 @@ func registerPackage(pkgs *packages.Service) func(context.Context, RegisterPacka
   <div class="parrow">&rarr;</div>
   <div class="pbox"><b>Reference page</b><span>modules as nav, sibling of rest/reference</span></div>
 </div>
-<div class="drift">&#10007; go test fails when mcp.json drifts, like openapi.json in auditor3</div>
+<div class="drift">&#10007; go test fails when mcp.json drifts, like openapi.json in the smaller app</div>
 <div class="wire" aria-label="Wireframe of the MCP reference page">
-  <div class="wire-bar"><span><i></i><i></i><i></i></span><span>emma &middot; MCP reference &middot; 2026-07-28 &middot; POST /mcp</span></div>
+  <div class="wire-bar"><span><i></i><i></i><i></i></span><span>larger app &middot; MCP reference &middot; 2026-07-28 &middot; POST /mcp</span></div>
   <div class="wire-body">
     <div class="wire-nav">
       <div class="grp">Overview</div>
@@ -1569,7 +1569,7 @@ returns <a class="term" href="#reference">Package</a></div></div>
   <div class="src"><h4>Anthropic</h4><ul><li>Search over list-everything</li><li>Tool search returns full definitions only for matches</li><li>Few tools, not one per endpoint</li><li>Annotations, concise/detailed</li></ul></div>
   <div class="src"><h4>Cloudflare Code Mode v2</h4><ul><li>search + execute: two tools, whole API</li><li>Script uses the same API namespace</li><li>~6k token result cap</li></ul></div>
   <div class="src"><h4>GitHub</h4><ul><li>Toolsets picked by header, our modules header</li><li>Read-only header; hide what the token cannot use</li><li class="x">Dynamic toolsets: removed in PR #2512, not copied</li></ul></div>
-  <div class="src"><h4>emma-cli</h4><ul><li>GET, summarize, confirm before delete</li><li>300-char errors</li><li>Cursor pagination; <code>self</code> becomes <code>whoami</code></li></ul></div>
+  <div class="src"><h4>Larger app CLI</h4><ul><li>GET, summarize, confirm before delete</li><li>300-char errors</li><li>Cursor pagination; <code>self</code> becomes <code>whoami</code></li></ul></div>
 </div>
 </section>
 
@@ -1605,7 +1605,7 @@ returns <a class="term" href="#reference">Package</a></div></div>
 </div>
 <div class="sub">Open questions</div>
 <ul class="check">
-  <li>Is the in-process QuickJS sandbox enough to turn run_script on for emma, or does it wait for a separate process?</li>
+  <li>Is the in-process QuickJS sandbox enough to turn run_script on for the larger app, or does it wait for a separate process?</li>
   <li>Should a composite hide the raw ops it wraps (<code>create_package</code>)?</li>
   <li>How do we express which roles can call a function?</li>
   <li>Names: snake_case of operationId, or an explicit <code>x-mcp-name</code>?</li>
@@ -1619,7 +1619,7 @@ returns <a class="term" href="#reference">Package</a></div></div>
   <div><b>Composites</b><span>register_package, run_audit</span></div>
   <div><b>Snapshot</b><span>mcp.json + drift test</span></div>
   <div><b>Reference</b><span>modules as nav</span></div>
-  <div><b>run_script</b><span>emma only, read-only</span></div>
+  <div><b>run_script</b><span>larger app only, read-only</span></div>
   <div><b>OAuth</b><span>claude.ai / ChatGPT connectors</span></div>
 </div>
 </section>

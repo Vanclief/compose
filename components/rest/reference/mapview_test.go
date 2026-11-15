@@ -19,7 +19,7 @@ func renderPage(t *testing.T, doc *Document) string {
 }
 
 func TestRenderSchemaMap(t *testing.T) {
-	page := renderPage(t, loadEmma(t, "emma.yaml"))
+	page := renderPage(t, loadSample(t, "sample.yaml"))
 
 	matches := mapDataPattern.FindAllStringSubmatch(page, -1)
 	require.Len(t, matches, 1, "the graph is written once")
@@ -61,7 +61,7 @@ func TestRenderSchemaMap(t *testing.T) {
 }
 
 func TestSchemaMapScopes(t *testing.T) {
-	page := renderPage(t, loadEmma(t, "emma.yaml"))
+	page := renderPage(t, loadSample(t, "sample.yaml"))
 	matches := mapDataPattern.FindAllStringSubmatch(page, -1)
 	require.Len(t, matches, 1)
 

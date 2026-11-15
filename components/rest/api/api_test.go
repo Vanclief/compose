@@ -67,7 +67,7 @@ func newServer(t *testing.T) *server {
 	e := newEcho()
 	app := &fixture.App{}
 	reg := api.New(e,
-		api.Info("auditor3", "1.0.0"),
+		api.Info("Sample API", "1.0.0"),
 		api.Description("fixture API"),
 		api.APIKeyHeader("API-KEY"),
 		api.Server("https://api.example.com"),

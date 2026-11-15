@@ -14529,7 +14529,7 @@
             "type": "string"
           },
           "organization_id": {
-            "description": "Required when type is organization and prohibited when type is platform (platform categories are Emma-wide).",
+            "description": "Required when type is organization and prohibited when type is platform (platform categories are Sample-wide).",
             "format": "uuid",
             "type": "string"
           },
@@ -16273,8 +16273,8 @@
     }
   },
   "info": {
-    "description": "Backend for the Emma application.\n\nAuthentication flow (create a new API key):\n1. POST /auth/login/challenge with destinatary, method, optional locale to receive a verification code.\n2. POST /auth/login with destinatary, method, code, device_name, optional device_uid and notification_token to receive api_key and api_secret.\n3. Send API-KEY and API-SECRET headers on authenticated requests.\n\nVersioning: releases follow ERA.FEATURE.PATCH — the FEATURE segment changes whenever this spec changes.",
-    "title": "Emma API",
+    "description": "Backend for the Sample application.\n\nAuthentication flow (create a new API key):\n1. POST /auth/login/challenge with destinatary, method, optional locale to receive a verification code.\n2. POST /auth/login with destinatary, method, code, device_name, optional device_uid and notification_token to receive api_key and api_secret.\n3. Send API-KEY and API-SECRET headers on authenticated requests.\n\nVersioning: releases follow ERA.FEATURE.PATCH — the FEATURE segment changes whenever this spec changes.",
+    "title": "Sample API",
     "version": "1.0"
   },
   "openapi": "3.0.3",
@@ -35687,7 +35687,7 @@
   ],
   "servers": [
     {
-      "url": "https://api.holaemma.app"
+      "url": "https://api.example.com"
     },
     {
       "url": "http://localhost:{port}",
