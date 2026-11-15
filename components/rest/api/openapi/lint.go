@@ -418,7 +418,13 @@ func lostMarshalers(t reflect.Type, addressable bool, seen map[marshalVisit]bool
 	byValue := encodesOwnJSON(t)
 	byPointer := encodesOwnJSON(ptr)
 	if byPointer && !byValue && !addressable {
-		*problems = append(*problems, fmt.Sprintf("%s is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; hold *%s", t, t))
+		// A response may not hold a struct documented by its fields that
+		// writes its own JSON as *T either (see checkKeys).
+		advice := fmt.Sprintf("hold *%s", t)
+		if t.Kind() == reflect.Struct && !isOpaque(t) {
+			advice = "respond with a struct whose fields are the JSON to send"
+		}
+		*problems = append(*problems, fmt.Sprintf("%s is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; %s", t, advice))
 	}
 	if byPointer || byValue {
 		return

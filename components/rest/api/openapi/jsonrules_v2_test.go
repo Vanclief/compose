@@ -41,7 +41,7 @@ func TestStreamMethodsAreCoders(t *testing.T) {
 	err := NewReflector().AddResponse(reflect.TypeFor[pcStreamHolder]())
 	require.Error(t, err)
 	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
-	require.Equal(t, `openapi: openapi.pcStreamHolder: the JSON encoder of embedded field PCStream would take over the whole value, not the fields the schema lists; make it a named field`, ez.ErrorMessage(err))
+	require.Equal(t, `openapi: openapi.pcStreamHolder: the JSON encoder of embedded field PCStream would take over the whole value, not the fields the schema lists; remove that encoder, or respond with a struct whose fields are the JSON to send`, ez.ErrorMessage(err))
 
 	_, err = NewReflector().AddRequest(reflect.TypeFor[pcStreamHolder]())
 	require.Error(t, err)
@@ -83,4 +83,24 @@ func TestStreamMethodsNeedTheirSignature(t *testing.T) {
 // format: option for every value, so the probe reports it here.
 func TestFormatOptionRefusedOnV2(t *testing.T) {
 	require.Contains(t, refusedTags(reflect.TypeFor[probeFormat]()), "Go struct field At has unsupported `format` tag option")
+}
+
+type pcStreamField struct {
+	Stream PCStream `json:"stream"`
+}
+
+type pcAppendField struct {
+	Append PCAppend `json:"append"`
+}
+
+// TestOwnEncoderNamed: a response struct encoding/json/v2 writes with
+// MarshalJSONTo or AppendText is refused naming the method.
+func TestOwnEncoderNamed(t *testing.T) {
+	err := NewReflector().AddResponse(reflect.TypeFor[pcStreamField]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.PCStream writes its own JSON with MarshalJSONTo, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
+
+	err = NewReflector().AddResponse(reflect.TypeFor[pcAppendField]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.PCAppend writes its own JSON with AppendText, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
 }

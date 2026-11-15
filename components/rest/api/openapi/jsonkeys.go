@@ -165,14 +165,22 @@ func lessIndex(a, b []int) bool {
 // response field may not send a null its schema does not allow (see
 // sentNulls). A struct encoding/json refuses for the json tags of its
 // fields, whatever the value, is refused (see refusedTags), as every request
-// or response holding it would fail. Types encoding/json hands to their own
-// decoder (request) or encoder (response) are not looked into, unless a
-// struct documented by its fields gets that decoder or encoder from an
-// embedded field (see promotedCoder), which is an error.
+// or response holding it would fail. A struct encoding/json hands to its own
+// decoder (request) is not looked into. A struct documented by its fields
+// that encoding/json hands to its own encoder (response) is an error: its
+// fields do not describe what it sends. One this response does not document
+// by its fields, as the items of a slice type published as a string, is not
+// (see fieldDocumented). A struct that gets that decoder or encoder from an
+// embedded field is an error too (see promotedCoder).
 func (r *registry) checkKeys(t reflect.Type, request bool) error {
 	schemas := map[reflect.Type]string{}
 	for name, typ := range r.types {
 		schemas[typ] = name
+	}
+
+	documented := map[reflect.Type]bool{}
+	if !request {
+		r.fieldDocumented(t, schemas, documented)
 	}
 
 	var problems []string
@@ -207,14 +215,21 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 		}
 		embedded, ok := promotedCoder(t, request)
 		if ok {
-			coder := "decoder"
-			if !request {
-				coder = "encoder"
-			}
-			problems = append(problems, fmt.Sprintf("%s: the JSON %s of embedded field %s would take over the whole value, not the fields the schema lists; make it a named field", t, coder, embedded))
+			problems = append(problems, promotedCoderProblem(t, embedded, request))
 			return
 		}
 		if codesOwnJSON(t, request) {
+			if !request && documented[t] {
+				// A response is written through a pointer, whose methods
+				// include the value's: the one encoding/json calls, except
+				// in a map value, which is not addressable.
+				method := ownEncoder(reflect.PointerTo(t))
+				byValue := ownEncoder(t)
+				if byValue != "" && byValue != method {
+					method = fmt.Sprintf("%s, or %s in a map value", method, byValue)
+				}
+				problems = append(problems, fmt.Sprintf("%s writes its own JSON with %s, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string", t, method))
+			}
 			return
 		}
 		// A response type that decodes itself is not asked (see
@@ -264,6 +279,46 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 	return ez.New(ez.EINVALID, "openapi: "+strings.Join(problems, "; "), nil)
 }
 
+// fieldDocumented adds to into the types the schema of the response type t
+// describes, among them the structs it is built from the fields of: those t
+// holds, at any depth, outside a type published as a scalar (isOpaque),
+// whose items get no schema, and in a field the schema of its struct lists,
+// hidden or not. names gives the schema name of a struct. Whether the
+// registry holds a schema for a struct is not asked: a request or another
+// response may have built it. It stops at a struct that writes its own
+// JSON, as the walk of checkKeys does.
+func (r *registry) fieldDocumented(t reflect.Type, names map[reflect.Type]string, into map[reflect.Type]bool) {
+	t = deref(t)
+	elem, ok := optionalElem(t)
+	if ok {
+		r.fieldDocumented(elem, names, into)
+		return
+	}
+	if isOpaque(t) || into[t] {
+		return
+	}
+	into[t] = true
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		r.fieldDocumented(t.Elem(), names, into)
+	case reflect.Struct:
+		if codesOwnJSON(t, false) {
+			return
+		}
+		// The schema of t does not list a field promoted from an
+		// unexported embedded struct, nor one whose key is "-".
+		// Properties holds the hidden ones too.
+		name, ok := names[t]
+		fields, _ := jsonFields(t)
+		for _, f := range fields {
+			if ok && r.schemas[name].Properties[f.name] == nil {
+				continue
+			}
+			r.fieldDocumented(f.typ, names, into)
+		}
+	}
+}
+
 // codesOwnJSON reports whether encoding/json hands t, or a pointer to it, to
 // the type's own decoder (request: decodesOwnJSON; isOpaque covers
 // encoding.TextUnmarshaler) or encoder (response: encodesOwnJSON) instead of
@@ -276,22 +331,39 @@ func codesOwnJSON(t reflect.Type, request bool) bool {
 	return coder(t) || coder(reflect.PointerTo(t))
 }
 
-// promotedCoder returns the name of the first embedded field of the struct t
-// whose type codes its own JSON (codesOwnJSON) when t does too: t then has
+// promotedCoder returns the first embedded field of the struct t whose type
+// codes its own JSON (codesOwnJSON) when t does too: t then has
 // that decoder or encoder by promotion, and encoding/json hands it the whole
 // value. reflect does not tell a method t declares from a promoted one, so a
 // t that declares its own while also embedding such a field is reported too.
-func promotedCoder(t reflect.Type, request bool) (string, bool) {
+func promotedCoder(t reflect.Type, request bool) (reflect.StructField, bool) {
 	if !codesOwnJSON(t, request) {
-		return "", false
+		return reflect.StructField{}, false
 	}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if f.Anonymous && codesOwnJSON(f.Type, request) {
-			return f.Name, true
+			return f, true
 		}
 	}
-	return "", false
+	return reflect.StructField{}, false
+}
+
+// promotedCoderProblem words the refusal of the struct t for its embedded
+// field (see promotedCoder). A named field is the way out, except in a
+// response for an embedded struct that is not published as a scalar: where
+// the response documents it, a named field of it is refused too.
+func promotedCoderProblem(t reflect.Type, embedded reflect.StructField, request bool) string {
+	coder := "decoder"
+	advice := "make it a named field"
+	if !request {
+		coder = "encoder"
+		held := deref(embedded.Type)
+		if held.Kind() == reflect.Struct && !isOpaque(held) {
+			advice = "remove that encoder, or respond with a struct whose fields are the JSON to send"
+		}
+	}
+	return fmt.Sprintf("%s: the JSON %s of embedded field %s would take over the whole value, not the fields the schema lists; %s", t, coder, embedded.Name, advice)
 }
 
 // compareKeys reports keys bound (request) or sent (response) by

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -840,4 +841,150 @@ func TestReadyPanics(t *testing.T) {
 	require.Panics(t, func() {
 		reg.StrictSpec()
 	})
+}
+
+// Stamp writes its own JSON.
+type Stamp struct {
+	At int64
+}
+
+func (s Stamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatInt(s.At, 10))
+}
+
+// PointerStamp writes its own JSON through a pointer receiver.
+type PointerStamp struct {
+	At int64
+}
+
+func (s *PointerStamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatInt(s.At, 10))
+}
+
+// TextStamp writes its own JSON and reads itself as text, so it is
+// published as a string.
+type TextStamp struct {
+	At int64
+}
+
+func (s TextStamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatInt(s.At, 10))
+}
+
+func (s *TextStamp) UnmarshalText(text []byte) error {
+	at, err := strconv.ParseInt(string(text), 10, 64)
+	if err != nil {
+		return ez.New(ez.EINVALID, "The stamp is not a number", err)
+	}
+	s.At = at
+	return nil
+}
+
+// Cents writes its own JSON but is no struct: it stays an integer.
+type Cents int64
+
+func (c Cents) MarshalJSON() ([]byte, error) {
+	return json.Marshal(int64(c))
+}
+
+type stampResponse struct {
+	At Stamp `json:"at"`
+}
+
+type stampsResponse struct {
+	At []PointerStamp `json:"at"`
+}
+
+type stampOptionalResponse struct {
+	At types.Optional[map[string]Stamp] `json:"at,omitzero"`
+}
+
+type stampHiddenResponse struct {
+	At Stamp `json:"at" hidden:"true"`
+}
+
+type stampRequest struct {
+	requests.NoRules
+	At Stamp `json:"at"`
+}
+
+type stampAllowedResponse struct {
+	Total Cents     `json:"total"`
+	At    TextStamp `json:"at"`
+	Any   any       `json:"any"`
+}
+
+// Bill is a model, billResponse the struct a handler answers with in place
+// of a MarshalJSON on Bill: it replaces status and adds waived.
+type Bill struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+type billStatus struct {
+	ID string `json:"id"`
+}
+
+type billResponse struct {
+	Bill
+	Status billStatus `json:"status"`
+	Waived bool       `json:"waived"`
+}
+
+// TestResponseStructInPlaceOfMarshalJSON: a response struct that embeds a
+// model, declares a field of the same Go name for a key it replaces and adds
+// a computed one is published with the keys encoding/json sends.
+func TestResponseStructInPlaceOfMarshalJSON(t *testing.T) {
+	sent, err := json.Marshal(billResponse{Bill: Bill{ID: 1, Status: "paid"}, Status: billStatus{ID: "paid"}, Waived: true})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"id": 1, "status": {"id": "paid"}, "waived": true}`, string(sent))
+
+	reg := api.New(newEcho(), api.Public())
+	api.GET[fixture.HealthRequest, billResponse](reg.Group("/things"), "", "op", stub)
+	reg.Ready()
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	doc := decode(t, raw)
+	properties := dig(t, doc, "components", "schemas", "api_test.billResponse", "properties")
+	require.Equal(t, map[string]any{
+		"id":     map[string]any{"type": "integer", "format": "int64"},
+		"status": map[string]any{"$ref": "#/components/schemas/api_test.billStatus"},
+		"waived": map[string]any{"type": "boolean"},
+	}, properties)
+}
+
+// TestResponseStructThatWritesItsOwnJSON: registration fails, naming the type
+// and its method, for a response struct that writes its own JSON, wherever
+// the response holds it, also under a hidden field. A request struct that
+// writes its own JSON, a response type of another kind that does, one that
+// reads itself as text, and a field declared any are published as before.
+func TestResponseStructThatWritesItsOwnJSON(t *testing.T) {
+	refused := func(register func(g *api.Group)) string {
+		reg := api.New(newEcho(), api.Public())
+		return panicMessage(t, func() { register(reg.Group("/things")) })
+	}
+	prefix := `api: GET /things (things.op): openapi: `
+	rest := ` writes its own JSON with MarshalJSON, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`
+
+	msg := refused(func(g *api.Group) { api.GET[fixture.HealthRequest, stampResponse](g, "", "op", stub) })
+	require.Equal(t, prefix+`api_test.Stamp`+rest, msg)
+	msg = refused(func(g *api.Group) { api.GET[fixture.HealthRequest, Stamp](g, "", "op", stub) })
+	require.Equal(t, prefix+`api_test.Stamp`+rest, msg)
+	msg = refused(func(g *api.Group) { api.GET[fixture.HealthRequest, stampOptionalResponse](g, "", "op", stub) })
+	require.Equal(t, prefix+`api_test.Stamp`+rest, msg)
+	msg = refused(func(g *api.Group) { api.GET[fixture.HealthRequest, stampHiddenResponse](g, "", "op", stub) })
+	require.Equal(t, prefix+`api_test.Stamp`+rest, msg)
+	msg = refused(func(g *api.Group) { api.GET[fixture.HealthRequest, stampsResponse](g, "", "op", stub) })
+	require.Equal(t, prefix+`api_test.PointerStamp`+rest, msg)
+
+	reg := api.New(newEcho(), api.Public())
+	api.POST[stampRequest, stampAllowedResponse](reg.Group("/things"), "", "op", stub)
+	reg.Ready()
+	raw, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	doc := decode(t, raw)
+	require.Equal(t, map[string]any{"type": "integer", "format": "int64"}, dig(t, doc, "components", "schemas", "api_test.stampAllowedResponse", "properties", "total"))
+	require.Equal(t, map[string]any{"type": "string"}, dig(t, doc, "components", "schemas", "api_test.stampAllowedResponse", "properties", "at"))
+	require.Equal(t, map[string]any{}, dig(t, doc, "components", "schemas", "api_test.stampAllowedResponse", "properties", "any"))
+	require.Contains(t, string(raw), `"api_test.Stamp"`)
 }

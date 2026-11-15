@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.40.0
+
+### Breaking
+
+- **The route registry refuses a response struct that writes its own JSON.** A struct with a `MarshalJSON` or a `MarshalText` (on `encoding/json/v2` also a `MarshalJSONTo` or an `AppendText`) was published by its fields while its method decided what was sent, so the document described a shape the server did not send: a model whose `MarshalJSON` wraps `status` as `{"id": …}` or adds a computed field was published with `status` as the model declares it and without the computed field. Registering a route whose response holds such a struct, at any depth where the response is documented by its fields and also under a `hidden` field, now fails naming the type and the method. Respond with a struct whose fields are the JSON to send and fill it in the handler: one that embeds the model, once the model's own method is removed, declares a field of the same Go name for each key the method replaced and adds the computed ones is published with exactly those keys. A struct that writes a string can be given an `UnmarshalText` instead, which makes the registry publish it as a string, and a field declared `any` is published as any value. A library's struct that writes its own JSON and has no `UnmarshalText`, such as pgx's `pgtype.Text`, is refused too: declare the field with the plain type it stands for. Request types, a struct that also has an `UnmarshalText`, and types of another kind with a `MarshalJSON`, such as a string type, are published as before.
+
 ## v1.39.0
 
 ### Breaking

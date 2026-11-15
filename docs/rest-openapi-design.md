@@ -250,10 +250,19 @@ Rules enforced at registration (fail boot):
 - the keys `encoding/json` writes are exactly the schema's properties, at every depth of a
   response type: registration fails for the same shapes (an unexported embedded struct's
   fields are sent but huma does not list them), so the document cannot miss a field the
-  server sends. `hidden` fields stay allowed there: sent, and left out on purpose. Types
-  that encode themselves (`json.Marshaler`, `encoding.TextMarshaler`, and on
-  `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) are not looked into,
-  except that a struct which gets its encoder from an embedded field is refused. Both walks
+  server sends. `hidden` fields stay allowed there: sent, and left out on purpose. A struct
+  that encodes itself (`json.Marshaler`, `encoding.TextMarshaler`, and on
+  `encoding/json/v2` a `MarshalJSONTo` or an `encoding.TextAppender`) would be published by
+  its fields, which do not describe what its method sends, so registration refuses it
+  wherever a response holds it and documents it by its fields, also under a `hidden`
+  field. A struct which gets its encoder from an embedded field is refused as before. The
+  way out is a response struct whose fields are the JSON to send, built by the handler; a
+  type that sends a string can have an `UnmarshalText` instead, which publishes it as a
+  string, and a field declared `any` is published as any value. A type of another kind
+  that encodes itself is published by its kind as before: a string or integer kind is not
+  looked into, and a struct held by a slice, array or map type is refused as in any other
+  place, unless that type is published as a string, whose items the response does not
+  document. Both walks
   ask `encoding/json` which of those methods it calls and which key a json tag's name gives
   (`openapi/jsonrules.go`), so they follow the toolchain the app is built with. They also
   ask it to decode `{}` into each struct they look into, once per type, which checks the

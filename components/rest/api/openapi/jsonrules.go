@@ -67,15 +67,26 @@ func hasStreamMethod(t reflect.Type, name string, param reflect.Type) bool {
 }
 
 // encodesOwnJSON reports whether t has a method encoding/json writes it with instead of by its
-// kind: MarshalJSON or MarshalText, and on encoding/json/v2 MarshalJSONTo or AppendText.
+// kind (see ownEncoder).
 func encodesOwnJSON(t reflect.Type) bool {
-	if t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType) {
-		return true
+	return ownEncoder(t) != ""
+}
+
+// ownEncoder returns the name of a method encoding/json writes t with instead of by its kind:
+// MarshalJSON or MarshalText, and on encoding/json/v2 MarshalJSONTo or AppendText; "" when t
+// has none.
+func ownEncoder(t reflect.Type) string {
+	switch {
+	case hasStreamMethod(t, "MarshalJSONTo", jsonEncoderType):
+		return "MarshalJSONTo"
+	case t.Implements(jsonMarshalerType):
+		return "MarshalJSON"
+	case writesAppendText && t.Implements(textAppenderType):
+		return "AppendText"
+	case t.Implements(textMarshalerType):
+		return "MarshalText"
 	}
-	if writesAppendText && t.Implements(textAppenderType) {
-		return true
-	}
-	return hasStreamMethod(t, "MarshalJSONTo", jsonEncoderType)
+	return ""
 }
 
 // decodesOwnJSON reports whether t has a method encoding/json reads it with instead of by its

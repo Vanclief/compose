@@ -217,7 +217,8 @@ func TestRequestKeyErrors(t *testing.T) {
 }
 
 // TestResponseKeyErrors: a response type that sends a key its schema does
-// not list fails at any depth; one that encodes itself is not looked into.
+// not list fails at any depth, and so does a struct that encodes itself,
+// whose fields do not describe what it sends.
 func TestResponseKeyErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -233,6 +234,8 @@ func TestResponseKeyErrors(t *testing.T) {
 		{"pointer sent as null through a map value", reflect.TypeFor[nullPointerMap](), `openapi: openapi.nullPointer: field Owner (json "owner") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
 		{"hidden pointer sent as null", reflect.TypeFor[nullHidden](), `openapi: openapi.nullHidden: field Owner (json "owner") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
 		{"non-null scalar pointer sent as null", reflect.TypeFor[nullScalar](), `openapi: openapi.nullScalar: field Note (json "note") is sent as null when nil, which its schema does not allow; add omitempty to its json tag (the key is then absent rather than null), or declare the field by value instead of as a pointer`},
+		{"own MarshalJSON", reflect.TypeFor[fixture.JSONStampedRun](), `openapi: fixture.JSONStampedRun writes its own JSON with MarshalJSON, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`},
+		{"own MarshalText", reflect.TypeFor[fixture.TextStampedRun](), `openapi: fixture.TextStampedRun writes its own JSON with MarshalText, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -241,11 +244,6 @@ func TestResponseKeyErrors(t *testing.T) {
 			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
 			require.Equal(t, tt.want, ez.ErrorMessage(err))
 		})
-	}
-
-	for _, typ := range []reflect.Type{reflect.TypeFor[fixture.JSONStampedRun](), reflect.TypeFor[fixture.TextStampedRun]()} {
-		err := NewReflector().AddResponse(typ)
-		require.NoError(t, err, typ.String())
 	}
 }
 
@@ -298,6 +296,24 @@ type pcTextResponse struct {
 	Name string `json:"name"`
 }
 
+// pcWord is a string that encodes itself; pcWordResponse gets its encoder by
+// embedding it, and pcWordNamed holds it as a named field.
+type pcWord string
+
+func (w pcWord) MarshalText() ([]byte, error) {
+	return []byte(w), nil
+}
+
+type pcWordResponse struct {
+	pcWord
+	Name string `json:"name"`
+}
+
+type pcWordNamed struct {
+	Word pcWord `json:"word"`
+	Name string `json:"name"`
+}
+
 // pcNamed holds the self-coding types as named fields.
 type pcNamed struct {
 	Base  pcBase  `json:"base"`
@@ -317,7 +333,10 @@ func (o *pcOwn) UnmarshalJSON(raw []byte) error {
 // TestPromotedCoder: a struct documented by its fields that gets a JSON
 // decoder (request) or encoder (response) from an embedded field is refused
 // at any depth: encoding/json would hand it the whole value. One that holds
-// such a type as a named field, or declares its own, is not looked into.
+// such a type as a named field, or declares its own decoder, is not looked
+// into; a named struct field that encodes itself is refused for its own
+// sake, so a response is told to make the embedded field a named one where
+// the embedded type is not such a struct, as for a string kind.
 func TestPromotedCoder(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -327,9 +346,10 @@ func TestPromotedCoder(t *testing.T) {
 	}{
 		{"request", reflect.TypeFor[pcRequest](), true, `openapi: openapi.pcRequest: the JSON decoder of embedded field pcBase would take over the whole value, not the fields the schema lists; make it a named field`},
 		{"nested request", reflect.TypeFor[pcNested](), true, `openapi: openapi.pcRequest: the JSON decoder of embedded field pcBase would take over the whole value, not the fields the schema lists; make it a named field`},
-		{"json response", reflect.TypeFor[pcJSONResponse](), false, `openapi: openapi.pcJSONResponse: the JSON encoder of embedded field pcStamp would take over the whole value, not the fields the schema lists; make it a named field`},
-		{"text response", reflect.TypeFor[pcTextResponse](), false, `openapi: openapi.pcTextResponse: the JSON encoder of embedded field pcLabel would take over the whole value, not the fields the schema lists; make it a named field`},
-		{"nested response", reflect.TypeFor[map[string][]pcJSONResponse](), false, `openapi: openapi.pcJSONResponse: the JSON encoder of embedded field pcStamp would take over the whole value, not the fields the schema lists; make it a named field`},
+		{"json response", reflect.TypeFor[pcJSONResponse](), false, `openapi: openapi.pcJSONResponse: the JSON encoder of embedded field pcStamp would take over the whole value, not the fields the schema lists; remove that encoder, or respond with a struct whose fields are the JSON to send`},
+		{"text response", reflect.TypeFor[pcTextResponse](), false, `openapi: openapi.pcTextResponse: the JSON encoder of embedded field pcLabel would take over the whole value, not the fields the schema lists; remove that encoder, or respond with a struct whose fields are the JSON to send`},
+		{"response embedding a string kind", reflect.TypeFor[pcWordResponse](), false, `openapi: openapi.pcWordResponse: the JSON encoder of embedded field pcWord would take over the whole value, not the fields the schema lists; make it a named field`},
+		{"nested response", reflect.TypeFor[map[string][]pcJSONResponse](), false, `openapi: openapi.pcJSONResponse: the JSON encoder of embedded field pcStamp would take over the whole value, not the fields the schema lists; remove that encoder, or respond with a struct whose fields are the JSON to send`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -348,9 +368,182 @@ func TestPromotedCoder(t *testing.T) {
 	for _, typ := range []reflect.Type{reflect.TypeFor[pcNamed](), reflect.TypeFor[pcOwn]()} {
 		_, err := NewReflector().AddRequest(typ)
 		require.NoError(t, err, typ.String())
-		err = NewReflector().AddResponse(typ)
-		require.NoError(t, err, typ.String())
 	}
+	err := NewReflector().AddResponse(reflect.TypeFor[pcOwn]())
+	require.NoError(t, err)
+	err = NewReflector().AddResponse(reflect.TypeFor[pcWordNamed]())
+	require.NoError(t, err)
+	err = NewReflector().AddResponse(reflect.TypeFor[pcNamed]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcStamp writes its own JSON with MarshalJSON, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
+}
+
+// pcSpan writes itself as text. pcSpans, a slice of them, writes itself as
+// one text and reads itself from one, so it is published as a string;
+// pcSpanList writes itself as JSON and is published as an array of pcSpan.
+type pcSpan struct {
+	From int
+	To   int
+}
+
+func (pcSpan) MarshalText() ([]byte, error) {
+	return []byte("1-5"), nil
+}
+
+type pcSpans []pcSpan
+
+func (pcSpans) MarshalText() ([]byte, error) {
+	return []byte("1-5,6-7"), nil
+}
+
+func (*pcSpans) UnmarshalText([]byte) error {
+	return nil
+}
+
+type pcSpanList []pcSpan
+
+func (pcSpanList) MarshalJSON() ([]byte, error) {
+	return []byte("2"), nil
+}
+
+type pcSpansResponse struct {
+	Spans pcSpans            `json:"spans"`
+	ByDay map[string]pcSpans `json:"by_day"`
+}
+
+type pcSpanListResponse struct {
+	List pcSpanList `json:"list"`
+}
+
+type pcSpanMapResponse struct {
+	ByDay map[string]pcSpan `json:"by_day"`
+}
+
+// pcSpanRequest holds a pcSpan by its fields, which a request may.
+type pcSpanRequest struct {
+	Span pcSpan `json:"span"`
+}
+
+// pcRows writes its items itself, as an array where it is nil: the items
+// are sent by their fields, one of which their schema does not list.
+type pcRows []fixture.StampedRun
+
+func (r pcRows) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]fixture.StampedRun(r))
+}
+
+type pcRowsResponse struct {
+	Rows pcRows `json:"rows"`
+}
+
+// pcMixed writes itself as text by value and as JSON through a pointer,
+// which is what encoding/json calls for a response, except in a map value.
+type pcMixed struct {
+	A int
+}
+
+func (pcMixed) MarshalText() ([]byte, error) {
+	return []byte("text"), nil
+}
+
+func (*pcMixed) MarshalJSON() ([]byte, error) {
+	return []byte(`{"json":1}`), nil
+}
+
+type pcMixedResponse struct {
+	Mixed pcMixed            `json:"mixed"`
+	ByKey map[string]pcMixed `json:"by_key"`
+}
+
+// pcUnlisted sends a pcSpan in two hidden fields the schema of the struct
+// does not list: one promoted from an unexported embedded struct, and one
+// whose key is "-".
+type pcUnlistedInner struct {
+	Span pcSpan `json:"span" hidden:"true"`
+}
+
+type pcUnlisted struct {
+	pcUnlistedInner
+	Dash pcSpan `json:"-," hidden:"true"`
+	Name string `json:"name"`
+}
+
+// pcPointerOnly writes its own JSON through a pointer receiver alone.
+type pcPointerOnly struct {
+	A int
+}
+
+func (*pcPointerOnly) MarshalJSON() ([]byte, error) {
+	return []byte(`"p"`), nil
+}
+
+// TestOwnEncoderContainers: a struct that writes its own JSON is refused
+// where the registry documents it by its fields: as an item of a slice type
+// published as an array, with or without its own encoder, and as a map
+// value. Under a slice type published as a string the response does not
+// document it, and it is not refused, whether or not a request added before
+// or after holds it by its fields; nor is it in a hidden field the schema
+// of its struct does not list. The items of a slice type that
+// writes itself are checked as any items are. A struct with a value
+// MarshalText and a pointer MarshalJSON is refused naming both, and one a
+// map holds by value whose only encoder has a pointer receiver is told to
+// respond with a struct, not to hold a pointer, which would be refused.
+func TestOwnEncoderContainers(t *testing.T) {
+	require.Equal(t, `{"spans":"1-5,6-7","by_day":{"mon":"1-5,6-7"}}`, marshalled(t, &pcSpansResponse{Spans: pcSpans{{}}, ByDay: map[string]pcSpans{"mon": {{}}}}))
+	r := NewReflector()
+	err := r.AddResponse(reflect.TypeFor[pcSpansResponse]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"type": "string"}, prop(t, component(t, res, "openapi.pcSpansResponse"), "spans"))
+
+	r = NewReflector()
+	_, err = r.AddRequest(reflect.TypeFor[pcSpanRequest]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[pcSpansResponse]())
+	require.NoError(t, err)
+	r = NewReflector()
+	err = r.AddResponse(reflect.TypeFor[pcSpansResponse]())
+	require.NoError(t, err)
+	_, err = r.AddRequest(reflect.TypeFor[pcSpanRequest]())
+	require.NoError(t, err)
+
+	require.Equal(t, `{"span":"1-5","-":"1-5","name":""}`, marshalled(t, &pcUnlisted{}))
+	r = NewReflector()
+	err = r.AddResponse(reflect.TypeFor[pcUnlisted]())
+	require.NoError(t, err)
+	res, err = r.Finalize()
+	require.NoError(t, err)
+	_, built := res.Components["openapi.pcSpan"]
+	require.False(t, built)
+
+	span := `openapi: openapi.pcSpan writes its own JSON with MarshalText, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`
+	require.Equal(t, `{"list":2}`, marshalled(t, &pcSpanListResponse{List: pcSpanList{{}, {}}}))
+	err = NewReflector().AddResponse(reflect.TypeFor[pcSpanListResponse]())
+	require.Error(t, err)
+	require.Equal(t, span, ez.ErrorMessage(err))
+	err = NewReflector().AddResponse(reflect.TypeFor[pcSpanMapResponse]())
+	require.Error(t, err)
+	require.Equal(t, span, ez.ErrorMessage(err))
+
+	err = NewReflector().AddResponse(reflect.TypeFor[pcRowsResponse]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), `fixture.StampedRun: field stamps.CreatedAt (json "created_at") is sent by encoding/json but missing from the schema`)
+
+	require.Equal(t, `{"mixed":{"json":1},"by_key":{"k":"text"}}`, marshalled(t, &pcMixedResponse{ByKey: map[string]pcMixed{"k": {}}}))
+	err = NewReflector().AddResponse(reflect.TypeFor[pcMixedResponse]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcMixed writes its own JSON with MarshalJSON, or MarshalText in a map value, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
+
+	err = NewReflector().AddResponse(reflect.TypeFor[map[string]pcPointerOnly]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcPointerOnly is held by value in a map of a response type: encoding/json cannot call its marshaler there, which has a pointer receiver, and would send its fields instead; respond with a struct whose fields are the JSON to send`, ez.ErrorMessage(err))
+	err = NewReflector().AddResponse(reflect.TypeFor[map[string]*pcPointerOnly]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.pcPointerOnly writes its own JSON with MarshalJSON, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
 }
 
 // PCAppend writes itself with AppendText alone, which encoding/json calls on
@@ -401,7 +594,7 @@ func TestAppendTextFollowsTheToolchain(t *testing.T) {
 		return
 	}
 	require.Error(t, err)
-	require.Equal(t, `openapi: openapi.pcAppendResponse: the JSON encoder of embedded field PCAppend would take over the whole value, not the fields the schema lists; make it a named field`, ez.ErrorMessage(err))
+	require.Equal(t, `openapi: openapi.pcAppendResponse: the JSON encoder of embedded field PCAppend would take over the whole value, not the fields the schema lists; remove that encoder, or respond with a struct whose fields are the JSON to send`, ez.ErrorMessage(err))
 	err = NewReflector().AddResponse(reflect.TypeFor[pcAppendMap]())
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), `openapi.pcAppendPointer is held by value in a map of a response type: encoding/json cannot call its marshaler there`)
@@ -442,15 +635,6 @@ type nullScalar struct {
 	Note *string `json:"note" nullable:"false"`
 }
 
-// nullSelfCoded encodes itself, so its fields are not looked into.
-type nullSelfCoded struct {
-	Owner *nullOwner `json:"owner"`
-}
-
-func (nullSelfCoded) MarshalJSON() ([]byte, error) {
-	return []byte(`{}`), nil
-}
-
 // nullAllowed holds pointers that send no null their schema refuses.
 type nullAllowed struct {
 	OmitEmpty *nullOwner       `json:"omit_empty,omitempty"`
@@ -462,7 +646,6 @@ type nullAllowed struct {
 	ID        *uuid.UUID       `json:"id"`
 	IP        *net.IP          `json:"ip"`
 	Value     nullOwner        `json:"value"`
-	Coded     nullSelfCoded    `json:"coded"`
 }
 
 // TestSentNullAllowed: a response pointer field passes when it is absent
@@ -770,17 +953,19 @@ type tnHidden struct {
 	Name string `json:"name"`
 }
 
-// TestTagNamesSkippedWhereKeysAre: the json tag names of a type that codes
-// its own JSON, which encoding/json never reads, and of a hidden response
-// field, which the schema does not list, are not checked, as their keys are
-// not.
+// TestTagNamesSkippedWhereKeysAre: the json tag names of a request type that
+// decodes its own JSON, which encoding/json never reads, and of a hidden
+// response field, which the schema does not list, are not checked, as their
+// keys are not. In a response the type is refused for writing its own JSON,
+// not for its tag names.
 func TestTagNamesSkippedWhereKeysAre(t *testing.T) {
 	require.Equal(t, `{"custom":"custom"}`, marshalled(t, tnHolder{}))
 
-	err := NewReflector().AddResponse(reflect.TypeFor[tnHolder]())
+	_, err := NewReflector().AddRequest(reflect.TypeFor[tnHolder]())
 	require.NoError(t, err)
-	_, err = NewReflector().AddRequest(reflect.TypeFor[tnHolder]())
-	require.NoError(t, err)
+	err = NewReflector().AddResponse(reflect.TypeFor[tnHolder]())
+	require.Error(t, err)
+	require.Equal(t, `openapi: openapi.tnCustom writes its own JSON with MarshalJSON, which the schema of its fields would not describe; respond with a struct whose fields are the JSON to send, or, where it writes a string, add an UnmarshalText so the type is published as a string`, ez.ErrorMessage(err))
 	err = NewReflector().AddResponse(reflect.TypeFor[tnHidden]())
 	require.NoError(t, err)
 }
