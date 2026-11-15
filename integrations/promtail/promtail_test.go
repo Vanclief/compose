@@ -127,9 +127,11 @@ func TestClientFlushesFullBatchBeforeClose(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	// The wait ends as soon as the push arrives. Encoding and decoding a full
+	// batch under the race detector took more than a second on a busy CI runner
 	require.Eventually(t, func() bool {
 		return len(loki.pushed()) == 1
-	}, time.Second, 5*time.Millisecond)
+	}, 10*time.Second, 5*time.Millisecond)
 
 	err := client.Close(context.Background())
 	require.NoError(t, err)
