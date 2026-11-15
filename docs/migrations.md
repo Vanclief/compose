@@ -38,9 +38,10 @@ completion, and they have their own `lock_timeout`, `migrationLockTimeout` in th
 than that for a lock held by another session fails, the boot fails, and the next start retries it
 instead of hanging the deploy. The server also checks every 5 s that the client is still there
 (`client_connection_check_interval`: Postgres 14 or newer on Linux, 15 or newer on macOS and BSD,
-never on Windows; a server that refuses it fails the pool's first statement, which is the
-migration lock below: on every `RunMigrationsFromBaseline`, and on `RunMigrations` or
-`RollbackLastMigration` whenever a migration is registered, not on the connect),
+never on Windows; a server that refuses it fails the pool's statements, not the connect: the
+migration lock below, on every `RunMigrationsFromBaseline`, and on `RunMigrations` or
+`RollbackLastMigration` whenever a migration is registered, and the lock `CreateTables` and
+`CreateExtensions` take on this pool, which then log a warning and run without it),
 so a container killed mid-migration does not leave a backend holding locks until the statement
 ends. The pool shares the main pool's model registry, so a migration may use registered models,
 and it drops its idle connections after 30 s, so it holds nothing once migrations are done.
@@ -74,8 +75,9 @@ undo. `RunMigrationsFromBaseline` holds it from the check for a
 fresh database and the others find it loaded. `RunMigrations` and `RollbackLastMigration` with no
 migration registered return without taking it.
 
-The lock is released with `pg_advisory_unlock`. When that fails, its connection is closed, and the
-server drops the lock with the session. A container killed while it holds the lock closes its
+The lock is released with `pg_advisory_unlock`. When that fails, or has no answer within 10
+seconds, its connection is closed, and the server drops the lock with the session. A container
+killed while it holds the lock closes its
 socket, and the server drops the lock then too. A host that vanishes without closing the socket
 leaves a session that runs no statement, which `client_connection_check_interval` does not check.
 The migration pool sets TCP keepalives on its sessions (`tcp_keepalives_idle` 30 s,
@@ -90,11 +92,21 @@ The lock has limits:
 - A session-level lock needs a server session that stays with the client. PgBouncer in transaction
   pooling mode does not give one; run migrations against the server directly or through session
   pooling. Through transaction pooling the lock can stay on a pooled server connection after the
-  call returns, and later boots wait for it.
+  call returns, and later boots wait for it. The lock `CreateTables` and `CreateExtensions` hold
+  while they run is a session-level lock on the same pool, with a key of its own, so the same
+  holds for it: later boots can wait 30 seconds in each of those calls, log a warning and go on
+  without it.
 - It holds one connection for the whole call, next to the ones the migrations use. The migration
   pool `postgres.ConnectToDatabase` opens has no cap. A `relational.DB` built by hand without
   `MigrationDB` runs migrations on its main pool, which then needs room for at least two
   connections, or the call waits forever.
+- A migration that calls `CreateTables` or `CreateExtensions` waits for their lock like any other
+  caller. Inside a transaction that has locked a table it can wait on an instance that holds that
+  lock and whose create-table hook waits for the table: the hook statement can reach its statement
+  timeout first, that instance's boot then fails once, and the migration goes on. Call them before
+  the transaction starts, or create the table in the migration. On a `relational.DB` built by hand
+  whose `MigrationDB` has a connection limit and no free connection, such a call waits the 30
+  seconds each time and runs without the lock.
 - Only the three calls above take it. An app that drives `migrate.Migrator` itself is not covered.
 - Every compose app uses the same lock key, and advisory locks are per database: two apps that
   share one database run their migrations one at a time too.

@@ -155,7 +155,11 @@ func TestCreateTablesConcurrently(t *testing.T) {
 	// Keeps the connections of a round open for the next, so the instances
 	// of every round start together instead of dialing one by one
 	cfg.MaxIdleConns = instances
-	db, _ := connectTestDB(t, cfg)
+	connected, _ := connectTestDB(t, cfg)
+	// Without MigrationDB and with a connection limit on the main pool,
+	// CreateTables takes no create lock, so the instances race and the
+	// retries are what keeps them from failing
+	db := &relational.DB{DB: connected.DB}
 	models := []interface{}{(*testRecord)(nil), (*testNote)(nil)}
 
 	failed := 0
@@ -325,7 +329,10 @@ func TestCreateTablesConcurrentlyWithHookIndexes(t *testing.T) {
 	cfg := baselineConfig(t)
 	cfg.MaxOpenConns = instances
 	cfg.MaxIdleConns = instances
-	db, _ := connectTestDB(t, cfg)
+	connected, _ := connectTestDB(t, cfg)
+	// Takes no create lock, so the instances race (see
+	// TestCreateTablesConcurrently)
+	db := &relational.DB{DB: connected.DB}
 	models := []interface{}{(*testMultiIndexed)(nil)}
 
 	reset := func() {
@@ -345,7 +352,10 @@ func TestCreateExtensionsConcurrently(t *testing.T) {
 	cfg := baselineConfig(t)
 	cfg.MaxOpenConns = instances
 	cfg.MaxIdleConns = instances
-	db, _ := connectTestDB(t, cfg)
+	connected, _ := connectTestDB(t, cfg)
+	// Takes no create lock, so the instances race (see
+	// TestCreateTablesConcurrently)
+	db := &relational.DB{DB: connected.DB}
 
 	var available bool
 	err := db.NewRaw("SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_trgm')").Scan(ctx, &available)

@@ -21,6 +21,13 @@ const migrationLockKey int64 = 0x636f6d706f7365
 // migration lock.
 const migrationLockPoll = 500 * time.Millisecond
 
+// advisoryUnlockTimeout is how long unlockAdvisory waits for the server to
+// release an advisory lock. The lock's connection comes from the migration
+// pool where there is one, which has no read timeout, so without it a server
+// or network that stops answering would hang the call in the release. A
+// variable so tests can shorten it.
+var advisoryUnlockTimeout = 10 * time.Second
+
 // RunMigrations - Executes all pending migrations. Each one is marked as
 // applied only after its Up succeeds, so a failed migration stays pending and
 // the next start retries it: every migration must be safe to run twice.
@@ -148,12 +155,19 @@ func (db *DB) RollbackLastMigration(migrations *migrate.Migrations) error {
 }
 
 // lockMigrations - Waits until this instance holds the migration lock and
-// returns the function that releases it. The lock is a session-level advisory
-// lock on a connection of its own out of the migration pool, which does
-// nothing but hold it. It is tried again every migrationLockPoll instead of
-// waited on with pg_advisory_lock, which the pool's lock_timeout would cut.
-// On any dialect but PostgreSQL there is no lock and the release does nothing.
+// returns the function that releases it. See lockAdvisory.
 func (db *DB) lockMigrations(ctx context.Context) (func(), error) {
+	return db.lockAdvisory(ctx, migrationLockKey, migrationLockPoll, "Waiting for another instance to finish its migrations")
+}
+
+// lockAdvisory - Waits until this instance holds the advisory lock key, or ctx
+// is done, and returns the function that releases it. The lock is a
+// session-level advisory lock on a connection of its own out of the migration
+// pool, which does nothing but hold it. It is tried again every poll instead
+// of waited on with pg_advisory_lock, which the pool's lock_timeout would
+// cut, and waiting is logged once. On any dialect but PostgreSQL there is no
+// lock and the release does nothing.
+func (db *DB) lockAdvisory(ctx context.Context, key int64, poll time.Duration, waitingMsg string) (func(), error) {
 	if db.Dialect().Name() != dialect.PG {
 		return func() {}, nil
 	}
@@ -165,7 +179,7 @@ func (db *DB) lockMigrations(ctx context.Context) (func(), error) {
 
 	waiting := false
 	for {
-		locked, err := tryMigrationLock(ctx, conn)
+		locked, err := tryAdvisoryLock(ctx, conn, key)
 		if err != nil {
 			return nil, ez.Wrap(err)
 		}
@@ -175,7 +189,7 @@ func (db *DB) lockMigrations(ctx context.Context) (func(), error) {
 		}
 
 		if !waiting {
-			log.Info().Msg("Waiting for another instance to finish its migrations")
+			log.Info().Msg(waitingMsg)
 			waiting = true
 		}
 
@@ -183,12 +197,12 @@ func (db *DB) lockMigrations(ctx context.Context) (func(), error) {
 		case <-ctx.Done():
 			discardConn(conn)
 			return nil, ez.Wrap(ctx.Err())
-		case <-time.After(migrationLockPoll):
+		case <-time.After(poll):
 		}
 	}
 
 	return func() {
-		unlockMigrations(conn)
+		unlockAdvisory(conn, key)
 	}, nil
 }
 
@@ -204,7 +218,7 @@ func (db *DB) tryLockMigrations(ctx context.Context) (func(), error) {
 		return nil, ez.Wrap(err)
 	}
 
-	locked, err := tryMigrationLock(ctx, conn)
+	locked, err := tryAdvisoryLock(ctx, conn, migrationLockKey)
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
@@ -215,15 +229,16 @@ func (db *DB) tryLockMigrations(ctx context.Context) (func(), error) {
 	}
 
 	return func() {
-		unlockMigrations(conn)
+		unlockAdvisory(conn, migrationLockKey)
 	}, nil
 }
 
-// tryMigrationLock - Tries once to take the migration lock on conn's session.
-// After an error the session may or may not hold the lock, so conn is closed.
-func tryMigrationLock(ctx context.Context, conn *sql.Conn) (bool, error) {
+// tryAdvisoryLock - Tries once to take the advisory lock key on conn's
+// session. After an error the session may or may not hold the lock, so conn
+// is closed.
+func tryAdvisoryLock(ctx context.Context, conn *sql.Conn, key int64) (bool, error) {
 	var locked bool
-	err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", migrationLockKey).Scan(&locked)
+	err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&locked)
 	if err != nil {
 		discardConn(conn)
 		return false, ez.Wrap(err)
@@ -232,15 +247,19 @@ func tryMigrationLock(ctx context.Context, conn *sql.Conn) (bool, error) {
 	return locked, nil
 }
 
-// unlockMigrations - Releases the migration lock held by conn's session and
-// returns conn to the pool. When the unlock fails the session is closed
-// instead, and the server drops the lock with it.
-func unlockMigrations(conn *sql.Conn) {
+// unlockAdvisory - Releases the advisory lock key held by conn's session and
+// returns conn to the pool. When the unlock fails, or has no answer within
+// advisoryUnlockTimeout, the session is closed instead, and the server drops
+// the lock with it.
+func unlockAdvisory(conn *sql.Conn, key int64) {
 	// A fresh context, so the lock is released even when the run's is done
+	ctx, cancel := context.WithTimeout(context.Background(), advisoryUnlockTimeout)
+	defer cancel()
+
 	var unlocked bool
-	err := conn.QueryRowContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey).Scan(&unlocked)
+	err := conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", key).Scan(&unlocked)
 	if err != nil || !unlocked {
-		log.Warn().Err(err).Bool("Unlocked", unlocked).Msg("Could not release the migration lock, closing its connection")
+		log.Warn().Err(err).Bool("Unlocked", unlocked).Int64("Key", key).Msg("Could not release an advisory lock, closing its connection")
 		discardConn(conn)
 		return
 	}
