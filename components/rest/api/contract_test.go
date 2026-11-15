@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -335,13 +337,13 @@ type longKeyRequest struct {
 // A client-chosen key does not make the walk of the violations under it
 // slower: 20,000 failing values under a 200 KB key cost about what they
 // cost under a short one, where every comparison of two of them once
-// walked the key.
+// walked the key. The route admits them with MaxBodyValues.
 func TestLongKeyDoesNotSlowTheWalk(t *testing.T) {
 	e := newEcho()
 	reg := api.New(e, api.Public())
 	api.POST(reg.Group("/counts"), "", "create", func(ctx context.Context, body *longKeyRequest) (whoResponse, error) {
 		return whoResponse{}, nil
-	})
+	}, api.MaxBodyValues(30000))
 	reg.Ready()
 	s := &server{e: e, reg: reg}
 
@@ -538,14 +540,15 @@ func TestFailingBodyCostStopsAtTheCap(t *testing.T) {
 	reg := api.New(e, api.Public())
 	api.POST(reg.Group("/cap"), "", "rows", func(ctx context.Context, body *capRows) (whoResponse, error) {
 		return whoResponse{}, nil
-	})
+	}, api.MaxBodyValues(1<<20))
 	reg.Ready()
 	s := &server{e: e, reg: reg}
 
-	// A body just under the default limit of {} items fails on about 2.6
-	// million fields. Mapping every one of them to a field, before the cap
-	// kept 100, allocated about 2.5 GB; the whole request now allocates
-	// about 0.5 GB, most of it the validator's own errors.
+	// A body just under the default byte limit of {} items, which the route
+	// admits with MaxBodyValues, fails on about 2.6 million fields. Mapping
+	// every one of them to a field, before the cap kept 100, allocated about
+	// 2.5 GB; the whole request now allocates about 0.5 GB, most of it the
+	// validator's own errors.
 	var b strings.Builder
 	b.WriteString(`{"rows":[{}`)
 	for b.Len() < 975*1024 {
@@ -566,6 +569,458 @@ func TestFailingBodyCostStopsAtTheCap(t *testing.T) {
 	resp := requireError(t, rec, http.StatusBadRequest, "rows.0.a is required; rows.0.b is required")
 	require.Len(t, resp.Error.Fields, 100)
 	require.True(t, strings.HasSuffix(resp.Error.Message, "; rows.12.d is required; and more"), resp.Error.Message)
+}
+
+type valuesRequest struct {
+	requests.NoRules
+	Items []any `json:"items"`
+}
+
+type valuesResponse struct {
+	Items int `json:"items"`
+}
+
+func countItems(ctx context.Context, body *valuesRequest) (valuesResponse, error) {
+	return valuesResponse{Items: len(body.Items)}, nil
+}
+
+// valuePieces are array items and how many values each holds: an object's
+// keys hold none, and the brackets, commas and quotes in a string are text.
+var valuePieces = []struct {
+	text   string
+	values int
+}{
+	{`1`, 1},
+	{`-2.5e3`, 1},
+	{`true`, 1},
+	{`null`, 1},
+	{`"a{b[c,d\"e\\"`, 1},
+	{`"\\"`, 1},
+	{`[]`, 1},
+	{`{ }`, 1},
+	{`[ 1 , [ ] ]`, 3},
+	{`{"k,{[\"":"v]}","n":{"m":[null]}}`, 5},
+	{"\n[\t{}\r]", 2},
+}
+
+// valuesBody returns a valuesRequest body that holds exactly n values, n at
+// least 2: the body object, its items array and valuePieces in turn, then
+// 1s.
+func valuesBody(n int) string {
+	var items []string
+	count := 2
+	for i := 0; count+valuePieces[i%len(valuePieces)].values <= n; i++ {
+		piece := valuePieces[i%len(valuePieces)]
+		items = append(items, piece.text)
+		count += piece.values
+	}
+	for count < n {
+		items = append(items, "1")
+		count++
+	}
+	return `{"items":[` + strings.Join(items, " ,") + "]}"
+}
+
+// jsonValues decodes body and counts its values: every scalar, array and
+// object one, an object's keys none.
+func jsonValues(t *testing.T, body string) int {
+	t.Helper()
+	var v any
+	err := json.Unmarshal([]byte(body), &v)
+	require.NoError(t, err)
+	var count func(v any) int
+	count = func(v any) int {
+		n := 1
+		switch v := v.(type) {
+		case []any:
+			for _, item := range v {
+				n += count(item)
+			}
+		case map[string]any:
+			for _, item := range v {
+				n += count(item)
+			}
+		}
+		return n
+	}
+	return count(v)
+}
+
+// TestMaxBodyValues: a JSON body holds at most DefaultMaxBodyValues values,
+// every scalar, array and object counting one, an object's keys none, and
+// the brackets, commas and quotes in a string nothing. One more is a 400
+// before the body is decoded, so the handler is not called.
+func TestMaxBodyValues(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	calls := 0
+	api.POST(reg.Group("/values"), "", "count", func(ctx context.Context, body *valuesRequest) (valuesResponse, error) {
+		calls++
+		return countItems(ctx, body)
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	body := valuesBody(api.DefaultMaxBodyValues)
+	require.Equal(t, api.DefaultMaxBodyValues, jsonValues(t, body))
+	rec := s.do(http.MethodPost, "/values", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, calls)
+
+	body = valuesBody(api.DefaultMaxBodyValues + 1)
+	require.Equal(t, api.DefaultMaxBodyValues+1, jsonValues(t, body))
+	rec = s.do(http.MethodPost, "/values", body)
+	resp := requireError(t, rec, http.StatusBadRequest, "body holds more than 10000 values")
+	require.Equal(t, "body holds more than 10000 values", resp.Error.Message)
+	require.Empty(t, resp.Error.Fields)
+	require.Equal(t, 1, calls)
+
+	// A malformed body within the limit keeps its error; past it, the count
+	// refuses it first. Commas inside an unterminated string are text, and
+	// the decoder refuses it.
+	tests := []struct {
+		body string
+		want string
+	}{
+		{`{"items":[1,2}`, "body is not valid JSON"},
+		{`{"items":[` + strings.Repeat("1,", 20000), "body holds more than 10000 values"},
+		{`{"items":[,,` + strings.Repeat(",", 20000) + `]}`, "body holds more than 10000 values"},
+		{`{"items":["` + strings.Repeat(",", 20000), "body is not valid JSON"},
+	}
+	for _, tt := range tests {
+		rec = s.do(http.MethodPost, "/values", tt.body)
+		resp = requireError(t, rec, http.StatusBadRequest, tt.want)
+		require.Equal(t, tt.want, resp.Error.Message)
+	}
+	require.Equal(t, 1, calls)
+}
+
+// TestMaxBodyValuesOption: MaxBodyValues on New is the default of every
+// operation, which a group's or the operation's own overrides, raising or
+// lowering it.
+func TestMaxBodyValuesOption(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public(), api.MaxBodyValues(20000))
+	api.POST(reg.Group("/new"), "", "count", countItems)
+	api.POST(reg.Group("/group", api.MaxBodyValues(4)), "", "count", countItems)
+	api.POST(reg.Group("/route"), "", "count", countItems, api.MaxBodyValues(3))
+	reg.Ready()
+	raised := &server{e: e, reg: reg}
+
+	e = newEcho()
+	reg = api.New(e, api.Public(), api.MaxBodyValues(5))
+	api.POST(reg.Group("/new"), "", "count", countItems)
+	api.POST(reg.Group("/group", api.MaxBodyValues(20000)), "", "count", countItems)
+	api.POST(reg.Group("/route", api.MaxBodyValues(4)), "", "count", countItems, api.MaxBodyValues(20000))
+	reg.Ready()
+	lowered := &server{e: e, reg: reg}
+
+	tests := []struct {
+		s      *server
+		target string
+		limit  int
+	}{
+		{raised, "/new", 20000},
+		{raised, "/group", 4},
+		{raised, "/route", 3},
+		{lowered, "/new", 5},
+		{lowered, "/group", 20000},
+		{lowered, "/route", 20000},
+	}
+	for _, tt := range tests {
+		rec := tt.s.do(http.MethodPost, tt.target, valuesBody(tt.limit))
+		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", tt.target, rec.Body.String())
+
+		rec = tt.s.do(http.MethodPost, tt.target, valuesBody(tt.limit+1))
+		want := fmt.Sprintf("body holds more than %d values", tt.limit)
+		resp := requireError(t, rec, http.StatusBadRequest, want)
+		require.Equal(t, want, resp.Error.Message, tt.target)
+	}
+}
+
+// allocated returns the bytes the heap allocated while fn ran.
+func allocated(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// TestManyValuesRefusedBeforeDecoding: a 1 MiB body of half a million
+// failing values allocated about 0.8 GB, most of it the validator's errors;
+// counting its values refuses it for little more than reading it costs.
+func TestManyValuesRefusedBeforeDecoding(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/cap"), "", "rows", func(ctx context.Context, body *capRows) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	var b strings.Builder
+	b.WriteString(`{"rows":[0`)
+	for b.Len() < 1<<20-2 {
+		b.WriteString(",0")
+	}
+	b.WriteString("]}")
+	body := b.String()
+
+	var rec *httptest.ResponseRecorder
+	n := allocated(func() {
+		rec = s.do(http.MethodPost, "/cap", body)
+	})
+	require.Less(t, n, uint64(16<<20), "refusing a %d-byte body allocated %d bytes", len(body), n)
+	resp := requireError(t, rec, http.StatusBadRequest, "body holds more than 10000 values")
+	require.Equal(t, "body holds more than 10000 values", resp.Error.Message)
+}
+
+type deepNode struct {
+	Kids []deepNode `json:"kids"`
+}
+
+type deepRequest struct {
+	requests.NoRules
+	Root deepNode `json:"root"`
+}
+
+// TestWorstAdmittedBodyCost: within the default limit, a body that fails
+// on every value at the deepest path the depth limit admits is the
+// costliest for a schema of plain structs, as every error holds its path.
+// It allocates about 40 MB; a path through nullable structs costs about
+// twice that.
+func TestWorstAdmittedBodyCost(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/deep"), "", "create", func(ctx context.Context, body *deepRequest) (whoResponse, error) {
+		return whoResponse{}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	// The body object, 31 nodes and their kids arrays hold 63 values, and
+	// the deepest array the rest, 9,937 strings that must be objects.
+	levels := 31
+	items := api.DefaultMaxBodyValues - 1 - 2*levels
+	body := `{"root":` + strings.Repeat(`{"kids":[`, levels) +
+		`"x"` + strings.Repeat(`,"x"`, items-1) +
+		strings.Repeat(`]}`, levels) + `}`
+	require.Equal(t, api.DefaultMaxBodyValues, jsonValues(t, body))
+
+	var rec *httptest.ResponseRecorder
+	n := allocated(func() {
+		rec = s.do(http.MethodPost, "/deep", body)
+	})
+	require.Less(t, n, uint64(128<<20), "validating a %d-byte body allocated %d bytes", len(body), n)
+	path := "root" + strings.Repeat(".kids.0", levels-1) + ".kids."
+	resp := requireError(t, rec, http.StatusBadRequest, path+"0 must be object")
+	require.Len(t, resp.Error.Fields, 100)
+}
+
+type paramItemsRequest struct {
+	requests.NoRules
+	Path  []int    `json:"-" path:"path"`
+	IDs   []int    `json:"-" query:"ids"`
+	Tags  []string `json:"-" query:"tags"`
+	Codes []string `json:"-" header:"X-Codes"`
+	One   string   `json:"-" query:"one"`
+}
+
+// paramItemsServer serves GET /items/:path, which answers how many items
+// its array parameters received, behind an authenticator that rejects a
+// request with X-Reject.
+func paramItemsServer(t *testing.T) *server {
+	t.Helper()
+	e := newEcho()
+	auth := func(request requests.Request) error {
+		if request.GetHeader().Get("X-Reject") != "" {
+			return ez.New(ez.ENOTAUTHENTICATED, "rejected", nil)
+		}
+		return nil
+	}
+	reg := api.New(e, api.Authenticate(auth))
+	api.GET(reg.Group("/items"), "/:path", "list", func(ctx context.Context, body *paramItemsRequest) (valuesResponse, error) {
+		return valuesResponse{Items: len(body.Path) + len(body.IDs) + len(body.Tags) + len(body.Codes)}, nil
+	})
+	reg.Ready()
+	return &server{e: e, reg: reg}
+}
+
+// get sends a GET to target with the header lines given as name, value
+// pairs, a name repeated adding a line.
+func (s *server) get(target string, header ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Add(header[i], header[i+1])
+	}
+	rec := httptest.NewRecorder()
+	s.e.ServeHTTP(rec, req)
+	return rec
+}
+
+// ones returns n comma-separated 1s.
+func ones(n int) string {
+	return "1" + strings.Repeat(",1", n-1)
+}
+
+// TestMaxParameterValues: the array parameters of a request hold at most
+// MaxParameterValues items together, in its path, query and headers, a
+// value counting the items its commas separate, a repeated query value one
+// item, and a header the non-empty items of all its lines. One more is a
+// 400 before any is coerced; an unauthenticated request is refused first.
+func TestMaxParameterValues(t *testing.T) {
+	s := paramItemsServer(t)
+	limit := api.MaxParameterValues
+	want := fmt.Sprintf("parameters hold more than %d values", limit)
+
+	tests := []struct {
+		name   string
+		target string
+		header []string
+		items  int
+	}{
+		{"path", "/items/" + ones(limit), nil, limit},
+		{"query", "/items/1?ids=" + ones(limit-1), nil, limit},
+		{"header", "/items/1", []string{"X-Codes", ones(limit - 1)}, limit},
+		// A repeated query value is one item, commas and all; a header's
+		// lines are split and their empty items dropped.
+		{"mixed", "/items/1,1?tags=a,b&tags=c&one=x,y&ids=" + ones(limit-2-2-4), []string{"X-Codes", " a, b,, ,c ", "X-Codes", "d"}, limit},
+	}
+	for _, tt := range tests {
+		rec := s.get(tt.target, tt.header...)
+		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", tt.name, rec.Body.String())
+		var resp valuesResponse
+		err := json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Equal(t, tt.items, resp.Items, tt.name)
+
+		// One item more.
+		header := tt.header
+		target := tt.target
+		if len(header) > 0 {
+			header = append(slices.Clone(header), "X-Codes", "e")
+		} else {
+			target = strings.Replace(target, "/items/", "/items/1,", 1)
+		}
+		rec = s.get(target, header...)
+		errResp := requireError(t, rec, http.StatusBadRequest, want)
+		require.Equal(t, want, errResp.Error.Message, tt.name)
+
+		// Authentication comes first.
+		rec = s.get(target, append(header, "X-Reject", "1")...)
+		requireError(t, rec, http.StatusUnauthorized, "rejected")
+	}
+}
+
+// TestManyParameterItemsRefusedBeforeCoercion: 1 MB of failing items in a
+// query or a header allocated about 0.5 GB, most of it the validator's
+// errors; counting them refuses the request for little more than parsing
+// it costs.
+func TestManyParameterItemsRefusedBeforeCoercion(t *testing.T) {
+	s := paramItemsServer(t)
+	items := "a" + strings.Repeat(",a", 500000)
+	want := fmt.Sprintf("parameters hold more than %d values", api.MaxParameterValues)
+
+	for _, header := range [][]string{nil, {"X-Codes", items}} {
+		target := "/items/1?ids=" + items
+		if header != nil {
+			target = "/items/1"
+		}
+		var rec *httptest.ResponseRecorder
+		n := allocated(func() {
+			rec = s.get(target, header...)
+		})
+		require.Less(t, n, uint64(16<<20), "refusing %d bytes of items allocated %d bytes", len(items), n)
+		resp := requireError(t, rec, http.StatusBadRequest, want)
+		require.Equal(t, want, resp.Error.Message)
+	}
+}
+
+// TestWorstAdmittedParameterCost: 10,000 failing query items, the most a
+// request may hold, allocate about 10 MB.
+func TestWorstAdmittedParameterCost(t *testing.T) {
+	s := paramItemsServer(t)
+	target := "/items/1?ids=a" + strings.Repeat(",a", api.MaxParameterValues-2)
+
+	var rec *httptest.ResponseRecorder
+	n := allocated(func() {
+		rec = s.get(target)
+	})
+	require.Less(t, n, uint64(64<<20), "validating %d bytes of items allocated %d bytes", len(target), n)
+	resp := requireError(t, rec, http.StatusBadRequest, "query ids.0 must be integer")
+	require.Len(t, resp.Error.Fields, 100)
+}
+
+type formItemsRequest struct {
+	requests.NoRules
+	Name string                `json:"name"`
+	IDs  []int                 `json:"ids"`
+	Tags []string              `json:"tags"`
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestMaxBodyValuesForm: a multipart form is the body, and its values count
+// toward the operation's MaxBodyValues as a JSON body's do: the body
+// object, every field sent and the items of an array field, the items its
+// commas separate in one value or one per repeated value. Files and empty
+// values do not count.
+func TestMaxBodyValuesForm(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	upload := func(ctx context.Context, body *formItemsRequest) (valuesResponse, error) {
+		return valuesResponse{Items: len(body.IDs) + len(body.Tags)}, nil
+	}
+	api.POST(reg.Group("/form"), "", "upload", upload)
+	api.POST(reg.Group("/small"), "", "upload", upload, api.MaxBodyValues(5))
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	post := func(target string, parts ...part) *httptest.ResponseRecorder {
+		body, contentType := form(t, parts...)
+		return s.do(http.MethodPost, target, body, echo.HeaderContentType, contentType)
+	}
+	limit := api.DefaultMaxBodyValues
+
+	tests := []struct {
+		name   string
+		target string
+		limit  int
+		parts  func(ids int) []part
+	}{
+		// The body, name, ids and its items.
+		{"one value", "/form", limit, func(ids int) []part {
+			return []part{{name: "name", value: "x"}, {name: "ids", value: ones(ids - 3)}, {name: "file", value: "f", filename: "f.txt"}}
+		}},
+		// The body, tags and its two values, ids and its items.
+		{"repeated", "/form", limit, func(ids int) []part {
+			return []part{{name: "tags", value: "a,b"}, {name: "tags", value: "c"}, {name: "tags", value: ""}, {name: "ids", value: ones(ids - 5)}}
+		}},
+		{"option", "/small", 5, func(ids int) []part {
+			return []part{{name: "name", value: "x"}, {name: "ids", value: ones(ids - 3)}}
+		}},
+	}
+	for _, tt := range tests {
+		rec := post(tt.target, tt.parts(tt.limit)...)
+		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", tt.name, rec.Body.String())
+
+		rec = post(tt.target, tt.parts(tt.limit+1)...)
+		want := fmt.Sprintf("body holds more than %d values", tt.limit)
+		resp := requireError(t, rec, http.StatusBadRequest, want)
+		require.Equal(t, want, resp.Error.Message, tt.name)
+	}
+
+	// 1 MB of failing items allocated about 0.5 GB; counting them refuses
+	// the form for little more than parsing it costs.
+	body, contentType := form(t, part{name: "ids", value: "a" + strings.Repeat(",a", 500000)})
+	var rec *httptest.ResponseRecorder
+	n := allocated(func() {
+		rec = s.do(http.MethodPost, "/form", body, echo.HeaderContentType, contentType)
+	})
+	require.Less(t, n, uint64(16<<20), "refusing a %d-byte form allocated %d bytes", len(body), n)
+	want := fmt.Sprintf("body holds more than %d values", limit)
+	resp := requireError(t, rec, http.StatusBadRequest, want)
+	require.Equal(t, want, resp.Error.Message)
 }
 
 func TestContractHandlerNotInvokedOnFailure(t *testing.T) {

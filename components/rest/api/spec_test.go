@@ -784,6 +784,8 @@ func TestOptionFailures(t *testing.T) {
 		{func() { api.GET[fixture.ReportRequest, *api.Blob](newGroup(), "/:id", "report", stub) }, "the handler must return api.Blob, not *api.Blob"},
 		{func() { api.Authenticate(nil) }, "api: Authenticate needs a function"},
 		{func() { api.MaxBodyBytes(0) }, "api: MaxBodyBytes must be positive"},
+		{func() { api.MaxBodyValues(0) }, "api: MaxBodyValues must be positive"},
+		{func() { api.MaxBodyValues(-1) }, "api: MaxBodyValues must be positive"},
 		{func() { api.Timeout(0) }, "api: Timeout must be positive"},
 		{func() { api.Timeout(-time.Second) }, "api: Timeout must be positive"},
 		{func() { api.Produces[fixture.ExportRequest]("text/csv", nil) }, "api: Produces needs a function"},

@@ -53,6 +53,7 @@ type operation struct {
 	description  string
 	timeout      time.Duration
 	maxBody      int64
+	maxValues    int
 	middleware   []echo.MiddlewareFunc
 
 	reqType  reflect.Type
@@ -138,15 +139,16 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 	defer r.mu.Unlock()
 
 	op := &operation{
-		reg:     r,
-		method:  strings.ToUpper(method),
-		path:    g.prefix + path,
-		name:    name,
-		tag:     g.tag,
-		reqType: reqType,
-		resType: resType,
-		invoke:  invoke,
-		maxBody: DefaultMaxBody,
+		reg:       r,
+		method:    strings.ToUpper(method),
+		path:      g.prefix + path,
+		name:      name,
+		tag:       g.tag,
+		reqType:   reqType,
+		resType:   resType,
+		invoke:    invoke,
+		maxBody:   DefaultMaxBody,
+		maxValues: DefaultMaxBodyValues,
 	}
 	op.id = name
 	if op.tag != "" {
