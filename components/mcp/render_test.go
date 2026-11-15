@@ -462,6 +462,7 @@ func TestTypeName(t *testing.T) {
 		"term ref":       {&reference.Schema{Ref: "#/components/schemas/models_Package", Nullable: true}, "Package?"},
 		"unknown ref":    {&reference.Schema{Ref: "#/components/schemas/Missing"}, "Missing"},
 		"allOf wrapper":  {&reference.Schema{AllOf: []*reference.Schema{{Ref: "#/components/schemas/models_Unit"}}, Nullable: true}, "Unit?"},
+		"typed wrapper":  {&reference.Schema{AllOf: []*reference.Schema{{Ref: "#/components/schemas/models_Unit"}}, Nullable: true, Type: reference.TypeList{"object"}}, "Unit?"},
 		"array of terms": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Ref: "#/components/schemas/models_Unit"}}, "Unit[]"},
 		"array of enums": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}}}, `string[] enum: "a"|"b"`},
 		"format":         {&reference.Schema{Type: reference.TypeList{"string"}, Format: "date-time", Nullable: true}, "string date-time?"},
@@ -720,4 +721,161 @@ func TestRenderConstAndSiblingEnum(t *testing.T) {
     mode   string            enum: "fast"
     level  (string|integer)  enum: "low"|1
     pair   (string[])        enum: ["a","b"]`, c.renderDescribe([]string{"things.create"}))
+}
+
+// typedWrapperSpec holds nullable fields as the OpenAPI generator writes them
+// for a pointer, slice or map of a named type: an allOf around the reference
+// with the type of the component beside nullable, which 3.0 needs.
+const typedWrapperSpec = `{"openapi": "3.0.3", "info": {"title": "t", "version": "1"}, "paths": {
+	"/things": {"get": {"operationId": "getThing", "tags": ["things"], "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}}}}}}
+}, "components": {"schemas": {
+	"Tags": {"type": "array", "items": {"type": "string"}},
+	"Hours": {"type": "object", "additionalProperties": {"type": "string"}},
+	"Kind": {"type": "string", "enum": ["a", "b"]},
+	"Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
+	"Amount": {"type": "number"},
+	"Anything": {},
+	"Either": {"oneOf": [{"$ref": "#/components/schemas/Owner"}, {"$ref": "#/components/schemas/Hours"}]},
+	"Mixed": {"oneOf": [{"$ref": "#/components/schemas/Owner"}, {"$ref": "#/components/schemas/Kind"}]},
+	"AnyBoth": {"anyOf": [{"$ref": "#/components/schemas/Owner"}, {"$ref": "#/components/schemas/Hours"}]},
+	"UntypedFirst": {"oneOf": [{}, {"$ref": "#/components/schemas/Owner"}]},
+	"UnknownFirst": {"oneOf": [{"$ref": "#/components/schemas/Missing"}, {"$ref": "#/components/schemas/Owner"}]},
+	"Multi": {"type": ["string", "integer"]},
+	"Thing": {"type": "object", "properties": {
+		"tags": {"allOf": [{"$ref": "#/components/schemas/Tags"}], "nullable": true, "type": "array"},
+		"hours": {"allOf": [{"$ref": "#/components/schemas/Hours"}], "nullable": true, "type": "object"},
+		"kind": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "nullable": true, "type": "string"},
+		"owner": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "nullable": true, "type": "object"},
+		"either": {"allOf": [{"$ref": "#/components/schemas/Either"}], "nullable": true, "type": "object"},
+		"kind_enum": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "nullable": true, "type": "string", "enum": ["a"]},
+		"kind_const": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": "string", "const": "a"},
+		"kind_format": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": "string", "format": "date-time"},
+		"tags_items": {"allOf": [{"$ref": "#/components/schemas/Tags"}], "type": "array", "items": {"type": "integer"}},
+		"owner_one_of": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "type": "object", "oneOf": [{"$ref": "#/components/schemas/Owner"}, {"$ref": "#/components/schemas/Hours"}]},
+		"owner_any_of": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "type": "object", "anyOf": [{"$ref": "#/components/schemas/Owner"}, {"$ref": "#/components/schemas/Hours"}]},
+		"count": {"allOf": [{"$ref": "#/components/schemas/Amount"}], "nullable": true, "type": "integer"},
+		"nested": {"allOf": [{"allOf": [{"$ref": "#/components/schemas/Amount"}]}], "type": "number"},
+		"missing": {"allOf": [{"$ref": "#/components/schemas/Missing"}], "nullable": true, "type": "integer"},
+		"anything": {"allOf": [{"$ref": "#/components/schemas/Anything"}], "type": "string"},
+		"either_string": {"allOf": [{"$ref": "#/components/schemas/Either"}], "type": "string"},
+		"mixed": {"allOf": [{"$ref": "#/components/schemas/Mixed"}], "type": "object"},
+		"mixed_string": {"allOf": [{"$ref": "#/components/schemas/Mixed"}], "type": "string"},
+		"any_both": {"allOf": [{"$ref": "#/components/schemas/AnyBoth"}], "nullable": true, "type": "object"},
+		"untyped_first": {"allOf": [{"$ref": "#/components/schemas/UntypedFirst"}], "type": "object"},
+		"unknown_first": {"allOf": [{"$ref": "#/components/schemas/UnknownFirst"}], "type": "object"},
+		"owner_described": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "nullable": true, "type": "object", "description": "who", "deprecated": true},
+		"owner_annotated": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "nullable": true, "type": "object", "title": "T", "readOnly": true, "writeOnly": true, "default": {}, "example": {}, "x-note": 1},
+		"kind_max_length": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": "string", "maxLength": 1},
+		"kind_pattern": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": "string", "pattern": "^a$"},
+		"kind_not": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": "string", "not": {"enum": ["b"]}},
+		"amount_minimum": {"allOf": [{"$ref": "#/components/schemas/Amount"}], "type": "number", "minimum": 1},
+		"owner_required": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "type": "object", "required": ["name"]},
+		"hours_closed": {"allOf": [{"$ref": "#/components/schemas/Hours"}], "type": "object", "additionalProperties": false},
+		"tags_min_items": {"allOf": [{"$ref": "#/components/schemas/Tags"}], "type": "array", "minItems": 1},
+		"hours_property_names": {"allOf": [{"$ref": "#/components/schemas/Hours"}], "nullable": true, "type": "object", "propertyNames": {"maxLength": 3}},
+		"hours_member_names": {"allOf": [{"$ref": "#/components/schemas/Hours", "propertyNames": {"maxLength": 3}}], "nullable": true, "type": "object"}
+	}}
+}}}`
+
+// typedWrapperSpec31 holds the wrappers only an OpenAPI 3.1 document can
+// write: a list of types, and keywords beside the $ref of the member.
+const typedWrapperSpec31 = `{"openapi": "3.1.0", "info": {"title": "t", "version": "1"}, "paths": {
+	"/things": {"get": {"operationId": "getThing", "tags": ["things"], "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}}}}}}
+}, "components": {"schemas": {
+	"Kind": {"type": "string", "enum": ["a", "b"]},
+	"Amount": {"type": "number"},
+	"Multi": {"type": ["string", "integer"]},
+	"Owner": {"type": "object", "properties": {"name": {"type": "string"}}},
+	"Thing": {"type": "object", "properties": {
+		"owner_null_member": {"allOf": [{"$ref": "#/components/schemas/Owner"}], "type": "object", "anyOf": [{"type": "null"}], "examples": [{}]},
+		"multi": {"allOf": [{"$ref": "#/components/schemas/Multi"}], "type": ["integer", "string", "null"]},
+		"multi_narrower": {"allOf": [{"$ref": "#/components/schemas/Multi"}], "type": "string"},
+		"multi_integer": {"allOf": [{"$ref": "#/components/schemas/Multi"}], "type": "integer"},
+		"kind_wider": {"allOf": [{"$ref": "#/components/schemas/Kind"}], "type": ["string", "integer"]},
+		"member_type": {"allOf": [{"$ref": "#/components/schemas/Amount", "type": "integer"}], "type": "number"},
+		"member_enum": {"allOf": [{"$ref": "#/components/schemas/Kind", "enum": ["a"]}], "type": ["string", "null"]}
+	}}
+}}}`
+
+func TestTypeNameOfTypedWrapper(t *testing.T) {
+	c, err := buildCatalog(parseSpec(t, typedWrapperSpec), nil, nil)
+	require.NoError(t, err)
+
+	thing := mustTerm(t, c, "Thing").Schema
+	want := map[string]string{
+		"tags":  "Tags?",
+		"hours": "Hours?",
+		"kind":  "Kind?",
+		"owner": "Owner?",
+		// A component that states no type, whose alternatives all state the
+		// wrapper's.
+		"either": "Either?",
+		// What the wrapper states besides its type is printed as written.
+		"kind_enum":    `string? enum: "a"`,
+		"kind_const":   `string enum: "a"`,
+		"kind_format":  "string date-time",
+		"tags_items":   "integer[]",
+		"owner_one_of": "Owner|Hours",
+		"owner_any_of": "Owner|Hours",
+		// So is a type that is not its member's, or whose member's cannot
+		// be told.
+		"count":         "integer?",
+		"nested":        "number",
+		"missing":       "integer?",
+		"anything":      "string",
+		"either_string": "string",
+		"mixed":         "object",
+		"mixed_string":  "string",
+		"untyped_first": "object",
+		"unknown_first": "object",
+		// An anyOf component whose alternatives all state the wrapper's
+		// type, and a wrapper that only adds annotations.
+		"any_both":        "AnyBoth?",
+		"owner_described": "Owner?",
+		"owner_annotated": "Owner?",
+		// A keyword the notation does not print may still narrow the
+		// member, so the wrapper is not its member.
+		"kind_max_length": "string",
+		"kind_pattern":    "string",
+		"kind_not":        "string",
+		"amount_minimum":  "number",
+		"owner_required":  "object",
+		"hours_closed":    "object",
+		"tags_min_items":  "any[]",
+		// So may a keyword reference.Schema keeps only in Unmodelled, on
+		// the wrapper or beside the $ref of its member.
+		"hours_property_names": "object?",
+		"hours_member_names":   "object?",
+	}
+	for key, notation := range want {
+		assert.Equal(t, notation, c.typeName(thing.Properties.Map[key]), key)
+	}
+
+	// The terms behind the wrappers are found, so the function lists them.
+	names := functionNames(c)
+	require.Len(t, names, 1)
+	assert.Contains(t, c.describeFunction(names[0]), "see also: AnyBoth, Either, Hours, Kind, Owner, Tags, Thing")
+}
+
+func TestTypeNameOfTypedWrapperTypeLists(t *testing.T) {
+	c, err := buildCatalog(parseSpec(t, typedWrapperSpec31), nil, nil)
+	require.NoError(t, err)
+
+	thing := mustTerm(t, c, "Thing").Schema
+	want := map[string]string{
+		// The same types in another order, null aside.
+		"multi": "Multi?",
+		// Null written as an alternative, which Parse folds into nullable.
+		"owner_null_member": "Owner?",
+		// Fewer or more types than the member states.
+		"multi_narrower": "string",
+		"multi_integer":  "integer",
+		"kind_wider":     "string",
+		// A keyword beside the $ref of the member narrows it.
+		"member_type": "number",
+		"member_enum": "string?",
+	}
+	for key, notation := range want {
+		assert.Equal(t, notation, c.typeName(thing.Properties.Map[key]), key)
+	}
 }

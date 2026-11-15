@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"unicode"
@@ -734,7 +735,11 @@ func (c *Catalog) termName(s *reference.Schema) string {
 		}
 		return s.Ref[strings.LastIndex(s.Ref, "/")+1:]
 	}
-	if len(s.AllOf) == 1 && s.Properties.Len() == 0 && len(s.Type) == 0 {
+	// A wrapper may state a type: OpenAPI 3.0 only honours nullable beside
+	// one, so the generator writes the type of the component beside a
+	// nullable wrapper. A typed wrapper that is not onlyTyped is printed as
+	// written.
+	if len(s.AllOf) == 1 && s.Properties.Len() == 0 && (len(s.Type) == 0 || c.onlyTyped(s)) {
 		return c.termName(s.AllOf[0])
 	}
 	for _, t := range c.Terms {
@@ -743,6 +748,91 @@ func (c *Catalog) termName(s *reference.Schema) string {
 		}
 	}
 	return ""
+}
+
+// onlyTyped reports whether s, a typed single-member allOf wrapper, stands
+// for its member: besides allOf, type and nullable it holds only
+// annotations, its member is a $ref to a term with nothing beside it, and
+// its types are the member's (see termTypes). Any other keyword
+// reference.Schema holds, such as an enum, a format, a bound or a pattern,
+// may narrow the member, so the wrapper is then printed as written, as it
+// is where the member's types cannot be told.
+func (c *Catalog) onlyTyped(s *reference.Schema) bool {
+	rest := *s
+	rest.AllOf = nil
+	rest.Type = nil
+	rest.Nullable = false
+	rest.NullMember = false
+	rest.Title = ""
+	rest.Description = ""
+	rest.Deprecated = false
+	rest.ReadOnly = false
+	rest.WriteOnly = false
+	rest.Default = nil
+	rest.Example = nil
+	rest.Examples = nil
+	rest.Extensions = nil
+	if !reflect.ValueOf(rest).IsZero() {
+		return false
+	}
+	ref := *s.AllOf[0]
+	ref.Ref = ""
+	if !reflect.ValueOf(ref).IsZero() {
+		return false
+	}
+	member, ok := c.Term(s.AllOf[0].Ref)
+	if !ok || member.Schema == nil {
+		return false
+	}
+	return sameTypes(s.Type, c.termTypes(member.Schema))
+}
+
+// termTypes returns the types the schema of a term states: its own, or,
+// when it states none, the ones every alternative of its oneOf and anyOf
+// states, each its own or those of the term it refers to. It returns nil
+// when there are none or the alternatives differ.
+func (c *Catalog) termTypes(s *reference.Schema) reference.TypeList {
+	if len(s.Type) > 0 {
+		return s.Type
+	}
+	var types reference.TypeList
+	for _, members := range [][]*reference.Schema{s.OneOf, s.AnyOf} {
+		for _, member := range members {
+			stated := member.Type
+			if member.Ref != "" {
+				term, ok := c.Term(member.Ref)
+				if !ok || term.Schema == nil {
+					return nil
+				}
+				stated = term.Schema.Type
+			}
+			if len(stated) == 0 || (types != nil && !sameTypes(types, stated)) {
+				return nil
+			}
+			types = stated
+		}
+	}
+	return types
+}
+
+// sameTypes reports whether a and b list the same types, "null" aside, and
+// at least one.
+func sameTypes(a, b reference.TypeList) bool {
+	left := typeSet(a)
+	right := typeSet(b)
+	return len(left) > 0 && slices.Equal(left, right)
+}
+
+// typeSet returns the types of t but "null", sorted, each once.
+func typeSet(t reference.TypeList) []string {
+	var set []string
+	for _, name := range t {
+		if name != "null" {
+			set = append(set, name)
+		}
+	}
+	slices.Sort(set)
+	return slices.Compact(set)
 }
 
 // nullMark is "?" for nullable schemas.
