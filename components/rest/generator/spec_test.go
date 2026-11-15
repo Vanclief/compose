@@ -155,25 +155,26 @@ func TestToOpenAPIPath(t *testing.T) {
 	}
 }
 
-func TestPathParameterSchemaDefaultsIDsToIntegers(t *testing.T) {
+// A path parameter the handler reads with a ParamGetters call has the getter's schema; one whose
+// read the generator does not see is a string, whatever its name: id and *_id are not guessed to
+// be integers.
+func TestPathParameterSchemaIsAStringUnlessRead(t *testing.T) {
 	params := buildPathParameters("/complexes/{complex_id}/units/{id}/{slug}", map[string]map[string]any{
-		"id": {"type": "string", "format": "uuid"},
+		"slug": {"type": "string", "format": "uuid"},
 	})
 	if len(params) != 3 {
 		t.Fatalf("expected three path parameters, got %v", params)
 	}
 
-	complexID := params[0].(map[string]any)["schema"].(map[string]any)
-	if complexID["type"] != "integer" || complexID["format"] != "int64" {
-		t.Fatalf("expected an _id parameter to default to int64, got %v", complexID)
-	}
-	id := params[1].(map[string]any)["schema"].(map[string]any)
-	if id["format"] != "uuid" {
-		t.Fatalf("expected the harvested getter schema to win, got %v", id)
+	for i, name := range []string{"complex_id", "id"} {
+		schema := params[i].(map[string]any)["schema"].(map[string]any)
+		if !reflect.DeepEqual(schema, map[string]any{"type": "string"}) {
+			t.Errorf("expected the unread parameter %s to be a string, got %v", name, schema)
+		}
 	}
 	slug := params[2].(map[string]any)["schema"].(map[string]any)
-	if slug["type"] != "string" {
-		t.Fatalf("expected other parameters to default to strings, got %v", slug)
+	if slug["format"] != "uuid" {
+		t.Fatalf("expected the harvested getter schema to win, got %v", slug)
 	}
 }
 

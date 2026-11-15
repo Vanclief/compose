@@ -110,8 +110,25 @@ type embeddedStruct struct {
 // stay required behind an embedded pointer. It reads database/sql's Null types as the structs
 // they are, a described type with a marshaler from source, and a standard-library or well-known
 // struct with a marshal method as a struct without fields.
+//
+// A field the walk finds whose json tag has a format: option refuses any struct, merged or not,
+// with the reason formatOptionReason gives, and so does one an embedded struct that
+// Config.TypeSchemas describes promotes (describedFormatReason).
 func (b *schemaBuilder) mergedStructSchema(st *ast.StructType, imports map[string]string, pkgPath string, own map[string]bool) (map[string]any, bool, string) {
 	walk := b.walkEmbedding(st, imports, pkgPath)
+	for _, promoted := range walk.fields {
+		reason := formatOptionReason(promoted.field)
+		if reason != "" {
+			return nil, false, reason
+		}
+	}
+	seen := map[typeRef]bool{}
+	for _, opaque := range walk.opaque {
+		reason := b.describedFormatReason(opaque, seen)
+		if reason != "" {
+			return nil, false, reason
+		}
+	}
 	collision := collides(walk.fields)
 	if !walk.pointer && !walk.marshals && !collision {
 		return nil, false, ""
@@ -323,6 +340,56 @@ func (b *schemaBuilder) walkEmbedding(st *ast.StructType, imports map[string]str
 	}
 
 	return walk
+}
+
+// describedFormatReason is formatOptionReason for a field with a format: option that an embedded
+// struct the walk does not expand, as Config.TypeSchemas describes it, promotes: encoding/json on
+// Go 1.27, unless built with GOEXPERIMENT=nojsonv2, refuses the struct that embeds it for one,
+// shadowed or not, whatever the description says. The described struct's declaration is read
+// from source, that of the generic struct for one declared from an instantiation or an alias of
+// one (genericStruct), its embedded structs walked, and those described in turn read the same
+// way, each once (seen). "" for any other embedded type.
+func (b *schemaBuilder) describedFormatReason(opaque opaqueEmbed, seen map[typeRef]bool) string {
+	ref, ok := typeRefFromExpr(opaque.expr, opaque.imports, opaque.pkgPath)
+	if !ok {
+		return ""
+	}
+	ref = b.aliasTarget(ref)
+	_, described := b.typeSchemas[typeKey(ref)]
+	if !described || seen[ref] || !b.declaredInSource(ref) {
+		return ""
+	}
+	seen[ref] = true
+	declared, imports, pkgPath, ok := b.underlyingType(ref, 0, true)
+	if !ok {
+		return ""
+	}
+	generic, ok := b.genericStruct(declared, imports, pkgPath)
+	if ok {
+		declared = generic.st
+		imports = generic.imports
+		pkgPath = generic.pkgPath
+	}
+	structure, ok := declared.(*ast.StructType)
+	if !ok {
+		return ""
+	}
+
+	walk := b.walkEmbedding(structure, imports, pkgPath)
+	for _, promoted := range walk.fields {
+		reason := formatOptionReason(promoted.field)
+		if reason != "" {
+			return reason
+		}
+	}
+	for _, inner := range walk.opaque {
+		reason := b.describedFormatReason(inner, seen)
+		if reason != "" {
+			return reason
+		}
+	}
+
+	return ""
 }
 
 // embeddedStructDecl is the struct declaration whose fields an embedded type promotes. ok is

@@ -2,8 +2,11 @@ package generator
 
 import (
 	"bytes"
+	"go/ast"
 	"go/build"
+	"go/types"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -97,4 +100,195 @@ var cgoPlatforms = func() platformSet {
 
 func (s platformSet) intersect(other platformSet) platformSet {
 	return platformSet{s[0] & other[0], s[1] & other[1]}
+}
+
+// sameDeclarations reports declarations of one type name, read from several files, that declare
+// the same type (declarationShape), each file importing the same package with a dot import, if
+// any.
+func sameDeclarations(decls []typeSpecInfo, docComments bool) bool {
+	first := declarationShape(decls[0], docComments)
+	for _, decl := range decls[1:] {
+		if declarationShape(decl, docComments) != first || decl.Imports["."] != decls[0].Imports["."] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// declarationShape writes a type declaration so that two declarations of the same type, an
+// alias or not, read the same whatever their layout: its type parameters and type with each
+// package qualifier written as its import path, parentheses dropped and names declared together
+// written one by one, a struct field with its tag as reflect.StructTag reads it and the
+// deprecation the generator reads from its comments (hasDeprecatedParagraph), which the document
+// shows, and, with docComments (Config.DocComments), the field's description (fieldDoc) and the
+// type's doc comment, which the document then shows too. A struct field that is neither exported
+// nor embedded is left out, as encoding/json does not write it.
+func declarationShape(decl typeSpecInfo, docComments bool) string {
+	var out strings.Builder
+	if docComments {
+		out.WriteString(strconv.Quote(commentText(decl.Doc)))
+	}
+	if decl.Spec.TypeParams != nil {
+		out.WriteString("[" + fieldListShape(decl.Spec.TypeParams, decl.Imports, false, docComments) + "]")
+	}
+	if decl.Spec.Assign.IsValid() {
+		out.WriteString("=")
+	}
+	out.WriteString(typeShape(decl.Spec.Type, decl.Imports, docComments))
+
+	return out.String()
+}
+
+// typeShape writes a type expression for declarationShape.
+func typeShape(expr ast.Expr, imports map[string]string, docComments bool) string {
+	switch t := expr.(type) {
+	case nil:
+		return ""
+	case *ast.Ident:
+		return t.Name
+	case *ast.ParenExpr:
+		return typeShape(t.X, imports, docComments)
+	case *ast.SelectorExpr:
+		qualifier, ok := t.X.(*ast.Ident)
+		if ok && imports[qualifier.Name] != "" {
+			return strconv.Quote(imports[qualifier.Name]) + "." + t.Sel.Name
+		}
+		return types.ExprString(t)
+	case *ast.StarExpr:
+		return "*" + typeShape(t.X, imports, docComments)
+	case *ast.ArrayType:
+		length := ""
+		if t.Len != nil {
+			length = types.ExprString(t.Len)
+		}
+		return "[" + length + "]" + typeShape(t.Elt, imports, docComments)
+	case *ast.Ellipsis:
+		return "..." + typeShape(t.Elt, imports, docComments)
+	case *ast.MapType:
+		return "map[" + typeShape(t.Key, imports, docComments) + "]" + typeShape(t.Value, imports, docComments)
+	case *ast.ChanType:
+		direction := "chan "
+		if t.Dir == ast.SEND {
+			direction = "chan<- "
+		} else if t.Dir == ast.RECV {
+			direction = "<-chan "
+		}
+		return direction + typeShape(t.Value, imports, docComments)
+	case *ast.FuncType:
+		return "func(" + fieldListShape(t.Params, imports, false, docComments) + ")(" + fieldListShape(t.Results, imports, false, docComments) + ")"
+	case *ast.StructType:
+		return "struct{" + fieldListShape(t.Fields, imports, true, docComments) + "}"
+	case *ast.InterfaceType:
+		return "interface{" + fieldListShape(t.Methods, imports, false, docComments) + "}"
+	case *ast.IndexExpr:
+		return typeShape(t.X, imports, docComments) + "[" + typeShape(t.Index, imports, docComments) + "]"
+	case *ast.IndexListExpr:
+		arguments := make([]string, 0, len(t.Indices))
+		for _, index := range t.Indices {
+			arguments = append(arguments, typeShape(index, imports, docComments))
+		}
+		return typeShape(t.X, imports, docComments) + "[" + strings.Join(arguments, ",") + "]"
+	case *ast.UnaryExpr:
+		return t.Op.String() + typeShape(t.X, imports, docComments)
+	case *ast.BinaryExpr:
+		return typeShape(t.X, imports, docComments) + t.Op.String() + typeShape(t.Y, imports, docComments)
+	}
+
+	return types.ExprString(expr)
+}
+
+// fieldListShape writes a field, parameter or method list for declarationShape, one entry per
+// name; fields adds a struct field's tag and comments and leaves out a name that is not exported.
+func fieldListShape(list *ast.FieldList, imports map[string]string, fields bool, docComments bool) string {
+	if list == nil {
+		return ""
+	}
+	var entries []string
+	for _, field := range list.List {
+		suffix := " " + typeShape(field.Type, imports, docComments)
+		if fields {
+			suffix += " " + tagShape(field) + " " + strconv.FormatBool(hasDeprecatedParagraph(field))
+		}
+		if fields && docComments {
+			suffix += " " + strconv.Quote(fieldDoc(field))
+		}
+		if len(field.Names) == 0 {
+			entries = append(entries, suffix)
+			continue
+		}
+		for _, name := range field.Names {
+			if fields && !name.IsExported() {
+				continue
+			}
+			entries = append(entries, name.Name+suffix)
+		}
+	}
+
+	return strings.Join(entries, ";")
+}
+
+// tagShape writes a struct field's tag as reflect.StructTag reads it: each key with the value
+// its first occurrence gives, in key order, so the spacing between keys and a raw or an
+// interpreted string literal do not count. A key whose first value does not unquote reads as
+// absent, as reflect.StructTag.Lookup then finds nothing.
+func tagShape(field *ast.Field) string {
+	if field.Tag == nil {
+		return ""
+	}
+	tag, err := strconv.Unquote(field.Tag.Value)
+	if err != nil {
+		// The parser only gives a tag that is a valid string literal.
+		return field.Tag.Value
+	}
+
+	// The loop of reflect.StructTag.Lookup, over every key.
+	values := map[string]string{}
+	seen := map[string]bool{}
+	for tag != "" {
+		i := 0
+		for i < len(tag) && tag[i] == ' ' {
+			i++
+		}
+		tag = tag[i:]
+		if tag == "" {
+			break
+		}
+		i = 0
+		for i < len(tag) && tag[i] > ' ' && tag[i] != ':' && tag[i] != '"' && tag[i] != 0x7f {
+			i++
+		}
+		if i == 0 || i+1 >= len(tag) || tag[i] != ':' || tag[i+1] != '"' {
+			break
+		}
+		name := tag[:i]
+		tag = tag[i+1:]
+		i = 1
+		for i < len(tag) && tag[i] != '"' {
+			if tag[i] == '\\' {
+				i++
+			}
+			i++
+		}
+		if i >= len(tag) {
+			break
+		}
+		quoted := tag[:i+1]
+		tag = tag[i+1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		value, err := strconv.Unquote(quoted)
+		if err == nil {
+			values[name] = value
+		}
+	}
+
+	var pairs []string
+	for _, name := range sortedKeys(values) {
+		pairs = append(pairs, name+":"+strconv.Quote(values[name]))
+	}
+
+	return strings.Join(pairs, " ")
 }

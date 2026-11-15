@@ -679,6 +679,9 @@ func componentNameFromSchema(schema map[string]any) string {
 	return strings.TrimPrefix(ref, schemaRefPrefix)
 }
 
+// pathParameterSchema is the schema of the read of a path parameter the handler makes
+// (pathParameterCall, boundPathParameters), else a string, the one thing known about a path
+// segment, whatever its name.
 func pathParameterSchema(name string, paramSchemas map[string]map[string]any) map[string]any {
 	if paramSchemas != nil {
 		schema, ok := paramSchemas[name]
@@ -687,26 +690,9 @@ func pathParameterSchema(name string, paramSchemas map[string]map[string]any) ma
 		}
 	}
 
-	schema := map[string]any{
+	return map[string]any{
 		"type": "string",
 	}
-
-	if isNumericIDParam(name) {
-		schema["type"] = "integer"
-		schema["format"] = "int64"
-	}
-
-	return schema
-}
-
-func isNumericIDParam(name string) bool {
-	if name == "id" {
-		return true
-	}
-	if strings.HasSuffix(name, "_id") {
-		return true
-	}
-	return false
 }
 
 func (g *generator) buildRequestBody(r Route, handler handlerSchema) map[string]any {
