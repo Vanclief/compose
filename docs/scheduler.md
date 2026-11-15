@@ -155,7 +155,8 @@ s, err := scheduler.New(
 
 Set both. The leaser stops two runs of an id from overlapping, but without a claimer a recurring
 job can still run once per instance per boundary: each instance asks for the lease at the
-boundary, and an instance that asks after the winner's run returned wins it again.
+boundary, and an instance that asks after the winner's run returned wins it again. A scheduler
+with a leaser and no claimer logs a warning when its first recurring job is added.
 `scheduler.Leaser` is the interface, for an app that keeps leases somewhere else. Like
 `CreateTable`, `CreateLeaseTable` takes an advisory lock around the create and needs `CREATE` on
 the schema; an app that cannot grant it creates the table in a migration (`job_id text PRIMARY
@@ -167,8 +168,12 @@ DEFAULT false`).
 Every run, recurring or on demand, holds the lease of its id while it runs. The run asks for it
 after its recurring claim, if any, and before its `WithLimit` permit, so the order is claim, lease,
 permit, job. The lease lasts 30 seconds from the database's clock. While a run holds it, its
-instance renews all the leases it holds in one statement every 2 seconds. The lease is released
-when the run returns, panic included.
+instance renews all the leases it holds in one statement every 2 seconds. That statement does not
+wait for a lease row another session holds a lock on that its update would wait for, such as a
+stuck transaction: it renews the other leases and leaves that one as it was, and the lease counts
+as neither renewed nor lost. An acquire of the id by another run locks the row for the length of
+its statement, so one busy renewal is logged at debug level and each one after it in a row at
+warn level. The lease is released when the run returns, panic included.
 
 - **`RunOnce` and recurring runs ask once.** When another instance holds the id, or the store
   fails, the job is skipped, logged at debug level for a refusal and at error level for a failure
@@ -186,10 +191,11 @@ when the run returns, panic included.
   bound, in no guaranteed order.
 - **A marked lease cancels its run.** The instance holding a lease marked superseded cancels the
   run that holds it with `scheduler.ErrSuperseded` when its next renewal sees the mark; the
-  instance attempts a renewal every 2 seconds, and only one that succeeds sees it. A renewal
-  that finds the lease no longer the run's cancels the run with `scheduler.ErrLeaseLost`, and so
-  does an instance that could not renew for 20 seconds, even while a renewal is still hanging:
-  that leaves the job 10 seconds to return before the database lets another instance take the id.
+  instance attempts a renewal every 2 seconds, and only one that renews the lease sees it. A
+  renewal that finds the lease no longer the run's cancels the run with `scheduler.ErrLeaseLost`,
+  and so does an instance that could not renew the lease for 20 seconds, because its renewals
+  failed or its row stayed locked, even while a renewal is still hanging: that leaves the job 10
+  seconds to return before the database lets another instance take the id.
 - **A pending job runs on the lease of the run before it.** When a run returns and a job queued
   on the same instance with `RunNext` or `Supersede` is waiting, the job runs next without
   releasing the lease, unless the lease was marked superseded or lost. Then the lease is released
@@ -269,7 +275,9 @@ without a release stays until another owner takes it or a release sweeps it:
 
 Each operation is one statement on the database's `now()`, with no session state, so it works
 through PgBouncer in transaction mode. An acquire is an upsert that takes the row when it is the
-same owner's or its `held_until` passed. A renewal extends only rows that still name their owner.
+same owner's or its `held_until` passed. A renewal extends only rows that still name their owner,
+and skips, with `FOR NO KEY UPDATE SKIP LOCKED`, those another session holds a lock on that an
+update waits for, any row lock but `FOR KEY SHARE`, which it reports busy.
 A release deletes the row only while it names the releasing owner, and in the same statement
 deletes the rows whose lease lapsed more than an hour ago, left by instances that stopped for ids
 no longer used.

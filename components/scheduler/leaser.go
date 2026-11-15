@@ -37,7 +37,7 @@ const (
 // ErrLeaseLost is the context cause seen by a job that was cancelled because
 // the Scheduler could no longer be sure it holds the lease of its id: a
 // renewal answered that the lease is no longer this run's, or no renewal
-// succeeded for the lease's TTL minus a safety margin.
+// extended it for the lease's TTL minus a safety margin.
 // errors.Is(context.Cause(ctx), ErrLeaseLost) and
 // errors.Is(context.Cause(ctx), context.Canceled) both hold.
 var ErrLeaseLost error = ez.New(ez.ECANCELED, "scheduler: lease lost", context.Canceled)
@@ -47,8 +47,16 @@ type Lease struct {
 	ID    string
 	Owner string
 	// Superseded is set in Renew's answer when an Acquire with supersede
-	// marked the lease.
+	// marked the lease. The Scheduler ignores it on a Busy lease.
 	Superseded bool
+	// Busy is set in Renew's answer for a lease that, as far as the store
+	// could tell, is still its owner's but that it could not renew at once,
+	// such as one whose row another session holds a lock on that the renewal
+	// would wait for: the lease was not extended. The Scheduler counts a busy
+	// lease as neither renewed nor lost, so a lease that stays busy is
+	// cancelled with ErrLeaseLost as one whose renewals all fail. A Leaser
+	// that never sets it works as before the field existed.
+	Busy bool
 }
 
 // Leaser keeps, across the instances of an app, which run holds each keyed
@@ -66,7 +74,7 @@ type Lease struct {
 // the Scheduler renews it every 2 seconds for 30 seconds, and cancels the run
 // with ErrSuperseded when a renewal answers that the lease was marked
 // superseded, and with ErrLeaseLost when a renewal answers that the lease is
-// no longer the run's or when no renewal succeeded for 20 seconds. The lease
+// no longer the run's or when no renewal extended it for 20 seconds. The lease
 // is released when the run returns, unless a pending job of the id queued on
 // the same instance runs next on it.
 type Leaser interface {
@@ -79,7 +87,9 @@ type Leaser interface {
 
 	// Renew extends each lease that is still its owner's by ttl from the
 	// store's clock and returns those, with Superseded set on the marked
-	// ones. A lease missing from the result is lost.
+	// ones. A lease that is still its owner's but that it could not renew at
+	// once it may return with Busy set instead, not extended. A lease missing
+	// from the result is lost.
 	Renew(ctx context.Context, leases []Lease, ttl time.Duration) ([]Lease, error)
 
 	// Release ends owner's lease on id. It never ends another owner's.
@@ -97,6 +107,7 @@ type hold struct {
 	deadline   time.Time               // last good acquire or renewal send time + TTL - margin
 	lost       bool
 	superseded bool
+	busy       int // busy answers in a row
 }
 
 // newLeaseToken returns the random token that prefixes the owner of every
@@ -342,13 +353,16 @@ func (s *Scheduler) heartbeat() {
 			s.log.Warn().Int("leases", len(leases)).Err(err).Msg("Scheduler lease renewal failed")
 			continue
 		}
-
 		s.applyRenewal(snapshot, renewed, sent)
 	}
 }
 
 // applyRenewal applies the answer of a renewal sent at sent to the holds of
-// snapshot that are still registered, matched by owner.
+// snapshot that are still registered, matched by owner. A busy lease leaves
+// its hold as it was: its deadline is not moved, and its superseded mark
+// waits for an answer that is not busy. The first busy answer in a row is
+// logged at debug level, since an acquire of the id by another run locks the
+// row for a moment, and each one after it at warn level.
 func (s *Scheduler) applyRenewal(snapshot []*hold, renewed []Lease, sent time.Time) {
 	byOwner := make(map[string]Lease, len(renewed))
 	for _, l := range renewed {
@@ -368,6 +382,16 @@ func (s *Scheduler) applyRenewal(snapshot []*hold, renewed []Lease, sent time.Ti
 			h.cancel(ErrLeaseLost)
 			continue
 		}
+		if l.Busy {
+			h.busy++
+			event := s.log.Warn()
+			if h.busy == 1 {
+				event = s.log.Debug()
+			}
+			event.Str("job_id", h.id).Int("busy_renewals", h.busy).Msg("Scheduler lease busy in the store, not renewed")
+			continue
+		}
+		h.busy = 0
 		if !h.lost {
 			h.deadline = sent.Add(s.leaseTTL - s.cancelMargin)
 			h.timer.Reset(time.Until(h.deadline))

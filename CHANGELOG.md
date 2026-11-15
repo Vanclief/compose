@@ -2,6 +2,13 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.39.0
+
+### Highlights
+
+- **Scheduler: a locked lease row costs only its own lease.** An instance renews all the leases it holds in one statement every 2 seconds, and that statement waited for a row lock, so one lease row that another session held a lock on that an update waits for, such as a stuck transaction, made every renewal of the instance time out, and 20 seconds later every leased run on it was cancelled with `ErrLeaseLost`. `claims.NewBunLeaser`'s renewal now skips a locked row (`FOR NO KEY UPDATE SKIP LOCKED`), still in one statement, renews the other leases, and returns that lease with the new `scheduler.Lease.Busy` set. The Scheduler counts a busy lease as neither renewed nor lost: its deadline does not move, a superseded mark waits for an answer that is not busy, a first busy answer is logged at debug level, since an acquire of the id by another run locks its row for a moment, and each one after it in a row at warn level, and a lease still busy at its deadline is cancelled with `ErrLeaseLost` as one whose renewals fail. A custom `Leaser` that never sets `Busy` works as before; code that calls `Renew` on the leaser `claims.NewBunLeaser` returns, or wraps it, must now treat a lease returned with `Busy` set as not renewed, and pass the field on.
+- **Scheduler: a leaser without a claimer is logged.** With `WithLeaser` and no `WithClaimer` a recurring job can still run on every instance, one after the other. Such a Scheduler now logs one warning, `Scheduler has a leaser but no claimer: recurring jobs can run on more than one instance, WithClaimer makes one instance run each boundary`, when its first recurring job is added; a Scheduler without a leaser, or with no recurring job, logs nothing new.
+
 ## v1.38.0
 
 ### Breaking
