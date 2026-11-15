@@ -152,19 +152,19 @@ func TestCurlWithoutServerOrOperation(t *testing.T) {
 	require.Equal(t, `curl '/health'`, doc.Curl("get", "/health", nil, nil, ""))
 }
 
-func TestCurlEmma(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestCurlSample(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 
 	// Login is public (security: []), so it carries no credentials.
 	login := curlFor(t, doc, "POST", "/auth/login", "")
-	require.Contains(t, login, `curl -X POST 'https://api.holaemma.app/auth/login' \`)
+	require.Contains(t, login, `curl -X POST 'https://api.example.com/auth/login' \`)
 	require.Contains(t, login, `-H 'Content-Type: application/json'`)
 	require.Contains(t, login, `-d '{`)
 	require.Contains(t, login, `"destinatary": "string"`)
 	require.NotContains(t, login, "API-KEY")
 
 	codes := curlFor(t, doc, "GET", "/complexes/{complex_id}/access-codes", "")
-	require.Equal(t, `curl 'https://api.holaemma.app/complexes/0/access-codes' \
+	require.Equal(t, `curl 'https://api.example.com/complexes/0/access-codes' \
   -H "API-KEY: $API_KEY" \
   -H "API-SECRET: $API_SECRET"`, codes)
 

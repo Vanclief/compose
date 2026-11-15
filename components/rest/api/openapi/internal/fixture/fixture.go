@@ -1,4 +1,4 @@
-// Package fixture mirrors auditor3's runs module for openapi reflector tests.
+// Package fixture mirrors the runs module of a production app for openapi reflector tests.
 package fixture
 
 import (

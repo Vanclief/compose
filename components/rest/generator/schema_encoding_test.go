@@ -188,9 +188,9 @@ type Wrapper struct {
 		t.Fatal(err)
 	}
 	builder := newTestSchemaBuilder(t, repoRoot)
-	builder.modulePath = "emma"
+	builder.modulePath = "app"
 
-	builder.schemaRef(typeRef{ImportPath: "emma/models/thing", Name: "Thing"})
+	builder.schemaRef(typeRef{ImportPath: "app/models/thing", Name: "Thing"})
 	err = builder.unresolvedError()
 	if err != nil {
 		t.Fatalf("expected the own type to resolve, got %v", err)
@@ -200,7 +200,7 @@ type Wrapper struct {
 		t.Fatalf("expected the own type modeled, got %v", builder.schemas["models_thing_Thing"])
 	}
 
-	builder.schemaRef(typeRef{ImportPath: "emma/models/thing", Name: "Wrapper"})
+	builder.schemaRef(typeRef{ImportPath: "app/models/thing", Name: "Wrapper"})
 	err = builder.unresolvedError()
 	if err == nil || !strings.Contains(err.Error(), "embeds Custom, which defines MarshalJSON") {
 		t.Fatalf("expected the embedded own marshaler reported, got %v", err)
@@ -208,7 +208,7 @@ type Wrapper struct {
 
 	// The standard library stays opaque.
 	stdlib := newTestSchemaBuilder(t, repoRoot)
-	stdlib.modulePath = "emma"
+	stdlib.modulePath = "app"
 	stdlib.schemaRef(typeRef{ImportPath: "net/url", Name: "URL"})
 	err = stdlib.unresolvedError()
 	if err != nil {
@@ -223,16 +223,16 @@ type Wrapper struct {
 // library either.
 func TestDotlessDependencyIsNotStandardLibrary(t *testing.T) {
 	builder := &schemaBuilder{
-		modulePath:     "emma",
+		modulePath:     "app",
 		moduleVersions: map[string]string{"shared": "v0.0.0", "example.com/dep": "v1.0.0"},
 	}
 
 	cases := map[string]bool{
 		"net/url":           true,
 		"time":              true,
-		"emma":              false,
-		"emma/models/thing": false,
-		"emmaline/thing":    true,
+		"app":               false,
+		"app/models/thing":  false,
+		"appline/thing":     true,
 		"shared/types":      false,
 		"example.com/dep/x": false,
 		"github.com/x/y":    false,

@@ -32,8 +32,8 @@ registers (section 5), so there is no remaining condition under which swaggest w
 
 ## 2. How we got here
 
-1. emma-backend has a 4.8k-line go/ast + regex OpenAPI generator (30% emma-specific, fragile).
-   auditor3-api has a 1.4k-line hand-written `map[string]any` spec (accurate, 0 error
+1. The larger app has a 4.8k-line go/ast + regex OpenAPI generator (30% app-specific, fragile).
+   The smaller app has a 1.4k-line hand-written `map[string]any` spec (accurate, 0 error
    responses; 0 operationIds until 2026-10-11, 50 since). Neither is worth moving into
    compose.
 2. Models need real types and constraints, not only routes. compose relies on ozzo `Validate()`,
@@ -61,7 +61,7 @@ registers (section 5), so there is no remaining condition under which swaggest w
 | swaggest validator | avoid | pinned to santhosh v3 (2021, draft-7), stops at first failing location in map order |
 | kaptinlin/jsonschema | avoid | needs Go 1.27, instance path resets inside `$ref` |
 
-## 3. Target shape (auditor3 `runs`, the real ten routes)
+## 3. Target shape (the smaller app's `runs`, the real ten routes)
 
 ```go
 // application/resources/runs/update.go
@@ -93,7 +93,7 @@ func (m *Module) Get(ctx context.Context, request *GetRequest) (project.Run, err
 // api/rest/server.go
 e.HTTPErrorHandler = rest.ErrorHandler() // answers the errors operations return to Echo
 reg := api.New(e,
-    api.Info("auditor3", version),
+    api.Info("Sample API", version),
     api.APIKeyHeader("API-KEY"),        // security scheme applied to every op unless api.Public()
     api.Authenticate(app.Authenticate), // every op is protected unless api.Public()
 )
@@ -120,7 +120,7 @@ doc30, err := reg.Spec(api.V30)
 `Validate` methods are ambiguous and the compiler rejects the registration. A type that
 embeds `CursorRequest` already satisfies `requests.Body`.
 
-Blobs and alternate representations (emma's shape; auditor3 has none; section 4):
+Blobs and alternate representations (the larger app's shape; the smaller has none; section 4):
 
 ```go
 // Report returns api.Blob, so its media type is declared.
@@ -320,7 +320,7 @@ as unknown keys, then bind). Decode once instead.
    the inbound one, so it keeps the values Echo middleware set and is cancelled when the
    client goes away. Its deadline is the earlier of the inbound deadline and the route or
    group timeout (`api.Timeout`, which panics on a duration that is not positive and is
-   passed as `requests.WithTimeout`, replacing the 15s default; auditor3 uses 60s). ID, `c.RealIP()`, `Client` header, locale and method as
+   passed as `requests.WithTimeout`, replacing the 15s default; the smaller app uses 60s). ID, `c.RealIP()`, `Client` header, locale and method as
    before. `API-KEY` is a security scheme the authenticator reads, not a header param. The
    request is stored with `handler.SetRequest` before anything can fail, so
    `handler.Request(c)` returns it to middleware and to the error handler's reporter and
@@ -444,7 +444,7 @@ coercion, no body read, no multipart form spilling to temporary files. Echo midd
 front of the registry still runs first: `rest.RejectNUL`, which `rest.Configure` installs,
 reads a JSON, form or multipart body before the authenticator. The cost is one
 credential lookup per malformed request that carries a credential, plus whatever else the
-authenticator does (emma's updates `last_active_at`), and the authenticator never sees the
+authenticator does (the larger app's updates `last_active_at`), and the authenticator never sees the
 body; neither app's needs it. Malformed and cross-field-invalid requests still never reach a
 typed wrapper or the handler, so nothing is charged there for them and the handler never sees
 an invalid body (Echo middleware still sees them, step 1). `Validate()` cannot use the
@@ -490,7 +490,7 @@ type AuthenticateFunc func(request requests.Request) error
 
 The authenticator changes the request in place (`request.SetContext`, `request.SetLocale`)
 instead of returning a context, so an app helper that caches into the request context on its
-failure paths (emma's bearer resolution) cannot lose those additions. An error rejects the
+failure paths (the larger app's bearer resolution) cannot lose those additions. An error rejects the
 request: it is returned to Echo like every other (step 11).
 
 - **Inheritance**: options of `api.New`, then of each group from the outside in, then of the
@@ -513,7 +513,7 @@ request: it is returned to Echo like every other (step 11).
   unnoticed. A `Ready()` that panicked leaves the registry not ready, and the next call
   checks again.
 - **App-local typed wrappers** are the supported way to run app code after validation and
-  before the handler. They are plain function composition; compose adds no hook. emma's
+  before the handler. They are plain function composition; compose adds no hook. The larger app's
   public-route quota must not charge invalid bodies, so it cannot be Echo middleware:
 
 ```go
@@ -631,10 +631,10 @@ request without a multipart body.
 - **A fallback to `App.HandleRequest`.** Each app migrates its registered routes in one
   change; plain Echo routes (`handler.NewHandler`, `JSONResponse`) are the boundary. The typed
   `Legacy[Req, Res]` registration and `x-compose-legacy` were dropped before release: blobs,
-  negotiation and multipart (above) cover what emma-backend's handlers do through
+  negotiation and multipart (above) cover what the larger app's handlers do through
   `BaseHandler`.
-- **XML request bodies.** No emma-backend or auditor3-api REST handler calls
-  `BindedXMLResponse` (emma's only XML is an outgoing client), so there is no consumer.
+- **XML request bodies.** No REST handler of either app calls
+  `BindedXMLResponse` (the larger app's only XML is an outgoing client), so there is no consumer.
   `BaseHandler.BindedXMLResponse` is unchanged; registered operations accept JSON and
   multipart bodies only.
 
@@ -927,10 +927,10 @@ Types
 SDK pipeline
 
 - **Generated clients committed in the API repo, not per-language repos** (own):
-  `auditor3-api/sdk/python` (openapi-python-client, httpx) and `sdk/rust` (progenitor CLI
+  the smaller app's `sdk/python` (openapi-python-client, httpx) and `sdk/rust` (progenitor CLI
   output, separate crate not opting into ozai's workspace lints, consumed by ozai as a git
-  dependency pinned to a rev). emma keeps emma-sdk-ts but regenerates from the new spec.
-- **Spec diff gates SDK regeneration and version bump** (emma release.yml): keep that flow,
+  dependency pinned to a rev). The larger app keeps its TypeScript SDK but regenerates from the new spec.
+- **Spec diff gates SDK regeneration and version bump** (the larger app's release.yml): keep that flow,
   feed it the committed golden spec.
 
 Cut after review: `RejectUnknownQueryParameters` (not needed yet), serving both spec
@@ -980,7 +980,7 @@ and `rest.ErrorHandler` (v1.29.0), so 404, 405, 413 and 415 produce the envelope
 
 Done:
 
-0. auditor3 is on compose v1.12.0, up from v1.8.5 (ez v1.6.0 signature change
+0. The smaller app is on compose v1.12.0, up from v1.8.5 (ez v1.6.0 signature change
    `ez.New(code, msg, err)`, scheduler v1.12 migration).
 1. compose, this branch: the type table for `uuid.UUID` and `types/`, enum values recorded
    by `enums.Set`, `requests.NoRules`, `json:"-"` on `pagination.CursorRequest`.
@@ -993,8 +993,8 @@ Done:
 4. Hardening, shipped separately (section 7): body limit, server timeouts, envelope for
    404/405/413/415.
 
-The planned spike (port auditor3 `runs` onto the huma registry and santhosh directly) became
-compose's test fixture: `components/rest/api/internal/fixture` mirrors auditor3's `runs`
+The planned spike (port the smaller app's `runs` onto the huma registry and santhosh directly) became
+compose's test fixture: `components/rest/api/internal/fixture` mirrors the smaller app's `runs`
 module. Its tests cover the spike's checks that need no real app: the param walker picks up
 the embedded `CursorRequest` and `json:"-"` keeps params out of the body component; field-level
 `enum:"failed,cancelled"` on `*RunStatus` narrows the schema while the enum stays a named
@@ -1007,7 +1007,7 @@ submitted value.
 Remaining:
 
 1. Release compose v1.31.0.
-2. auditor3: all 50 routes migrate to the typed registry in one PR (there is no untyped
+2. The smaller app: all 50 routes migrate to the typed registry in one PR (there is no untyped
    registration to park routes on), hide `PUT /runs/:id`, commit `openapi.json` and
    `openapi-3.0.json`, CI spec diff plus hey-api, openapi-python-client and progenitor
    generation, contract tests. It also runs the spike checks that need the generators and the
@@ -1019,7 +1019,7 @@ Remaining:
    forbidding it while the server accepts it; add `null` there if progenitor needs it); every success and error response is
    byte-identical to the current server for the ten `runs` operations, except the intended
    stricter validation cases.
-3. emma: migrates once v1.31.0 is released, with a codemod for request structs
+3. The larger app: migrates once v1.31.0 is released, with a codemod for request structs
    (section 11). The generator is deleted in the change that commits the registry spec;
    there is no parallel generator lane.
 
@@ -1031,7 +1031,7 @@ Remaining:
   which is exactly the step being removed.
 - **`Validate()` stays mandatory**: the pipeline calls `Body.Validate()` after schema validation
   and before the handler, so cross-field rules have one home. `requests.NoRules` is the embeddable
-  no-op. Revisit after emma migrates.
+  no-op. Revisit after the larger app migrates.
 - **`fields` in the envelope**: decided here as "later, build the list internally now";
   shipped in v1.33.0 (section 7, Errors).
 - **Response validation lives in a compose `apitest` helper**, because it needs compose's
@@ -1046,11 +1046,11 @@ Remaining:
   adopting the registry includes `e.HTTPErrorHandler = rest.ErrorHandler(opts...)`, set
   before `Ready()`, which panics while Echo's default handler is installed. It logs
   nothing itself: in an app that runs neither `rest.Configure` nor `rest.Start` nothing logs a
-  500. emma passes
+  500. The larger app passes
   `rest.WithErrorReporter(handler.ReportToSentry)` and a `rest.WithErrorTranslator` that
   returns nil when `handler.Request(c)` is nil and `app.TranslateError(err,
   handler.Request(c))` otherwise; its `BaseHandler.ErrorTranslator` stays for its plain
-  routes. auditor3 passes nothing: `rest.ErrorHandler()`.
+  routes. The smaller app passes nothing: `rest.ErrorHandler()`.
 - **The error handler is checked, wrapped ez errors are not.** `Ready()` probes the error
   handler and panics unless it answers an ez error with a 4xx, so Echo's default handler is
   caught at boot, and a reporter or translator passed to `rest.ErrorHandler` gets that probe
@@ -1068,27 +1068,27 @@ Remaining:
   rejects the zero value; schema `required` only checks the key is present, so `""`, `0` and
   `false` pass. Each converted rule needs `required:"true"` plus the constraint that keeps the
   zero value out where it must stay out (`minLength:"1"`, `minimum:"1"`, `minItems:"1"`, an
-  `enum`). Sizes measured 2026-11-09: emma-backend 530 `validation.Required` uses in 504
-  `Validate()` methods over 246 routes; auditor3-api 50 uses in 56 methods over 50 routes.
-  The codemod for emma must apply this rule, not only suggest tags.
+  `enum`). Sizes measured 2026-11-09: the larger app 530 `validation.Required` uses in 504
+  `Validate()` methods over 246 routes; the smaller app 50 uses in 56 methods over 50 routes.
+  The codemod for the larger app must apply this rule, not only suggest tags.
 - **Converted endpoints change what they accept**: `0`, `false`, `""` now pass a presence
   `required` (above); stricter uuid and enum checks reject what ozzo let through;
   case-mismatched keys are rejected at every depth instead of bound; a `limit` above 1000
   on a `pagination.CursorRequest` is a 400 (its `maximum` tag), where `Validate()` clamps
   it on a plain route. Contract tests per converted module (`apitest`).
-- **Param fields get tags.** auditor3 `runs.GetRequest.RunID` must become `uuid.UUID` with
+- **Param fields get tags.** The smaller app's `runs.GetRequest.RunID` must become `uuid.UUID` with
   `json:"-" path:"id"`, and `ListRequest` fields need `json:"-" query:"..."` tags.
   `pagination.CursorRequest` fields carry `json:"-"` and are query parameters only: check
-  emma's POST search bodies first in case any carry `limit`/`cursor` in the body. A request
+  the larger app's POST search bodies first in case any carry `limit`/`cursor` in the body. A request
   that embeds `CursorRequest` does not embed `requests.NoRules` (section 3).
-- **Component names.** emma has about 25 duplicated package names (`finance/units` vs
+- **Component names.** The larger app has about 25 duplicated package names (`finance/units` vs
   `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
-- **Compare the old spec with the registry's before switching** (emma): paths, methods and
-  operationIds, because emma-sdk-ts method names and the MCP server's function names come
+- **Compare the old spec with the registry's before switching** (the larger app): paths, methods and
+  operationIds, because its TypeScript SDK's method names and the MCP server's function names come
   from them.
 - **Pointer-to-struct response fields get `omitempty`** (section 7): `null` becomes absent on
-  the wire, and registration refuses such a field without it. Apply in auditor3 first; audit emma-sdk-ts consumers before emma.
-- **emma's handlers change shape.** Its negotiating list handlers split into a JSON handler
+  the wire, and registration refuses such a field without it. Apply in the smaller app first; audit the larger app's TypeScript SDK consumers before the larger app.
+- **The larger app's handlers change shape.** Its negotiating list handlers split into a JSON handler
   plus a `Produces` handler per other format instead of filling `Format` from
   `NegotiateContentType` (so `Validate()` stops requiring `Format`; query-format overrides
   become route middleware that rewrites `Accept`), reports that return serialized JSON as
@@ -1097,15 +1097,15 @@ Remaining:
   `form:"..."` and `json:"-"`.
 - **Accounting moves**, accepted for both apps. Schema, decode and `Validate()` failures are
   rejected before any app code but the authenticator runs (section 4), so they are never
-  charged: emma's invalid-body quota charge and its 429-for-400 replacement go away for
+  charged: the larger app's invalid-body quota charge and its 429-for-400 replacement go away for
   registered routes (a spent bearer device now gets the 400), and every `Validate()` failure
-  becomes uncharged, not only cross-field ones (emma also normalizes there). Admission that
+  becomes uncharged, not only cross-field ones (the larger app also normalizes there). Admission that
   has to stay ahead of the app moves to Echo middleware, which runs before schema validation:
-  emma's IP peek (and its verified-bearer exception) and auditor3's API-key/IP charge now also
+  the larger app's IP peek (and its verified-bearer exception) and the smaller app's API-key/IP charge now also
   see parse and schema failures, and an exhausted IP gets 429 for input the registry would
-  have answered with 400. Admission that must follow validation (emma's public-route quota,
+  have answered with 400. Admission that must follow validation (the larger app's public-route quota,
   the STP gateway exception) is an app-local typed wrapper (section 4).
 - **Not expressible in the registry yet** (they stay plain Echo routes, outside the spec):
-  emma's signed webhooks (`whatsapp.ReceiveWebhook`, `crm.CalWebhook`) need the exact raw
+  the larger app's signed webhooks (`whatsapp.ReceiveWebhook`, `crm.CalWebhook`) need the exact raw
   body bytes for the signature check, and the system health handler answers non-200
   statuses, `HEAD` with no body and its own cache headers.

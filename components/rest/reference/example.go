@@ -39,7 +39,8 @@ const maxExampleModels = 3
 // non-object schemas, so a named oneOf whose members hold several fields of
 // the next named oneOf grows by its width at every level, up to
 // maxExampleDepth levels; past this many values the rest render empty. Real
-// examples stay far below it: the longest emma example is under 500 lines.
+// examples stay far below it: the longest example of a production document
+// is under 500 lines.
 // The copies past three an array holds count against a second cap of this
 // size, see ExampleValue.
 const maxExampleValues = 5000

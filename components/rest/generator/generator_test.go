@@ -10,7 +10,7 @@ import (
 )
 
 // newTestGenerator is a generator over an empty module with the query helpers of an
-// application that extends the defaults (emma's handler/base.go ones).
+// application that extends the defaults (a production app's handler/base.go ones).
 func newTestGenerator(t *testing.T) *generator {
 	t.Helper()
 
@@ -65,7 +65,7 @@ func writeFixture(t *testing.T, files map[string]string) string {
 	return root
 }
 
-// nestedFixture is an application with a Handlers struct of namespaces (emma's layout).
+// nestedFixture is an application with a Handlers struct of namespaces (a production app's layout).
 var nestedFixture = map[string]string{
 	"go.mod": "module example.com/app\n\ngo 1.22\n",
 	"api/handlers.go": `package api
@@ -922,7 +922,7 @@ func TestUnwiredHandlerPackageFailsCollection(t *testing.T) {
 }
 
 // flatFixture is an application with one Handler type and every route in one function
-// (auditor3's layout).
+// (another production app's layout).
 var flatFixture = map[string]string{
 	"go.mod": "module example.com/flat\n\ngo 1.22\n",
 	"api/rest/server.go": `package rest

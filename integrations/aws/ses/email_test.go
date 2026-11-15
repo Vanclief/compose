@@ -316,10 +316,10 @@ func TestSenderAddressWritesAValidFromAsWritten(t *testing.T) {
 		name     string
 		wantName string
 	}{
-		{name: "Emma", wantName: "Emma"},
+		{name: "Sample", wantName: "Sample"},
 		{name: "Acme Inc.", wantName: "Acme Inc."},
 		{name: "John Q. Public", wantName: "John Q. Public"},
-		{name: "Emma ", wantName: "Emma"},
+		{name: "Sample ", wantName: "Sample"},
 		{name: `Acme "Best" Co`, wantName: "Acme Best Co"},
 		{name: "=?utf-8?q?PayPal?=", wantName: "PayPal"},
 		{name: mime.QEncoding.Encode("utf-8", "José Inc."), wantName: "José Inc."},

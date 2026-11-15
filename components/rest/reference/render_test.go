@@ -184,16 +184,16 @@ func requireBalanced(t *testing.T, html string) {
 	}
 }
 
-func TestRenderEmmaInline(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestRenderSampleInline(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 
 	start := time.Now()
 	out, err := Render(doc, Options{})
 	require.NoError(t, err)
-	t.Logf("emma page: %d bytes in %s", len(out), time.Since(start))
+	t.Logf("sample page: %d bytes in %s", len(out), time.Since(start))
 	html := string(out)
 
-	require.Contains(t, html, "<title>Emma API</title>")
+	require.Contains(t, html, "<title>Sample API</title>")
 	require.Contains(t, html, `id="operation/auth-login"`)
 	require.Contains(t, html, `href="#operation/auth-login"`)
 	require.Contains(t, html, `id="model/StandardError"`)
@@ -229,7 +229,7 @@ func TestRenderEmmaInline(t *testing.T) {
 	require.Contains(t, html, "<style>")
 	require.NotContains(t, html, "reference.js\"")
 
-	// emma's anyOf of bare required lists is a note, not tabs.
+	// The sample's anyOf of bare required lists is a note, not tabs.
 	require.Contains(t, html, "At least one of <code>email</code>, <code>phone_number</code> is required.")
 	// Unnamed oneOf variants are labelled by their pinned enum value.
 	require.Contains(t, html, ">scope: cluster</button>")
@@ -246,7 +246,7 @@ func TestRenderAllFixtures(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			doc := loadEmma(t, name)
+			doc := loadSample(t, name)
 			html, err := Render(doc, Options{AssetsURL: "/assets"})
 			require.NoError(t, err)
 			requireBalanced(t, string(html))
@@ -553,22 +553,22 @@ func TestShortNames(t *testing.T) {
 	require.Equal(t, "units.ListRequest", names["application_modules_units_ListRequest"])
 }
 
-// TestWriteEmmaPage writes the rendered emma page for a human to open in a
-// browser: APIDOCS_WRITE=/tmp/reference-emma.html go test -run TestWriteEmmaPage
-func TestWriteEmmaPage(t *testing.T) {
+// TestWriteSamplePage writes the rendered sample page for a human to open in a
+// browser: APIDOCS_WRITE=/tmp/reference-sample.html go test -run TestWriteSamplePage
+func TestWriteSamplePage(t *testing.T) {
 	path := os.Getenv("APIDOCS_WRITE")
 	if path == "" {
-		t.Skip("set APIDOCS_WRITE=/tmp/reference-emma.html to write the rendered emma page")
+		t.Skip("set APIDOCS_WRITE=/tmp/reference-sample.html to write the rendered sample page")
 	}
-	doc := loadEmma(t, "emma.yaml")
+	doc := loadSample(t, "sample.yaml")
 	html, err := Render(doc, Options{SpecURL: "/openapi.yaml"})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, html, 0o644))
 	t.Logf("wrote %d bytes to %s", len(html), path)
 }
 
-func BenchmarkRenderEmma(b *testing.B) {
-	data, err := os.ReadFile("testdata/emma.yaml")
+func BenchmarkRenderSample(b *testing.B) {
+	data, err := os.ReadFile("testdata/sample.yaml")
 	require.NoError(b, err)
 	doc, err := Parse(data)
 	require.NoError(b, err)
@@ -891,11 +891,11 @@ func TestRenderBoundsSharedBaseExamples(t *testing.T) {
 	require.Contains(t, string(out), "tabpanel-removed", "removed responses still show their base sample")
 }
 
-// TestRenderKeepsEveryEmmaExample checks that a real spec stays under the
+// TestRenderKeepsEverySampleExample checks that a real spec stays under the
 // page budget: every sample is the media type's example, as MediaExampleJSON
 // renders it.
-func TestRenderKeepsEveryEmmaExample(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestRenderKeepsEverySampleExample(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 	p := buildPage(doc, Options{}, nil)
 
 	samples := 0

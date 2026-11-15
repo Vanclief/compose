@@ -9867,7 +9867,7 @@ components:
                 name:
                     type: string
                 organization_id:
-                    description: Required when type is organization and prohibited when type is platform (platform categories are Emma-wide).
+                    description: Required when type is organization and prohibited when type is platform (platform categories are Sample-wide).
                     format: uuid
                     type: string
                 type:
@@ -10997,7 +10997,7 @@ components:
             type: apiKey
 info:
     description: |-
-        Backend for the Emma application.
+        Backend for the Sample application.
 
         Authentication flow (create a new API key):
         1. POST /auth/login/challenge with destinatary, method, optional locale to receive a verification code.
@@ -11005,7 +11005,7 @@ info:
         3. Send API-KEY and API-SECRET headers on authenticated requests.
 
         Versioning: releases follow ERA.FEATURE.PATCH — the FEATURE segment changes whenever this spec changes.
-    title: Emma API
+    title: Sample API
     version: "1.0"
 openapi: 3.0.3
 paths:
@@ -23411,7 +23411,7 @@ security:
     - ApiKeyAuth: []
       ApiSecretAuth: []
 servers:
-    - url: https://api.holaemma.app
+    - url: https://api.example.com
     - url: http://localhost:{port}
       variables:
         port:

@@ -111,7 +111,7 @@ no credentials and makes no network call.
 emails := outbox.Emails()
 require.Len(t, emails, 1)
 require.Equal(t, []string{"resident@example.com"}, emails[0].Email.Recipients)
-require.Equal(t, "Emma <noreply@example.com>", emails[0].From)
+require.Equal(t, "Sample <noreply@example.com>", emails[0].From)
 ```
 
 - `Emails()` and `SMS()` return copies, oldest first. `Reset()` empties both, for use between

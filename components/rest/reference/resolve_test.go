@@ -168,8 +168,8 @@ func (w *refWalker) examples(where string, examples Ordered[*Example]) {
 	}
 }
 
-func TestEmmaRefsAllResolve(t *testing.T) {
-	// The emma-backend generator references four crm leads schemas it never
+func TestSampleRefsAllResolve(t *testing.T) {
+	// The generator that wrote the sample references four crm leads schemas it never
 	// emits. Pin them so any other unresolved ref fails the test.
 	const leads = "#/components/schemas/application_modules_crm_leads_"
 	known := []string{
@@ -179,9 +179,9 @@ func TestEmmaRefsAllResolve(t *testing.T) {
 		"POST /crm/leads/touch 200 application/json: " + leads + "TouchResponse",
 	}
 
-	for _, name := range []string{"emma.yaml", "emma.json"} {
+	for _, name := range []string{"sample.yaml", "sample.json"} {
 		t.Run(name, func(t *testing.T) {
-			doc := loadEmma(t, name)
+			doc := loadSample(t, name)
 			w := &refWalker{doc: doc, seen: map[*Schema]bool{}}
 			w.walk()
 
@@ -191,8 +191,8 @@ func TestEmmaRefsAllResolve(t *testing.T) {
 	}
 }
 
-func TestEmmaQuirks(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestSampleQuirks(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 
 	// Shared base models come in through allOf of a $ref plus an inline object.
 	access := doc.Flatten(doc.Components.Schemas.Map["application_models_accesscontrol_AccessPoint"])
@@ -457,8 +457,8 @@ func TestFlattenNeverMutatesTheDocument(t *testing.T) {
 	require.Equal(t, []string{"extra"}, doc.Components.Schemas.Map["Child"].Properties.Keys)
 }
 
-func TestFlattenEmmaNeverMutates(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestFlattenSampleNeverMutates(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 
 	before, err := json.Marshal(doc.Components.Schemas)
 	require.NoError(t, err)

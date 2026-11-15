@@ -324,8 +324,8 @@ func TestToJSONKeepsOrderAndHandlesYAMLValues(t *testing.T) {
 	require.Equal(t, "{}", ToJSON(&Ordered[any]{}))
 }
 
-func TestExampleJSONEmma(t *testing.T) {
-	doc := loadEmma(t, "emma.yaml")
+func TestExampleJSONSample(t *testing.T) {
+	doc := loadSample(t, "sample.yaml")
 
 	require.Equal(t, `{
   "code": "string",
@@ -347,11 +347,11 @@ func TestExampleJSONEmma(t *testing.T) {
 	}
 }
 
-// emmaExampleSizes renders the request and response examples of every emma
+// sampleExampleSizes renders the request and response examples of every sample
 // operation and returns their total bytes and the longest one in lines.
-func emmaExampleSizes(t *testing.T) (int, int) {
+func sampleExampleSizes(t *testing.T) (int, int) {
 	t.Helper()
-	doc := loadEmma(t, "emma.yaml")
+	doc := loadSample(t, "sample.yaml")
 	total := 0
 	longest := 0
 	measure := func(mt *MediaType, mode ExampleMode) {
@@ -385,9 +385,9 @@ func emmaExampleSizes(t *testing.T) (int, int) {
 	return total, longest
 }
 
-func TestExampleSizesEmma(t *testing.T) {
-	total, longest := emmaExampleSizes(t)
-	t.Logf("emma examples: %d bytes, longest %d lines", total, longest)
+func TestExampleSizesSample(t *testing.T) {
+	total, longest := sampleExampleSizes(t)
+	t.Logf("sample examples: %d bytes, longest %d lines", total, longest)
 
 	// Without the model nesting cap these were 2.3 MB and 1,102 lines.
 	require.Less(t, total, 1_000_000)

@@ -61,9 +61,9 @@ func smallCatalog(t *testing.T) *Catalog {
 	return c
 }
 
-func emmaCatalog(t *testing.T) *Catalog {
+func sampleCatalog(t *testing.T) *Catalog {
 	t.Helper()
-	c, err := buildCatalog(parseFile(t, "../rest/reference/testdata/emma.json"), nil, nil)
+	c, err := buildCatalog(parseFile(t, "../rest/reference/testdata/sample.json"), nil, nil)
 	require.NoError(t, err)
 	return c
 }
@@ -406,8 +406,8 @@ func TestDisplayNames(t *testing.T) {
 	}, names)
 }
 
-func TestBuildCatalogEmma(t *testing.T) {
-	doc := parseFile(t, "../rest/reference/testdata/emma.json")
+func TestBuildCatalogSample(t *testing.T) {
+	doc := parseFile(t, "../rest/reference/testdata/sample.json")
 	c, err := buildCatalog(doc, nil, nil)
 	require.NoError(t, err)
 

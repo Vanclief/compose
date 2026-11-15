@@ -131,7 +131,7 @@ func TestBindedJSONResponseLogsWrongTypedEnumField(t *testing.T) {
 	require.Contains(t, output, `"bind_error":`+string(logged))
 }
 
-// email mirrors emma's types.Email: a translation key with the value as data,
+// email mirrors a production app's types.Email: a translation key with the value as data,
 // and a wrapped json error for a wrong-typed value.
 type email string
 

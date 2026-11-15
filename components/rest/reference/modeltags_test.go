@@ -284,7 +284,7 @@ func TestRenderModelTagGroups(t *testing.T) {
 // A and Loop B are each other's parent, and Empty child has no operations
 // or models. Operations only carry Finance.
 const childTagsSpec = `openapi: 3.0.3
-info: {title: Emma, version: "1"}
+info: {title: Sample, version: "1"}
 tags:
   - name: Finance
   - name: Bank accounts
