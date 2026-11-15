@@ -123,6 +123,10 @@ func Generate(cfg Config) (*Spec, error) {
 	if err != nil {
 		return nil, ez.Wrap(err)
 	}
+	err = ensureOneParameterNamePerPath(routes, g.skip)
+	if err != nil {
+		return nil, ez.Wrap(err)
+	}
 	g.operationIDs, err = g.assignOperationIDs(routes)
 	if err != nil {
 		return nil, ez.Wrap(err)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +20,8 @@ import (
 // Route is one route declaration found in the route files.
 type Route struct {
 	Method string
-	// Path is the Echo path, e.g. "/units/:id".
+	// Path is the Echo path, e.g. "/units/:id", with a leading slash added to a non-empty path
+	// written without one, as Echo serves it; an empty path stays empty.
 	Path string
 	// Namespace is the handler namespace: the Handlers struct field in nested mode, the first
 	// path segment in flat mode. It names the operation's tag and prefixes its operationId.
@@ -55,10 +57,11 @@ func (r Route) OpenAPIPath() string {
 	return toOpenAPIPath(r.Path)
 }
 
-// UnresolvedRoute is a route registration the route finder recognises but cannot resolve, as
-// Config.SkipUnresolved receives it. Receiver and Path are the expressions as written, e.g.
-// `s.api` and `cfg.HealthPath`, or `"/health"` for a string literal; Path is empty for a route
-// method used as a value, `get := e.GET`.
+// UnresolvedRoute is a route registration the route finder recognises but cannot resolve, or
+// registered with a method the generator does not document, as Config.SkipUnresolved receives
+// it. Method is the method called, GET or Any. Receiver and Path are the expressions as written,
+// e.g. `s.api` and `cfg.HealthPath`, or `"/health"` for a string literal; Path is empty for a
+// route method used as a value, `get := e.GET`, and for AddRoute.
 type UnresolvedRoute struct {
 	Method   string
 	Receiver string
@@ -124,7 +127,7 @@ func parseRoutes(cfg Config) ([]Route, error) {
 	}
 
 	if len(unresolved) > 0 {
-		message := "route registrations the generator cannot resolve; make the path a string constant and register the route on a root group, a Group call on one or a variable holding one, or leave them out with SkipUnresolved:\n  " + strings.Join(unresolved, "\n  ")
+		message := "route registrations the generator cannot resolve or does not document; make the path a string constant and register the route with GET, POST, PUT, PATCH, DELETE or HEAD on a root group, a Group call on one or a variable holding one, or leave them out with SkipUnresolved:\n  " + strings.Join(unresolved, "\n  ")
 		return nil, ez.New(ez.EINVALID, message, nil)
 	}
 	if len(handlerless) > 0 {
@@ -146,8 +149,9 @@ func parseRoutes(cfg Config) ([]Route, error) {
 }
 
 // builtGoFile reports whether a default build on the platform the generator runs on compiles a
-// Go file: a test file, and a file whose name or build constraints select another platform or a
-// tag such as ignore, are not. A file whose name does not end in .go is left to the parser.
+// Go file: a test file, a file whose name or build constraints select another platform or a
+// tag such as ignore, and, with cgo off, a file that imports "C" are not. A file whose name does
+// not end in .go, or whose imports cannot be parsed, is left to the parser.
 func builtGoFile(path string) (bool, error) {
 	if !strings.HasSuffix(path, ".go") {
 		return true, nil
@@ -160,8 +164,23 @@ func builtGoFile(path string) (bool, error) {
 	if err != nil {
 		return false, ez.New(ez.EINVALID, "cannot evaluate the build constraints of "+path+": "+err.Error(), err)
 	}
+	if !match || build.Default.CgoEnabled {
+		return match, nil
+	}
 
-	return match, nil
+	// go/build leaves out a file that imports "C" with cgo off only in Import, not in MatchFile.
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+	if err != nil {
+		return true, nil // the caller parses the whole file and reports the error
+	}
+	for _, spec := range file.Imports {
+		importPath, _ := strconv.Unquote(spec.Path.Value) // an invalid path is not "C", and the caller's parser reports it
+		if importPath == "C" {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
 
 type routeParser struct {
@@ -272,6 +291,8 @@ type binding struct {
 	// identifier, or the name of a root group.
 	key   any
 	group groupValue
+	// grouped reports a variable that has held a known group, though it may hold none now.
+	grouped bool
 
 	isConst bool
 	value   string
@@ -326,8 +347,10 @@ func (a *frameAssignment) changed() bool {
 // select, a case or a function literal is not seen outside it, and an inner declaration
 // shadows an outer one. The RootGroups names are known in every declaration, and a parameter
 // of such a name is that root group, as is a variable of such a name declared without a value
-// or set to the result of a call other than Group, such as echo.New(); a named result, any
-// other parameter, and a variable set to anything but a group, holds no group the finder knows.
+// or set to a call of anything but Group or to a field, such as echo.New(), s.echo or one of
+// several results of a call; a variable set to another holds what the other holds, and a named
+// result, a range variable, any other parameter, and a variable set to anything else, holds no
+// group the finder knows.
 // In straight-line code `=` sets a variable's group from that statement on, all right-hand
 // sides read first. A variable that a branch, a loop or a function literal sets to another
 // group holds no known group after it, nor anywhere in a loop or literal that does so, since
@@ -391,9 +414,10 @@ func (w *routeWalker) declaration(decl ast.Decl) {
 	w.funcDepth = 0
 	for name, base := range w.p.cfg.RootGroups {
 		w.scope.names[name] = &binding{
-			name:  name,
-			key:   "root " + name,
-			group: rootGroup(base),
+			name:    name,
+			key:     "root " + name,
+			group:   rootGroup(base),
+			grouped: true,
 		}
 	}
 
@@ -441,6 +465,7 @@ func (w *routeWalker) declare(name *ast.Ident, group groupValue) *binding {
 		name:      name.Name,
 		key:       name,
 		group:     group,
+		grouped:   group.known,
 		frames:    len(w.frames),
 		funcDepth: w.funcDepth,
 	}
@@ -477,6 +502,9 @@ func (w *routeWalker) assign(b *binding, group groupValue, pos token.Pos) {
 		}
 	}
 	b.group = group
+	if group.known {
+		b.grouped = true
+	}
 	if w.funcDepth > b.funcDepth && b.lost == "" {
 		b.lost = strconv.Quote(b.name) + " is assigned at " + w.location(pos) + " in a function literal, which may run at any time, so the group it holds is not known"
 	}
@@ -491,8 +519,8 @@ func (w *routeWalker) lose(b *binding, reason string, pos token.Pos) {
 }
 
 // rootFallback is the group a variable named name holds when it is a parameter, is declared
-// without a value or is set to the result of a call other than Group: a name in RootGroups is
-// that root group, such as e in `e := echo.New()`.
+// without a value or is set to a root value (see isRootValue): a name in RootGroups is that root
+// group, such as e in `e := echo.New()` or `e := s.echo`.
 func (w *routeWalker) rootFallback(name string, group groupValue) groupValue {
 	base, ok := w.p.cfg.RootGroups[name]
 	if !ok || group.known {
@@ -502,15 +530,19 @@ func (w *routeWalker) rootFallback(name string, group groupValue) groupValue {
 	return rootGroup(base)
 }
 
-// isOtherCall reports a call of anything but Group, such as echo.New().
-func isOtherCall(expr ast.Expr) bool {
-	call, ok := ast.Unparen(expr).(*ast.CallExpr)
-	if !ok {
-		return false
+// isRootValue reports a value a RootGroups name set to is its root group: a call of anything but
+// Group, such as echo.New() or newEcho(), and a field or other selector, such as s.echo. A
+// variable is not one: a name set to it holds what it holds.
+func isRootValue(expr ast.Expr) bool {
+	switch x := ast.Unparen(expr).(type) {
+	case *ast.SelectorExpr:
+		return true
+	case *ast.CallExpr:
+		selector, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr)
+		return !ok || selector.Sel.Name != "Group"
 	}
-	selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 
-	return !ok || selector.Sel.Name != "Group"
+	return false
 }
 
 // identName is the name of an identifier, through parentheses, "" for any other expression.
@@ -673,7 +705,19 @@ func commonGroup(b *binding, alternatives []map[*binding]*frameAssignment) (grou
 // assigns, then with everything it assigns holding no known group from its start. A
 // variable the body leaves as it found it is forgotten too: a later run may find in it
 // what an earlier run left in another variable.
+//
+// A quiet walk walks the body once: what it learns, the bindings assigned and where first,
+// those lost and those reassigned, does not depend on the groups they hold, and a frame
+// restores every binding it assigns, so the second walk would learn nothing more. Nested
+// loops and function literals are walked twice per level only outside a quiet walk.
 func (w *routeWalker) loop(body func()) {
+	if w.quiet > 0 {
+		for b, assignment := range w.inFrame(body) {
+			forgetAt(b, assignment.location)
+		}
+		return
+	}
+
 	w.quiet++
 	first := w.inFrame(body)
 	w.quiet--
@@ -853,8 +897,9 @@ func fallsThrough(stmts []ast.Stmt) bool {
 }
 
 // assignStmt reads `x := value` and `x = value`: x holds the group value holds, and no known
-// group when value is not one or is one of several results of a call. Every value is read
-// before any variable is set, as Go evaluates them.
+// group when value is not one or is one of several results of a call, except that a RootGroups
+// name set to a root value, one of several results of a call included, is its root group (see
+// rootFallback). Every value is read before any variable is set, as Go evaluates them.
 func (w *routeWalker) assignStmt(s *ast.AssignStmt) {
 	for _, rhs := range s.Rhs {
 		w.expr(rhs)
@@ -873,11 +918,17 @@ func (w *routeWalker) assignStmt(s *ast.AssignStmt) {
 	groups := make([]groupValue, len(s.Lhs))
 	for i, lhs := range s.Lhs {
 		groups[i] = unknownGroup(types.ExprString(lhs) + " is assigned at " + location + " from something other than a group")
-		if len(s.Lhs) == len(s.Rhs) && (s.Tok == token.DEFINE || s.Tok == token.ASSIGN) {
-			groups[i] = w.groupOf(s.Rhs[i])
-			if isOtherCall(s.Rhs[i]) {
-				groups[i] = w.rootFallback(identName(lhs), groups[i])
-			}
+		if s.Tok != token.DEFINE && s.Tok != token.ASSIGN {
+			continue
+		}
+		// Several variables set to one value are set to the results of a call.
+		value := s.Rhs[0]
+		if len(s.Lhs) == len(s.Rhs) {
+			value = s.Rhs[i]
+			groups[i] = w.groupOf(value)
+		}
+		if isRootValue(value) {
+			groups[i] = w.rootFallback(identName(lhs), groups[i])
 		}
 	}
 	for i, lhs := range s.Lhs {
@@ -951,14 +1002,18 @@ func (w *routeWalker) declStmt(s *ast.DeclStmt) {
 		groups := make([]groupValue, len(valueSpec.Names))
 		for i, name := range valueSpec.Names {
 			groups[i] = unknownGroup(strconv.Quote(name.Name) + " is declared at " + location + " without a group")
-			switch {
-			case len(valueSpec.Values) == 0:
+			if len(valueSpec.Values) == 0 {
 				groups[i] = w.rootFallback(name.Name, groups[i])
-			case len(valueSpec.Values) == len(valueSpec.Names):
-				groups[i] = w.groupOf(valueSpec.Values[i])
-				if isOtherCall(valueSpec.Values[i]) {
-					groups[i] = w.rootFallback(name.Name, groups[i])
-				}
+				continue
+			}
+			// Several names declared with one value are set to the results of a call.
+			value := valueSpec.Values[0]
+			if len(valueSpec.Values) == len(valueSpec.Names) {
+				value = valueSpec.Values[i]
+				groups[i] = w.groupOf(value)
+			}
+			if isRootValue(value) {
+				groups[i] = w.rootFallback(name.Name, groups[i])
 			}
 		}
 		for i, name := range valueSpec.Names {
@@ -1074,7 +1129,9 @@ func (w *routeWalker) constString(expr ast.Expr) (string, bool) {
 
 // call reads a route call: `group.METHOD(path, handler, ...)` with an HTTP method Echo
 // registers that way and at least one argument after the path, or with one argument that is
-// a call, which is not resolved. A quiet walk records nothing.
+// a call, which is not resolved. A route registered on a group with a method the generator
+// does not document (see unsupportedRoute) is not resolved either. A quiet walk records
+// nothing.
 func (w *routeWalker) call(call *ast.CallExpr) {
 	if w.quiet > 0 || w.err != nil {
 		return
@@ -1088,6 +1145,9 @@ func (w *routeWalker) call(call *ast.CallExpr) {
 	method := selector.Sel.Name
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	case "Any", "Match", "Add", "AddRoute", "CONNECT", "OPTIONS", "TRACE", "QUERY":
+		w.unsupportedRoute(call, selector)
+		return
 	default:
 		return
 	}
@@ -1139,10 +1199,15 @@ func (w *routeWalker) call(call *ast.CallExpr) {
 	}
 
 	fullPath := group.base + suffix
+	// Echo serves a path that does not start with a slash under one; "" is kept as written.
+	path := fullPath
+	if path != "" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
 
 	r := Route{
 		Method:     method,
-		Path:       fullPath,
+		Path:       path,
 		SourceFile: filepath.ToSlash(w.absPath),
 		SourceLine: lineNo,
 		flat:       w.p.cfg.flat(),
@@ -1165,16 +1230,87 @@ func (w *routeWalker) call(call *ast.CallExpr) {
 		r.Handler = names[0]
 	}
 
-	if r.Handler == "" && !w.p.skip(method, fullPath) {
-		w.found.handlerless = append(w.found.handlerless, location+" "+method+" "+fullPath)
+	if r.Handler == "" && !w.p.skip(method, path) {
+		w.found.handlerless = append(w.found.handlerless, location+" "+method+" "+path)
 	}
 
 	w.found.routes = append(w.found.routes, r)
 }
 
+// unsupportedRoute reads a route registered with Any, Match, Add, AddRoute, CONNECT, OPTIONS,
+// TRACE or QUERY with as many arguments as Echo takes: on a group, it is a route the document
+// would leave out, so it is not resolved. The receiver is a group when the finder knows its group,
+// or when it is a Group call or a variable that has held a known group, and then the reason the
+// group is not known comes first. On any other receiver, or with other arguments, the call is not
+// taken for a route, as regexp.Match(pattern, b) or z.Add(x, y) are not. AddRoute takes a route
+// value, so its path is not named.
+func (w *routeWalker) unsupportedRoute(call *ast.CallExpr, selector *ast.SelectorExpr) {
+	method := selector.Sel.Name
+	pathArg := 0
+	echoArgs := len(call.Args) >= 2
+	switch method {
+	case "Match", "Add":
+		pathArg = 1
+		echoArgs = len(call.Args) >= 3
+	case "AddRoute":
+		echoArgs = len(call.Args) == 1
+	}
+	if !echoArgs {
+		return
+	}
+
+	var reasons []string
+	group := w.groupOf(selector.X)
+	if !group.known {
+		if !w.heldGroup(selector.X) {
+			return
+		}
+		reasons = append(reasons, group.reason)
+	}
+	reasons = append(reasons, "the generator documents only routes registered with GET, POST, PUT, PATCH, DELETE or HEAD")
+
+	path := ""
+	if method != "AddRoute" {
+		path = types.ExprString(call.Args[pathArg])
+	}
+	written := "..."
+	if path != "" {
+		written = path + ", ..."
+	}
+
+	unresolved := UnresolvedRoute{
+		Method:   method,
+		Receiver: types.ExprString(selector.X),
+		Path:     path,
+		File:     w.relPath,
+		Line:     w.fset.Position(call.Pos()).Line,
+		Reason:   strings.Join(reasons, "; "),
+	}
+	w.unresolved(unresolved, unresolved.Receiver+"."+method+"("+written+")")
+}
+
+// heldGroup reports a receiver that is a group though the finder may not know which: a Group call,
+// as groupOf reads one, or a variable that has held a known group.
+func (w *routeWalker) heldGroup(expr ast.Expr) bool {
+	switch x := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		b := w.lookup(x.Name)
+		return b != nil && b.grouped
+	case *ast.CallExpr:
+		selector, ok := x.Fun.(*ast.SelectorExpr)
+		return ok && selector.Sel.Name == "Group" && len(x.Args) > 0
+	}
+
+	return false
+}
+
 // methodValue reads a route method used as a value, `get := e.GET` or `register(e.POST, ...)`:
 // the routes registered through it cannot be known. A selector on an import, such as a method
-// name constant `echo.GET`, is not one. A quiet walk records nothing.
+// name constant `echo.GET`, is not one, nor is a handler method named like one, written as a route
+// call reads a handler (see handlerReference): h.GET in flat mode, h.Things.GET in nested mode,
+// also through a receiver variable that is a field, s.h.Things.GET, unless the chain starts from
+// a variable that holds or has held a group, as h does after `h := e.Group("/admin")`. A quiet
+// walk records nothing.
 func (w *routeWalker) methodValue(selector *ast.SelectorExpr) {
 	if w.quiet > 0 || w.err != nil {
 		return
@@ -1190,6 +1326,17 @@ func (w *routeWalker) methodValue(selector *ast.SelectorExpr) {
 	x, ok := selector.X.(*ast.Ident)
 	if ok && w.imports[x.Name] && w.lookup(x.Name) == nil {
 		return
+	}
+	chain, ok := receiverChain(selector, w.p.cfg.ReceiverVar)
+	handlerNames := 2
+	if w.p.cfg.flat() {
+		handlerNames = 1
+	}
+	if ok && len(chain) == handlerNames {
+		root := w.lookup(chainRoot(selector))
+		if root == nil || !root.grouped {
+			return
+		}
 	}
 
 	unresolved := UnresolvedRoute{
@@ -1399,14 +1546,15 @@ func receiverChain(expr ast.Expr, receiver string) ([]string, bool) {
 			expr = x.X
 			continue
 		case *ast.SelectorExpr:
-			names = append([]string{x.Sel.Name}, names...)
+			names = append(names, x.Sel.Name)
 			expr = x.X
 			continue
 		case *ast.Ident:
-			names = append([]string{x.Name}, names...)
+			names = append(names, x.Name)
 		}
 		break
 	}
+	slices.Reverse(names)
 
 	for i, name := range names[:len(names)-1] {
 		if name == receiver {
@@ -1415,6 +1563,23 @@ func receiverChain(expr ast.Expr, receiver string) ([]string, bool) {
 	}
 
 	return nil, false
+}
+
+// chainRoot is the name a selector chain starts from, through parentheses: h for h.Things.GET; ""
+// for a chain that starts from anything but a name.
+func chainRoot(expr ast.Expr) string {
+	for {
+		switch x := expr.(type) {
+		case *ast.ParenExpr:
+			expr = x.X
+		case *ast.SelectorExpr:
+			expr = x.X
+		case *ast.Ident:
+			return x.Name
+		default:
+			return ""
+		}
+	}
 }
 
 // callsWrapper reports a call of the Config.DeprecatedWrapper function among a route call's
@@ -1522,6 +1687,7 @@ func lowerFirst(value string) string {
 	return string(runes)
 }
 
+// ensureNoDuplicateOperations refuses two routes of one method and path.
 func ensureNoDuplicateOperations(routes []Route) error {
 	seen := map[string]struct{}{}
 
@@ -1532,6 +1698,35 @@ func ensureNoDuplicateOperations(routes []Route) error {
 			return ez.New(ez.EINVALID, "duplicate route: "+key, nil)
 		}
 		seen[key] = struct{}{}
+	}
+
+	return nil
+}
+
+// ensureOneParameterNamePerPath refuses two routes in the document, those skip does not leave
+// out, whose paths differ only in the names of their parameters, /things/{id} and
+// /things/{name}, which OpenAPI takes for one path.
+func ensureOneParameterNamePerPath(routes []Route, skip func(method string, oasPath string) bool) error {
+	// templates holds the first route of each path with its parameters unnamed, /things/{}.
+	templates := map[string]Route{}
+
+	for _, r := range routes {
+		oasPath := toOpenAPIPath(r.Path)
+		if skip(r.Method, oasPath) {
+			continue
+		}
+		template := reOASParam.ReplaceAllString(oasPath, "{}")
+		first, ok := templates[template]
+		if !ok {
+			templates[template] = r
+			continue
+		}
+		firstPath := toOpenAPIPath(first.Path)
+		if firstPath != oasPath {
+			message := "routes " + first.Method + " " + firstPath + " (" + first.SourceFile + ":" + strconv.Itoa(first.SourceLine) + ") and " +
+				r.Method + " " + oasPath + " (" + r.SourceFile + ":" + strconv.Itoa(r.SourceLine) + ") are one OpenAPI path with differently named parameters; use one parameter name in both"
+			return ez.New(ez.EINVALID, message, nil)
+		}
 	}
 
 	return nil
