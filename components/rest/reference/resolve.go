@@ -3,6 +3,7 @@ package reference
 import (
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -169,7 +170,8 @@ func (d *Document) Example(e *Example) *Example {
 // items and the other keywords that take one value take the first
 // non-empty one walking parent first then members in order; boolean flags
 // (nullable, deprecated, readOnly, writeOnly, uniqueItems) are true when
-// any of them sets it.
+// any of them sets it. Unmodelled holds the keywords of all of them, each
+// name and value once.
 // additionalProperties is the first one given as well, unless a later one
 // refuses every other property, false or a schema that allows no value, and
 // the first does not; then that later one is kept. oneOf, anyOf and
@@ -506,6 +508,18 @@ func mergeInto(out, m *Schema) {
 	if m.UniqueItems {
 		out.UniqueItems = true
 	}
+	out.Unmodelled = mergeKeywords(out.Unmodelled, m.Unmodelled)
+}
+
+// mergeKeywords returns the keywords of a and b, both sorted, as one sorted
+// list holding each name and value once, a new slice where b has any.
+func mergeKeywords(a, b []RawKeyword) []RawKeyword {
+	if len(b) == 0 {
+		return a
+	}
+	out := slices.Concat(a, b)
+	sortKeywords(out)
+	return slices.Compact(out)
 }
 
 // commonTypes returns the types both a and b allow, in the order of a, an

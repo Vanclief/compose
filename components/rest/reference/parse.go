@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/vanclief/ez"
 	"gopkg.in/yaml.v3"
@@ -62,9 +63,24 @@ const maxYAMLDepth = 10000
 // uses anchors far less than that.
 const maxYAMLAliasNodes = 1_000_000
 
+// maxYAMLAliasText is how many bytes of scalar text alias expansion may add
+// to a YAML document. Few nodes can repeat a long scalar many times, and
+// Schema.Unmodelled writes out each value it reaches, so the text is
+// counted too, each scalar as long as it is written as a JSON string. A
+// document's own scalar text so counted is less than three times its
+// length, as escapes such as \0, six bytes \u0000 for two, lengthen it
+// most, so a document without aliases never reaches the budget; the
+// allowance lets aliases repeat modest text, a 1 KiB description 60,000
+// times. appendNode also stops writing the value of one keyword Unmodelled
+// keeps once it is longer than this, which bounds a Schema decoded from YAML
+// outside Parse. It is a variable so a test can lower it.
+var maxYAMLAliasText = 64 << 20
+
 // decodeYAML decodes data into doc after checking that expanding its aliases
-// stays within maxYAMLAliasNodes. A document without aliases has fewer
-// nodes than bytes, so the budget is the input length plus that allowance.
+// stays within maxYAMLAliasNodes and maxYAMLAliasText. A document without
+// aliases has fewer nodes than bytes, so the node budget is the input
+// length plus that allowance, and the text budget three times the input
+// length plus its own.
 func decodeYAML(data []byte, doc *Document) error {
 	var root yaml.Node
 	err := yaml.Unmarshal(data, &root)
@@ -73,7 +89,8 @@ func decodeYAML(data []byte, doc *Document) error {
 	}
 
 	budget := len(data) + maxYAMLAliasNodes
-	if !withinAliasBudget(&root, 0, &budget) {
+	text := 3*len(data) + maxYAMLAliasText
+	if !withinAliasBudget(&root, 0, &budget, &text) {
 		return ez.New(ez.EINVALID, "YAML alias expansion too large", nil)
 	}
 
@@ -85,23 +102,48 @@ func decodeYAML(data []byte, doc *Document) error {
 }
 
 // withinAliasBudget walks n with every alias followed and reports whether it
-// holds at most *budget nodes, taking each node it visits from *budget. depth
-// stops at maxYAMLDepth so an alias inside its own anchor, such as &a [*a],
-// fails instead of recursing until the budget runs out.
-func withinAliasBudget(n *yaml.Node, depth int, budget *int) bool {
+// holds at most *budget nodes and *text bytes of scalar text, taking each
+// node it visits from *budget and each scalar's length as a JSON string,
+// see jsonStringLen, from *text. A string is written at most that long; a
+// timestamp, tagged or not, which is written in RFC 3339, a number, bool or
+// null at most 25 bytes longer, which the node budget bounds. depth stops
+// at maxYAMLDepth so an alias inside its own anchor, such as &a [*a], fails
+// instead of recursing until the budget runs out.
+func withinAliasBudget(n *yaml.Node, depth int, budget, text *int) bool {
 	*budget--
-	if *budget < 0 || depth > maxYAMLDepth {
+	if n.Kind == yaml.ScalarNode {
+		*text -= jsonStringLen(n.Value)
+	}
+	if *budget < 0 || *text < 0 || depth > maxYAMLDepth {
 		return false
 	}
 	if n.Kind == yaml.AliasNode {
-		return n.Alias == nil || withinAliasBudget(n.Alias, depth+1, budget)
+		return n.Alias == nil || withinAliasBudget(n.Alias, depth+1, budget, text)
 	}
 	for _, child := range n.Content {
-		if !withinAliasBudget(child, depth+1, budget) {
+		if !withinAliasBudget(child, depth+1, budget, text) {
 			return false
 		}
 	}
 	return true
+}
+
+// jsonStringLen is the length of s written as a JSON string by
+// appendScalar, quotes included, counting U+FFFD, which an invalid byte
+// also reads as, as its escape \ufffd.
+func jsonStringLen(s string) int {
+	n := 2
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\' || r == '\b' || r == '\f' || r == '\n' || r == '\r' || r == '\t':
+			n += 2
+		case r < 0x20 || r == '\u2028' || r == '\u2029' || r == utf8.RuneError:
+			n += 6
+		default:
+			n += utf8.RuneLen(r)
+		}
+	}
+	return n
 }
 
 // causeText describes a decoding error by its innermost message, without the

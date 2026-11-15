@@ -3,16 +3,21 @@
 // backend, with no CDN assets.
 //
 // The model below covers the subset of OpenAPI 3.0 and 3.1 that matters for
-// documentation. Unknown fields are ignored. Values that differ between 3.0 and
+// documentation. Unknown fields are ignored, but for the schema keywords
+// Schema.Unmodelled keeps. Values that differ between 3.0 and
 // 3.1 (nullable versus "null" in the type list, exclusiveMinimum as a bool
 // versus a number) are normalized by Parse so the renderer sees one shape.
 package reference
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -287,6 +292,357 @@ type Schema struct {
 	// "x-") as decoded values, or nil when the schema has none. It is not
 	// written back by json.Marshal.
 	Extensions map[string]any `json:"-" yaml:"-"`
+
+	// Unmodelled holds the keywords of the schema that no other field holds
+	// and that are neither extensions nor annotationKeywords, such as
+	// patternProperties, if or prefixItems, sorted by name, or nil when the
+	// schema has none. Diff compares them by value only, see Diff. It is not
+	// written back by json.Marshal.
+	Unmodelled []RawKeyword `json:"-" yaml:"-"`
+}
+
+// RawKeyword is a schema keyword Parse does not model: its name and its
+// value as compact JSON with object keys sorted, so two values that differ
+// only in key order, spacing or the spelling of a number of at most 15
+// significant digits within the normal float64 range are the same text; any
+// other number is written as in the document, or as its value where YAML
+// spells it in a form JSON has not. A YAML mapping key
+// is its text as written, and a YAML value JSON cannot hold, such as .nan,
+// is written as a string.
+type RawKeyword struct {
+	Name  string
+	Value string
+}
+
+// annotationKeywords are the schema keywords Parse drops, as it drops
+// extensions, though no Schema field holds them: they describe or identify
+// a schema and do not change the values it accepts.
+var annotationKeywords = []string{"$comment", "$id", "$schema", "$anchor", "externalDocs", "xml", "patternDescription"}
+
+// fieldKeys holds the key of each Schema field Parse decodes.
+var fieldKeys = func() []string {
+	var out []string
+	t := reflect.TypeOf(Schema{})
+	for i := range t.NumField() {
+		key := t.Field(i).Tag.Get("json")
+		if key != "-" {
+			out = append(out, key)
+		}
+	}
+	return out
+}()
+
+// unmodelled reports whether Parse keeps key, of a YAML schema mapping, in
+// Unmodelled: it is not the key of a Schema field, an extension or one of
+// the annotationKeywords.
+func unmodelled(key string) bool {
+	return !slices.Contains(fieldKeys, key) && !slices.Contains(annotationKeywords, key) && !strings.HasPrefix(key, "x-")
+}
+
+// unmodelledJSON is unmodelled for a key of a JSON schema object, which
+// encoding/json decodes into the field whose key it matches regardless of
+// case, as maxlength into MaxLength.
+func unmodelledJSON(key string) bool {
+	return unmodelled(key) && !slices.ContainsFunc(fieldKeys, func(field string) bool {
+		return strings.EqualFold(field, key)
+	})
+}
+
+// jsonKeyword is the keyword name with the JSON value, see RawKeyword.
+func jsonKeyword(name string, value json.RawMessage) (RawKeyword, error) {
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.UseNumber()
+	var v any
+	err := dec.Decode(&v)
+	if err != nil {
+		return RawKeyword{}, ez.Wrap(err)
+	}
+	var buf bytes.Buffer
+	appendJSON(&buf, comparedNumbers(v))
+	return RawKeyword{Name: name, Value: buf.String()}, nil
+}
+
+// comparedNumbers replaces, in place, each json.Number in v, decoded with
+// UseNumber, by comparedNumber of its text, and returns v.
+func comparedNumbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		return comparedNumber(string(t))
+	case map[string]any:
+		for key, item := range t {
+			t[key] = comparedNumbers(item)
+		}
+	case []any:
+		for i, item := range t {
+			t[i] = comparedNumbers(item)
+		}
+	}
+	return v
+}
+
+// minNormal is the smallest positive float64 with full precision; below it
+// two decimals of 15 significant digits can round to the same float64.
+const minNormal = 0x1p-1022
+
+// comparedNumber is the number written as text, in a value Unmodelled
+// keeps, as RawKeyword compares it: a float64 where text has at most 15
+// significant digits and lies in the normal float64 range, where no two such
+// decimals give the same float64, so 1, 1.0 and 1e0 are one value; otherwise
+// the text as written, a json.Number, which appendScalar writes as a string
+// where it is not a JSON number.
+func comparedNumber(text string) any {
+	mantissa := text
+	i := strings.IndexAny(text, "eE")
+	if i >= 0 {
+		mantissa = text[:i]
+	}
+	digits := strings.Replace(strings.TrimLeft(mantissa, "+-"), ".", "", 1)
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return json.Number(text)
+	}
+	significant := strings.Trim(digits, "0")
+	if len(significant) > 15 {
+		return json.Number(text)
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil || (significant != "" && math.Abs(f) < minNormal) {
+		return json.Number(text)
+	}
+	if f == 0 {
+		return 0.0
+	}
+	return f
+}
+
+// yamlKeyword is the keyword name with the YAML value node, see
+// RawKeyword. The node is written as it stands rather than decoded, so a
+// value yaml.v3 refuses to decode, as with a key given twice or more
+// aliases than its ratio allows, is kept too: aliases are followed, under
+// Parse within the node and text budgets decodeYAML sets for the whole
+// document, and anywhere until the value is written longer than
+// maxYAMLAliasText, which is an error, as is an alias inside its own
+// anchor; a mapping's keys are written as their text, in order of that
+// text, keys of the same text in document order, and a merge key as a key
+// like any other, while a key that is not a scalar, which JSON cannot
+// hold, is an error; numbers are written by comparedNumber.
+func yamlKeyword(name string, node *yaml.Node) (RawKeyword, error) {
+	var buf bytes.Buffer
+	err := appendNode(&buf, name, node, map[*yaml.Node]bool{})
+	if err != nil {
+		return RawKeyword{}, ez.Wrap(err)
+	}
+	return RawKeyword{Name: name, Value: buf.String()}, nil
+}
+
+// appendNode writes node, in the value of the keyword name, as compact
+// JSON, see yamlKeyword. visiting holds the anchors being written, so an
+// alias to one of them is refused. buf holds that value alone, and once it
+// is longer than maxYAMLAliasText after a node is written the expansion
+// stops with an error, so a billion-laughs value that yaml.v3's own alias
+// check never sees, as appendNode follows the aliases itself, cannot
+// exhaust memory where a Schema is decoded from YAML outside Parse. Under
+// Parse, whose budgets decodeYAML checks first, it refuses a document only
+// where the value of one such keyword alone is written longer than that.
+func appendNode(buf *bytes.Buffer, name string, node *yaml.Node, visiting map[*yaml.Node]bool) error {
+	if node != nil && node.Kind == yaml.AliasNode {
+		target := node.Alias
+		if visiting[target] {
+			return ez.New(ez.EINVALID, fmt.Sprintf("line %d: anchor %q contains itself", node.Line, node.Value), nil)
+		}
+		visiting[target] = true
+		err := appendNode(buf, name, target, visiting)
+		delete(visiting, target)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+		return nil
+	}
+	if node == nil {
+		buf.WriteString("null")
+		return nil
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		buf.WriteByte('[')
+		for i, item := range node.Content {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			err := appendNode(buf, name, item, visiting)
+			if err != nil {
+				return ez.Wrap(err)
+			}
+		}
+		buf.WriteByte(']')
+	case yaml.MappingNode:
+		type pair struct {
+			key   string
+			value *yaml.Node
+		}
+		pairs := make([]pair, 0, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := aliasTarget(node.Content[i])
+			if key.Kind != yaml.ScalarNode {
+				return ez.New(ez.EINVALID, fmt.Sprintf("line %d: schema keyword %s has a key that is not a scalar, which JSON cannot hold", node.Content[i].Line, name), nil)
+			}
+			pairs = append(pairs, pair{key: key.Value, value: node.Content[i+1]})
+		}
+		slices.SortStableFunc(pairs, func(a, b pair) int {
+			return strings.Compare(a.key, b.key)
+		})
+		buf.WriteByte('{')
+		for i, p := range pairs {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			appendScalar(buf, p.key)
+			buf.WriteByte(':')
+			err := appendNode(buf, name, p.value, visiting)
+			if err != nil {
+				return ez.Wrap(err)
+			}
+		}
+		buf.WriteByte('}')
+	case yaml.ScalarNode:
+		appendYAMLScalar(buf, node)
+	default:
+		buf.WriteString("null")
+	}
+	if buf.Len() > maxYAMLAliasText {
+		return ez.New(ez.EINVALID, fmt.Sprintf("schema keyword %s is longer than %d bytes written as JSON with its YAML aliases expanded", name, maxYAMLAliasText), nil)
+	}
+	return nil
+}
+
+// appendYAMLScalar writes the scalar node as yaml.v3 decodes it, a float
+// by writeFloat. A string, and a null, bool, int or float with no explicit
+// tag, is written from its resolved tag and text, and !!binary, whose bytes
+// JSON cannot hold, as its text; any other scalar goes through Decode.
+func appendYAMLScalar(buf *bytes.Buffer, node *yaml.Node) {
+	tag := node.ShortTag()
+	if tag == "!!str" || tag == "!!binary" {
+		appendScalar(buf, node.Value)
+		return
+	}
+	if node.Style&yaml.TaggedStyle == 0 {
+		switch tag {
+		case "!!null":
+			buf.WriteString("null")
+			return
+		case "!!bool":
+			buf.WriteString(strconv.FormatBool(strings.EqualFold(node.Value, "true")))
+			return
+		case "!!int":
+			n, err := strconv.ParseInt(strings.ReplaceAll(node.Value, "_", ""), 0, 64)
+			if err == nil {
+				buf.WriteString(strconv.FormatInt(n, 10))
+				return
+			}
+		case "!!float":
+			f, err := strconv.ParseFloat(strings.ReplaceAll(node.Value, "_", ""), 64)
+			if err == nil {
+				writeFloat(buf, f, node.Value)
+				return
+			}
+		}
+	}
+	var v any
+	err := node.Decode(&v)
+	if err != nil {
+		// A scalar its tag does not fit, such as !!int abc: its text is
+		// all there is to compare.
+		appendScalar(buf, node.Value)
+		return
+	}
+	f, ok := v.(float64)
+	if ok {
+		writeFloat(buf, f, node.Value)
+		return
+	}
+	appendScalar(buf, v)
+}
+
+// writeFloat writes the YAML float f, written text: by comparedNumber where
+// f is finite and text, without the underscores YAML allows between digits,
+// is a JSON number or comparedNumber reads it, and as f otherwise, a
+// negative zero as 0 and NaN and the infinities as strings.
+func writeFloat(buf *bytes.Buffer, f float64, text string) {
+	if f == 0 {
+		f = 0
+	}
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		appendScalar(buf, f)
+		return
+	}
+	v := comparedNumber(strings.ReplaceAll(text, "_", ""))
+	number, ok := v.(json.Number)
+	if ok && !json.Valid([]byte(number)) {
+		v = f
+	}
+	appendScalar(buf, v)
+}
+
+// aliasTarget is the node the alias node points at, or node itself where it
+// is no alias.
+func aliasTarget(node *yaml.Node) *yaml.Node {
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		return node.Alias
+	}
+	return node
+}
+
+// appendMerged appends to out the keywords Unmodelled keeps that the merge
+// key values merges bring into a mapping, each a mapping, an alias to one
+// or a sequence of those. As YAML merge defines, a key in seen, which the
+// mapping or an earlier merged mapping holds, is skipped, and the keys of a
+// merged mapping win over those its own merge keys bring in.
+func appendMerged(out []RawKeyword, merges []*yaml.Node, seen map[string]bool) ([]RawKeyword, error) {
+	for _, merge := range merges {
+		merge = aliasTarget(merge)
+		mappings := []*yaml.Node{merge}
+		if merge.Kind == yaml.SequenceNode {
+			mappings = merge.Content
+		}
+		for _, m := range mappings {
+			m = aliasTarget(m)
+			if m.Kind != yaml.MappingNode {
+				continue
+			}
+			var nested []*yaml.Node
+			for i := 0; i+1 < len(m.Content); i += 2 {
+				if m.Content[i].ShortTag() == "!!merge" {
+					nested = append(nested, m.Content[i+1])
+					continue
+				}
+				key := aliasTarget(m.Content[i]).Value
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				if !unmodelled(key) {
+					continue
+				}
+				keyword, err := yamlKeyword(key, m.Content[i+1])
+				if err != nil {
+					return nil, ez.Wrap(err)
+				}
+				out = append(out, keyword)
+			}
+			var err error
+			out, err = appendMerged(out, nested, seen)
+			if err != nil {
+				return nil, ez.Wrap(err)
+			}
+		}
+	}
+	return out, nil
+}
+
+// sortKeywords sorts keywords by name, then by value.
+func sortKeywords(keywords []RawKeyword) {
+	slices.SortFunc(keywords, func(a, b RawKeyword) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Value, b.Value))
+	})
 }
 
 // schemaFields has the fields of Schema without its methods, so the custom
@@ -305,11 +661,6 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
-	// Most schemas have no extensions and no const; skip the second decode
-	// for them. A parent still rescans when only a nested schema has one.
-	if !bytes.Contains(data, []byte(`"x-`)) && !bytes.Contains(data, []byte(`"const"`)) {
-		return nil
-	}
 	var raw map[string]json.RawMessage
 	err = json.Unmarshal(data, &raw)
 	if err != nil {
@@ -317,6 +668,14 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	}
 	s.ConstNull = string(bytes.TrimSpace(raw["const"])) == "null"
 	for key, value := range raw {
+		if unmodelledJSON(key) {
+			keyword, err := jsonKeyword(key, value)
+			if err != nil {
+				return ez.Wrap(err)
+			}
+			s.Unmodelled = append(s.Unmodelled, keyword)
+			continue
+		}
 		if !strings.HasPrefix(key, "x-") {
 			continue
 		}
@@ -330,6 +689,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 		}
 		s.Extensions[key] = v
 	}
+	sortKeywords(s.Unmodelled)
 	return nil
 }
 
@@ -359,10 +719,24 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
+	// A merge key may bring in keywords Unmodelled keeps.
+	var merges []*yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i].Value
+		key := aliasTarget(node.Content[i]).Value
 		if key == "const" {
 			s.ConstNull = s.Const == nil
+		}
+		if node.Content[i].ShortTag() == "!!merge" {
+			merges = append(merges, node.Content[i+1])
+			continue
+		}
+		if unmodelled(key) {
+			keyword, err := yamlKeyword(key, node.Content[i+1])
+			if err != nil {
+				return ez.Wrap(err)
+			}
+			s.Unmodelled = append(s.Unmodelled, keyword)
+			continue
 		}
 		if !strings.HasPrefix(key, "x-") {
 			continue
@@ -377,6 +751,17 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 		}
 		s.Extensions[key] = v
 	}
+	if len(merges) > 0 {
+		seen := map[string]bool{}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			seen[aliasTarget(node.Content[i]).Value] = true
+		}
+		s.Unmodelled, err = appendMerged(s.Unmodelled, merges, seen)
+		if err != nil {
+			return ez.Wrap(err)
+		}
+	}
+	sortKeywords(s.Unmodelled)
 	return nil
 }
 
