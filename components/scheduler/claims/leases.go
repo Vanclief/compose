@@ -39,7 +39,13 @@ type leaseRecord struct {
 // through a pooler in transaction mode, and instances whose clocks disagree
 // agree on whether a lease is live. Release also deletes the rows whose lease
 // lapsed more than an hour ago, left by instances that stopped without
-// releasing for ids not used since.
+// releasing for ids not used since. Renew does not wait for a row that another
+// session holds a lock on that its update would wait for, any row lock but
+// FOR KEY SHARE: it renews the other leases and returns that one Busy, so a
+// transaction stuck on one row costs only that lease: its run is cancelled
+// with scheduler.ErrLeaseLost 20 seconds after the last renewal that
+// extended it. An Acquire of the id locks its row for the length of its
+// statement, so a renewal at that moment is Busy.
 //
 // The statements are written for the default READ COMMITTED isolation only.
 // Under a database or role default of REPEATABLE READ or SERIALIZABLE,
@@ -131,25 +137,49 @@ SELECT EXISTS (SELECT 1 FROM acquired WHERE owner = ?::text)`,
 }
 
 // Renew extends, in one statement, every lease of leases whose row still
-// names its owner, and returns those with their superseded mark. An empty
-// leases makes no query.
+// names its owner and that it can lock at once, and returns those with their
+// superseded mark. A row that names its owner but that another session holds
+// a lock on that the update would wait for, such as a stuck transaction, is
+// skipped, not waited for, and its lease is returned Busy, not extended and
+// without its mark, so one locked row does not hold up the renewal of the
+// others. An empty leases makes no query.
+//
+// free locks the rows that still name their owner, skipping the locked ones,
+// and renewed extends exactly those. Its lock is FOR NO KEY UPDATE, the one
+// the UPDATE takes, so a row that a foreign key check holds FOR KEY SHARE,
+// which an UPDATE does not wait for, is renewed. All the parts of the
+// statement read one snapshot, so the last SELECT still sees a renewed row as
+// it was before the update and leaves it out by renewed. A row whose owner
+// changed, or that was deleted, after that snapshot and before free reached
+// it is left out of free, which looks at the newest row, and is then returned
+// Busy, not lost: the next renewal reports it lost.
 func (l *bunLeaser) Renew(ctx context.Context, leases []scheduler.Lease, ttl time.Duration) ([]scheduler.Lease, error) {
 	if len(leases) == 0 {
 		return nil, nil
 	}
 
 	values := make([]string, 0, len(leases))
-	args := make([]any, 0, 2+2*len(leases))
-	args = append(args, bun.Ident(l.table), ttl.Microseconds())
+	args := make([]any, 0, 2*len(leases)+4)
 	for _, lease := range leases {
 		values = append(values, "(?::text, ?::text)")
 		args = append(args, lease.ID, lease.Owner)
 	}
+	args = append(args, bun.Ident(l.table), bun.Ident(l.table), ttl.Microseconds(), bun.Ident(l.table))
 
-	rows, err := l.db.QueryContext(ctx, `UPDATE ? AS lease SET held_until = now() + ? * interval '1 microsecond'
-FROM (VALUES `+strings.Join(values, ", ")+`) AS v (job_id, owner)
-WHERE lease.job_id = v.job_id AND lease.owner = v.owner
-RETURNING lease.job_id, lease.owner, lease.superseded`, args...)
+	rows, err := l.db.QueryContext(ctx, `WITH v (job_id, owner) AS (VALUES `+strings.Join(values, ", ")+`),
+free AS MATERIALIZED (
+	SELECT lease.job_id FROM ? AS lease JOIN v ON lease.job_id = v.job_id AND lease.owner = v.owner
+	FOR NO KEY UPDATE OF lease SKIP LOCKED
+),
+renewed AS (
+	UPDATE ? AS lease SET held_until = now() + ? * interval '1 microsecond'
+	FROM free WHERE lease.job_id = free.job_id
+	RETURNING lease.job_id, lease.owner, lease.superseded
+)
+SELECT job_id, owner, superseded, false AS busy FROM renewed
+UNION ALL
+SELECT lease.job_id, lease.owner, false, true FROM ? AS lease JOIN v ON lease.job_id = v.job_id AND lease.owner = v.owner
+WHERE NOT EXISTS (SELECT 1 FROM renewed WHERE renewed.job_id = lease.job_id)`, args...)
 	if err != nil {
 		return nil, ez.New(ez.EINTERNAL, "claims: renewing the job leases failed", err)
 	}
@@ -158,7 +188,7 @@ RETURNING lease.job_id, lease.owner, lease.superseded`, args...)
 	renewed := make([]scheduler.Lease, 0, len(leases))
 	for rows.Next() {
 		var lease scheduler.Lease
-		err = rows.Scan(&lease.ID, &lease.Owner, &lease.Superseded)
+		err = rows.Scan(&lease.ID, &lease.Owner, &lease.Superseded, &lease.Busy)
 		if err != nil {
 			return nil, ez.New(ez.EINTERNAL, "claims: renewing the job leases failed", err)
 		}

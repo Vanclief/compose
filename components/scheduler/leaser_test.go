@@ -52,6 +52,7 @@ type fakeLeaser struct {
 
 	mu         sync.Mutex
 	leases     map[string]*fakeLease
+	busy       map[string]bool // ids whose renewals answer Busy, as a locked row would
 	acquires   []acquireCall
 	releases   []leaseCall
 	renewCalls int
@@ -59,7 +60,7 @@ type fakeLeaser struct {
 }
 
 func newFakeLeaser() *fakeLeaser {
-	return &fakeLeaser{leases: make(map[string]*fakeLease)}
+	return &fakeLeaser{leases: make(map[string]*fakeLease), busy: make(map[string]bool)}
 }
 
 func (f *fakeLeaser) Acquire(ctx context.Context, id, owner string, ttl time.Duration, supersede bool) (bool, error) {
@@ -106,7 +107,11 @@ func (f *fakeLeaser) Renew(ctx context.Context, leases []Lease, ttl time.Duratio
 	var renewed []Lease
 	for _, l := range leases {
 		held := f.leases[l.ID]
-		if held != nil && held.owner == l.Owner {
+		if held != nil && held.owner == l.Owner && f.busy[l.ID] {
+			// Not extended. The mark is passed on, to show that the
+			// Scheduler ignores it on a busy lease.
+			renewed = append(renewed, Lease{ID: l.ID, Owner: l.Owner, Superseded: held.superseded, Busy: true})
+		} else if held != nil && held.owner == l.Owner {
 			held.lapsed = false
 			renewed = append(renewed, Lease{ID: l.ID, Owner: l.Owner, Superseded: held.superseded})
 		}
@@ -143,6 +148,20 @@ func (f *fakeLeaser) set(id, owner string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.leases[id] = &fakeLease{owner: owner}
+}
+
+// setBusy makes the renewals of id answer Busy, or stops them doing so.
+func (f *fakeLeaser) setBusy(id string, busy bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.busy[id] = busy
+}
+
+// mark marks the lease of id superseded, as a refused Supersede would.
+func (f *fakeLeaser) mark(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.leases[id].superseded = true
 }
 
 // drop deletes the lease of id, as a store that lost it would.
@@ -518,6 +537,142 @@ func TestLeaseUnrenewedCancelsRun(t *testing.T) {
 		assert.True(t, errors.Is(cause, ErrLeaseLost), "cause %v", cause)
 		assert.GreaterOrEqual(t, time.Since(begin), 400*time.Millisecond)
 		waitIdle(t, s)
+	})
+}
+
+// TestLeaseBusyKeepsDeadlineUntilRenewed: busy answers neither cancel the run
+// nor move its deadline, which stays the last good renewal's, and the first
+// answer that is not busy moves it again.
+func TestLeaseBusyKeepsDeadlineUntilRenewed(t *testing.T) {
+	f := newFakeLeaser()
+	log, buf := newTestLogger()
+	s := newLeasedScheduler(t, f, WithLogger(log))
+
+	run := newBlocker()
+	require.True(t, s.RunOnce(context.Background(), "x", run.job))
+	ctx := recv(t, run.started)
+	h := holdOf(s, "x")
+	require.NotNil(t, h)
+
+	f.setBusy("x", true)
+	// A renewal answered before setBusy is applied before the next one is
+	// made, so every answer applied from here on is busy.
+	f.waitRenewals(t, 2)
+	last := deadlineOf(s, h)
+	f.waitRenewals(t, 5)
+	assert.Equal(t, last, deadlineOf(s, h), "a busy answer moved the deadline")
+	assert.NoError(t, ctx.Err(), "a busy answer cancelled the run")
+
+	f.setBusy("x", false)
+	require.Eventually(t, func() bool { return deadlineOf(s, h).After(last) }, waitFor, pollFor, "the renewal did not move the deadline")
+	assert.NoError(t, ctx.Err())
+
+	// The renewal ended the row of busy answers, so the next one is the
+	// first again, logged at debug level.
+	const first = `level=DEBUG msg="Scheduler lease busy in the store, not renewed" job_id=x busy_renewals=1` + "\n"
+	assert.Equal(t, 1, strings.Count(buf.String(), first))
+	f.setBusy("x", true)
+	require.Eventually(t, func() bool { return strings.Count(buf.String(), first) == 2 }, waitFor, pollFor, "the busy answers in a row were not counted from one again")
+	f.setBusy("x", false)
+
+	close(run.release)
+	assert.NoError(t, recv(t, run.returned))
+	waitIdle(t, s)
+}
+
+// TestLeaseBusyPastDeadlineCancelsRun: a lease that stays busy is cancelled
+// with ErrLeaseLost at its deadline, as one whose renewals fail, while a lease
+// renewed in the same answers keeps its run going. The sibling's deadline is
+// earlier than the busy run's, so it is still running only because those
+// answers renewed it.
+func TestLeaseBusyPastDeadlineCancelsRun(t *testing.T) {
+	f := newFakeLeaser()
+	log, buf := newTestLogger()
+	s := newLeasedScheduler(t, f, WithLogger(log))
+	s.leaseTTL = 600 * time.Millisecond
+	s.cancelMargin = 200 * time.Millisecond
+	f.setBusy("x", true)
+
+	sibling := newBlocker()
+	require.True(t, s.RunOnce(context.Background(), "y", sibling.job))
+	siblingCtx := recv(t, sibling.started)
+
+	run := newBlocker()
+	begin := time.Now()
+	require.True(t, s.RunOnce(context.Background(), "x", run.job))
+	recv(t, run.started)
+
+	cause := recvWithin(t, run.returned, slow)
+	assert.True(t, errors.Is(cause, ErrLeaseLost), "cause %v", cause)
+	assert.GreaterOrEqual(t, time.Since(begin), 400*time.Millisecond)
+	assert.Contains(t, buf.String(), `level=DEBUG msg="Scheduler lease busy in the store, not renewed" job_id=x busy_renewals=1`)
+	assert.Contains(t, buf.String(), `level=WARN msg="Scheduler lease busy in the store, not renewed" job_id=x busy_renewals=2`)
+	assert.NoError(t, siblingCtx.Err(), "the sibling was not renewed")
+
+	f.waitRenewals(t, 3)
+	assert.NoError(t, siblingCtx.Err())
+	close(sibling.release)
+	assert.NoError(t, recv(t, sibling.returned))
+	waitIdle(t, s)
+}
+
+// TestLeaseBusyMarkWaitsForRenewal: the superseded mark of a busy answer is
+// ignored, and the first answer that is not busy cancels the run with it.
+func TestLeaseBusyMarkWaitsForRenewal(t *testing.T) {
+	f := newFakeLeaser()
+	s := newLeasedScheduler(t, f)
+
+	run := newBlocker()
+	require.True(t, s.RunOnce(context.Background(), "x", run.job))
+	ctx := recv(t, run.started)
+
+	f.setBusy("x", true)
+	f.mark("x")
+	f.waitRenewals(t, 5)
+	assert.NoError(t, ctx.Err(), "a busy answer's mark cancelled the run")
+
+	f.setBusy("x", false)
+	cause := recv(t, run.returned)
+	assert.True(t, errors.Is(cause, ErrSuperseded), "cause %v", cause)
+	waitIdle(t, s)
+}
+
+// TestLeaserWithoutClaimerWarns: a Scheduler with a Leaser and no Claimer
+// warns once, when its first recurring job is added. One with a Claimer too,
+// one without a Leaser, and one that runs only on-demand jobs do not.
+func TestLeaserWithoutClaimerWarns(t *testing.T) {
+	const warning = "recurring jobs can run on more than one instance"
+	job := func(context.Context) {}
+
+	t.Run("leaser without claimer", func(t *testing.T) {
+		log, buf := newTestLogger()
+		s := newTestScheduler(t, WithLeaser(newFakeLeaser()), WithLogger(log))
+		ran := make(chan struct{})
+		require.True(t, s.RunOnce(context.Background(), "once", func(context.Context) {
+			close(ran)
+		}))
+		recv(t, ran)
+		waitIdle(t, s)
+		assert.NotContains(t, buf.String(), warning, "an on-demand job")
+
+		require.NoError(t, s.Add("a", Every(time.Minute), job))
+		require.NoError(t, s.Add("b", Every(time.Minute), job))
+		assert.Equal(t, 1, strings.Count(buf.String(), warning), buf.String())
+		assert.Contains(t, buf.String(), `level=WARN msg="Scheduler has a leaser but no claimer: recurring jobs can run on more than one instance, WithClaimer makes one instance run each boundary" job_id=a`)
+	})
+
+	t.Run("leaser and claimer", func(t *testing.T) {
+		log, buf := newTestLogger()
+		s := newTestScheduler(t, WithLeaser(newFakeLeaser()), WithClaimer(newFakeClaimer(true, nil)), WithLogger(log))
+		require.NoError(t, s.Add("a", Every(time.Minute), job))
+		assert.NotContains(t, buf.String(), warning)
+	})
+
+	t.Run("no leaser", func(t *testing.T) {
+		log, buf := newTestLogger()
+		s := newTestScheduler(t, WithLogger(log))
+		require.NoError(t, s.Add("a", Every(time.Minute), job))
+		assert.NotContains(t, buf.String(), warning)
 	})
 }
 

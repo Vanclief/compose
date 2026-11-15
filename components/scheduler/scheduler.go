@@ -177,6 +177,9 @@ func (s *Scheduler) Add(id string, when Schedule, job Job) error {
 	}
 
 	s.registrations = append(s.registrations, registration{id: id, when: when, job: job})
+	if len(s.registrations) == 1 && s.leaser != nil && s.claimer == nil {
+		s.log.Warn().Str("job_id", id).Msg("Scheduler has a leaser but no claimer: recurring jobs can run on more than one instance, WithClaimer makes one instance run each boundary")
+	}
 	return nil
 }
 

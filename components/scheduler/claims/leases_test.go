@@ -66,6 +66,16 @@ func lapse(t *testing.T, db *bun.DB, id string) {
 	require.NoError(t, err)
 }
 
+// live reports whether the lease of id is held, its held_until ahead of the
+// database clock.
+func live(t *testing.T, db *bun.DB, id string) bool {
+	t.Helper()
+	var held bool
+	err := db.QueryRowContext(context.Background(), "SELECT held_until > now() FROM ? WHERE job_id = ?", bun.Ident(leaseTable), id).Scan(&held)
+	require.NoError(t, err)
+	return held
+}
+
 func leaseRowCount(t *testing.T, db *bun.DB, id string) int64 {
 	t.Helper()
 	count, err := db.NewSelect().
@@ -207,6 +217,81 @@ func TestLeasesPostgres(t *testing.T) {
 		assert.False(t, acquire(t, l, "renew-a", "z/1", hour, false))
 	})
 
+	t.Run("renew skips a row locked by another session and reports it busy", func(t *testing.T) {
+		l := NewBunLeaser(db, leaseTable)
+		ctx := context.Background()
+		require.True(t, acquire(t, l, "locked-a", "a/1", hour, false))
+		require.True(t, acquire(t, l, "locked-b", "b/1", hour, false))
+		require.False(t, acquire(t, l, "locked-b", "x/1", hour, true))
+		require.True(t, acquire(t, l, "locked-c", "c/1", hour, false))
+		require.True(t, acquire(t, l, "locked-d", "d/2", hour, false))
+		// Lapsed but still their owners', so a renewal shows in held_until.
+		for _, id := range []string{"locked-a", "locked-b", "locked-c"} {
+			lapse(t, db, id)
+		}
+		leases := []scheduler.Lease{
+			{ID: "locked-a", Owner: "a/1"},
+			{ID: "locked-b", Owner: "b/1"},
+			{ID: "locked-c", Owner: "c/1"},
+			{ID: "locked-d", Owner: "d/1"},
+			{ID: "locked-e", Owner: "e/1"},
+		}
+
+		// Another session locks locked-b, which is marked superseded, and
+		// locked-d, which is another owner's.
+		holder, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer holder.Rollback() // nolint:errcheck // ends the transaction when the test fails before the rollback below
+		_, err = holder.ExecContext(ctx, "SELECT 1 FROM ? WHERE job_id IN ('locked-b', 'locked-d') FOR UPDATE", bun.Ident(leaseTable))
+		require.NoError(t, err)
+
+		// Bounded as the Scheduler bounds a renewal.
+		renewCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		begin := time.Now()
+		renewed, err := l.Renew(renewCtx, leases, hour)
+		elapsed := time.Since(begin)
+		cancel()
+		require.NoError(t, err)
+		assert.Less(t, elapsed, 500*time.Millisecond, "the renewal waited for the lock")
+		assert.ElementsMatch(t, []scheduler.Lease{
+			{ID: "locked-a", Owner: "a/1"},
+			{ID: "locked-b", Owner: "b/1", Busy: true},
+			{ID: "locked-c", Owner: "c/1"},
+		}, renewed, "another owner's row and a missing row are lost, locked or not")
+		assert.True(t, live(t, db, "locked-a"))
+		assert.False(t, live(t, db, "locked-b"), "the locked row was extended")
+		assert.True(t, live(t, db, "locked-c"))
+
+		require.NoError(t, holder.Rollback())
+		renewed = renew(t, l, leases...)
+		assert.ElementsMatch(t, []scheduler.Lease{
+			{ID: "locked-a", Owner: "a/1"},
+			{ID: "locked-b", Owner: "b/1", Superseded: true},
+			{ID: "locked-c", Owner: "c/1"},
+		}, renewed)
+		assert.True(t, live(t, db, "locked-b"))
+	})
+
+	t.Run("renew extends a row another session holds for key share", func(t *testing.T) {
+		l := NewBunLeaser(db, leaseTable)
+		ctx := context.Background()
+		require.True(t, acquire(t, l, "shared", "a/1", hour, false))
+		lapse(t, db, "shared")
+
+		// The lock a foreign key check takes on the row it refers to. The
+		// renewal's UPDATE changes no key column, so it does not wait for it.
+		holder, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer holder.Rollback() // nolint:errcheck // ends the transaction when the test fails before the rollback below
+		_, err = holder.ExecContext(ctx, "SELECT 1 FROM ? WHERE job_id = 'shared' FOR KEY SHARE", bun.Ident(leaseTable))
+		require.NoError(t, err)
+
+		renewed := renew(t, l, scheduler.Lease{ID: "shared", Owner: "a/1"})
+		assert.Equal(t, []scheduler.Lease{{ID: "shared", Owner: "a/1"}}, renewed)
+		assert.True(t, live(t, db, "shared"))
+		require.NoError(t, holder.Rollback())
+	})
+
 	t.Run("renew of no leases makes no query", func(t *testing.T) {
 		l := NewBunLeaser(db, leaseTable)
 		log := &queryLog{}
@@ -253,6 +338,7 @@ func TestLeasesPostgres(t *testing.T) {
 		assert.Contains(t, queries[0], `INSERT INTO "`+leaseTable+`" AS lease`)
 		assert.Contains(t, queries[1], `UPDATE "`+leaseTable+`" AS lease SET held_until = now()`)
 		assert.Contains(t, queries[1], `(VALUES ('sql'::text, 'a/1'::text), ('sql-other'::text, 'b/1'::text))`)
+		assert.Contains(t, queries[1], `FOR NO KEY UPDATE OF lease SKIP LOCKED`)
 		assert.Contains(t, queries[2], `DELETE FROM "`+leaseTable+`" WHERE ((job_id = 'sql' AND owner = 'a/1')) OR (held_until < now() - interval '1 hour')`)
 	})
 

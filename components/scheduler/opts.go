@@ -84,8 +84,9 @@ func WithClaimer(c Claimer) Option {
 // another. Set it on every instance, together with WithClaimer: the lease
 // stops two runs of a recurring job from overlapping, but without a Claimer a
 // boundary still runs on every instance that asks for the lease after the
-// run before it returned. Nil leaves the Scheduler as without this option:
-// ids exclude each other in this process only.
+// run before it returned. A Scheduler with a Leaser and no Claimer logs a
+// warning when the first recurring job is added. Nil leaves the Scheduler as
+// without this option: ids exclude each other in this process only.
 func WithLeaser(l Leaser) Option {
 	return func(s *Scheduler) {
 		s.leaser = l
