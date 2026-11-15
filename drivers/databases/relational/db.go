@@ -140,11 +140,16 @@ func (db *DB) lockCreate() func() {
 		return func() {}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), createLockWait)
+	deadline := time.Now().Add(createLockWait)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
 	unlock, err := db.lockAdvisory(ctx, createLockKey, createLockPoll, "Waiting for another instance to finish creating tables or extensions")
-	if err != nil && ctx.Err() != nil {
+	// The driver puts the context's deadline on the connection, so a try cut
+	// off by it can fail with an i/o timeout an instant before ctx.Err()
+	// says so: the deadline having passed is what tells a wait that ran out
+	// from a lock that could not be taken.
+	if err != nil && (ctx.Err() != nil || !time.Now().Before(deadline)) {
 		log.Warn().Dur("Waited", createLockWait).Msg("Did not get the create lock in time, creating tables or extensions without it")
 		return func() {}
 	}
