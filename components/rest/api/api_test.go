@@ -2626,3 +2626,331 @@ func TestSliceParamWithJSONDecoderIsRefused(t *testing.T) {
 	})
 	require.Equal(t, "api: GET /codes (codes.list): query parameter codes: type api_test.codeList is a slice with its own UnmarshalJSON, which a parameter's items would not go through (give it an UnmarshalText, or use a plain slice)", msg)
 }
+
+// unitRatio is a float with only a JSON decoder: the registry publishes and
+// validates it as a number, and the decoder rounds what it reads.
+type unitRatio float64
+
+func (r *unitRatio) UnmarshalJSON(data []byte) error {
+	var value float64
+	err := json.Unmarshal(data, &value)
+	if err != nil {
+		return ez.New(ez.EINVALID, "ratio is not a number", err)
+	}
+	*r = unitRatio(value)
+	return nil
+}
+
+type ownFloatBody struct {
+	requests.NoRules
+	R unitRatio `json:"r" required:"true" exclusiveMinimum:"0"`
+}
+
+type ownFloatQuery struct {
+	requests.NoRules
+	R unitRatio `json:"-" query:"r" required:"true" exclusiveMinimum:"0"`
+}
+
+type ownFloatPath struct {
+	requests.NoRules
+	R unitRatio `json:"-" path:"r" exclusiveMaximum:"1"`
+}
+
+type ownFloatForm struct {
+	requests.NoRules
+	R    *unitRatio            `json:"r" exclusiveMaximum:"1"`
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+type ownFloatItems struct {
+	requests.NoRules
+	R []unitRatio `json:"r" exclusiveMinimum:"0"`
+}
+
+// ownFloatInclusive bounds the float inclusively, which holds through the
+// rounding.
+type ownFloatInclusive struct {
+	requests.NoRules
+	R unitRatio `json:"r" required:"true" minimum:"0" maximum:"1"`
+}
+
+// numberExclusive bounds a json.Number exclusively, which keeps the
+// client's digits.
+type numberExclusive struct {
+	requests.NoRules
+	N json.Number `json:"n" required:"true" exclusiveMinimum:"0"`
+	Q json.Number `json:"-" query:"q" exclusiveMinimum:"0"`
+}
+
+// TestOwnFloatExclusiveBoundIsRefused: a float type with only an
+// UnmarshalJSON is published and validated as a number and decoded into a
+// float, which turns 1e-400 into 0, past exclusiveMinimum 0, so registration
+// refuses an exclusive bound on it as on a float64: in a body, a query or
+// path parameter, a form value and on items. An inclusive bound stays, and
+// a json.Number keeps its exclusive bound and the client's digits.
+func TestOwnFloatExclusiveBoundIsRefused(t *testing.T) {
+	handle := func(ctx context.Context, req requests.Body) (nodeResponse, error) {
+		return nodeResponse{OK: true}, nil
+	}
+	advice := "the schema checks the number as the client wrote it, and the float can round it onto the bound; use an inclusive bound, a json.Number field, or a check in Validate()"
+	cases := []struct {
+		register func(g *api.Group)
+		want     string
+	}{
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *ownFloatBody) (nodeResponse, error) { return handle(ctx, req) })
+		}, "api: POST /ratios (ratios.create): openapi: api_test.ownFloatBody.R: exclusiveMinimum is not supported on api_test.unitRatio in a request type: " + advice},
+		{func(g *api.Group) {
+			api.GET(g, "", "list", func(ctx context.Context, req *ownFloatQuery) (nodeResponse, error) { return handle(ctx, req) })
+		}, "api: GET /ratios (ratios.list): openapi: api_test.ownFloatQuery.R: exclusiveMinimum is not supported on api_test.unitRatio in a request type: " + advice},
+		{func(g *api.Group) {
+			api.GET(g, "/:r", "get", func(ctx context.Context, req *ownFloatPath) (nodeResponse, error) { return handle(ctx, req) })
+		}, "api: GET /ratios/:r (ratios.get): openapi: api_test.ownFloatPath.R: exclusiveMaximum is not supported on api_test.unitRatio in a request type: " + advice},
+		{func(g *api.Group) {
+			api.POST(g, "", "upload", func(ctx context.Context, req *ownFloatForm) (nodeResponse, error) { return handle(ctx, req) })
+		}, "api: POST /ratios (ratios.upload): openapi: api_test.ownFloatForm.R: exclusiveMaximum is not supported on *api_test.unitRatio in a request type: " + advice},
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *ownFloatItems) (nodeResponse, error) { return handle(ctx, req) })
+		}, "api: POST /ratios (ratios.create): openapi: api_test.ownFloatItems.R: exclusiveMinimum is not supported on []api_test.unitRatio in a request type: " + advice},
+	}
+	for _, c := range cases {
+		reg := api.New(newEcho(), api.Public())
+		msg := panicMessage(t, func() {
+			c.register(reg.Group("/ratios"))
+		})
+		require.Equal(t, c.want, msg)
+	}
+
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var ratio unitRatio
+	api.POST(reg.Group("/ratios"), "", "create", func(ctx context.Context, req *ownFloatInclusive) (nodeResponse, error) {
+		ratio = req.R
+		return nodeResponse{OK: true}, nil
+	})
+	var number *numberExclusive
+	api.POST(reg.Group("/numbers"), "", "create", func(ctx context.Context, req *numberExclusive) (nodeResponse, error) {
+		number = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/ratios", `{"r":1e-400}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, unitRatio(0), ratio)
+	rec = s.do(http.MethodPost, "/ratios", `{"r":-1e-400}`)
+	requireError(t, rec, http.StatusBadRequest, "r must be >= 0")
+
+	rec = s.do(http.MethodPost, "/numbers?q=1e-400", `{"n":1e-400}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number("1e-400"), number.N)
+	require.Equal(t, json.Number("1e-400"), number.Q)
+	rec = s.do(http.MethodPost, "/numbers?q=0", `{"n":0e-400}`)
+	resp := requireError(t, rec, http.StatusBadRequest, "query q must be > 0; n must be > 0")
+	require.Equal(t, "query q must be > 0; n must be > 0", resp.Error.Message)
+}
+
+// multipleOfRequest checks multipleOf on the numbers of the body and the
+// query, and leaves one number unchecked.
+type multipleOfRequest struct {
+	requests.NoRules
+	Num   json.Number `json:"num" multipleOf:"1000000000"`
+	Big   *big.Int    `json:"big" multipleOf:"1000000000"`
+	Value big.Int     `json:"value" multipleOf:"1000000000"`
+	Float float64     `json:"float" multipleOf:"1000000000"`
+	Free  json.Number `json:"free"`
+	Query json.Number `json:"-" query:"num" multipleOf:"1000000000"`
+}
+
+type multipleOfForm struct {
+	requests.NoRules
+	Num  json.Number           `json:"num" multipleOf:"1000000000"`
+	File *multipart.FileHeader `json:"-" form:"file"`
+}
+
+// TestMultipleOfPastTheExactDigits: a number of more than 64 significant
+// digits under multipleOf is refused as one that cannot be checked, in a
+// body, a query parameter and a form value, where from 74 significant digits
+// its first 64 digits and a 5 once passed multipleOf 10^9 whatever its
+// remaining digits. A number of at most 64 significant digits, trailing
+// zeros not counted, is checked exactly, and a number under no multipleOf
+// passes at any length.
+func TestMultipleOfPastTheExactDigits(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *multipleOfRequest
+	api.POST(reg.Group("/multiples"), "", "create", func(ctx context.Context, req *multipleOfRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	var form *multipleOfForm
+	api.POST(reg.Group("/forms"), "", "upload", func(ctx context.Context, req *multipleOfForm) (nodeResponse, error) {
+		form = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	sendForm := func(value string) *httptest.ResponseRecorder {
+		body, contentType := formBody(t, value)
+		return s.do(http.MethodPost, "/forms", body, echo.HeaderContentType, contentType)
+	}
+
+	digits64 := "1234567890123456789012345678901234567890123456789012345678901234"
+	multiple73 := digits64 + "000000000"
+	notMultiple73 := "1234567890123456789012345678901234567890123456789012345678901234567890123"
+	notMultiple76 := "1234567890123456789012345678901234567890123456789012345678901234567890123457"
+
+	for _, field := range []string{"num", "big", "value", "float"} {
+		rec := s.do(http.MethodPost, "/multiples", `{"`+field+`":`+multiple73+`}`)
+		require.Equal(t, http.StatusOK, rec.Code, field+": "+rec.Body.String())
+
+		rec = s.do(http.MethodPost, "/multiples", `{"`+field+`":`+digits64+`}`)
+		requireError(t, rec, http.StatusBadRequest, field+" must be a multiple of 1000000000")
+
+		for _, number := range []string{notMultiple73, notMultiple76} {
+			rec = s.do(http.MethodPost, "/multiples", `{"`+field+`":`+number+`}`)
+			resp := requireError(t, rec, http.StatusBadRequest, "")
+			require.Equal(t, field+" has too many digits to be checked as a multiple of 1000000000", resp.Error.Message)
+		}
+	}
+	rec := s.do(http.MethodPost, "/multiples", `{"num":`+multiple73+`,"big":`+multiple73+`}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number(multiple73), got.Num)
+	require.Equal(t, multiple73, got.Big.String())
+
+	rec = s.do(http.MethodPost, "/multiples", `{"free":`+notMultiple76+`}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number(notMultiple76), got.Free)
+
+	rec = s.do(http.MethodPost, "/multiples?num="+multiple73, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number(multiple73), got.Query)
+	rec = s.do(http.MethodPost, "/multiples?num="+digits64, "")
+	requireError(t, rec, http.StatusBadRequest, "query num must be a multiple of 1000000000")
+	rec = s.do(http.MethodPost, "/multiples?num="+notMultiple73, "")
+	requireError(t, rec, http.StatusBadRequest, "query num has too many digits to be checked as a multiple of 1000000000")
+
+	rec = sendForm(multiple73)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, json.Number(multiple73), form.Num)
+	rec = sendForm(digits64)
+	requireError(t, rec, http.StatusBadRequest, "num must be a multiple of 1000000000")
+	rec = sendForm(notMultiple76)
+	requireError(t, rec, http.StatusBadRequest, "num has too many digits to be checked as a multiple of 1000000000")
+}
+
+// multipleOfSiblings has numbers under multipleOf side by side.
+type multipleOfSiblings struct {
+	requests.NoRules
+	Small json.Number   `json:"small" multipleOf:"0.5"`
+	Opt   json.Number   `json:"opt" multipleOf:"1000000000"`
+	Items []json.Number `json:"items" multipleOf:"1000000000"`
+}
+
+// TestTooManyDigitsKeepsOtherFields: a number refused as too long to be
+// checked hides the multipleOf failure of no other field or item.
+func TestTooManyDigitsKeepsOtherFields(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	api.POST(reg.Group("/multiples"), "", "create", func(ctx context.Context, req *multipleOfSiblings) (nodeResponse, error) {
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	long := "1" + strings.Repeat("2", 64) + "000000001"
+
+	rec := s.do(http.MethodPost, "/multiples", `{"opt":`+long+`,"small":0.3}`)
+	resp := requireError(t, rec, http.StatusBadRequest, "")
+	require.Equal(t, "opt has too many digits to be checked as a multiple of 1000000000; small must be a multiple of 0.5", resp.Error.Message)
+
+	rec = s.do(http.MethodPost, "/multiples", `{"items":[`+long+`,1]}`)
+	resp = requireError(t, rec, http.StatusBadRequest, "")
+	require.Equal(t, "items.0 has too many digits to be checked as a multiple of 1000000000; items.1 must be a multiple of 1000000000", resp.Error.Message)
+}
+
+// formBody encodes a form with the value num.
+func formBody(t *testing.T, num string) (string, string) {
+	t.Helper()
+	return form(t, part{name: "num", value: num})
+}
+
+type unixTimeRequest struct {
+	requests.NoRules
+	At time.Time `json:"at,format:unix"`
+}
+
+type hexBytesRequest struct {
+	requests.NoRules
+	B []byte `json:"b,omitempty,format:hex"`
+}
+
+type secondsRequest struct {
+	requests.NoRules
+	D time.Duration `json:"d,format:sec"`
+}
+
+type unixTimeResponse struct {
+	At time.Time `json:"at,format:unix"`
+}
+
+// tagOptionsRequest keeps the format struct tag, which is the OpenAPI
+// format, and a json option encoding/json ignores on every toolchain.
+type tagOptionsRequest struct {
+	requests.NoRules
+	ID   string `json:"id,omitempty" format:"uuid"`
+	Note string `json:"note,foo"`
+	Bare string `json:"bare,format:"`
+}
+
+// TestJSONFormatOptionIsRefused: a json format: option, which encoding/json
+// ignores on Go 1.26 and on Go 1.27 refuses for every value of the struct,
+// so that every request was a 400 and every response a 500, fails
+// registration on a request type and a response type on every toolchain.
+// The format struct tag, other unknown json options and a format: with no
+// value, which encoding/json accepts on both, still register.
+func TestJSONFormatOptionIsRefused(t *testing.T) {
+	advice := "encoding/json reads it differently or not at all depending on the Go version (Go 1.26 ignores it, Go 1.27 refuses every value of the struct wherever it reads the struct's tags, also through a conversion in the type's own UnmarshalJSON or MarshalJSON); drop it, and give the field a type that reads and writes the form you want"
+	cases := []struct {
+		register func(g *api.Group)
+		want     string
+	}{
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *unixTimeRequest) (nodeResponse, error) { return nodeResponse{}, nil })
+		}, "api: POST /tags (tags.create): openapi: api_test.unixTimeRequest.At: the json option format:unix is not supported: " + advice},
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *hexBytesRequest) (nodeResponse, error) { return nodeResponse{}, nil })
+		}, "api: POST /tags (tags.create): openapi: api_test.hexBytesRequest.B: the json option format:hex is not supported: " + advice},
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *secondsRequest) (nodeResponse, error) { return nodeResponse{}, nil })
+		}, "api: POST /tags (tags.create): openapi: api_test.secondsRequest.D: the json option format:sec is not supported: " + advice},
+		{func(g *api.Group) {
+			api.POST(g, "", "create", func(ctx context.Context, req *whoRequest) (unixTimeResponse, error) { return unixTimeResponse{}, nil })
+		}, "api: POST /tags (tags.create): openapi: api_test.unixTimeResponse.At: the json option format:unix is not supported: " + advice},
+	}
+	for _, c := range cases {
+		reg := api.New(newEcho(), api.Public())
+		msg := panicMessage(t, func() {
+			c.register(reg.Group("/tags"))
+		})
+		require.Equal(t, c.want, msg)
+	}
+
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	var got *tagOptionsRequest
+	api.POST(reg.Group("/tags"), "", "create", func(ctx context.Context, req *tagOptionsRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodPost, "/tags", `{"id":"`+projectID.String()+`","note":"n","bare":"b"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, projectID.String(), got.ID)
+	require.Equal(t, "n", got.Note)
+	require.Equal(t, "b", got.Bare)
+	rec = s.do(http.MethodPost, "/tags", `{"id":"no"}`)
+	requireError(t, rec, http.StatusBadRequest, "id must be a valid uuid")
+}

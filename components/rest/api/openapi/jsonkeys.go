@@ -163,10 +163,12 @@ func lessIndex(a, b []int) bool {
 // undocumented. Any other difference would let a value the validator never
 // saw reach the handler, or send a key the document does not list. A
 // response field may not send a null its schema does not allow (see
-// sentNulls). Types encoding/json hands to their own decoder (request) or
-// encoder (response) are not looked into, unless a struct documented by its
-// fields gets that decoder or encoder from an embedded field (see
-// promotedCoder), which is an error.
+// sentNulls). A struct encoding/json refuses for the json tags of its
+// fields, whatever the value, is refused (see refusedTags), as every request
+// or response holding it would fail. Types encoding/json hands to their own
+// decoder (request) or encoder (response) are not looked into, unless a
+// struct documented by its fields gets that decoder or encoder from an
+// embedded field (see promotedCoder), which is an error.
 func (r *registry) checkKeys(t reflect.Type, request bool) error {
 	schemas := map[reflect.Type]string{}
 	for name, typ := range r.types {
@@ -214,6 +216,14 @@ func (r *registry) checkKeys(t reflect.Type, request bool) error {
 		}
 		if codesOwnJSON(t, request) {
 			return
+		}
+		// A response type that decodes itself is not asked (see
+		// refusedTags).
+		if !codesOwnJSON(t, true) {
+			refusal := refusedTags(t)
+			if refusal != "" {
+				problems = append(problems, fmt.Sprintf("%s: encoding/json refuses the json tags of this type, whatever the value: %s; change the tag it names", t, refusal))
+			}
 		}
 
 		hidden := map[string]bool{}

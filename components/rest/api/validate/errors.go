@@ -368,7 +368,7 @@ func (g *gathering) gather(n *jsonschema.ValidationError) {
 		}
 	}
 	if len(n.Causes) > 0 {
-		for _, cause := range n.Causes {
+		for _, cause := range causes(n) {
 			g.gather(cause)
 		}
 		return
@@ -414,7 +414,7 @@ func (g *gathering) atKey(n *jsonschema.ValidationError) {
 		}
 	}
 	if len(n.Causes) > 0 {
-		for _, cause := range n.Causes {
+		for _, cause := range causes(n) {
 			g.atKey(cause)
 		}
 		return
@@ -456,10 +456,42 @@ func appendLeaves(leaves []*jsonschema.ValidationError, verr *jsonschema.Validat
 	if len(verr.Causes) == 0 {
 		return append(leaves, verr)
 	}
-	for _, cause := range verr.Causes {
+	for _, cause := range causes(verr) {
 		leaves = appendLeaves(leaves, cause)
 	}
 	return leaves
+}
+
+// causes returns the causes of verr without the multipleOf failure of a
+// number that also failed tooManyDigits, a cause at the same location: the
+// multipleOf answer came from a text that does not hold the number's
+// remaining digits. A multipleOf failure at another location, of another
+// field or item, stays. The locations are looked up in a map, so an array of
+// many items of both kinds costs one pass.
+func causes(verr *jsonschema.ValidationError) []*jsonschema.ValidationError {
+	digits := map[string]bool{}
+	for _, cause := range verr.Causes {
+		_, ok := cause.ErrorKind.(*tooManyDigits)
+		if ok {
+			digits[locationKey(cause.InstanceLocation)] = true
+		}
+	}
+	if len(digits) == 0 {
+		return verr.Causes
+	}
+	return slices.DeleteFunc(slices.Clone(verr.Causes), func(cause *jsonschema.ValidationError) bool {
+		_, ok := cause.ErrorKind.(*kind.MultipleOf)
+		if !ok {
+			return false
+		}
+		return digits[locationKey(cause.InstanceLocation)]
+	})
+}
+
+// locationKey returns a map key for an instance location, a different key
+// for each location.
+func locationKey(location []string) string {
+	return fmt.Sprintf("%q", location)
 }
 
 func message(errKind jsonschema.ErrorKind) string {
@@ -484,6 +516,8 @@ func message(errKind jsonschema.ErrorKind) string {
 		return "must be < " + ratString(k.Want)
 	case *kind.MultipleOf:
 		return "must be a multiple of " + ratString(k.Want)
+	case *tooManyDigits:
+		return "has too many digits to be checked as a multiple of " + ratString(k.Want)
 	case *kind.MinLength:
 		return "must be at least " + counted(k.Want, "character", "characters")
 	case *kind.MaxLength:

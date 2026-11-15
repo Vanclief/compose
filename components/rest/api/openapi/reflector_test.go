@@ -528,10 +528,77 @@ type exclusiveFloatItems struct {
 	Weights types.Optional[[]float64] `json:"weights" exclusiveMinimum:"0"`
 }
 
+// ownRatio is a float with only a JSON decoder: published and validated as a
+// number, and rounded by the decoder.
+type ownRatio float64
+
+func (r *ownRatio) UnmarshalJSON(data []byte) error {
+	var value float64
+	err := json.Unmarshal(data, &value)
+	if err != nil {
+		return ez.New(ez.EINVALID, "ratio is not a number", err)
+	}
+	*r = ownRatio(value)
+	return nil
+}
+
+type exclusiveOwnFloat struct {
+	Rate ownRatio `json:"rate" exclusiveMinimum:"0"`
+}
+
+type exclusiveOwnFloatParam struct {
+	Max *ownRatio `json:"-" query:"max" exclusiveMaximum:"1"`
+}
+
+type exclusiveOwnFloatItems struct {
+	Weights []ownRatio `json:"weights" exclusiveMinimum:"0"`
+}
+
+// ownRatios decodes the whole list itself, but is published as an array of
+// numbers, its items carrying the bound.
+type ownRatios []float64
+
+func (r *ownRatios) UnmarshalJSON(data []byte) error {
+	var items []float64
+	err := json.Unmarshal(data, &items)
+	if err != nil {
+		return ez.New(ez.EINVALID, "ratios are not a list of numbers", err)
+	}
+	*r = items
+	return nil
+}
+
+type exclusiveOwnFloatList struct {
+	Weights ownRatios `json:"weights" exclusiveMaximum:"1"`
+}
+
+type exclusiveOptionalFloatItems struct {
+	Weights []types.Optional[float64] `json:"weights" exclusiveMinimum:"0"`
+}
+
+type formatOptionRequest struct {
+	At time.Time `json:"at,format:unix"`
+}
+
+type formatOptionBytes struct {
+	B []byte `json:"b,omitempty,format:hex"`
+}
+
+// formatOptionEmbedded holds the option on a field of an embedded struct.
+type formatOptionEmbedded struct {
+	formatOptionDuration
+	Name string `json:"name"`
+}
+
+type formatOptionDuration struct {
+	D time.Duration `json:"d,format:sec"`
+}
+
 // floatBoundsAllowed carries the bounds that hold through a float's
 // rounding, and exclusive bounds where nothing is rounded.
 type floatBoundsAllowed struct {
 	Rate   float64     `json:"rate" minimum:"0" maximum:"1"`
+	Own    ownRatio    `json:"own" minimum:"0" maximum:"1"`
 	Amount json.Number `json:"amount" exclusiveMinimum:"0"`
 	Count  int         `json:"count" exclusiveMinimum:"0" exclusiveMaximum:"10"`
 }
@@ -888,6 +955,15 @@ func TestErrors(t *testing.T) {
 		{"exclusive bound on a float", reflect.TypeFor[exclusiveFloat](), true, `openapi.exclusiveFloat.Rate: exclusiveMinimum is not supported on float64 in a request type: the schema checks the number as the client wrote it, and the float can round it onto the bound; use an inclusive bound, a json.Number field, or a check in Validate()`},
 		{"exclusive bound on a float parameter", reflect.TypeFor[exclusiveFloatParam](), true, `openapi.exclusiveFloatParam.Max: exclusiveMaximum is not supported on *float32 in a request type`},
 		{"exclusive bound on float items", reflect.TypeFor[exclusiveFloatItems](), true, `openapi.exclusiveFloatItems.Weights: exclusiveMinimum is not supported on types.Optional[[]float64] in a request type`},
+		{"exclusive bound on a float with a JSON decoder", reflect.TypeFor[exclusiveOwnFloat](), true, `openapi.exclusiveOwnFloat.Rate: exclusiveMinimum is not supported on openapi.ownRatio in a request type: the schema checks the number as the client wrote it, and the float can round it onto the bound; use an inclusive bound, a json.Number field, or a check in Validate()`},
+		{"exclusive bound on a float parameter with a JSON decoder", reflect.TypeFor[exclusiveOwnFloatParam](), true, `openapi.exclusiveOwnFloatParam.Max: exclusiveMaximum is not supported on *openapi.ownRatio in a request type`},
+		{"exclusive bound on float items with a JSON decoder", reflect.TypeFor[exclusiveOwnFloatItems](), true, `openapi.exclusiveOwnFloatItems.Weights: exclusiveMinimum is not supported on []openapi.ownRatio in a request type`},
+		{"exclusive bound on a float list with a JSON decoder", reflect.TypeFor[exclusiveOwnFloatList](), true, `openapi.exclusiveOwnFloatList.Weights: exclusiveMaximum is not supported on openapi.ownRatios in a request type`},
+		{"exclusive bound on optional float items", reflect.TypeFor[exclusiveOptionalFloatItems](), true, `openapi.exclusiveOptionalFloatItems.Weights: exclusiveMinimum is not supported on []types.Optional[float64] in a request type`},
+		{"json format option in a request", reflect.TypeFor[formatOptionRequest](), true, `openapi.formatOptionRequest.At: the json option format:unix is not supported: encoding/json reads it differently or not at all depending on the Go version (Go 1.26 ignores it, Go 1.27 refuses every value of the struct wherever it reads the struct's tags, also through a conversion in the type's own UnmarshalJSON or MarshalJSON); drop it, and give the field a type that reads and writes the form you want`},
+		{"json format option in a response", reflect.TypeFor[formatOptionRequest](), false, `openapi.formatOptionRequest.At: the json option format:unix is not supported`},
+		{"json format option after another", reflect.TypeFor[formatOptionBytes](), true, `openapi.formatOptionBytes.B: the json option format:hex is not supported`},
+		{"json format option in an embedded struct", reflect.TypeFor[formatOptionEmbedded](), false, `openapi.formatOptionDuration.D: the json option format:sec is not supported`},
 		{"nullable blank field in a request", reflect.TypeFor[nullableBlankHolder](), true, `openapi.nullableBlank: a nullable tag on the blank field is not supported in a request type: null would pass for the whole struct and leave its zero value unchecked; use a pointer field`},
 		{"default on a parameter of an unexported embedded struct", reflect.TypeFor[unexportedEmbedParams](), true, `openapi.paging.Limit: the default tag is not supported on a request type`},
 		{"unknown tag on a parameter of an unexported embedded struct", reflect.TypeFor[unexportedEmbedParams](), true, `openapi.paging.Limit: unknown struct tag "minimun"`},
@@ -1187,7 +1263,7 @@ func TestFloatBoundsAllowed(t *testing.T) {
 	r := NewReflector()
 	_, err := r.AddRequest(reflect.TypeFor[floatBoundsAllowed]())
 	require.NoError(t, err)
-	for _, typ := range []reflect.Type{reflect.TypeFor[exclusiveFloat](), reflect.TypeFor[exclusiveFloatItems]()} {
+	for _, typ := range []reflect.Type{reflect.TypeFor[exclusiveFloat](), reflect.TypeFor[exclusiveFloatItems](), reflect.TypeFor[exclusiveOwnFloat](), reflect.TypeFor[exclusiveOwnFloatList]()} {
 		err = r.AddResponse(typ)
 		require.NoError(t, err, typ.String())
 	}

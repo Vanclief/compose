@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"reflect"
@@ -781,5 +782,190 @@ func TestTagNamesSkippedWhereKeysAre(t *testing.T) {
 	_, err = NewReflector().AddRequest(reflect.TypeFor[tnHolder]())
 	require.NoError(t, err)
 	err = NewReflector().AddResponse(reflect.TypeFor[tnHidden]())
+	require.NoError(t, err)
+}
+
+// probeFormat has a json format: option, which encoding/json on Go 1.27
+// refuses for every value of the struct and Go 1.26 ignores.
+type probeFormat struct {
+	At time.Time `json:"at,format:unix"`
+}
+
+// probeTrap panics in every method encoding/json could call on it.
+type probeTrap struct {
+	V int `json:"v"`
+}
+
+func (probeTrap) MarshalJSON() ([]byte, error) {
+	panic("MarshalJSON called")
+}
+
+func (*probeTrap) UnmarshalJSON([]byte) error {
+	panic("UnmarshalJSON called")
+}
+
+// ProbeEmbedded is embedded by probeShapes with an option encoding/json
+// takes on every toolchain.
+type ProbeEmbedded struct {
+	E int `json:"e,omitempty"`
+}
+
+// probeShapes holds what the probe must not trip on: a field type whose
+// methods panic, an unexported field, an embedded struct, a
+// recursive pointer, an interface and an unknown option.
+type probeShapes struct {
+	ProbeEmbedded
+	Trap     probeTrap    `json:"trap"`
+	Traps    []*probeTrap `json:"traps"`
+	hidden   int
+	Next     *probeShapes `json:"next"`
+	Any      any          `json:"any"`
+	Unknown  int          `json:"unknown,foo"`
+	Stringer fmt.Stringer `json:"-"`
+}
+
+// TestRefusedTags: the probe asks encoding/json whether it refuses a struct
+// for its json tags, which Go 1.27 does for a format: option and Go 1.26
+// does not, and calls no method of a field's type.
+func TestRefusedTags(t *testing.T) {
+	_ = probeShapes{hidden: 1}.hidden
+	require.Empty(t, refusedTags(reflect.TypeFor[probeShapes]()))
+	require.Empty(t, refusedTags(reflect.TypeFor[ProbeEmbedded]()))
+
+	_, err := json.Marshal(probeFormat{})
+	refusal := refusedTags(reflect.TypeFor[probeFormat]())
+	if err == nil {
+		require.Empty(t, refusal)
+		return
+	}
+	require.Contains(t, refusal, "Go struct field At has unsupported `format` tag option")
+	require.Equal(t, refusal, refusedTags(reflect.TypeFor[probeFormat]()))
+}
+
+// TestCheckKeysAsksEncodingJSON: the key check refuses a struct
+// encoding/json refuses for its json tags, in a request and in a response,
+// where the toolchain refuses it. The lint refuses a format: option before
+// the key check runs; it is skipped here to reach the probe.
+func TestCheckKeysAsksEncodingJSON(t *testing.T) {
+	_, err := json.Marshal(probeFormat{})
+	refuses := err != nil
+	for _, request := range []bool{true, false} {
+		r := NewReflector()
+		r.reg.Schema(reflect.TypeFor[probeFormat](), true, "Probe")
+		err = r.reg.checkKeys(reflect.TypeFor[probeFormat](), request)
+		if !refuses {
+			require.NoError(t, err)
+			continue
+		}
+		require.Error(t, err)
+		require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+		require.Equal(t, "openapi: openapi.probeFormat: encoding/json refuses the json tags of this type, whatever the value: "+refusedTags(reflect.TypeFor[probeFormat]())+"; change the tag it names", ez.ErrorMessage(err))
+	}
+}
+
+// ownFormatIn decodes itself the usual way, through a conversion to a type
+// of the same fields, which reads their tags, the format: option among them.
+type ownFormatIn struct {
+	At time.Time `json:"at,format:unix"`
+}
+
+func (in *ownFormatIn) UnmarshalJSON(data []byte) error {
+	type plain ownFormatIn
+	err := json.Unmarshal(data, (*plain)(in))
+	if err != nil {
+		return ez.New(ez.EINVALID, "ownFormatIn could not be decoded", err)
+	}
+	return nil
+}
+
+type ownFormatRequest struct {
+	In ownFormatIn `json:"in"`
+}
+
+// ownFormatOut encodes itself the usual way, through a conversion to a type
+// of the same fields, which reads their tags.
+type ownFormatOut struct {
+	At time.Time `json:"at,format:unix"`
+}
+
+func (out ownFormatOut) MarshalJSON() ([]byte, error) {
+	type plain ownFormatOut
+	data, err := json.Marshal(plain(out))
+	if err != nil {
+		return nil, ez.New(ez.EINTERNAL, "ownFormatOut could not be encoded", err)
+	}
+	return data, nil
+}
+
+type ownFormatResponse struct {
+	Out ownFormatOut `json:"out"`
+}
+
+// ownFormatSeconds holds the option on a struct embedded in ownFormatOwn.
+type ownFormatSeconds struct {
+	D time.Duration `json:"d,format:sec"`
+}
+
+// ownFormatOwn decodes and encodes itself without reading its tags.
+type ownFormatOwn struct {
+	ownFormatSeconds
+}
+
+func (*ownFormatOwn) UnmarshalJSON([]byte) error {
+	return nil
+}
+
+func (ownFormatOwn) MarshalJSON() ([]byte, error) {
+	return []byte(`{}`), nil
+}
+
+type ownFormatHolder struct {
+	Own ownFormatOwn `json:"own"`
+}
+
+// TestFormatOptionRefusedOnOwnCodedStructs: a format: option is refused on
+// a field of a struct that decodes itself (request) or encodes itself
+// (response) and on a struct embedded in one, as such a method may read the
+// tags through a conversion of the type, as ownFormatIn and ownFormatOut do,
+// which the toolchain that refuses the option then refuses for every value.
+func TestFormatOptionRefusedOnOwnCodedStructs(t *testing.T) {
+	_, err := json.Marshal(probeFormat{})
+	refuses := err != nil
+	var request ownFormatRequest
+	err = json.Unmarshal([]byte(`{"in":{}}`), &request)
+	require.Equal(t, refuses, err != nil, err)
+	_, err = json.Marshal(ownFormatResponse{})
+	require.Equal(t, refuses, err != nil, err)
+
+	_, err = NewReflector().AddRequest(reflect.TypeFor[ownFormatRequest]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), "openapi.ownFormatIn.At: the json option format:unix is not supported")
+	err = NewReflector().AddResponse(reflect.TypeFor[ownFormatResponse]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), "openapi.ownFormatOut.At: the json option format:unix is not supported")
+
+	_, err = NewReflector().AddRequest(reflect.TypeFor[ownFormatHolder]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), "openapi.ownFormatSeconds.D: the json option format:sec is not supported")
+	err = NewReflector().AddResponse(reflect.TypeFor[ownFormatHolder]())
+	require.Error(t, err)
+	require.Contains(t, ez.ErrorMessage(err), "openapi.ownFormatSeconds.D: the json option format:sec is not supported")
+}
+
+// failingDecoder is a response type with a decoder that always fails and
+// no encoder: encoding/json writes it by its fields, and the key check does
+// not ask it to decode {}, which would run that decoder.
+type failingDecoder struct {
+	V int `json:"v"`
+}
+
+func (*failingDecoder) UnmarshalJSON([]byte) error {
+	return ez.Root(ez.EINVALID, "failingDecoder decodes nothing")
+}
+
+// TestResponseDecoderNotRun: a response type's own decoder is not run at
+// registration, so its failure does not refuse the type.
+func TestResponseDecoderNotRun(t *testing.T) {
+	err := NewReflector().AddResponse(reflect.TypeFor[failingDecoder]())
 	require.NoError(t, err)
 }
