@@ -44,7 +44,8 @@ type Change struct {
 	// "GET /issues/{id} › response 200 › created_at" or "Issue › status".
 	Path string
 	// Detail says what changed: "property removed", "type changed from
-	// string to integer", "model Issue changed".
+	// string to integer", "model Issue changed", "security changed from
+	// oauth (read) to oauth (read, write)".
 	Detail string
 	// Breaking is set for changes that can break existing clients.
 	Breaking bool
@@ -331,6 +332,12 @@ type differ struct {
 	// unfolded holds the folded unions given back their one variant, see
 	// unfold.
 	unfolded map[unfoldKey]*Schema
+	// security holds the security change of each pair of requirement lists
+	// compared, see walk.security.
+	security map[securityPair]securityChange
+	// securityLists holds each requirement list as it is compared, see
+	// securityList.
+	securityLists map[securityListKey]*securityList
 }
 
 // modelUse is a model and how it is referred to under nots, see refUse.
@@ -722,6 +729,39 @@ func (p *diffPath) String() string {
 // deepObject, which writes a parameter one way, or states only types that
 // its style writes the same either way: any but an array or an object, and
 // an array too in style simple.
+//
+// An operation's security, the document's where the operation sets none,
+// is compared as a set of alternatives, each a set of schemes with a set of
+// scopes each, so alternatives, schemes or scopes in another order, an
+// alternative or a scope repeated, and an empty list against one empty
+// alternative, both of which require nothing, are no change. A change, read
+// security changed from X to Y with the scopes in parentheses after their
+// scheme, breaks a request unless every base alternative is still enough in
+// the head: some head alternative names only schemes the base one names,
+// each with only scopes it has there. So a requirement added where there was
+// none, a scheme required beside another, an alternative removed, a scheme
+// replaced, an empty alternative removed and a scope added break, and a
+// requirement dropped, an empty alternative or another alternative added,
+// a scheme no longer required beside another and a scope dropped do not.
+// A scheme is known by its name, so one given another name with the
+// definition it had reads as replaced. Two lists that accept the same
+// clients but are not the same sets, as k against k or k + o, whose second
+// alternative adds nothing, read security changed and break nothing, and
+// two lists whose alternatives take more than 65,536 pairs to compare are
+// not compared to the end and read as breaking. Where both sides of an
+// operation's security name a scheme that both documents define with a
+// type, the operation also reports, under security scheme N, a change of
+// what a client sends: a type changed, alone, as the other fields then
+// mean other things; of an apiKey its in or its name, compared regardless
+// of case where both are in a header; and of an http scheme its scheme,
+// regardless of case; each breaking a request, also where another head
+// alternative would still let the client in. A bearerFormat changed breaks
+// nothing. An operation lists the first 16 changed schemes by name and
+// counts the others in one line, N more security schemes changed, breaking
+// when one of them is. A description, the flows of an oauth2 scheme, their
+// URLs and scopes, the openIdConnectUrl of an openIdConnect scheme and a
+// scheme written as a $ref are not compared; Parse reads neither the flows,
+// the URL nor the fields behind the $ref.
 // Everything else is a non-breaking change.
 func Diff(base, head *Document) *Report {
 	if base == nil {
@@ -731,18 +771,20 @@ func Diff(base, head *Document) *Report {
 		head = &Document{}
 	}
 	d := &differ{
-		base:      base,
-		head:      head,
-		marks:     newDiffMarks(),
-		models:    map[string]*modelState{},
-		flat:      map[flatKey]*Schema{},
-		keys:      map[*Schema]string{},
-		breakSets: map[diffCtx]map[modelUse]bool{},
-		scc:       map[string]int{},
-		sccIndex:  map[string]int{},
-		sccLow:    map[string]int{},
-		texts:     map[modelUse]useText{},
-		unfolded:  map[unfoldKey]*Schema{},
+		base:          base,
+		head:          head,
+		marks:         newDiffMarks(),
+		models:        map[string]*modelState{},
+		flat:          map[flatKey]*Schema{},
+		keys:          map[*Schema]string{},
+		breakSets:     map[diffCtx]map[modelUse]bool{},
+		scc:           map[string]int{},
+		sccIndex:      map[string]int{},
+		sccLow:        map[string]int{},
+		texts:         map[modelUse]useText{},
+		unfolded:      map[unfoldKey]*Schema{},
+		security:      map[securityPair]securityChange{},
+		securityLists: map[securityListKey]*securityList{},
 	}
 	r := &Report{ops: map[string]*OperationDiff{}, models: map[string]*ModelDiff{}, marks: d.marks}
 
@@ -1249,11 +1291,9 @@ func (w *walk) operation(bref, href OperationRef, key string) {
 		}
 		w.add(Changed, root, detail, false, false)
 	}
-	bsec := securityKey(w.d.base.OperationSecurity(bop))
-	hsec := securityKey(w.d.head.OperationSecurity(hop))
-	if bsec != hsec {
-		w.add(Changed, root, "security changed from "+securityText(w.d.base.OperationSecurity(bop))+" to "+securityText(w.d.head.OperationSecurity(hop)), false, false)
-	}
+	bsec := w.d.base.OperationSecurity(bop)
+	hsec := w.d.head.OperationSecurity(hop)
+	w.security(bsec, hsec, root)
 
 	w.parameters(bref, href, root)
 	w.requestBody(w.d.base.RequestBody(bop.RequestBody), w.d.head.RequestBody(hop.RequestBody), root)
@@ -1332,24 +1372,343 @@ func (w *walk) headers(bh, hh Ordered[*Header], path *diffPath) {
 	}
 }
 
+// maxSchemeChanges is how many changed security schemes an operation
+// lists one by one. The others are counted in one line, so what a report
+// holds for an operation does not grow with the schemes it names.
+const maxSchemeChanges = 16
+
+// security compares the security requirements of an operation, b in the
+// base and h in the head, as sets of alternatives, and the definitions of
+// the schemes both name, see Diff. The comparison of the lists and of the
+// definitions is kept per pair of lists, so the operations that inherit
+// the document's security compare it once, and what a list is compared by
+// is kept per list, so a long list that many operations compare with
+// lists of their own is read once.
+func (w *walk) security(b, h []map[string][]string, root *diffPath) {
+	pair := securityPair{b: w.d.securityList(b), h: w.d.securityList(h)}
+	sc, ok := w.d.security[pair]
+	if !ok {
+		sc = compareSecurity(pair.b, pair.h)
+		w.d.schemeChanges(&sc)
+		w.d.security[pair] = sc
+	}
+	if sc.detail != "" {
+		w.add(Changed, root, sc.detail, sc.breaking, false)
+	}
+	for _, c := range sc.definitions {
+		w.add(Changed, extend(root, "security scheme "+c.scheme), c.detail, c.breaking, false)
+	}
+	if sc.more == 1 {
+		w.add(Changed, root, "1 more security scheme changed", sc.moreBreaking, false)
+	}
+	if sc.more > 1 {
+		w.add(Changed, root, strconv.Itoa(sc.more)+" more security schemes changed", sc.moreBreaking, false)
+	}
+}
+
+// schemeChanges fills sc with the changes of the definitions of the
+// schemes both lists name: those of the first maxSchemeChanges changed
+// schemes by name, and the others as a count, breaking when one of them
+// is.
+func (d *differ) schemeChanges(sc *securityChange) {
+	listed := 0
+	for _, name := range sc.schemes {
+		bs, _ := d.base.Components.SecuritySchemes.Get(name)
+		hs, _ := d.head.Components.SecuritySchemes.Get(name)
+		if bs == nil || hs == nil {
+			continue
+		}
+		changes := securitySchemeChanges(name, bs, hs)
+		if len(changes) == 0 {
+			continue
+		}
+		if listed < maxSchemeChanges {
+			listed++
+			sc.definitions = append(sc.definitions, changes...)
+			continue
+		}
+		sc.more++
+		for _, c := range changes {
+			sc.moreBreaking = sc.moreBreaking || c.breaking
+		}
+	}
+}
+
+// securityPair is a base and a head security requirement list.
+type securityPair struct {
+	b, h *securityList
+}
+
+// securityListKey is a security requirement list by its first element and
+// length, which tell a list of the documents apart.
+type securityListKey struct {
+	first *map[string][]string
+	n     int
+}
+
+// securityList is what a security requirement list is compared by: its
+// alternatives, their keys, the names of its schemes and its text.
+type securityList struct {
+	alts  []alternative
+	keys  map[string]bool
+	names map[string]bool
+	text  string
+}
+
+// securityList returns the securityList of reqs, the same one for the
+// same list of a document.
+func (d *differ) securityList(reqs []map[string][]string) *securityList {
+	key := securityListKey{first: firstRequirement(reqs), n: len(reqs)}
+	l, ok := d.securityLists[key]
+	if ok {
+		return l
+	}
+	l = &securityList{alts: alternatives(reqs), keys: map[string]bool{}, names: map[string]bool{}, text: securityText(reqs)}
+	for _, alt := range l.alts {
+		l.keys[alt.key] = true
+		for name := range alt.schemes {
+			l.names[name] = true
+		}
+	}
+	d.securityLists[key] = l
+	return l
+}
+
+// securityChange is the change between the lists of a securityPair, an
+// empty detail when they require the same, the sorted names of the schemes
+// both lists name, and the changes of their definitions: those listed one
+// by one, and how many more schemes changed and whether one of them breaks.
+// A scheme only one list names is part of the change of the lists.
+type securityChange struct {
+	detail       string
+	breaking     bool
+	schemes      []string
+	definitions  []schemeChange
+	more         int
+	moreBreaking bool
+}
+
+// schemeChange is one changed field of the definition of a security
+// scheme.
+type schemeChange struct {
+	scheme   string
+	detail   string
+	breaking bool
+}
+
+func firstRequirement(reqs []map[string][]string) *map[string][]string {
+	if len(reqs) == 0 {
+		return nil
+	}
+	return &reqs[0]
+}
+
+func compareSecurity(b, h *securityList) securityChange {
+	var sc securityChange
+	same := len(b.alts) == len(h.alts)
+	for i := 0; same && i < len(b.alts); i++ {
+		same = b.alts[i].key == h.alts[i].key
+	}
+	if !same {
+		sc.detail = "security changed from " + b.text + " to " + h.text
+		sc.breaking = !covers(h, b)
+	}
+
+	// The schemes both lists name, from the list that names fewer.
+	fewer, other := b.names, h.names
+	if len(other) < len(fewer) {
+		fewer, other = other, fewer
+	}
+	for name := range fewer {
+		if other[name] {
+			sc.schemes = append(sc.schemes, name)
+		}
+	}
+	slices.Sort(sc.schemes)
+	return sc
+}
+
+// alternative is one alternative of a security requirement list: the
+// schemes a client sends together, each with the set of scopes it needs.
+// key writes it out with names and scopes sorted, so two alternatives that
+// require the same are equal by key.
+type alternative struct {
+	key     string
+	schemes map[string]map[string]bool
+}
+
+// alternatives returns the alternatives of reqs sorted by key, without
+// duplicates. An empty list requires nothing, as one empty alternative
+// does, so it is returned as one.
+func alternatives(reqs []map[string][]string) []alternative {
+	if len(reqs) == 0 {
+		reqs = []map[string][]string{{}}
+	}
+	seen := map[string]bool{}
+	var out []alternative
+	for _, req := range reqs {
+		alt := alternative{schemes: map[string]map[string]bool{}}
+		var sb strings.Builder
+		for _, name := range slices.Sorted(maps.Keys(req)) {
+			scopes := map[string]bool{}
+			for _, scope := range req[name] {
+				scopes[scope] = true
+			}
+			alt.schemes[name] = scopes
+			sb.WriteString(strconv.Quote(name))
+			for _, scope := range slices.Sorted(maps.Keys(scopes)) {
+				sb.WriteString(" " + strconv.Quote(scope))
+			}
+			sb.WriteString("\n")
+		}
+		alt.key = sb.String()
+		if seen[alt.key] {
+			continue
+		}
+		seen[alt.key] = true
+		out = append(out, alt)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].key < out[j].key
+	})
+	return out
+}
+
+// maxSecurityChecks is how many pairs of a base and a head alternative
+// covers compares for one pair of lists. It keeps the comparison linear in
+// the size of the documents, and is past what a written list needs: two
+// lists of 256 alternatives each stay within it.
+const maxSecurityChecks = 1 << 16
+
+// covers reports whether every base alternative is still enough in the
+// head: some head alternative requires no scheme the base one does not,
+// and of each of its schemes no scope the base one does not. Each base
+// alternative not in the head as it is scans the head alternatives, and
+// past maxSecurityChecks pairs covers gives up and reports false, so two
+// lists too long to compare read as breaking.
+func covers(head, base *securityList) bool {
+	checks := 0
+	for _, a := range base.alts {
+		if head.keys[a.key] {
+			continue
+		}
+		enough := false
+		for _, h := range head.alts {
+			checks++
+			if checks > maxSecurityChecks {
+				return false
+			}
+			if h.within(a) {
+				enough = true
+				break
+			}
+		}
+		if !enough {
+			return false
+		}
+	}
+	return true
+}
+
+// within reports whether a client that meets a meets h: every scheme of h
+// is one of a, with no scope a does not have.
+func (h alternative) within(a alternative) bool {
+	if len(h.schemes) > len(a.schemes) {
+		return false
+	}
+	for name, scopes := range h.schemes {
+		have, ok := a.schemes[name]
+		if !ok || len(scopes) > len(have) {
+			return false
+		}
+		for scope := range scopes {
+			if !have[scope] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// securityText writes a security requirement list for a change: none for
+// an empty list, its alternatives joined by or as written, each its scheme
+// names sorted and joined by +, a scheme's scopes sorted in parentheses
+// after it, as oauth (read, write), and optional for an empty one.
 func securityText(reqs []map[string][]string) string {
 	if len(reqs) == 0 {
 		return "none"
 	}
 	var sets []string
 	for _, req := range reqs {
-		names := make([]string, 0, len(req))
-		for name := range req {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		if len(names) == 0 {
+		if len(req) == 0 {
 			sets = append(sets, "optional")
 			continue
+		}
+		var names []string
+		for _, name := range slices.Sorted(maps.Keys(req)) {
+			scopes := slices.Compact(slices.Sorted(slices.Values(req[name])))
+			if len(scopes) > 0 {
+				name += " (" + strings.Join(scopes, ", ") + ")"
+			}
+			names = append(names, name)
 		}
 		sets = append(sets, strings.Join(names, " + "))
 	}
 	return strings.Join(sets, " or ")
+}
+
+// securitySchemeChanges compares what a client sends for the security
+// scheme name, b in the base and h in the head. A changed type is reported
+// alone, as the other fields then mean other things. A scheme without a
+// type on either side is not compared: Parse reads one written as a $ref
+// without its fields, so there is nothing to tell a change from.
+func securitySchemeChanges(name string, b, h *SecurityScheme) []schemeChange {
+	if b.Type == "" || h.Type == "" {
+		return nil
+	}
+	var out []schemeChange
+	field := func(field, bv, hv string, breaking bool) {
+		detail := schemeField(field, bv, hv)
+		if detail != "" {
+			out = append(out, schemeChange{scheme: name, detail: detail, breaking: breaking})
+		}
+	}
+	if !strings.EqualFold(b.Type, h.Type) {
+		field("type", b.Type, h.Type, true)
+		return out
+	}
+	switch strings.ToLower(h.Type) {
+	case "apikey":
+		field("in", b.In, h.In, true)
+		// HTTP header names are case-insensitive; query and cookie names
+		// are not.
+		header := b.In == "header" && h.In == "header"
+		if !header || !strings.EqualFold(b.Name, h.Name) {
+			field("name", b.Name, h.Name, true)
+		}
+	case "http":
+		// The scheme is an HTTP authentication scheme, case-insensitive.
+		if !strings.EqualFold(b.Scheme, h.Scheme) {
+			field("scheme", b.Scheme, h.Scheme, true)
+		}
+		field("bearerFormat", b.BearerFormat, h.BearerFormat, false)
+	}
+	return out
+}
+
+// schemeField is the detail of a changed field of a security scheme, ""
+// when unset on a side, and no detail when it did not change.
+func schemeField(name, b, h string) string {
+	switch {
+	case b == h:
+		return ""
+	case b == "":
+		return name + " added: " + clip(h)
+	case h == "":
+		return name + " removed (was " + clip(b) + ")"
+	default:
+		return name + " changed from " + clip(b) + " to " + clip(h)
+	}
 }
 
 func (w *walk) parameters(bref, href OperationRef, root *diffPath) {
