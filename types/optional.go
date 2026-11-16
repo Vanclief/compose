@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 
 	"github.com/vanclief/ez"
@@ -52,8 +53,10 @@ func (o Optional[T]) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON records the key as present: null sets Null, anything else
 // decodes into Value. encoding/json only calls it for keys in the body, so
-// an absent key leaves Set false. A decode error is EINVALID, like the other
-// types in this package.
+// an absent key leaves Set false. An ez error from T's own decoder is
+// returned as T's decoder wrote it, its code, message and data kept, so the
+// field answers as T alone would. Any other decode error is EINVALID, like
+// the other types in this package.
 func (o *Optional[T]) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" {
 		*o = Optional[T]{Set: true, Null: true}
@@ -63,6 +66,11 @@ func (o *Optional[T]) UnmarshalJSON(b []byte) error {
 	var v T
 	err := json.Unmarshal(b, &v)
 	if err != nil {
+		var ezErr *ez.Error
+		isEZ := errors.As(err, &ezErr)
+		if isEZ {
+			return ez.Wrap(ezErr)
+		}
 		return ez.New(ez.EINVALID, "invalid JSON for the optional value", err)
 	}
 

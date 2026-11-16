@@ -60,7 +60,45 @@ func TestOptionalUnmarshalError(t *testing.T) {
 	err := json.Unmarshal([]byte(`"five"`), &o)
 
 	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Equal(t, "invalid JSON for the optional value", ez.ErrorMessage(err))
 	require.Equal(t, Some(5), o)
+}
+
+// refusingValue refuses every value with the ez error its text names.
+type refusingValue string
+
+func (r *refusingValue) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"missing"`:
+		return ez.New(ez.ENOTFOUND, "missing is not a known value", nil)
+	case `"internal"`:
+		return ez.New(ez.EINTERNAL, "lookup table missing", nil)
+	}
+	return ez.New(ez.EINVALID, string(data)+" is not a valid value", nil).AddData("value", string(data))
+}
+
+// An ez error from T's decoder keeps its code, message and data.
+func TestOptionalUnmarshalKeepsInnerEZError(t *testing.T) {
+	testCases := []struct {
+		input   string
+		code    string
+		message string
+	}{
+		{`"+5212"`, ez.EINVALID, `"+5212" is not a valid value`},
+		{`"missing"`, ez.ENOTFOUND, "missing is not a known value"},
+		{`"internal"`, ez.EINTERNAL, "lookup table missing"},
+	}
+	for _, tc := range testCases {
+		var o Optional[refusingValue]
+		err := json.Unmarshal([]byte(tc.input), &o)
+		require.Equal(t, tc.code, ez.ErrorCode(err), tc.input)
+		require.Equal(t, tc.message, ez.ErrorMessage(err), tc.input)
+		require.False(t, o.Set, tc.input)
+	}
+
+	var o Optional[refusingValue]
+	err := json.Unmarshal([]byte(`"+5212"`), &o)
+	require.Equal(t, `"+5212"`, ez.ErrorData(err)["value"])
 }
 
 func TestOptionalMarshal(t *testing.T) {

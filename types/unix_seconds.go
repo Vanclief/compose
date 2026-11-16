@@ -1,6 +1,7 @@
 package types
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -67,17 +68,32 @@ func (us UnixSeconds) MarshalJSON() ([]byte, error) {
 	return json.Marshal(int64(us))
 }
 
-// UnmarshalJSON accepts a JSON number (unix seconds)
+// UnmarshalJSON accepts a JSON number (unix seconds). A JSON number that
+// is not whole or does not fit in an int64, such as 1.5 or 1e30, is refused
+// with a message that says so.
 func (us *UnixSeconds) UnmarshalJSON(data []byte) error {
 	var seconds int64
 	err := json.Unmarshal(data, &seconds)
 	if err != nil {
+		if isJSONNumber(data) {
+			return ez.New(ez.EINVALID, "value must be whole unix seconds that fit in 64 bits", err)
+		}
 		return ez.New(ez.EINVALID, "value must be a JSON number (unix seconds)", err)
 	}
 
 	*us = UnixSeconds(seconds)
 
 	return nil
+}
+
+// isJSONNumber reports whether data is one valid JSON number.
+func isJSONNumber(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || !json.Valid(data) {
+		return false
+	}
+	first := data[0]
+	return first == '-' || ('0' <= first && first <= '9')
 }
 
 // Value implements driver.Valuer for BIGINT storage.
