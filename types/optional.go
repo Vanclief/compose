@@ -71,7 +71,7 @@ func (o *Optional[T]) UnmarshalJSON(b []byte) error {
 		if isEZ {
 			return ez.Wrap(ezErr)
 		}
-		return ez.New(ez.EINVALID, "invalid JSON for the optional value", err)
+		return ez.New(ez.EINVALID, "value could not be decoded", err)
 	}
 
 	*o = Optional[T]{Value: v, Set: true}

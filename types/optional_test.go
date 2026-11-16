@@ -60,7 +60,13 @@ func TestOptionalUnmarshalError(t *testing.T) {
 	err := json.Unmarshal([]byte(`"five"`), &o)
 
 	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
-	require.Equal(t, "invalid JSON for the optional value", ez.ErrorMessage(err))
+	require.Equal(t, "value could not be decoded", ez.ErrorMessage(err))
+	require.Equal(t, Some(5), o)
+
+	// Valid JSON that int refuses gets the same message, which is true of it.
+	err = json.Unmarshal([]byte(`1.0`), &o)
+	require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
+	require.Equal(t, "value could not be decoded", ez.ErrorMessage(err))
 	require.Equal(t, Some(5), o)
 }
 

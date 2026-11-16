@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/primitives/enums"
+	"github.com/vanclief/compose/types"
 	"github.com/vanclief/ez"
 )
 
@@ -181,6 +182,57 @@ func TestBindedJSONResponseKeepsAppErrorData(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ez.EINVALID, response.Error.Code)
 	require.Equal(t, "not-an-email is not a valid email", response.Error.Message)
+}
+
+// knownSlug refuses every value but "ok" with an ENOTFOUND.
+type knownSlug string
+
+func (s *knownSlug) UnmarshalJSON(b []byte) error {
+	if string(b) != `"ok"` {
+		return ez.New(ez.ENOTFOUND, "slug "+string(b)+" is not known", nil)
+	}
+	*s = knownSlug("ok")
+	return nil
+}
+
+type optionalBody struct {
+	Slug           types.Optional[knownSlug]    `json:"slug"`
+	Locale         types.Locale                 `json:"locale"`
+	OptionalLocale types.Optional[types.Locale] `json:"optional_locale"`
+}
+
+func (b *optionalBody) Validate() error { return nil }
+
+// An ez error from the decoder of a types.Optional field's value reaches
+// the client with its code and message, as the same field without Optional
+// does.
+func TestBindedJSONResponseKeepsOptionalAppError(t *testing.T) {
+	testCases := []struct {
+		body    string
+		status  int
+		code    string
+		message string
+	}{
+		{`{"slug":"nope"}`, http.StatusNotFound, ez.ENOTFOUND, `slug "nope" is not known`},
+		{`{"locale":5}`, http.StatusBadRequest, ez.EINVALID, "locale must be a JSON string"},
+		{`{"optional_locale":5}`, http.StatusBadRequest, ez.EINVALID, "locale must be a JSON string"},
+	}
+	for _, tc := range testCases {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+
+		err := NewHandler(nil).BindedJSONResponse(c, "test", requests.New(http.Header{}, "127.0.0.1"), &optionalBody{})
+		require.NoError(t, err, tc.body)
+		require.Equal(t, tc.status, rec.Code, tc.body)
+
+		var response ErrorResponse
+		err = json.Unmarshal(rec.Body.Bytes(), &response)
+		require.NoError(t, err, tc.body)
+		require.Equal(t, tc.code, response.Error.Code, tc.body)
+		require.Equal(t, tc.message, response.Error.Message, tc.body)
+	}
 }
 
 // Echo v5 decodes with json.Unmarshal, so data after the value is refused
