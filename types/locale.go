@@ -101,8 +101,9 @@ func (l Locale) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements json.Unmarshaler
 func (l *Locale) UnmarshalJSON(data []byte) error {
 	var str string
-	if err := json.Unmarshal(data, &str); err != nil {
-		return ez.Wrap(err)
+	err := json.Unmarshal(data, &str)
+	if err != nil {
+		return ez.New(ez.EINVALID, "locale must be a JSON string", err)
 	}
 
 	validated, err := NewLocaleString(str)

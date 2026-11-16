@@ -2711,7 +2711,7 @@ func TestDecoderErrors(t *testing.T) {
 			// A plain error under types.Optional answers Optional's message.
 			want := generic[target]
 			if strings.HasPrefix(name, "optional_") {
-				want = "invalid JSON for the optional value"
+				want = "value could not be decoded"
 			}
 			rec = post(target, name, "plain")
 			resp = requireError(t, rec, http.StatusBadRequest, "")

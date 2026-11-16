@@ -69,19 +69,26 @@ func TestUnixSecondsUnmarshalJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UnixSeconds(1700000000), us)
 
-	const notNumber = "value must be a JSON number (unix seconds)"
-	const notWhole = "value must be whole unix seconds that fit in 64 bits"
+	// null sets 0.
+	us = UnixSeconds(99)
+	err = us.UnmarshalJSON([]byte(`null`))
+	require.NoError(t, err)
+	require.Equal(t, UnixSeconds(0), us)
+
+	// Whole numbers with an exponent or a fraction part are refused too.
 	testCases := []struct {
-		name    string
-		input   string
-		message string
+		name  string
+		input string
 	}{
-		{"string", `"1700000000"`, notNumber},
-		{"boolean", `true`, notNumber},
-		{"exponent past int64", `1e30`, notWhole},
-		{"digits past int64", `99999999999999999999`, notWhole},
-		{"negative past int64", `-9223372036854775809`, notWhole},
-		{"fraction", `1.5`, notWhole},
+		{"string", `"1700000000"`},
+		{"boolean", `true`},
+		{"exponent", `1e3`},
+		{"zero fraction", `1.0`},
+		{"exponent past int64", `1e30`},
+		{"digits past int64", `99999999999999999999`},
+		{"negative past int64", `-9223372036854775809`},
+		{"fraction", `1.5`},
+		{"not JSON", `-`},
 	}
 
 	for _, tc := range testCases {
@@ -89,7 +96,7 @@ func TestUnixSecondsUnmarshalJSON(t *testing.T) {
 			us := UnixSeconds(99)
 			err := us.UnmarshalJSON([]byte(tc.input))
 			require.Equal(t, ez.EINVALID, ez.ErrorCode(err))
-			require.Equal(t, tc.message, ez.ErrorMessage(err))
+			require.Equal(t, "value must be unix seconds written as a plain integer that fits in 64 bits", ez.ErrorMessage(err))
 			require.Equal(t, UnixSeconds(99), us)
 		})
 	}
