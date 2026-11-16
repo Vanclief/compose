@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.40.2
+
+### Highlights
+
+- **Route registry: the documents name the table of a bun model, and the strict document marks hidden operations internal.** The registry wrote neither of the two marks the reference page and the MCP server read from a document, so a page served from a registry document guessed which models are stored records, showed no table for any, and could not tell a hidden operation from a public one. A component whose struct embeds `bun.BaseModel` now carries `x-table` with the table its tag names, `bun:"table:parcels,alias:p"` or `bun:"parcels"`, in the 3.1, the 3.0.3 and the strict document, and the map of the reference page then shows exactly those components, each with its table. The request copy published beside a component as `<name>Input`, a struct that embeds a model and a model whose tag names no table, or quotes it, carry none. Once one component carries a table the map shows only those that do, so a model without one leaves the map, with the relations to it: name its table in the tag, `table:parcels`, to keep it there. An operation registered with `api.Hidden()` carries `x-internal: true` in `StrictSpec()`, the only document that lists it: the reference page labels it and offers Show internal, and an MCP server built from that document leaves it out, where it was one of its functions. `mcp.New` refuses a `Config.Tools` or a `Config.WhoAmI` that names a function the server leaves out, so such a server does not start until the name is taken out or the operation is no longer hidden. A document kept in a repository gains the `x-table` lines when it is written again, and they publish the names of the tables.
+
 ## v1.40.1
 
 ### Highlights

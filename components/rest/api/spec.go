@@ -116,7 +116,9 @@ func (r *Registry) checkRoutes() error {
 }
 
 // Spec returns the OpenAPI document (hidden operations excluded) as indented
-// JSON with sorted keys. It calls Ready.
+// JSON with sorted keys. A component whose struct embeds bun.BaseModel
+// carries x-table, the table its bun tag names, as it does in the strict
+// document. It calls Ready.
 func (r *Registry) Spec(v Version) ([]byte, error) {
 	r.Ready()
 
@@ -130,8 +132,10 @@ func (r *Registry) Spec(v Version) ([]byte, error) {
 // StrictSpec returns the 3.1 document including hidden operations, so with
 // the components only they use, with additionalProperties:false on every
 // response object component and with the properties of hidden:"true" fields
-// listed (optional), since a response still sends them. It is meant for
-// contract tests (see apitest). It calls Ready.
+// listed (optional), since a response still sends them. A hidden operation
+// carries x-internal: true there, which the reference page labels and an MCP
+// server built from the document leaves out. It is meant for contract tests
+// (see apitest). It calls Ready.
 func (r *Registry) StrictSpec() []byte {
 	r.Ready()
 	return bytes.Clone(r.strict)
@@ -346,6 +350,10 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 	}
 	if op.tag != "" {
 		o.Tags = []string{op.tag}
+	}
+	// Only the strict document lists a hidden operation.
+	if op.hidden {
+		o.Extensions = map[string]any{"x-internal": true}
 	}
 
 	for _, p := range op.params {

@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/vanclief/ez"
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
@@ -1654,4 +1656,146 @@ func TestOptionalErrors(t *testing.T) {
 	err = r.AddResponse(reflect.TypeFor[fixture.OptionalWideBound]())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fixture.OptionalWideBound.N: maximum 1000 is above the int8 range")
+}
+
+// TableWidget is a bun model that is sent and returned. Its request copy
+// differs, since Label is a pointer.
+type TableWidget struct {
+	bun.BaseModel `bun:"table:widgets,alias:w"`
+
+	ID    int64   `json:"id"`
+	Label *string `json:"label,omitempty"`
+}
+
+// TableGadget is a bun model that is only sent, with the table option last.
+type TableGadget struct {
+	bun.BaseModel `bun:"alias:g,table:gadgets"`
+
+	ID    int64   `json:"id"`
+	Label *string `json:"label,omitempty"`
+}
+
+// TableWidgetView is a response struct built from a model.
+type TableWidgetView struct {
+	TableWidget
+	Count int `json:"count"`
+}
+
+// TableBare embeds a BaseModel whose tag names no table.
+type TableBare struct {
+	bun.BaseModel `bun:"alias:b"`
+
+	ID int64 `json:"id"`
+}
+
+// TableShort names its table as the tag's first entry.
+type TableShort struct {
+	bun.BaseModel `bun:"shorts,alias:s"`
+
+	ID int64 `json:"id"`
+}
+
+// TableBoth names a table both ways: bun keeps the table option.
+type TableBoth struct {
+	bun.BaseModel `bun:"first,table:second"`
+
+	ID int64 `json:"id"`
+}
+
+// TableSchema names its table with a schema.
+type TableSchema struct {
+	bun.BaseModel `bun:"table:audit.events"`
+
+	ID int64 `json:"id"`
+}
+
+// TableSpaced has a space before its table option, which bun then does not
+// read as one.
+type TableSpaced struct {
+	bun.BaseModel `bun:"alias:w, table:spaced"`
+
+	ID int64 `json:"id"`
+}
+
+// TableQuoted quotes its table, which only bun's tag parser reads.
+type TableQuoted struct {
+	bun.BaseModel `bun:"table:\"quoted\""`
+
+	ID int64 `json:"id"`
+}
+
+// TableDash has the tag bun skips a field for, so bun reads no table from it.
+type TableDash struct {
+	bun.BaseModel `bun:"-"`
+
+	ID int64 `json:"id"`
+}
+
+// TestModelTable: a component that is a bun model carries the table of its
+// BaseModel tag as x-table, also when it is only a request body, and the
+// table is the one bun reads from the tag. The request copy published beside
+// it, a struct that embeds the model, a model whose tag names no table, one
+// whose tag bun reads no table option from, one whose tag quotes the table
+// and one whose tag is "-" carry none.
+func TestModelTable(t *testing.T) {
+	r := NewReflector()
+	_, err := r.AddRequest(reflect.TypeFor[TableWidget]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableWidget]())
+	require.NoError(t, err)
+	_, err = r.AddRequest(reflect.TypeFor[TableGadget]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableWidgetView]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableBare]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableShort]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableBoth]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableSchema]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableSpaced]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableQuoted]())
+	require.NoError(t, err)
+	err = r.AddResponse(reflect.TypeFor[TableDash]())
+	require.NoError(t, err)
+	res, err := r.Finalize()
+	require.NoError(t, err)
+
+	// What bun itself reads from the same tags.
+	db := bun.NewDB(nil, sqlitedialect.New())
+	for name, model := range map[string]any{
+		"openapi.TableWidget": (*TableWidget)(nil),
+		"openapi.TableGadget": (*TableGadget)(nil),
+		"openapi.TableShort":  (*TableShort)(nil),
+		"openapi.TableBoth":   (*TableBoth)(nil),
+		"openapi.TableSchema": (*TableSchema)(nil),
+	} {
+		require.Equal(t, db.Table(reflect.TypeOf(model).Elem()).Name, component(t, res, name)["x-table"], name)
+	}
+
+	widget := component(t, res, "openapi.TableWidget")
+	require.Equal(t, "widgets", widget["x-table"])
+	require.NotContains(t, widget["properties"], "BaseModel")
+	require.Equal(t, "gadgets", component(t, res, "openapi.TableGadget")["x-table"])
+
+	input := component(t, res, "openapi.TableWidgetInput")
+	require.Equal(t, []any{"string", "null"}, prop(t, input, "label")["type"])
+	require.NotContains(t, input, "x-table")
+	require.NotContains(t, component(t, res, "openapi.TableWidgetView"), "x-table")
+	require.NotContains(t, component(t, res, "openapi.TableBare"), "x-table")
+
+	// bun derives the table of TableSpaced and of TableDash from the type,
+	// and unquotes the one of TableQuoted.
+	require.Equal(t, "table_spaceds", db.Table(reflect.TypeFor[TableSpaced]()).Name)
+	require.NotContains(t, component(t, res, "openapi.TableSpaced"), "x-table")
+	require.Equal(t, "quoted", db.Table(reflect.TypeFor[TableQuoted]()).Name)
+	require.NotContains(t, component(t, res, "openapi.TableQuoted"), "x-table")
+	require.Equal(t, "table_dashes", db.Table(reflect.TypeFor[TableDash]()).Name)
+	require.NotContains(t, component(t, res, "openapi.TableDash"), "x-table")
+
+	// The strict copy keeps it.
+	require.Equal(t, "widgets", toMap(t, res.StrictComponents()["openapi.TableWidget"])["x-table"])
 }

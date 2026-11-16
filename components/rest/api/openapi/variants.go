@@ -111,6 +111,15 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 		out[vname] = s
 	}
 
+	// A request copy published beside its component, as <name>Input, has no
+	// type under that name, so only the component carries the table.
+	for name, s := range out {
+		table := modelTable(r.reg.types[name])
+		if table != "" {
+			s.Extensions = map[string]any{tableKey: table}
+		}
+	}
+
 	res = &Result{
 		bodies:    map[reflect.Type]body{},
 		responses: map[reflect.Type]*huma.Schema{},
@@ -151,6 +160,56 @@ func (r *Reflector) Finalize() (res *Result, err error) {
 
 	r.result = res
 	return res, nil
+}
+
+// tableKey is the extension a component that is a bun model carries: the
+// name of the database table it is stored in.
+const tableKey = "x-table"
+
+// modelTable returns the table the struct t is stored in, as the bun tag on
+// the bun.BaseModel it embeds names it: its table option,
+// `bun:"table:cards,alias:c"`, or else a first entry that is no option,
+// `bun:"cards,alias:c"`. It returns "" when t is nil, not a struct, embeds no
+// BaseModel or its tag names no table: the name bun then derives from the
+// type follows an inflector the app can replace. A tag of "-", which bun
+// skips, and one that holds a quote or a backslash name none either. Only t's
+// own embedding counts: a struct that embeds a model is a shape built from
+// it, not the model. The type is matched by its package path and name, so this package
+// does not import bun.
+func modelTable(t reflect.Type) string {
+	if t == nil || t.Kind() != reflect.Struct {
+		return ""
+	}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.Anonymous || f.Type.PkgPath() != "github.com/uptrace/bun/schema" || f.Type.Name() != "BaseModel" {
+			continue
+		}
+
+		// grug: the tag is split on commas, which reads what bun reads
+		// unless an entry is quoted or escaped, so such a tag names no table
+		// here, or a table holds a comma inside parentheses, which is then
+		// cut at the comma. Reading those would take bun's tag parser, which
+		// bun does not export; port it if an app quotes its table names.
+		tag := f.Tag.Get("bun")
+		if tag == "-" || strings.ContainsAny(tag, "\"\\") {
+			return ""
+		}
+
+		options := strings.Split(tag, ",")
+		table := ""
+		if !strings.Contains(options[0], ":") {
+			table = options[0]
+		}
+		for _, option := range options {
+			name, ok := strings.CutPrefix(option, "table:")
+			if ok {
+				table = name
+			}
+		}
+		return table
+	}
+	return ""
 }
 
 // requestShape copies base and rewrites it for the request direction:
