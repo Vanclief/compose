@@ -17,12 +17,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 	"github.com/vanclief/ez"
 
 	"github.com/vanclief/compose/components/rest/api"
 	"github.com/vanclief/compose/components/rest/api/internal/fixture"
 	"github.com/vanclief/compose/components/rest/api/openapi"
 	"github.com/vanclief/compose/components/rest/apitest"
+	"github.com/vanclief/compose/components/rest/reference"
 	"github.com/vanclief/compose/components/rest/requests"
 	"github.com/vanclief/compose/types"
 )
@@ -1063,4 +1065,56 @@ func TestResponseStructThatWritesItsOwnJSON(t *testing.T) {
 	require.Equal(t, map[string]any{"type": "string"}, dig(t, doc, "components", "schemas", "api_test.stampAllowedResponse", "properties", "at"))
 	require.Equal(t, map[string]any{}, dig(t, doc, "components", "schemas", "api_test.stampAllowedResponse", "properties", "any"))
 	require.Contains(t, string(raw), `"api_test.Stamp"`)
+}
+
+// Parcel is a bun model that is sent and returned. Its request copy
+// differs, since Note is a pointer.
+type Parcel struct {
+	bun.BaseModel `bun:"table:parcels,alias:p"`
+
+	ID   int64   `json:"id"`
+	Note *string `json:"note,omitempty"`
+}
+
+type parcelRequest struct {
+	requests.NoRules
+	Parcel Parcel `json:"parcel"`
+}
+
+// TestTableAndInternalMarks: every document names the table of a component
+// that is a bun model, and not on its request copy; the strict document
+// marks its hidden operations x-internal, the public ones list no such
+// operation. The reference package reads both marks from the strict document.
+func TestTableAndInternalMarks(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	g := reg.Group("/parcels")
+	api.POST[parcelRequest, Parcel](g, "", "create", stub)
+	api.GET[fixture.HealthRequest, Parcel](g, "/audit", "audit", stub, api.Hidden())
+	reg.Ready()
+
+	for _, version := range []api.Version{api.V31, api.V30} {
+		raw, err := reg.Spec(version)
+		require.NoError(t, err)
+		doc := decode(t, raw)
+		require.Equal(t, "parcels", dig(t, doc, "components", "schemas", "api_test.Parcel", "x-table"))
+		require.NotContains(t, dig(t, doc, "components", "schemas", "api_test.ParcelInput"), "x-table")
+		require.NotContains(t, dig(t, doc, "paths"), "/parcels/audit")
+		require.NotContains(t, string(raw), "x-internal")
+	}
+
+	strict := decode(t, reg.StrictSpec())
+	require.Equal(t, "parcels", dig(t, strict, "components", "schemas", "api_test.Parcel", "x-table"))
+	require.NotContains(t, dig(t, strict, "components", "schemas", "api_test.ParcelInput"), "x-table")
+	require.Equal(t, true, dig(t, strict, "paths", "/parcels/audit", "get", "x-internal"))
+	require.NotContains(t, dig(t, strict, "paths", "/parcels", "post"), "x-internal")
+
+	doc, err := reference.Parse(reg.StrictSpec())
+	require.NoError(t, err)
+	require.Equal(t, "parcels", doc.Table("api_test.Parcel"))
+	require.Empty(t, doc.Table("api_test.ParcelInput"))
+	internal := map[string]bool{}
+	for _, ref := range doc.Operations() {
+		internal[ref.Operation.OperationID] = ref.Operation.Internal
+	}
+	require.Equal(t, map[string]bool{"parcels.create": false, "parcels.audit": true}, internal)
 }

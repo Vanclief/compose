@@ -162,7 +162,8 @@ func MaxBodyValues(n int) Option {
 	}}
 }
 
-// Hidden registers the operation on Echo but omits it from the spec.
+// Hidden registers the operation on Echo but omits it from the spec. The
+// strict document lists it, marked x-internal (see Registry.StrictSpec).
 func Hidden() Option {
 	return Option{name: "api.Hidden", op: func(op *operation) {
 		op.hidden = true

@@ -724,6 +724,16 @@ lint, key check and variants.
   components so undocumented response fields are still caught in CI. The strict copy also
   lists `hidden` properties, as optional ones, so a hidden field a response sends is known
   to the contract and checked against its schema.
+- **The marks compose's readers use.** A component whose struct embeds `bun.BaseModel`
+  carries `x-table`, the table its tag names (`bun:"table:runs,alias:r"`, or a first entry
+  that is no option, `bun:"runs"`), in the 3.1, the 3.0.3 and the strict document: the
+  reference page then takes exactly those components for stored records instead of
+  guessing them. The request copy published beside a component (`<name>Input`), a struct
+  that embeds a model and a model whose tag names no table, or quotes it, carry none; the reflector
+  matches `BaseModel` by its package path and name, so the registry does not import bun.
+  A hidden operation carries `x-internal: true` in the strict document, the only one that
+  lists it: the reference page labels it and an MCP server built from that document
+  leaves it out.
 - **Type table** (`builtinSchemas`): `uuid.UUID` is `{type: string, format: uuid}`
   (`TextUnmarshaler` types otherwise become plain `string`), `types.Email` `format: email`,
   `types.PhoneNumber` `format: phone`, `types.Locale` and `types.Language` plain strings,
