@@ -460,8 +460,12 @@ as unknown keys, then bind). Decode once instead.
    registration: its items would be set one by one without that decoder running.
    A conversion failure is a 400 (`query at is invalid`), not a 500: santhosh's
    `date-time` accepts inputs that `time.Time` rejects. An error from a type's own
-   `UnmarshalText` or `UnmarshalJSON` is a 400 too, whatever its ez code, as its
-   `UnmarshalJSON` error is in a body. `request.SetBody(req)`.
+   `UnmarshalText` or `UnmarshalJSON` is a 400 too, whatever its ez code, and the message
+   names the parameter. In a body or a form, a decoder that refuses a value with an ez
+   error whose code is not `EINTERNAL` wrote it for the client, so that error is returned
+   with its code, message and data, as the binder of plain routes does. Any other decode
+   error is a 400 with a generic message, `body could not be decoded` or `form values
+   could not be decoded`, which does not repeat the error. `request.SetBody(req)`.
 9. `Body.Validate()`, once, for cross-field rules.
 10. The typed handler of the negotiated media type, exactly one: the `Produces` handler
     declared for it, else the primary handler. It receives `request.GetContext()` as it is

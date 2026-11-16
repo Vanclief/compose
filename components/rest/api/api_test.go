@@ -2570,8 +2570,119 @@ func TestParamsUseJSONDecoder(t *testing.T) {
 	rec = s.do(http.MethodPost, "/slugs/abc?count=3", `{"body":"ok"}`)
 	requireError(t, rec, http.StatusBadRequest, "query count is invalid")
 
+	// In the body the decoder's ez error reaches the client.
 	rec = s.do(http.MethodPost, "/slugs/abc", `{"body":"NO"}`)
-	requireError(t, rec, http.StatusBadRequest, "body could not be decoded")
+	requireError(t, rec, http.StatusBadRequest, "slug has upper case")
+}
+
+// decoderRefusal is what the phone decoders below return for text: nil for
+// "ok", an ez EINTERNAL for "internal", an ez.Wrap of a plain error for
+// "wrapped", a plain error for "plain", and otherwise an ez EINVALID written
+// for the client that names the value and carries it as data.
+func decoderRefusal(text string) error {
+	switch text {
+	case "ok":
+		return nil
+	case "internal":
+		return ez.New(ez.EINTERNAL, "lookup table missing", nil)
+	case "wrapped":
+		return ez.Wrap(errors.New("unknown value"))
+	case "plain":
+		return errors.New("unknown value")
+	}
+	return ez.New(ez.EINVALID, text+" is not a valid phone number", nil).AddData("value", text)
+}
+
+// jsonPhone decodes itself with UnmarshalJSON only.
+type jsonPhone string
+
+func (p *jsonPhone) UnmarshalJSON(data []byte) error {
+	var text string
+	err := json.Unmarshal(data, &text)
+	if err != nil {
+		return ez.New(ez.EINVALID, "phone is not a string", err)
+	}
+	err = decoderRefusal(text)
+	if err != nil {
+		return err
+	}
+	*p = jsonPhone(text)
+	return nil
+}
+
+// textPhone decodes itself with UnmarshalText only.
+type textPhone string
+
+func (p *textPhone) UnmarshalText(text []byte) error {
+	err := decoderRefusal(string(text))
+	if err != nil {
+		return err
+	}
+	*p = textPhone(text)
+	return nil
+}
+
+type phoneRequest struct {
+	requests.NoRules
+	JSON jsonPhone `json:"json"`
+	Text textPhone `json:"text"`
+}
+
+type phoneForm struct {
+	requests.NoRules
+	File *multipart.FileHeader `json:"-" form:"file"`
+	JSON jsonPhone             `json:"json"`
+	Text textPhone             `json:"text"`
+}
+
+// TestDecoderErrors: when a field's own decoder refuses a body or form value
+// with an ez error that is not EINTERNAL, the client gets its code and
+// message and the app's error handler its data. Any other decoder error is
+// the generic 400, which does not echo it.
+func TestDecoderErrors(t *testing.T) {
+	e := newEcho()
+	var seen error
+	answer := rest.ErrorHandler()
+	e.HTTPErrorHandler = func(c *echo.Context, err error) {
+		seen = err
+		answer(c, err)
+	}
+	reg := api.New(e, api.Public())
+	api.POST[phoneRequest, nodeResponse](reg.Group("/phones"), "", "create", stub)
+	api.POST[phoneForm, nodeResponse](reg.Group("/forms"), "", "create", stub)
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+	post := func(target, name, value string) *httptest.ResponseRecorder {
+		if target == "/phones" {
+			body, err := json.Marshal(map[string]string{name: value})
+			require.NoError(t, err)
+			return s.do(http.MethodPost, target, string(body))
+		}
+		body, contentType := form(t, part{name: name, value: value})
+		return s.do(http.MethodPost, target, body, echo.HeaderContentType, contentType)
+	}
+
+	generic := map[string]string{
+		"/phones": "body could not be decoded",
+		"/forms":  "form values could not be decoded",
+	}
+	for _, target := range []string{"/phones", "/forms"} {
+		for _, name := range []string{"json", "text"} {
+			rec := post(target, name, "ok")
+			require.Equal(t, http.StatusOK, rec.Code, target+" "+name+": "+rec.Body.String())
+
+			rec = post(target, name, "+5212")
+			resp := requireError(t, rec, http.StatusBadRequest, "")
+			require.Equal(t, "+5212 is not a valid phone number", resp.Error.Message, target+" "+name)
+			require.Equal(t, "+5212", ez.ErrorData(seen)["value"], target+" "+name)
+
+			for _, value := range []string{"plain", "wrapped", "internal"} {
+				rec = post(target, name, value)
+				resp = requireError(t, rec, http.StatusBadRequest, "")
+				require.Equal(t, generic[target], resp.Error.Message, target+" "+name+" "+value)
+			}
+		}
+	}
 }
 
 // shortRatio decodes itself with UnmarshalJSON only and keeps the text it

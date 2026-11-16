@@ -265,7 +265,7 @@ func (op *operation) decodeForm(req reflect.Value, body map[string]any, form *mu
 	}
 	err = json.Unmarshal(raw, req.Interface())
 	if err != nil {
-		return ez.New(ez.EINVALID, "form values could not be decoded", err)
+		return decodeError(err, "form values could not be decoded")
 	}
 
 	for _, f := range op.files {

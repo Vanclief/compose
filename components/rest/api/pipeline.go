@@ -40,7 +40,9 @@ func Accept(ctx context.Context) string {
 // is parsed for it; request.GetBody() is nil inside it. Multipart operations
 // validate their form values against the body schema the same way. Every
 // error is returned to Echo, for the app's HTTPErrorHandler to answer: the
-// pipeline's own errors are ez errors, the handler's are returned as is.
+// pipeline's own errors are ez errors, the handler's are returned as is, and
+// a field decoder's ez error whose code is not EINTERNAL keeps its code,
+// message and data (see decodeError).
 func (op *operation) serve(c *echo.Context) error {
 	reqOpts := []requests.Option{requests.WithMethod(c.Request().Method)}
 	if op.timeout > 0 {
@@ -166,7 +168,7 @@ func (op *operation) serve(c *echo.Context) error {
 	if raw != nil {
 		err = json.Unmarshal(raw, req.Interface())
 		if err != nil {
-			return ez.New(ez.EINVALID, "body could not be decoded", err)
+			return decodeError(err, "body could not be decoded")
 		}
 	}
 	err = setParams(req.Elem(), op.params, values)
@@ -202,6 +204,23 @@ func (op *operation) call(ctx context.Context, mediaType string, body requests.B
 		}
 	}
 	return op.invoke(ctx, body)
+}
+
+// decodeError returns the error that answers a request whose validated body
+// or form values json.Unmarshal could not decode into the request type. When
+// a field's own decoder refused its value with an ez error whose code is not
+// EINTERNAL, the error is the app's, written for the client, and keeps its
+// code, message and data, as on plain routes. Any other error becomes an
+// EINVALID with message and err as its cause: encoding/json's messages name
+// Go types and fields, and an ez.Wrap of a plain error carries only
+// EINTERNAL.
+func decodeError(err error, message string) error {
+	var appErr *ez.Error
+	isAppErr := errors.As(err, &appErr)
+	if isAppErr && ez.ErrorCode(appErr) != ez.EINTERNAL {
+		return ez.Wrap(appErr)
+	}
+	return ez.New(ez.EINVALID, message, err)
 }
 
 // paramValues returns the non-empty raw values of a parameter.
