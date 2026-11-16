@@ -46,33 +46,35 @@ type CursorRequest struct {
 // negative limit is ez.EINVALID. It does not check Sort: the sort allowlist is
 // an argument of Paginate, so Paginate, not Validate, resolves Sort.
 func (r *CursorRequest) Validate() error {
-	limit, err := validLimit(r.Limit)
-	if err != nil {
-		return ez.Wrap(err)
+	if r.Limit < 0 {
+		return ez.New(ez.EINVALID, "Page size cannot be negative", nil)
 	}
 
-	r.Limit = limit
+	r.Limit = pageLimit(r.Limit)
 
 	return nil
 }
 
-// cursorRequest returns r itself: Paginate reads the request through it.
-func (r *CursorRequest) cursorRequest() *CursorRequest {
-	return r
+// cursorRequest validates r and returns it: Paginate reads the request
+// through it. The error is returned as Validate made it, so it reads as it did
+// when Paginate called Validate itself.
+func (r *CursorRequest) cursorRequest() (*CursorRequest, error) {
+	err := r.Validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
 }
 
-// validLimit returns limit with the default applied and clamped to
-// MAX_PAGE_SIZE. A negative limit is ez.EINVALID.
-func validLimit(limit int) (int, error) {
-	if limit < 0 {
-		return 0, ez.New(ez.EINVALID, "Page size cannot be negative", nil)
-	}
-
+// pageLimit returns a limit that is not negative with the default applied
+// and clamped to MAX_PAGE_SIZE.
+func pageLimit(limit int) int {
 	if limit == 0 {
-		return DEFAULT_LIMIT, nil
+		return DEFAULT_LIMIT
 	}
 
-	return min(limit, MAX_PAGE_SIZE), nil
+	return min(limit, MAX_PAGE_SIZE)
 }
 
 // sortOrder is the effective order of a page.
