@@ -2576,13 +2576,16 @@ func TestParamsUseJSONDecoder(t *testing.T) {
 }
 
 // decoderRefusal is what the phone decoders below return for text: nil for
-// "ok", an ez EINTERNAL for "internal", an ez.Wrap of a plain error for
-// "wrapped", a plain error for "plain", and otherwise an ez EINVALID written
-// for the client that names the value and carries it as data.
+// "ok", an ez ENOTFOUND for "missing", an ez EINTERNAL for "internal", an
+// ez.Wrap of a plain error for "wrapped", a plain error for "plain", and
+// otherwise an ez EINVALID written for the client that names the value and
+// carries it as data.
 func decoderRefusal(text string) error {
 	switch text {
 	case "ok":
 		return nil
+	case "missing":
+		return ez.New(ez.ENOTFOUND, "missing is not a known phone number", nil)
 	case "internal":
 		return ez.New(ez.EINTERNAL, "lookup table missing", nil)
 	case "wrapped":
@@ -2624,8 +2627,10 @@ func (p *textPhone) UnmarshalText(text []byte) error {
 
 type phoneRequest struct {
 	requests.NoRules
-	JSON jsonPhone `json:"json"`
-	Text textPhone `json:"text"`
+	JSON         jsonPhone                 `json:"json"`
+	Text         textPhone                 `json:"text"`
+	OptionalJSON types.Optional[jsonPhone] `json:"optional_json"`
+	OptionalText types.Optional[textPhone] `json:"optional_text"`
 }
 
 type phoneForm struct {
@@ -2636,9 +2641,11 @@ type phoneForm struct {
 }
 
 // TestDecoderErrors: when a field's own decoder refuses a body or form value
-// with an ez error that is not EINTERNAL, the client gets its code and
-// message and the app's error handler its data. Any other decoder error is
-// the generic 400, which does not echo it.
+// with an ez error that is not EINTERNAL, the client gets its code, message
+// and status and the app's error handler its data, also under
+// types.Optional. Any other decoder error is the generic 400, which does not
+// echo it, except a plain error under types.Optional, which answers
+// Optional's own message.
 func TestDecoderErrors(t *testing.T) {
 	e := newEcho()
 	var seen error
@@ -2666,21 +2673,49 @@ func TestDecoderErrors(t *testing.T) {
 		"/phones": "body could not be decoded",
 		"/forms":  "form values could not be decoded",
 	}
+	fields := map[string][]string{
+		"/phones": {"json", "text", "optional_json", "optional_text"},
+		"/forms":  {"json", "text"},
+	}
 	for _, target := range []string{"/phones", "/forms"} {
-		for _, name := range []string{"json", "text"} {
+		for _, name := range fields[target] {
+			where := target + " " + name
 			rec := post(target, name, "ok")
-			require.Equal(t, http.StatusOK, rec.Code, target+" "+name+": "+rec.Body.String())
+			require.Equal(t, http.StatusOK, rec.Code, where+": "+rec.Body.String())
 
 			rec = post(target, name, "+5212")
 			resp := requireError(t, rec, http.StatusBadRequest, "")
-			require.Equal(t, "+5212 is not a valid phone number", resp.Error.Message, target+" "+name)
-			require.Equal(t, "+5212", ez.ErrorData(seen)["value"], target+" "+name)
+			require.Equal(t, "+5212 is not a valid phone number", resp.Error.Message, where)
+			// The outermost error the handler saw is the app's, with its own
+			// data: a generic wrapper around it would fail here.
+			outer, ok := seen.(*ez.Error)
+			require.True(t, ok, where)
+			require.Equal(t, ez.EINVALID, outer.Code, where)
+			require.Equal(t, "+5212 is not a valid phone number", outer.Message, where)
+			require.Equal(t, "+5212", outer.Data["value"], where)
 
-			for _, value := range []string{"plain", "wrapped", "internal"} {
+			rec = post(target, name, "missing")
+			require.Equal(t, http.StatusNotFound, rec.Code, where+": "+rec.Body.String())
+			var notFound handler.ErrorResponse
+			err := json.Unmarshal(rec.Body.Bytes(), &notFound)
+			require.NoError(t, err)
+			require.Equal(t, ez.ENOTFOUND, notFound.Error.Code, where)
+			require.Equal(t, "missing is not a known phone number", notFound.Error.Message, where)
+
+			for _, value := range []string{"wrapped", "internal"} {
 				rec = post(target, name, value)
 				resp = requireError(t, rec, http.StatusBadRequest, "")
-				require.Equal(t, generic[target], resp.Error.Message, target+" "+name+" "+value)
+				require.Equal(t, generic[target], resp.Error.Message, where+" "+value)
 			}
+
+			// A plain error under types.Optional answers Optional's message.
+			want := generic[target]
+			if strings.HasPrefix(name, "optional_") {
+				want = "invalid JSON for the optional value"
+			}
+			rec = post(target, name, "plain")
+			resp = requireError(t, rec, http.StatusBadRequest, "")
+			require.Equal(t, want, resp.Error.Message, where+" plain")
 		}
 	}
 }
