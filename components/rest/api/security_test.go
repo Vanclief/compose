@@ -131,6 +131,8 @@ func TestSecurityFailures(t *testing.T) {
 		{func() { api.Security(key, api.SecurityScheme{Name: "ApiKeyAuth", Header: "API-SECRET"}) }, "api: Security: scheme ApiKeyAuth is declared twice"},
 		{func() { api.Security(key, api.SecurityScheme{Name: "ApiKeyAuth", Type: "http", Scheme: "bearer"}) }, "api: Security: scheme ApiKeyAuth is declared twice"},
 		{func() { api.Security(api.SecurityScheme{Name: "ApiKeyAuth"}) }, "api: Security: scheme ApiKeyAuth of type apiKey needs a Header"},
+		{func() { api.Security(api.SecurityScheme{Name: "ApiKeyAuth", Header: "API KEY"}) }, `api: Security: scheme ApiKeyAuth names the header "API KEY", which is not a valid header name`},
+		{func() { api.Security(api.SecurityScheme{Name: "ApiKeyAuth", Header: "API-KEY:"}) }, `api: Security: scheme ApiKeyAuth names the header "API-KEY:", which is not a valid header name`},
 		// A bearer scheme whose Type was left out is not published as an API key.
 		{func() { api.Security(api.SecurityScheme{Name: "BearerAuth", Scheme: "bearer"}) }, "api: Security: scheme BearerAuth of type apiKey needs a Header"},
 		{func() { api.Security(api.SecurityScheme{Name: "BearerAuth", Header: "API-KEY", Scheme: "bearer"}) }, "api: Security: scheme BearerAuth of type apiKey sets Scheme or BearerFormat"},
@@ -142,6 +144,9 @@ func TestSecurityFailures(t *testing.T) {
 		{func() {
 			api.Security(api.SecurityScheme{Name: "BearerAuth", Type: "http", Scheme: "bearer", Header: "Authorization"})
 		}, "api: Security: scheme BearerAuth of type http sets Header"},
+		{func() {
+			api.Security(api.SecurityScheme{Name: "BasicAuth", Type: "http", Scheme: "basic", BearerFormat: "opaque"})
+		}, "api: Security: scheme BasicAuth of type http sets BearerFormat, which only the bearer scheme has"},
 		{func() { api.Security(api.SecurityScheme{Name: "OAuth", Type: "oauth2"}) }, `api: Security: scheme OAuth has unknown type "oauth2": use "apiKey" or "http"`},
 		{func() { api.New(newEcho(), api.APIKeyHeader("API-KEY"), api.Security(key)) }, "api: New: api.APIKeyHeader and api.Security cannot both be passed"},
 		{func() { api.New(newEcho(), api.Security(key), api.APIKeyHeader("API-KEY")) }, "api: New: api.APIKeyHeader and api.Security cannot both be passed"},
@@ -152,6 +157,11 @@ func TestSecurityFailures(t *testing.T) {
 		msg := panicMessage(t, tt.fn)
 		require.Contains(t, msg, tt.want)
 	}
+
+	// The bearer scheme is matched without regard to case.
+	require.NotPanics(t, func() {
+		api.Security(api.SecurityScheme{Name: "BearerAuth", Type: "http", Scheme: "Bearer", BearerFormat: "opaque"})
+	})
 
 	// The schemes are copied: changing the caller's slice afterwards does
 	// not change the document.

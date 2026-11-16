@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/vanclief/ez"
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 )
@@ -31,14 +32,14 @@ type SecurityScheme struct {
 	// Type is "apiKey" (the default when empty, header named by Header) or
 	// "http".
 	Type string
-	// Header names the header of an apiKey scheme. Required for one, and
-	// refused on an http scheme.
+	// Header names the header of an apiKey scheme. Required for one, must be
+	// a valid header name, and refused on an http scheme.
 	Header string
 	// Scheme is the http scheme, "bearer". Required when Type is "http", and
 	// refused on an apiKey scheme.
 	Scheme string
-	// BearerFormat is a hint for clients, for example "opaque". Refused on
-	// an apiKey scheme.
+	// BearerFormat is a hint for clients, for example "opaque". Refused
+	// unless Scheme is bearer, so on an apiKey scheme too.
 	BearerFormat string
 	// Description tells clients how to obtain and send the credential.
 	Description string
@@ -63,8 +64,9 @@ type SecurityScheme struct {
 // Registry option. New panics when it is passed twice or with APIKeyHeader.
 // Panics when no scheme is given, a Name is empty, repeated or does not
 // match [A-Za-z0-9._-]+, a Type is not "apiKey" or "http", an apiKey scheme
-// has no Header or one another scheme names, an http scheme has no Scheme,
-// or a scheme sets a field its type does not use.
+// has no Header, one that is not a valid header name or one another scheme
+// names, an http scheme has no Scheme or sets BearerFormat with a Scheme
+// other than bearer, or a scheme sets a field its type does not use.
 func Security(schemes ...SecurityScheme) Option {
 	schemes = slices.Clone(schemes)
 	err := checkSecurity(schemes)
@@ -104,6 +106,9 @@ func checkSecurity(schemes []SecurityScheme) error {
 			if s.Header == "" {
 				return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s of type apiKey needs a Header", s.Name), nil)
 			}
+			if !httpguts.ValidHeaderFieldName(s.Header) {
+				return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s names the header %q, which is not a valid header name", s.Name, s.Header), nil)
+			}
 			if s.Scheme != "" || s.BearerFormat != "" {
 				return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s of type apiKey sets Scheme or BearerFormat, which only an http scheme has: set Type to \"http\" or drop them", s.Name), nil)
 			}
@@ -119,6 +124,9 @@ func checkSecurity(schemes []SecurityScheme) error {
 			}
 			if s.Header != "" {
 				return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s of type http sets Header, which only an apiKey scheme has: an http credential is sent in Authorization", s.Name), nil)
+			}
+			if s.BearerFormat != "" && !strings.EqualFold(s.Scheme, "bearer") {
+				return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s of type http sets BearerFormat, which only the bearer scheme has", s.Name), nil)
 			}
 		default:
 			return ez.New(ez.EINVALID, fmt.Sprintf("scheme %s has unknown type %q: use \"apiKey\" or \"http\"", s.Name, s.Type), nil)

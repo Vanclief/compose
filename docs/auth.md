@@ -977,9 +977,10 @@ accepted, list only `BearerAuth`.
   so one given another name reads as replaced, which is breaking.
 - An invalid list panics when `api.Security` is called: no scheme, a name that is empty, repeated
   or outside `[A-Za-z0-9._-]+`, a `Type` other than `"apiKey"` or `"http"`, an `apiKey` scheme
-  without a `Header` or with the header of another scheme, an `http` scheme without a `Scheme`,
-  or a field the type does not use (`Scheme` or `BearerFormat` on an `apiKey` scheme, `Header` on
-  an `http` one).
+  without a `Header`, with one that is not a valid header name or with the header of another
+  scheme, an `http` scheme without a `Scheme` or with a `BearerFormat` and a `Scheme` other than
+  bearer (compared without regard to case), or a field the type does not use (`Scheme` or
+  `BearerFormat` on an `apiKey` scheme, `Header` on an `http` one).
 
 ## Migrating from API-KEY and API-SECRET
 
