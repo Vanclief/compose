@@ -13,7 +13,11 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// CursorRequest represents a cursor paginated request.
+// CursorRequest is the request of a list the client can sort or count. Embed
+// it in the request type of a list that passes Options.SortFields or
+// Options.AllowCount to Paginate. A list that passes neither embeds
+// PageRequest instead, so its OpenAPI operation does not list sort and
+// include_count, two parameters the list would always refuse.
 //
 // Limit, Cursor, Sort and IncludeCount come from the client as query
 // parameters, never body fields, so they carry json:"-" and xml:"-" and the
@@ -42,19 +46,33 @@ type CursorRequest struct {
 // negative limit is ez.EINVALID. It does not check Sort: the sort allowlist is
 // an argument of Paginate, so Paginate, not Validate, resolves Sort.
 func (r *CursorRequest) Validate() error {
-	if r.Limit < 0 {
-		return ez.New(ez.EINVALID, "Page size cannot be negative", nil)
+	limit, err := validLimit(r.Limit)
+	if err != nil {
+		return ez.Wrap(err)
 	}
 
-	if r.Limit == 0 {
-		r.Limit = DEFAULT_LIMIT
-	}
-
-	if r.Limit > MAX_PAGE_SIZE {
-		r.Limit = MAX_PAGE_SIZE
-	}
+	r.Limit = limit
 
 	return nil
+}
+
+// cursorRequest returns r itself: Paginate reads the request through it.
+func (r *CursorRequest) cursorRequest() *CursorRequest {
+	return r
+}
+
+// validLimit returns limit with the default applied and clamped to
+// MAX_PAGE_SIZE. A negative limit is ez.EINVALID.
+func validLimit(limit int) (int, error) {
+	if limit < 0 {
+		return 0, ez.New(ez.EINVALID, "Page size cannot be negative", nil)
+	}
+
+	if limit == 0 {
+		return DEFAULT_LIMIT, nil
+	}
+
+	return min(limit, MAX_PAGE_SIZE), nil
 }
 
 // sortOrder is the effective order of a page.

@@ -116,9 +116,17 @@ doc31, err := reg.Spec(api.V31)
 doc30, err := reg.Spec(api.V30)
 ```
 
-`requests.NoRules` cannot be embedded next to `pagination.CursorRequest`: the two promoted
-`Validate` methods are ambiguous and the compiler rejects the registration. A type that
-embeds `CursorRequest` already satisfies `requests.Body`.
+A list request embeds one of two pagination types. A list that passes
+`Options.SortFields` or `Options.AllowCount` to `pagination.Paginate` embeds
+`pagination.CursorRequest`, whose query parameters are `limit`, `cursor`, `sort` and
+`include_count`. A list that passes neither embeds `pagination.PageRequest`, whose only query
+parameters are `limit` and `cursor`. Its document then does not list `sort` and
+`include_count`, two parameters the list would refuse with a 400. Either way, pass the
+embedded field to `Paginate`: `&req.CursorRequest` or `&req.PageRequest`.
+
+`requests.NoRules` cannot be embedded next to `pagination.CursorRequest` or
+`pagination.PageRequest`: the two promoted `Validate` methods are ambiguous and the compiler
+rejects the registration. A type that embeds either already satisfies `requests.Body`.
 
 Blobs and alternate representations (the larger app's shape; the smaller has none; section 4):
 
@@ -1133,13 +1141,14 @@ Remaining:
 - **Converted endpoints change what they accept**: `0`, `false`, `""` now pass a presence
   `required` (above); stricter uuid and enum checks reject what ozzo let through;
   case-mismatched keys are rejected at every depth instead of bound; a `limit` above 1000
-  on a `pagination.CursorRequest` is a 400 (its `maximum` tag), where `Validate()` clamps
-  it on a plain route. Contract tests per converted module (`apitest`).
+  on a `pagination.CursorRequest` or `pagination.PageRequest` is a 400 (its `maximum` tag),
+  where `Validate()` clamps it on a plain route. Contract tests per converted module (`apitest`).
 - **Param fields get tags.** The smaller app's `runs.GetRequest.RunID` must become `uuid.UUID` with
   `json:"-" path:"id"`, and `ListRequest` fields need `json:"-" query:"..."` tags.
-  `pagination.CursorRequest` fields carry `json:"-"` and are query parameters only: check
-  the larger app's POST search bodies first in case any carry `limit`/`cursor` in the body. A request
-  that embeds `CursorRequest` does not embed `requests.NoRules` (section 3).
+  `pagination.CursorRequest` and `pagination.PageRequest` fields carry `json:"-"` and are
+  query parameters only: check the larger app's POST search bodies first in case any carry
+  `limit`/`cursor` in the body. A request that embeds either does not embed
+  `requests.NoRules` (section 3).
 - **Component names.** The larger app has about 25 duplicated package names (`finance/units` vs
   `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
 - **Compare the old spec with the registry's before switching** (the larger app): paths, methods and

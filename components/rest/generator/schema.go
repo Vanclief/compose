@@ -2178,6 +2178,7 @@ var knownMarshalers = map[string]map[string]bool{
 	"github.com/google/uuid.UUID":            {"MarshalText": true},
 	paginationImportPath + ".CursorRequest":  {},
 	paginationImportPath + ".CursorResponse": {},
+	paginationImportPath + ".PageRequest":    {},
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/query.Filter": {},
 	"github.com/uptrace/bun.BaseModel":                                               {},
 	"github.com/uptrace/bun/schema.BaseModel":                                        {},
@@ -2489,6 +2490,20 @@ func (b *schemaBuilder) wellKnownComponentSchema(ref typeRef) (map[string]any, b
 					},
 					"include_count": map[string]any{
 						"type": "boolean",
+					},
+					// Filter is `json:"-"`: server-side only, never read from the client.
+				},
+			}, true
+		case "PageRequest":
+			return map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{
+						"type":   "integer",
+						"format": "int32",
+					},
+					"cursor": map[string]any{
+						"type": "string",
 					},
 					// Filter is `json:"-"`: server-side only, never read from the client.
 				},

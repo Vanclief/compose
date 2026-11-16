@@ -198,6 +198,32 @@ func TestCursorRequestSchemaLeavesOutServerSideFilters(t *testing.T) {
 	}
 }
 
+func TestPageRequestSchemaHasOnlyLimitAndCursor(t *testing.T) {
+	builder := &schemaBuilder{schemas: map[string]map[string]any{}}
+
+	ref := builder.schemaRef(typeRef{
+		ImportPath: "github.com/vanclief/compose/drivers/databases/relational/postgres/pagination",
+		Name:       "PageRequest",
+	})
+	if ref["$ref"] != schemaRefPrefix+"github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_PageRequest" {
+		t.Fatalf("expected a $ref to the PageRequest component, got %v", ref)
+	}
+
+	properties := builder.schemas["github_com_vanclief_compose_drivers_databases_relational_postgres_pagination_PageRequest"]["properties"].(map[string]any)
+	if !reflect.DeepEqual(sortedKeys(properties), []string{"cursor", "limit"}) {
+		t.Fatalf("expected only limit and cursor, got %v", sortedKeys(properties))
+	}
+	if len(builder.schemas) != 1 {
+		t.Fatalf("expected no query.Filter component, got %v", sortedKeys(builder.schemas))
+	}
+
+	// A GET whose request embeds it is a paginated list
+	g := &generator{builder: builder}
+	if !g.paginates("GET", map[string]any{"allOf": []any{ref}}) {
+		t.Fatal("expected a GET whose request embeds PageRequest to paginate")
+	}
+}
+
 // A custom namer names every component; the generator's own lookups (pagination, models,
 // resources) follow the Go types, not the names.
 func TestSchemaNameHook(t *testing.T) {

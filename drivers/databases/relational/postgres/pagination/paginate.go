@@ -17,8 +17,19 @@ import (
 	"github.com/vanclief/ez"
 )
 
+// Request is a list request: a *CursorRequest or a *PageRequest. Only this
+// package's two types implement it.
+type Request interface {
+	Validate() error
+	// cursorRequest returns the request as the CursorRequest Paginate reads,
+	// after Validate.
+	cursorRequest() *CursorRequest
+}
+
 // Options is the endpoint's server-side list configuration, passed to
-// Paginate. None of it comes from the client.
+// Paginate. None of it comes from the client. SortFields and AllowCount act
+// on a CursorRequest only: a PageRequest has no Sort and no IncludeCount, so
+// Paginate does not use them for one.
 type Options struct {
 	// Direction is the default order, used when the request has no Sort. A Direction other than ASC or DESC,
 	// the zero value included, is ez.EINTERNAL, even under a client sort.
@@ -58,11 +69,15 @@ type Options struct {
 // Paginate runs one page of q, a select the caller has already scoped and
 // filtered, and returns its items and the response to embed next to them.
 //
+// r is a *CursorRequest or a *PageRequest. A PageRequest is read as a
+// CursorRequest with no Sort and no IncludeCount. Paginate calls r's Validate
+// first, so afterwards r's Limit holds the limit the page used.
+//
 // It validates r, resolves the order, decodes the cursor and checks it was
-// issued for that order, applies r.Filter, counts the filtered rows when
-// r.IncludeCount is set (before the cursor, so the count covers the whole
+// issued for that order, applies r's Filter, counts the filtered rows when
+// r's IncludeCount is set (before the cursor, so the count covers the whole
 // filtered set), applies the cursor, the order and the limit, scans and issues
-// the next cursor. The order is r.Sort when set, resolved against
+// the next cursor. The order is r's Sort when set, resolved against
 // opts.SortFields and rendered from the model's bun schema, otherwise
 // model.GetSortField() in opts.Direction, with model.GetUniqueField() as the
 // tie-breaker. A direction other than ASC or DESC is ez.EINTERNAL. A cursor
@@ -92,7 +107,7 @@ type Options struct {
 // query with a relation whose apply function calls JoinOn, which bun writes
 // again on each render.
 //
-// The count is closed by default: r.IncludeCount without opts.AllowCount is
+// The count is closed by default: r's IncludeCount without opts.AllowCount is
 // ez.EINVALID, before any query.
 //
 // A query error keeps its own code: an ez error keeps its code,
@@ -103,7 +118,7 @@ type Options struct {
 // and with which error, is up to database/sql and the driver.
 //
 // q's top-level conditions must be joined by AND: put OR conditions inside
-// WhereGroup(" AND ", ...). After a top-level OR, r.Filter and the cursor
+// WhereGroup(" AND ", ...). After a top-level OR, r's Filter and the cursor
 // bind only to the last OR branch, so the cursor does not hold back rows
 // matching the other branches: pages repeat them, and once they fill a page
 // paging never ends. bun's soft-delete scope and WherePK stay outside the OR:
@@ -125,17 +140,19 @@ type Options struct {
 // of another type, such as []*T, is ez.EINTERNAL. Without a slice model the
 // rows are scanned into a new slice. q is modified in place, as bun queries
 // are.
-func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorRequest, model T, opts Options) ([]T, CursorResponse, error) {
+func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r Request, model T, opts Options) ([]T, CursorResponse, error) {
 	err := r.Validate()
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
 
-	if r.IncludeCount && !opts.AllowCount {
+	req := r.cursorRequest()
+
+	if req.IncludeCount && !opts.AllowCount {
 		return nil, CursorResponse{}, ez.New(ez.EINVALID, "This list cannot be counted", nil)
 	}
 
-	order, err := r.order(q.DB(), model, opts)
+	order, err := req.order(q.DB(), model, opts)
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
@@ -149,7 +166,7 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
 
-	cursor, err := DecodeCursor(r.Cursor)
+	cursor, err := DecodeCursor(req.Cursor)
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
@@ -170,13 +187,13 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		}
 	}
 
-	q, err = applyFilters(q, r.Filter)
+	q, err = applyFilters(q, req.Filter)
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
 
 	var totalCount *int
-	if r.IncludeCount {
+	if req.IncludeCount {
 		// Rendering a query runs the apply functions of its has-one and
 		// belongs-to relations on it, so counting on q would leave what they
 		// add twice in the page query. A copy of the query value takes what
@@ -198,7 +215,7 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		totalCount = &total
 	}
 
-	q = applyCursor(q, cursor, order, model.GetUniqueField(), r.Limit)
+	q = applyCursor(q, cursor, order, model.GetUniqueField(), req.Limit)
 
 	dest, err = scanPage(ctx, q, dest)
 	if err != nil {
@@ -208,7 +225,7 @@ func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r *CursorR
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
 
-	items, resp, err := buildPage(*dest, r.Limit, order)
+	items, resp, err := buildPage(*dest, req.Limit, order)
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}

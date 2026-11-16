@@ -6,9 +6,9 @@ package requests
 // handler, so Validate only exists to satisfy Body.
 //
 // Do not embed it next to another embedded type that already has a Validate
-// method (for example pagination.CursorRequest): the two promoted methods are
-// ambiguous and the request type stops implementing Body, which the compiler
-// reports at the registration call.
+// method (for example pagination.CursorRequest or pagination.PageRequest): the
+// two promoted methods are ambiguous and the request type stops implementing
+// Body, which the compiler reports at the registration call.
 type NoRules struct{}
 
 // Validate always succeeds.
