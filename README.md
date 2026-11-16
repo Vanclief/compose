@@ -1,6 +1,6 @@
 # compose
 
-Building blocks for Go backend services. compose covers the parts most services share: configuration, logging, a REST layer on [Echo](https://echo.labstack.com) whose routes generate and enforce their own OpenAPI document, an MCP server over that API, authentication, a scheduler, and PostgreSQL helpers on [bun](https://bun.uptrace.dev).
+Building blocks for Go backend services, covering the parts most of them share: configuration, logging, a REST layer on [Echo](https://echo.labstack.com) whose routes generate and enforce their own OpenAPI document, an MCP server over that API, authentication, a scheduler, and PostgreSQL helpers on [bun](https://bun.uptrace.dev).
 
 It is the base of services that run in production, and it is published as it is: an opinionated library that is still being shaped. If you build this kind of service in Go and have views on how these parts should work, issues and design feedback are welcome.
 
@@ -149,7 +149,7 @@ It is not free. Error handling is repetitive, and the type system has no sum typ
 - **Production use.** Most of compose runs in production services. The route registry (`components/rest/api`) is the newest part and has not carried a production service yet.
 - **Breaking changes ship in minor releases.** The module stays on `v1`, and a minor release can change behaviour or an exported name. Each such change is listed under `### Breaking` in the [changelog](CHANGELOG.md) with what to do about it. Pin a version and read that section before upgrading.
 - **Requirements.** Go 1.26.11 or later; CI also runs the tests on Go 1.27. Echo v5. PostgreSQL is the main target: the advisory locks, the schema baseline and the scheduler's claims need it. SQLite covers the rest.
-- **Scope.** compose is maintained alongside the services that use it. There is nothing to sell and no roadmap to promise: it changes when those services need it to, or when someone shows a better design.
+- **Scope.** The library is maintained alongside the services that use it. There is nothing to sell and no roadmap to promise: it changes when those services need it to, or when someone shows a better design.
 
 ## Known limits
 
