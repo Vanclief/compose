@@ -21,6 +21,7 @@ This guide covers:
 - [OAuth for MCP](#oauth-for-mcp)
 - [MCP](#mcp)
 - [Generator](#generator)
+- [Route registry](#route-registry)
 - [Migrating from API-KEY and API-SECRET](#migrating-from-api-key-and-api-secret)
 
 The packages are:
@@ -939,6 +940,47 @@ an app that lists `ApiKeyAuth`, `ApiSecretAuth` and `BearerAuth` publishes
 `security: [{ApiKeyAuth: [], ApiSecretAuth: []}, {BearerAuth: []}]`. The reference page's curl
 examples use the first requirement object, so they keep showing the key pair until it is removed.
 
+## Route registry
+
+An app whose routes are in the route registry (`components/rest/api`) declares the same schemes
+with `api.Security`, passed to `api.New`. `api.SecurityScheme` has the fields of
+`generator.SecurityScheme`, so the list above moves over unchanged:
+
+```go
+reg := api.New(e,
+	api.Security(
+		api.SecurityScheme{Name: "ApiKeyAuth", Header: "API-KEY"},
+		api.SecurityScheme{Name: "ApiSecretAuth", Header: "API-SECRET"},
+		api.SecurityScheme{
+			Name:         "BearerAuth",
+			Type:         "http",
+			Scheme:       "bearer",
+			BearerFormat: "opaque",
+			Description:  "An API key (acme_...), an OAuth access token (acmeat_...) or a session token (acmes_...).",
+		},
+	),
+	api.Authenticate(app.Authenticate),
+)
+```
+
+The requirement follows the generator's rule: every `apiKey` scheme in one requirement object,
+then each `http` scheme in its own, so this list publishes
+`security: [{ApiKeyAuth: [], ApiSecretAuth: []}, {BearerAuth: []}]`. The registry writes it on
+every operation not marked `api.Public()`, not once on the document. Once the pair is no longer
+accepted, list only `BearerAuth`.
+
+- `api.Security` only writes the document. The function passed to `api.Authenticate` checks the
+  credentials, and must accept what the list declares.
+- `api.APIKeyHeader("API-KEY")` is the short form of one `apiKey` scheme named `apiKey`. It cannot
+  be passed together with `api.Security`, and `api.Security` is passed once, with every scheme.
+- Keep the names the published document already has: `reference.Diff` knows a scheme by its name,
+  so one given another name reads as replaced, which is breaking.
+- An invalid list panics when `api.Security` is called: no scheme, a name that is empty, repeated
+  or outside `[A-Za-z0-9._-]+`, a `Type` other than `"apiKey"` or `"http"`, an `apiKey` scheme
+  without a `Header` or with the header of another scheme, an `http` scheme without a `Scheme`,
+  or a field the type does not use (`Scheme` or `BearerFormat` on an `apiKey` scheme, `Header` on
+  an `http` one).
+
 ## Migrating from API-KEY and API-SECRET
 
 1. **Bump compose.**
@@ -974,7 +1016,8 @@ examples use the first requirement object, so they keep showing the key pair unt
    the credential the application resolved.
 6. **Switch clients to `Authorization: Bearer <token>`.** Issue API keys with
    `token.Generate(prefix)` and resolve them by hash, as in [the example](#example). Switch the
-   generator config to the [http bearer scheme](#generator).
+   generator config to the [http bearer scheme](#generator), or the list of
+   [`api.Security`](#route-registry) where the routes are in the route registry.
 7. **OAuth.** Set `oauth.Config.TokenPrefix`. Return `oauth.Grant{Subject: ...}` from
    `Login.Verify` or `Approve`; `Grant.Headers` is gone. Change `Fallback` to
    `func(ctx context.Context, token string) (bool, error)`. Resolve `<prefix>at_` tokens on the REST side

@@ -58,7 +58,8 @@ import (
 	"github.com/vanclief/compose/components/rest/handler"
 )
 
-// securitySchemeName is the name of the API key security scheme.
+// securitySchemeName is the name of the security scheme APIKeyHeader
+// declares.
 const securitySchemeName = "apiKey"
 
 // DefaultMaxBody is the request body limit in bytes of an operation that no
@@ -91,6 +92,7 @@ type Registry struct {
 	info         huma.Info
 	servers      []*huma.Server
 	apiKeyHeader string
+	security     []SecurityScheme // of Security, or the one of APIKeyHeader
 	namer        func(reflect.Type) string
 	opts         []Option // operation options of New, applied before the group's
 
@@ -122,7 +124,9 @@ func Description(description string) Option {
 }
 
 // APIKeyHeader declares an API key security scheme read from the given
-// header and requires it on every operation not marked Public. Registry
+// header, under the name apiKey, and requires it on every operation not
+// marked Public. An app that requires more than one header, takes a bearer
+// token or names its schemes declares them with Security instead. Registry
 // option.
 func APIKeyHeader(name string) Option {
 	return Option{name: "api.APIKeyHeader", registry: func(r *Registry) {
@@ -155,7 +159,8 @@ func Namer(namer func(reflect.Type) string) Option {
 // the request an operation built. Operation options such as Authenticate,
 // Timeout or MaxBodyBytes apply to every operation, before the options of its
 // groups and its own. Panics when an option is an operation option
-// (ContentType, Produces).
+// (ContentType, Produces), and when Security is passed twice or with
+// APIKeyHeader.
 func New(e *echo.Echo, opts ...Option) *Registry {
 	err := checkOptions(opts, registryScope)
 	if err != nil {
@@ -174,6 +179,12 @@ func New(e *echo.Echo, opts ...Option) *Registry {
 			continue
 		}
 		opt.registry(r)
+	}
+	if r.apiKeyHeader != "" {
+		if r.security != nil {
+			panic(ez.New(ez.EINVALID, "api: New: api.APIKeyHeader and api.Security cannot both be passed: declare the header as an apiKey scheme of api.Security", nil))
+		}
+		r.security = []SecurityScheme{{Name: securitySchemeName, Type: apiKeyType, Header: r.apiKeyHeader}}
 	}
 	r.reflector = openapi.NewReflector(openapi.WithNamer(r.namer))
 

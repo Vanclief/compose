@@ -304,10 +304,8 @@ func (r *Registry) document(res *openapi.Result, comps map[string]*huma.Schema, 
 		Servers:    r.servers,
 		Components: &huma.Components{Schemas: schemas},
 	}
-	if r.apiKeyHeader != "" {
-		doc.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
-			securitySchemeName: {Type: "apiKey", In: "header", Name: r.apiKeyHeader},
-		}
+	if len(r.security) > 0 {
+		doc.Components.SecuritySchemes = r.securitySchemes()
 	}
 
 	var tags []string
@@ -374,8 +372,8 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 		o.RequestBody = &huma.RequestBody{Required: required, Content: jsonContent(&huma.Schema{Ref: ref})}
 	}
 
-	if r.apiKeyHeader != "" && !op.public {
-		o.Security = []map[string][]string{{securitySchemeName: {}}}
+	if len(r.security) > 0 && !op.public {
+		o.Security = r.securityRequirement()
 	}
 
 	return o
