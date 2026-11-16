@@ -1,8 +1,8 @@
 # compose REST: OpenAPI, schema-as-validator and SDK generation
 
-Status: implemented on branch `Vanclief/sdk-generation` (packages `components/rest/api`,
-`components/rest/api/openapi`, `components/rest/api/validate`, `components/rest/apitest`);
-first ships in compose v1.31.0, on Echo v5. Last updated 2026-11-11.
+Status: implemented in the packages `components/rest/api`, `components/rest/api/openapi`,
+`components/rest/api/validate` and `components/rest/apitest`; first shipped in compose
+v1.31.0, on Echo v5.
 
 ## 1. Decision
 
