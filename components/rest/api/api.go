@@ -39,9 +39,9 @@
 // translator, with handler.Request nil.
 //
 // Tags: an operation's tag is the last non-parameter segment of its group's
-// full prefix (/runs -> runs, /runs/:id/issues -> issues, /v1/runs -> runs).
-// Its operationId is "<tag>.<name>", or just "<name>" when the prefix has no
-// non-parameter segment.
+// full prefix (/runs -> runs, /runs/:id/issues -> issues, /v1/runs -> runs),
+// unless Tag sets another. Its operationId is "<tag>.<name>", or just
+// "<name>" when the prefix has no non-parameter segment and no Tag applies.
 package api
 
 import (

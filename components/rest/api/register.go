@@ -143,17 +143,13 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 		method:    strings.ToUpper(method),
 		path:      g.prefix + path,
 		name:      name,
-		tag:       g.tag,
 		reqType:   reqType,
 		resType:   resType,
 		invoke:    invoke,
 		maxBody:   DefaultMaxBody,
 		maxValues: DefaultMaxBodyValues,
 	}
-	op.id = name
-	if op.tag != "" {
-		op.id = op.tag + "." + name
-	}
+	op.setTag(g.tag)
 
 	err := checkOptions(opts, routeScope)
 	if err != nil {
@@ -182,6 +178,16 @@ func (g *Group) register(method, path, name string, reqType, resType reflect.Typ
 	r.ops = append(r.ops, op)
 	r.ids[op.id] = true
 	r.routes[routeKey(op.method, op.path)] = op.id
+}
+
+// setTag sets the operation's tag and the operationId that follows from it:
+// "<tag>.<name>", or "<name>" without a tag.
+func (op *operation) setTag(tag string) {
+	op.tag = tag
+	op.id = op.name
+	if tag != "" {
+		op.id = tag + "." + op.name
+	}
 }
 
 // routeName is the name of the operation's Echo route.
@@ -229,8 +235,9 @@ func (r *Registry) check(op *operation) error {
 	if !namePattern.MatchString(op.name) {
 		return ez.New(ez.EINVALID, fmt.Sprintf("operation name %q must match %s", op.name, namePattern), nil)
 	}
+	// api.Tag checks its own name, so a tag that fails here is the prefix's.
 	if op.tag != "" && !namePattern.MatchString(op.tag) {
-		return ez.New(ez.EINVALID, fmt.Sprintf("tag %q (from the group prefix) must match %s", op.tag, namePattern), nil)
+		return ez.New(ez.EINVALID, fmt.Sprintf("tag %q (from the group prefix) must match %s: change the prefix or set the tag with api.Tag", op.tag, namePattern), nil)
 	}
 	if r.ids[op.id] {
 		return ez.New(ez.EINVALID, "duplicate operationId", nil)

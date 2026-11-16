@@ -157,8 +157,11 @@ Rules enforced at registration (fail boot):
   count: `/runs/:id` and `/runs/:run_id` are one route, and every method of one path must
   spell its placeholders alike, since OpenAPI forbids two templated paths that differ only by
   those names); names and tags match
-  `[A-Za-z0-9_-]+`. The tag is the last non-parameter segment of the group's full prefix
-  (`/runs/:id/issues` gives `issues`); with none, the operationId is `<name>`
+  `[A-Za-z0-9_-]+`. The tag is the one the nearest `api.Tag` sets, on the operation, its
+  groups or `api.New`, so a tag need not follow the path:
+  `Group("/complexes/:id/expenses", api.Tag("finance"))` gives `finance.<name>`. Without an
+  `api.Tag` it is the last non-parameter segment of the group's full prefix
+  (`/runs/:id/issues` gives `issues`), and with no such segment the operationId is `<name>`
 - tag names come from an allowlist (`json`, `path`, `query`, `header`, `form`, `required`,
   `default`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`,
   `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`, `enum`,
@@ -312,8 +315,7 @@ Rules enforced at registration (fail boot):
 Dropped from the first sketch after review: `api.DefaultError` (`rest.ErrorHandler`, like
 `ManageError`, always writes `handler.ErrorResponse`, making it configurable invites drift),
 `api.Empty` (add it only when an endpoint needs it, and then it means 204 via
-`c.NoContent`, never `200 null`), `api.Tag` on groups (derived from the prefix, above),
-`SpecHandler`.
+`c.NoContent`, never `200 null`), `SpecHandler`.
 
 ## 4. Request pipeline per registered operation
 
@@ -1122,7 +1124,8 @@ Remaining:
   `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
 - **Compare the old spec with the registry's before switching** (the larger app): paths, methods and
   operationIds, because its TypeScript SDK's method names and the MCP server's function names come
-  from them.
+  from them. Where an old operationId's first half is not the last segment of the route's
+  group, `api.Tag` on the group keeps it.
 - **Pointer-to-struct response fields get `omitempty`** (section 7): `null` becomes absent on
   the wire, and registration refuses such a field without it. Apply in the smaller app first; audit the larger app's TypeScript SDK consumers before the larger app.
 - **The larger app's handlers change shape.** Its negotiating list handlers split into a JSON handler
