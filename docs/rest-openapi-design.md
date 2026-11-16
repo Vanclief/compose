@@ -309,7 +309,7 @@ Rules enforced at registration (fail boot):
 - a `Produces` handler takes the operation's `Req`: a built `Option` has lost its type
   parameters, so the compiler cannot check it and registration does
 - every option is used at a scope it supports (`Info`, `Description`, `APIKeyHeader`,
-  `Server`, `Namer` on `api.New` only; `ContentType`, `Produces` on an operation only), and
+  `Security`, `Server`, `Namer` on `api.New` only; `ContentType`, `Produces` on an operation only), and
   one options list cannot hold both `Public()` and `Authenticate()`
 
 Dropped from the first sketch after review: `api.DefaultError` (`rest.ErrorHandler`, like
@@ -812,7 +812,17 @@ lint, key check and variants.
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
   `default` response pointing at the `handler.ErrorResponse` component, under the name the
   namer gives it. The `api.APIKeyHeader` security
-  scheme applies to every operation unless `api.Public()`.
+  scheme applies to every operation unless `api.Public()`. `api.Security` declares the schemes
+  by name in its place, for an app that requires more than one header or takes a bearer
+  token: every `apiKey` scheme goes in one requirement, so they are sent together, and each
+  `http` scheme in its own after it, an alternative credential, as the generator writes them
+  (`api/security.go`). `api.Security(api.SecurityScheme{Name: "ApiKeyAuth", Header: "API-KEY"},
+  api.SecurityScheme{Name: "ApiSecretAuth", Header: "API-SECRET"}, api.SecurityScheme{Name:
+  "BearerAuth", Type: "http", Scheme: "bearer"})` publishes `security: [{ApiKeyAuth: [],
+  ApiSecretAuth: []}, {BearerAuth: []}]` on every operation not marked `api.Public()`. Both
+  options only write the document: the `api.Authenticate` function checks the credentials.
+  Other scheme types (`oauth2`, `openIdConnect`, `mutualTLS`), API keys in a query or cookie,
+  and a requirement that differs between operations are not supported.
 - huma is not a module dependency. Its `schema.go`, `registry.go` and `openapi.go` from
   v2.39.1 are copied into `components/rest/api/internal/huma` (MIT, `LICENSE` alongside),
   trimmed to what compose uses: no `huma.Validate` message precomputation (only its
