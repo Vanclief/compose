@@ -25,7 +25,7 @@ type Group struct {
 // Option configures the registry (api.New), a group or an operation. Each
 // option supports some of these scopes; using it at another one panics at
 // boot. Registry options (Info, Description, APIKeyHeader, Security, Server,
-// Namer) are only accepted by New. ContentType and Produces are
+// Namer, Descriptions) are only accepted by New. ContentType and Produces are
 // only accepted by an operation. Every other option is accepted at every
 // scope and applies to every operation below it: options of New first, then
 // the group's, then the operation's, so the nearest one wins. Middleware

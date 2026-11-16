@@ -8,6 +8,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/vanclief/compose/components/rest/api/descriptions"
 )
 
 // ports are the GOOS/GOARCH pairs Go builds for, as `go tool dist list` prints them on Go 1.26
@@ -121,13 +123,14 @@ func sameDeclarations(decls []typeSpecInfo, docComments bool) bool {
 // package qualifier written as its import path, parentheses dropped and names declared together
 // written one by one, a struct field with its tag as reflect.StructTag reads it and the
 // deprecation the generator reads from its comments (hasDeprecatedParagraph), which the document
-// shows, and, with docComments (Config.DocComments), the field's description (fieldDoc) and the
-// type's doc comment, which the document then shows too. A struct field that is neither exported
-// nor embedded is left out, as encoding/json does not write it.
+// shows, and, with docComments (Config.DocComments), the field's description
+// (descriptions.FieldText) and the type's doc comment, which the document then shows too. A
+// struct field that is neither exported nor embedded is left out, as encoding/json does not
+// write it.
 func declarationShape(decl typeSpecInfo, docComments bool) string {
 	var out strings.Builder
 	if docComments {
-		out.WriteString(strconv.Quote(commentText(decl.Doc)))
+		out.WriteString(strconv.Quote(descriptions.CommentText(decl.Doc)))
 	}
 	if decl.Spec.TypeParams != nil {
 		out.WriteString("[" + fieldListShape(decl.Spec.TypeParams, decl.Imports, false, docComments) + "]")
@@ -211,7 +214,7 @@ func fieldListShape(list *ast.FieldList, imports map[string]string, fields bool,
 			suffix += " " + tagShape(field) + " " + strconv.FormatBool(hasDeprecatedParagraph(field))
 		}
 		if fields && docComments {
-			suffix += " " + strconv.Quote(fieldDoc(field))
+			suffix += " " + strconv.Quote(descriptions.FieldText(field))
 		}
 		if len(field.Names) == 0 {
 			entries = append(entries, suffix)

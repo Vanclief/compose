@@ -17,7 +17,7 @@ type Param struct {
 	Required   bool         // always true for path params, which refuse required:"false"
 	Schema     *huma.Schema // inline schema (may be a $ref for enum types); Description lives in Doc
 	Index      []int        // reflect field index path into the request struct
-	Doc        string       // from doc tag
+	Doc        string       // doc tag, or the field's comment (WithDescriptions)
 	Deprecated bool
 }
 
@@ -86,7 +86,8 @@ func buildParams(reg *registry, t reflect.Type) ([]Param, error) {
 		}
 		seen[key] = true
 
-		schema := huma.SchemaFromField(reg, f, "")
+		parent := declaringType(t, f.Index)
+		schema := huma.SchemaFromField(reg, parent, f, "")
 		deprecated := schema.Deprecated
 		schema.Nullable = false
 		schema.Description = ""
@@ -98,7 +99,7 @@ func buildParams(reg *registry, t reflect.Type) ([]Param, error) {
 			Required:   required,
 			Schema:     schema,
 			Index:      f.Index,
-			Doc:        f.Tag.Get("doc"),
+			Doc:        huma.FieldDoc(reg, parent, f),
 			Deprecated: deprecated,
 		})
 	}

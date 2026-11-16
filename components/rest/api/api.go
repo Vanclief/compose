@@ -45,6 +45,7 @@
 package api
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"sync"
@@ -94,7 +95,8 @@ type Registry struct {
 	apiKeyHeader string
 	security     []SecurityScheme // of Security, or the one of APIKeyHeader
 	namer        func(reflect.Type) string
-	opts         []Option // operation options of New, applied before the group's
+	descriptions map[string]string // of Descriptions
+	opts         []Option          // operation options of New, applied before the group's
 
 	reflector *openapi.Reflector
 	ops       []*operation
@@ -150,6 +152,42 @@ func Namer(namer func(reflect.Type) string) Option {
 	}}
 }
 
+// Descriptions describes the types and fields the documents publish with
+// their Go comments, which reflection cannot read. data is the JSON object
+// `compose descriptions` writes, keyed by import path and type name, and by
+// field name after it. A field without a doc tag is treated exactly as if it
+// carried doc:"<its comment>", the comment of the struct that declares it, so
+// a field promoted from an embedded struct finds the embedded struct's: in
+// the body, the path, query and header parameters and the multipart form
+// values and files. A doc tag wins, an empty one too. A struct or enum type
+// published as a component gets its comment as its description, as do its
+// request copy, <name>Input, and every instantiation of a generic type. Every
+// document carries them, and no request validates differently. An app embeds
+// the file, so it ships in the binary:
+//
+//	//go:generate go run github.com/vanclief/compose/cmd/compose descriptions -out descriptions.json .
+//
+//	//go:embed descriptions.json
+//	var descriptions []byte
+//
+//	reg := api.New(e, api.Descriptions(descriptions))
+//
+// Registry option. Panics when data is not a JSON object of strings, and New
+// panics when it is passed twice.
+func Descriptions(data []byte) Option {
+	var comments map[string]string
+	err := json.Unmarshal(data, &comments)
+	if err != nil || comments == nil {
+		panic(ez.New(ez.EINVALID, "api: Descriptions: the data is not a JSON object of strings, as compose descriptions writes it", err))
+	}
+	return Option{name: "api.Descriptions", registry: func(r *Registry) {
+		if r.descriptions != nil {
+			panic(ez.New(ez.EINVALID, "api: New: api.Descriptions is passed twice: pass one file", nil))
+		}
+		r.descriptions = comments
+	}}
+}
+
 // New creates a registry bound to an Echo instance. Its operations return
 // their errors to Echo, so the app sets e.HTTPErrorHandler to
 // rest.ErrorHandler for the handler.ErrorResponse envelope the spec
@@ -159,8 +197,8 @@ func Namer(namer func(reflect.Type) string) Option {
 // the request an operation built. Operation options such as Authenticate,
 // Timeout or MaxBodyBytes apply to every operation, before the options of its
 // groups and its own. Panics when an option is an operation option
-// (ContentType, Produces), and when Security is passed twice or with
-// APIKeyHeader.
+// (ContentType, Produces), when Security is passed twice or with
+// APIKeyHeader, and when Descriptions is passed twice.
 func New(e *echo.Echo, opts ...Option) *Registry {
 	err := checkOptions(opts, registryScope)
 	if err != nil {
@@ -186,7 +224,7 @@ func New(e *echo.Echo, opts ...Option) *Registry {
 		}
 		r.security = []SecurityScheme{{Name: securitySchemeName, Type: apiKeyType, Header: r.apiKeyHeader}}
 	}
-	r.reflector = openapi.NewReflector(openapi.WithNamer(r.namer))
+	r.reflector = openapi.NewReflector(openapi.WithNamer(r.namer), openapi.WithDescriptions(r.descriptions))
 
 	err = r.reflector.AddResponse(errorResponseType)
 	if err != nil {

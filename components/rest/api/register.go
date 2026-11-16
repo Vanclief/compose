@@ -286,7 +286,7 @@ func (r *Registry) check(op *operation) error {
 		return ez.Wrap(err)
 	}
 
-	op.files, err = fileFields(op.reqType)
+	op.files, err = fileFields(op.reqType, r.reflector)
 	if err != nil {
 		return ez.Wrap(err)
 	}

@@ -868,6 +868,62 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
   through an unexported interface in `openapi`, so `types/` depends on neither the api
   packages nor huma.
 
+### Descriptions
+
+The registry builds its documents by reflection inside the running binary, where Go
+comments do not exist. Two things describe what it publishes:
+
+- **The `doc` tag** describes one field: `doc:"Where the run is."`.
+- **The comments file** carries the doc comments of the app's types and fields. A build step
+  writes it with `compose descriptions`, the app embeds it, and `api.Descriptions` loads it:
+
+  ```go
+  //go:generate go run github.com/vanclief/compose/cmd/compose descriptions -out descriptions.json .
+
+  //go:embed descriptions.json
+  var descriptions []byte
+
+  reg := api.New(e, api.Descriptions(descriptions), api.Info("Runs API", "1.0.0"))
+  ```
+
+The rule: **a field without a `doc` tag is treated exactly as if it carried
+`doc:"<its comment>"`, and a struct type published in the document gets its comment as its
+schema's `description`.** A `doc` tag wins, an empty `doc:""` too, which hides the comment.
+A field's comment is the one written in the struct that declares it, so a field promoted from
+an embedded struct finds the embedded struct's comment. The rule holds wherever the `doc` tag
+is read: body properties, path, query and header parameters, multipart form values and file
+fields. All of them go through one lookup, `huma.FieldDoc`, so the tag and the comment cannot
+behave differently. A field whose schema is a `$ref` carries the description beside it, and
+the 3.0.3 document wraps the `$ref` in `allOf`, as for a tag. An enum type published as a
+component is described like a struct. So are the request copy published as `<name>Input` and
+every instantiation of a generic type, which shares its declaration's comment. A named type
+inlined into its fields is not described. The 3.1, the 3.0.3 and the strict document carry
+the same descriptions. They are annotations: no request validates differently, and the
+`apitest` contract judges a response the same.
+
+`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default, skipping
+`vendor`, `testdata`, directories that start with `.` or `_`, and `_test.go` files. It
+records every package-level named type with a doc comment, unexported ones too, because the
+exported fields of an unexported embedded struct are published, and every named exported
+field of a package-level struct with a comment. Aliases, types declared in a function and
+embedded fields have no entry. A key is the import path and the type name,
+`github.com/x/app/runs.Run`, with the Go field name after it for a field,
+`github.com/x/app/runs.Run.Status`. The import path is the module path of the nearest
+`go.mod` joined with the directory below it. A type in a `package main` is keyed under
+`main`, as reflection reports it, and a generic type under its name without type arguments.
+The text follows the generator's rules (`descriptions.CommentText` and
+`descriptions.FieldText`, which the generator calls too): the `Deprecated:` paragraph and
+TODO, FIXME and nolint lines are dropped, and a field's doc comment comes before its line
+comment. Two files that describe one key differently fail and name both.
+
+The output is one JSON object with sorted keys, the same bytes for the same source. So CI
+checks that the file is fresh by regenerating it and running `git diff --exit-code`. The
+file holds the comments of every type under the directories given, and it is embedded in the
+binary. Point the command at the packages that hold the API's types if the rest should not
+ship. Not described yet: enum constants, package comments as tag descriptions and handler
+comments as operation descriptions, which the generator reads. `api.Doc` sets an operation's
+summary and description.
+
 ## 6. Validator glue (santhosh v6)
 
 - `compiler.AddResource("mem:///spec.json", ...)` once with a validation document holding every
@@ -1154,6 +1210,10 @@ Remaining:
   query parameters only: check the larger app's POST search bodies first in case any carry
   `limit`/`cursor` in the body. A request that embeds either does not embed
   `requests.NoRules` (section 3).
+- **Doc comments become a file.** The generator read the comments of types and fields from
+  source. The registry reads them from the file `compose descriptions` writes, loaded with
+  `api.Descriptions` (section 5, Descriptions), so add the `go:generate` and `go:embed` lines
+  and the CI freshness check in the change that moves the routes.
 - **Component names.** The larger app has about 25 duplicated package names (`finance/units` vs
   `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
 - **Compare the old spec with the registry's before switching** (the larger app): paths, methods and

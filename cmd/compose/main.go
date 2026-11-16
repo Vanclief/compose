@@ -11,6 +11,12 @@
 //	compose reference -head openapi.yaml -base previous.yaml -out page.html
 //	compose reference -head openapi.yaml -base previous.yaml -serve 127.0.0.1:8090
 //
+// The descriptions subcommand writes the doc comments of the Go types under
+// the directories given, and of their fields, as the JSON file the route
+// registry loads with api.Descriptions, to a file or to stdout:
+//
+//	compose descriptions -out descriptions.json .
+//
 // Exit codes are 0 on success, 1 on a runtime error and 2 on a usage error.
 package main
 
@@ -23,10 +29,11 @@ import (
 const usage = `Usage: compose <command> [flags]
 
 Commands:
-  reference   render the API reference page of an OpenAPI spec
-  help        show this help
+  reference      render the API reference page of an OpenAPI spec
+  descriptions   write the doc comments of Go types for api.Descriptions
+  help           show this help
 
-Run 'compose reference -h' for the flags of reference.
+Run 'compose <command> -h' for the flags of a command.
 `
 
 func main() {
@@ -43,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "reference":
 		return runReference(args[1:], stdout, stderr)
+	case "descriptions":
+		return runDescriptions(args[1:], stdout, stderr)
 	case "help", "-h", "-help", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
