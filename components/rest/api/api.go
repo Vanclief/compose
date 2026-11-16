@@ -125,9 +125,9 @@ func Description(description string) Option {
 
 // APIKeyHeader declares an API key security scheme read from the given
 // header, under the name apiKey, and requires it on every operation not
-// marked Public. An app that requires more than one header, takes a bearer
-// token or names its schemes declares them with Security instead. Registry
-// option.
+// marked Public. An empty name declares no scheme. An app that requires more
+// than one header, takes a bearer token or names its schemes declares them
+// with Security instead. Registry option.
 func APIKeyHeader(name string) Option {
 	return Option{name: "api.APIKeyHeader", registry: func(r *Registry) {
 		r.apiKeyHeader = name
