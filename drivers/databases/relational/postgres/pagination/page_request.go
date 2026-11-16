@@ -35,22 +35,29 @@ type PageRequest struct {
 // Validate applies the default limit and clamps the limit to MAX_PAGE_SIZE. A
 // negative limit is ez.EINVALID.
 func (r *PageRequest) Validate() error {
-	limit, err := validLimit(r.Limit)
-	if err != nil {
-		return ez.Wrap(err)
+	if r.Limit < 0 {
+		return ez.New(ez.EINVALID, "Page size cannot be negative", nil)
 	}
 
-	r.Limit = limit
+	r.Limit = pageLimit(r.Limit)
 
 	return nil
 }
 
-// cursorRequest returns the CursorRequest Paginate reads for r: its Limit,
-// Cursor and Filter, with no Sort and no IncludeCount.
-func (r *PageRequest) cursorRequest() *CursorRequest {
-	return &CursorRequest{
+// cursorRequest validates r and returns the CursorRequest Paginate reads for
+// it: its Limit, Cursor and Filter, with no Sort and no IncludeCount. The
+// error is returned as Validate made it, as for a CursorRequest.
+func (r *PageRequest) cursorRequest() (*CursorRequest, error) {
+	err := r.Validate()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &CursorRequest{
 		Limit:  r.Limit,
 		Cursor: r.Cursor,
 		Filter: r.Filter,
 	}
+
+	return request, nil
 }

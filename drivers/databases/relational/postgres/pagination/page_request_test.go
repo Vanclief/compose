@@ -171,18 +171,101 @@ func TestPaginatePageRequestIgnoresSortFieldsAndAllowCount(t *testing.T) {
 }
 
 // A cursor a client sort issued is refused on a PageRequest, which pages only
-// in the default order.
+// in the default order. Its values are an int64, as the default rank sort
+// issues, so only the order check refuses it.
 func TestPaginatePageRequestRefusesASortedCursor(t *testing.T) {
-	conn := newRecordConn()
-	opts := Options{Direction: ASC, SortFields: recordSortFields}
+	cursor := encodeTestCursor(t, Cursor{SortField: "?TableAlias.name", SortValue: int64(5), UniqueField: "?TableAlias.id", UniqueValue: int64(2), Direction: "asc"})
 
-	_, resp, err := paginateRecords(conn, &CursorRequest{Limit: 2, Sort: "name"}, opts)
-	if err != nil {
-		t.Fatalf("paginate: %v", err)
+	conn := newRecordConn()
+	_, _, err := paginatePageRecords(conn, &PageRequest{Limit: 2, Cursor: cursor}, Options{Direction: ASC, SortFields: recordSortFields})
+	requireCode(t, err, ez.EINVALID)
+	if ez.ErrorMessage(err) != "Cursor was issued for a different order" {
+		t.Fatalf("expected the order check to refuse the cursor, got %q", ez.ErrorMessage(err))
+	}
+	requireQueries(t, conn)
+}
+
+// overridingCursorList and overridingPageList embed the package's requests
+// and declare their own Validate, which skips the limit rule. Paginate still
+// applies it.
+type overridingCursorList struct {
+	CursorRequest
+	Name string
+}
+
+func (r *overridingCursorList) Validate() error {
+	return nil
+}
+
+type overridingPageList struct {
+	PageRequest
+	Name string
+}
+
+func (r *overridingPageList) Validate() error {
+	return nil
+}
+
+func TestPaginateAppliesTheLimitRuleUnderAnEmbeddingValidate(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		wantLimit int
+		wantQuery string
+	}{
+		{name: "default", limit: 0, wantLimit: DEFAULT_LIMIT, wantQuery: selectRecords + ` ORDER BY "r".rank ASC, "r".id ASC LIMIT 51`},
+		{name: "clamped", limit: 5000, wantLimit: MAX_PAGE_SIZE, wantQuery: selectRecords + ` ORDER BY "r".rank ASC, "r".id ASC LIMIT 1001`},
 	}
 
-	conn = newRecordConn()
-	_, _, err = paginatePageRecords(conn, &PageRequest{Limit: 2, Cursor: resp.NextCursor}, opts)
-	requireCode(t, err, ez.EINVALID)
-	requireQueries(t, conn)
+	for _, tc := range tests {
+		t.Run("cursor request "+tc.name, func(t *testing.T) {
+			conn := newRecordConn()
+			db := newFakeDB(conn)
+			items := []record{}
+			request := &overridingCursorList{CursorRequest: CursorRequest{Limit: tc.limit}}
+
+			_, _, err := Paginate(context.Background(), db.NewSelect().Model(&items), request, record{}, Options{Direction: ASC})
+			if err != nil {
+				t.Fatalf("paginate: %v", err)
+			}
+
+			requireQueries(t, conn, tc.wantQuery)
+			if request.Limit != tc.wantLimit {
+				t.Fatalf("expected limit %d, got %d", tc.wantLimit, request.Limit)
+			}
+		})
+
+		t.Run("page request "+tc.name, func(t *testing.T) {
+			conn := newRecordConn()
+			db := newFakeDB(conn)
+			items := []record{}
+			request := &overridingPageList{PageRequest: PageRequest{Limit: tc.limit}}
+
+			_, _, err := Paginate(context.Background(), db.NewSelect().Model(&items), request, record{}, Options{Direction: ASC})
+			if err != nil {
+				t.Fatalf("paginate: %v", err)
+			}
+
+			requireQueries(t, conn, tc.wantQuery)
+			if request.Limit != tc.wantLimit {
+				t.Fatalf("expected limit %d, got %d", tc.wantLimit, request.Limit)
+			}
+		})
+	}
+}
+
+// A negative limit names the Validate of the package's request, as when
+// Paginate called Validate itself.
+func TestPaginateNegativeLimitErrorChain(t *testing.T) {
+	_, _, err := paginateRecords(newRecordConn(), &CursorRequest{Limit: -1}, Options{Direction: ASC})
+	want := "pagination.Paginate: pagination.CursorRequest.Validate: <invalid> Page size cannot be negative"
+	if err == nil || err.Error() != want {
+		t.Fatalf("expected %q, got %v", want, err)
+	}
+
+	_, _, err = paginatePageRecords(newRecordConn(), &PageRequest{Limit: -1}, Options{Direction: ASC})
+	want = "pagination.Paginate: pagination.PageRequest.Validate: <invalid> Page size cannot be negative"
+	if err == nil || err.Error() != want {
+		t.Fatalf("expected %q, got %v", want, err)
+	}
 }

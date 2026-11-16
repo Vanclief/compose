@@ -17,13 +17,15 @@ import (
 	"github.com/vanclief/ez"
 )
 
-// Request is a list request: a *CursorRequest or a *PageRequest. Only this
-// package's two types implement it.
+// Request is a list request: a *CursorRequest, a *PageRequest, or a pointer
+// to a type that embeds one of them, which gets the method from it. Paginate
+// always applies the limit rule of the embedded CursorRequest or PageRequest,
+// whatever Validate the embedding type declares, so passing &req behaves
+// exactly as passing &req.CursorRequest or &req.PageRequest.
 type Request interface {
-	Validate() error
-	// cursorRequest returns the request as the CursorRequest Paginate reads,
-	// after Validate.
-	cursorRequest() *CursorRequest
+	// cursorRequest runs the package's own Validate on the request and
+	// returns it as the CursorRequest Paginate reads.
+	cursorRequest() (*CursorRequest, error)
 }
 
 // Options is the endpoint's server-side list configuration, passed to
@@ -69,9 +71,11 @@ type Options struct {
 // Paginate runs one page of q, a select the caller has already scoped and
 // filtered, and returns its items and the response to embed next to them.
 //
-// r is a *CursorRequest or a *PageRequest. A PageRequest is read as a
-// CursorRequest with no Sort and no IncludeCount. Paginate calls r's Validate
-// first, so afterwards r's Limit holds the limit the page used.
+// r is a *CursorRequest or a *PageRequest, or a pointer to a type that embeds
+// one (see Request). A PageRequest is read as a CursorRequest with no Sort and
+// no IncludeCount. Paginate first runs the Validate of the CursorRequest or
+// PageRequest, never one the embedding type declares, so afterwards its Limit
+// holds the limit the page used.
 //
 // It validates r, resolves the order, decodes the cursor and checks it was
 // issued for that order, applies r's Filter, counts the filtered rows when
@@ -141,12 +145,10 @@ type Options struct {
 // rows are scanned into a new slice. q is modified in place, as bun queries
 // are.
 func Paginate[T Paginatable](ctx context.Context, q *bun.SelectQuery, r Request, model T, opts Options) ([]T, CursorResponse, error) {
-	err := r.Validate()
+	req, err := r.cursorRequest()
 	if err != nil {
 		return nil, CursorResponse{}, ez.Wrap(err)
 	}
-
-	req := r.cursorRequest()
 
 	if req.IncludeCount && !opts.AllowCount {
 		return nil, CursorResponse{}, ez.New(ez.EINVALID, "This list cannot be counted", nil)

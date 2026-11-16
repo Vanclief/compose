@@ -1552,6 +1552,29 @@ func TestEmbeddedPointerParams(t *testing.T) {
 	require.Equal(t, 2, *got.Page)
 }
 
+// plainPageRequest is a list the client can neither sort nor count.
+type plainPageRequest struct {
+	pagination.PageRequest
+}
+
+// A list on PageRequest ignores sort and include_count, which its request
+// type does not declare, as it ignores any query key it does not declare.
+func TestPageRequestIgnoresSortAndIncludeCount(t *testing.T) {
+	e := newEcho()
+	var got *plainPageRequest
+	reg := api.New(e, api.Public())
+	api.GET(reg.Group("/plain"), "", "list", func(ctx context.Context, req *plainPageRequest) (nodeResponse, error) {
+		got = req
+		return nodeResponse{OK: true}, nil
+	})
+	reg.Ready()
+	s := &server{e: e, reg: reg}
+
+	rec := s.do(http.MethodGet, "/plain?limit=5&sort=-name&include_count=true", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, pagination.PageRequest{Limit: 5}, got.PageRequest)
+}
+
 // PromotedBase gives the requests that embed it by pointer their Validate,
 // which reads its receiver.
 type PromotedBase struct {
