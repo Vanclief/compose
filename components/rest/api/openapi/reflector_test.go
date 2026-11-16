@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/components/rest/api/openapi/internal/fixture"
+	"github.com/vanclief/compose/drivers/databases/relational/postgres/pagination"
 	"github.com/vanclief/compose/primitives/enums"
 	"github.com/vanclief/compose/types"
 )
@@ -147,6 +149,40 @@ func TestListRequestParams(t *testing.T) {
 	_, _, ok := res.BodyRef(typ)
 	require.False(t, ok)
 	require.NotContains(t, res.Components, "fixture.ListRequest")
+}
+
+// pageListRequest is a list the client can neither sort nor count.
+type pageListRequest struct {
+	pagination.PageRequest
+	Name string `json:"-" query:"name"`
+}
+
+// An embedded PageRequest is documented as limit and cursor only, with no
+// sort and no include_count.
+func TestPageRequestParams(t *testing.T) {
+	r := NewReflector()
+	typ := reflect.TypeFor[pageListRequest]()
+	params, err := r.AddRequest(typ)
+	require.NoError(t, err)
+
+	byName := map[string]Param{}
+	for _, p := range params {
+		require.Equal(t, "query", p.In)
+		require.False(t, p.Required)
+		byName[p.Name] = p
+	}
+	require.Equal(t, []string{"cursor", "limit", "name"}, slices.Sorted(maps.Keys(byName)))
+
+	limit := byName["limit"]
+	require.Equal(t, []int{0, 0}, limit.Index)
+	require.Equal(t, "Page size, defaults to 50", limit.Doc)
+	require.Equal(t, map[string]any{"type": "integer", "format": "int64", "minimum": 0.0, "maximum": 1000.0}, toMap(t, limit.Schema))
+	require.Equal(t, map[string]any{"type": "string"}, toMap(t, byName["cursor"].Schema))
+
+	res, err := r.Finalize()
+	require.NoError(t, err)
+	_, _, ok := res.BodyRef(typ)
+	require.False(t, ok)
 }
 
 func TestUpdateRequest(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/vanclief/compose/drivers/databases/relational"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres"
 	"github.com/vanclief/compose/drivers/databases/relational/postgres/pgtest"
+	pgquery "github.com/vanclief/compose/drivers/databases/relational/postgres/query"
 	"github.com/vanclief/ez"
 )
 
@@ -194,6 +195,57 @@ func TestPaginatePostgresPagesWithIssuedCursors(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tc.want, got)
 			}
 		})
+	}
+}
+
+// A PageRequest pages the filtered rows in the default order with the
+// cursors it issues, and its cursor is the one a CursorRequest without Sort
+// takes.
+func TestPaginatePostgresPageRequest(t *testing.T) {
+	db := newPostgresDB(t)
+	ctx := context.Background()
+	opts := Options{Direction: DESC}
+
+	var ids []int64
+	request := &PageRequest{Limit: 2, Filter: []pgquery.Filter{{Field: "rank", Comparison: ">=", Value: 2}}}
+	for range 10 {
+		items := []pgRecord{}
+		page, resp, err := Paginate(ctx, db.NewSelect().Model(&items), request, pgRecord{}, opts)
+		if err != nil {
+			t.Fatalf("paginate with cursor %q: %v", request.Cursor, err)
+		}
+		if resp.TotalCount != nil {
+			t.Fatalf("expected no count, got %d", *resp.TotalCount)
+		}
+
+		for _, item := range page {
+			ids = append(ids, item.ID)
+		}
+
+		if !resp.HasNextPage {
+			break
+		}
+		request.Cursor = resp.NextCursor
+	}
+
+	want := []int64{1, 3, 4}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("expected %v, got %v", want, ids)
+	}
+
+	items := []pgRecord{}
+	_, first, err := Paginate(ctx, db.NewSelect().Model(&items), &PageRequest{Limit: 2}, pgRecord{}, opts)
+	if err != nil {
+		t.Fatalf("paginate: %v", err)
+	}
+
+	items = []pgRecord{}
+	page, _, err := Paginate(ctx, db.NewSelect().Model(&items), &CursorRequest{Limit: 2, Cursor: first.NextCursor}, pgRecord{}, opts)
+	if err != nil {
+		t.Fatalf("paginate with the page request's cursor: %v", err)
+	}
+	if len(page) != 2 || page[0].ID != 3 || page[1].ID != 2 {
+		t.Fatalf("expected records 3 and 2, got %+v", page)
 	}
 }
 

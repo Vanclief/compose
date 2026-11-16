@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.41.0
+
+### Highlights
+
+- **Pagination: `pagination.PageRequest` is the request of a list the client can neither sort nor count, so its document lists only `limit` and `cursor`.** Every cursor list embedded `pagination.CursorRequest`, which declares four query parameters: `limit`, `cursor`, `sort` and `include_count`. The route registry documents every query parameter of a request type, so every list's operation showed `sort` and `include_count`. But whether a list can be sorted or counted is decided by the `Options.SortFields` and `Options.AllowCount` the list passes to `Paginate`, and a list that passes neither answers any `sort` with a 400 "This list cannot be sorted" and `include_count=true` with a 400 "This list cannot be counted". The document promised two parameters the list always refused. `PageRequest` has only `Limit`, `Cursor` and the server-side `Filter`, with the same tags, the same `Validate` and the same limits as `CursorRequest`. `Paginate` now takes a `pagination.Request`, which is a `*CursorRequest` or a `*PageRequest`, and reads a `PageRequest` as a `CursorRequest` with no sort and no count: the page is in the model's default order in `Options.Direction`, and the response has no total count. `Options.SortFields` and `Options.AllowCount` are not used for a `PageRequest`. Its cursors are the ones a `CursorRequest` without `sort` issues, so the cursors clients hold keep working. To use it, embed `pagination.PageRequest` instead of `pagination.CursorRequest` in the request type of a list that passes no `SortFields` and no `AllowCount`, and pass `&req.PageRequest` to `Paginate`. The list's operation then loses `sort` and `include_count`, which `reference.Diff` reports as two removed parameters. The OpenAPI generator documents an embedded `PageRequest` as `limit` and `cursor` as well. An app that does nothing sees no change: `CursorRequest` keeps its fields, and `Paginate(ctx, q, &req.CursorRequest, model, opts)` compiles and behaves as before.
+
 ## v1.40.3
 
 ### Highlights
