@@ -184,6 +184,21 @@ func Doc(summary string, description ...string) Option {
 	}}
 }
 
+// Tag sets the tag of every operation in its scope, in place of the one the
+// group's prefix gives, and with it the first half of their operationId:
+// under Group("/complexes/:id/expenses", Tag("finance")) the operation named
+// list is finance.list and is documented under finance. A group created
+// under a group with a Tag keeps that tag unless it sets its own. Panics when
+// name does not match [A-Za-z0-9_-]+.
+func Tag(name string) Option {
+	if !namePattern.MatchString(name) {
+		panic(ez.New(ez.EINVALID, fmt.Sprintf("api: Tag %q must match %s", name, namePattern), nil))
+	}
+	return Option{name: "api.Tag", op: func(op *operation) {
+		op.setTag(name)
+	}}
+}
+
 // Middleware adds per-route Echo middleware.
 func Middleware(m ...echo.MiddlewareFunc) Option {
 	return Option{name: "api.Middleware", op: func(op *operation) {
@@ -205,8 +220,8 @@ func (r *Registry) Group(prefix string, opts ...Option) *Group {
 }
 
 // Group creates a nested group. It inherits the parent's options, and its tag
-// is derived from the full prefix. Panics when an option is not a group
-// option.
+// is derived from the full prefix unless a Tag applies. Panics when an option
+// is not a group option.
 func (g *Group) Group(prefix string, opts ...Option) *Group {
 	full := g.prefix + prefix
 	mustGroupOptions(full, opts)

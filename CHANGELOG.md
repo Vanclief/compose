@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.40.1
+
+### Highlights
+
+- **Route registry: `api.Tag` sets an operation's tag, and so the first half of its operationId.** The tag was always the last non-parameter segment of the group's prefix, so an operationId's first half could only be what the URL said: `/complexes/:id/expenses` gave `expenses.list`, two groups ending in the same segment (`/finance/units`, `/property/units`) shared one set of names, and an API whose operationIds did not follow its paths could not move to the registry without renaming them, and with them the methods of a generated client and the functions of an MCP server. `api.Tag("finance")` on a group gives its operations the tag `finance` and the ids `finance.<name>`, and documents them under that tag; the groups created under it keep the tag unless they set their own, one operation can set its own, and passed to `api.New` it is the tag of every operation no nearer one sets, the nearest winning as for the other options. The name must match `[A-Za-z0-9_-]+`, or `api.Tag` panics. Without it nothing changes: the tag still comes from the prefix. A prefix whose last segment does not match that pattern (`/access.control`) is still refused at registration unless an `api.Tag` applies, which the refusal now says.
+
 ## v1.40.0
 
 ### Breaking

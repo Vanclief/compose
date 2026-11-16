@@ -290,6 +290,80 @@ func TestTags(t *testing.T) {
 	require.Equal(t, []string{"v1.check", "runs.get", "issues.list", "ping"}, ids)
 }
 
+// api.Tag replaces the tag the prefix gives: the nearest of api.New, the
+// groups and the operation wins, and a nested group keeps its parent's.
+func TestTagOption(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Tag("core"))
+	finance := reg.Group("/complexes/:id", api.Tag("finance"))
+	expenses := finance.Group("/expenses")
+	billing := finance.Group("/invoices", api.Tag("billing"))
+	// The prefix alone would be refused: its last segment has a dot.
+	dotted := reg.Group("/access.control/:id", api.Tag("access"))
+	plain := reg.Group("/runs/:id")
+
+	api.GET[fixture.GetRequest, fixture.Run](finance, "", "getComplex", stub, api.Public())
+	api.GET[fixture.GetRequest, fixture.Run](expenses, "", "listExpenses", stub, api.Public())
+	api.GET[fixture.GetRequest, fixture.Run](billing, "", "listInvoices", stub, api.Public())
+	api.GET[fixture.GetRequest, fixture.Run](expenses, "/summary", "summary", stub, api.Public(), api.Tag("reports"))
+	api.GET[fixture.GetRequest, fixture.Run](dotted, "", "get", stub, api.Public())
+	api.GET[fixture.GetRequest, fixture.Run](plain, "", "get", stub, api.Public())
+
+	var ids []string
+	var tags []string
+	for _, op := range reg.Operations() {
+		ids = append(ids, op.OperationID)
+		tags = append(tags, op.Tag)
+	}
+	require.Equal(t, []string{"finance.getComplex", "finance.listExpenses", "billing.listInvoices", "reports.summary", "access.get", "core.get"}, ids)
+	require.Equal(t, []string{"finance", "finance", "billing", "reports", "access", "core"}, tags)
+
+	// The document carries the same tags and ids.
+	reg.Ready()
+	spec, err := reg.Spec(api.V31)
+	require.NoError(t, err)
+	var doc struct {
+		Tags []struct {
+			Name string `json:"name"`
+		} `json:"tags"`
+		Paths map[string]map[string]struct {
+			OperationID string   `json:"operationId"`
+			Tags        []string `json:"tags"`
+		} `json:"paths"`
+	}
+	err = json.Unmarshal(spec, &doc)
+	require.NoError(t, err)
+	var documented []string
+	for _, tag := range doc.Tags {
+		documented = append(documented, tag.Name)
+	}
+	require.Equal(t, []string{"access", "billing", "core", "finance", "reports"}, documented)
+	summary := doc.Paths["/complexes/{id}/expenses/summary"]["get"]
+	require.Equal(t, "reports.summary", summary.OperationID)
+	require.Equal(t, []string{"reports"}, summary.Tags)
+
+	// Two groups given one tag share its names.
+	msg := panicMessage(t, func() {
+		other := api.New(newEcho())
+		api.GET[fixture.GetRequest, fixture.Run](other.Group("/a/:id", api.Tag("finance")), "", "get", stub)
+		api.GET[fixture.GetRequest, fixture.Run](other.Group("/b/:id", api.Tag("finance")), "", "get", stub)
+	})
+	require.Contains(t, msg, "api: GET /b/:id (finance.get): duplicate operationId")
+
+	// Without api.Tag the dotted prefix is refused, and told about it.
+	msg = panicMessage(t, func() {
+		other := api.New(newEcho())
+		api.GET[fixture.GetRequest, fixture.Run](other.Group("/access.control/:id"), "", "get", stub)
+	})
+	require.Contains(t, msg, `tag "access.control" (from the group prefix) must match`)
+	require.Contains(t, msg, "set the tag with api.Tag")
+
+	for _, name := range []string{"", "a.b", "a b", "a/b"} {
+		msg = panicMessage(t, func() { api.Tag(name) })
+		require.Contains(t, msg, "api: Tag "+strconv.Quote(name)+" must match")
+	}
+}
+
 type paramTagRequest struct {
 	requests.NoRules
 	ID string `json:"-" param:"id" path:"id"`
