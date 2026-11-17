@@ -184,15 +184,21 @@ func TestBindedJSONResponseKeepsAppErrorData(t *testing.T) {
 	require.Equal(t, "not-an-email is not a valid email", response.Error.Message)
 }
 
-// knownSlug refuses every value but "ok" with an ENOTFOUND.
+// knownSlug takes "ok", refuses "internal" with an EINTERNAL and "plain"
+// with a plain error, and anything else with an ENOTFOUND.
 type knownSlug string
 
 func (s *knownSlug) UnmarshalJSON(b []byte) error {
-	if string(b) != `"ok"` {
-		return ez.New(ez.ENOTFOUND, "slug "+string(b)+" is not known", nil)
+	switch string(b) {
+	case `"ok"`:
+		*s = knownSlug("ok")
+		return nil
+	case `"internal"`:
+		return ez.New(ez.EINTERNAL, "slug table missing", nil)
+	case `"plain"`:
+		return errors.New("slug lookup failed")
 	}
-	*s = knownSlug("ok")
-	return nil
+	return ez.New(ez.ENOTFOUND, "slug "+string(b)+" is not known", nil)
 }
 
 type optionalBody struct {
@@ -205,7 +211,8 @@ func (b *optionalBody) Validate() error { return nil }
 
 // An ez error from the decoder of a types.Optional field's value reaches
 // the client with its code and message, as the same field without Optional
-// does.
+// does. An EINTERNAL gets the generic 400, and a plain error Optional's own
+// message.
 func TestBindedJSONResponseKeepsOptionalAppError(t *testing.T) {
 	testCases := []struct {
 		body    string
@@ -214,6 +221,8 @@ func TestBindedJSONResponseKeepsOptionalAppError(t *testing.T) {
 		message string
 	}{
 		{`{"slug":"nope"}`, http.StatusNotFound, ez.ENOTFOUND, `slug "nope" is not known`},
+		{`{"slug":"internal"}`, http.StatusBadRequest, ez.EINVALID, "Invalid request body"},
+		{`{"slug":"plain"}`, http.StatusBadRequest, ez.EINVALID, "value could not be decoded"},
 		{`{"locale":5}`, http.StatusBadRequest, ez.EINVALID, "locale must be a JSON string"},
 		{`{"optional_locale":5}`, http.StatusBadRequest, ez.EINVALID, "locale must be a JSON string"},
 	}
