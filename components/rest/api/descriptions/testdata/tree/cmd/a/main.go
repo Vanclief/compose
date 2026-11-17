@@ -6,4 +6,7 @@ type Config struct {
 	Port int
 }
 
+// Settings is Config under another name.
+type Settings Config
+
 func main() {}

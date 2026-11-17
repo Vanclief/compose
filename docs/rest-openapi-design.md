@@ -903,39 +903,51 @@ the same descriptions. They are annotations: no request validates differently, a
 
 `compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. Below each
 directory given it skips the directories named `vendor` or `testdata` or that start with `.`
-or `_`, the files that start with `.` or `_`, and `_test.go` files. A directory given is
+or `_`, the files that start with `.` or `_`, `_test.go` files and files whose build
+constraint is exactly `ignore`, which are scripts outside their package. A directory given is
 always read. A symbolic link given as a directory is followed, and the directory is keyed by
 where the link points: a package directory that links to another module's package gets that
 module's import path, though a binary built from the linking module reports its own. A `.go`
 file that is a link to a regular file is read, as Go compiles it. Every other file is read
-whatever its build constraints, so the file is the same on every platform. It records every package-level named
+once, whatever its build constraints, so the file is the same on every platform, and a
+directory given inside another one given adds nothing. It records every package-level named
 type with a doc comment, and every exported field of a package-level struct with a comment.
 An embedded field is recorded under the name of its type, as reflection names it. Aliases
-and types declared in a function have no entry. Unexported types are recorded too. A request
-may embed an unexported struct whose exported fields are parameters or file fields, and those
-are published with the comments of that struct. In a body the registry refuses such a struct
-at registration, so there the entry is never read.
+have no entry. A type declared in a function has none of its own, but reflection gives it the
+key of a package-level type of the same name, so it gets that type's description. Unexported
+types are recorded too. A request may embed an unexported struct whose exported fields are
+parameters or file fields, and those are published with the comments of that struct. In a
+body the registry refuses such a struct at registration, so there the entry is never read.
 
 A key is the import path and the type name, `github.com/x/app/runs.Run`, with the Go field
 name after it for a field, `github.com/x/app/runs.Run.Status`. The import path is the module
 path of the nearest `go.mod` joined with the directory below it, or what follows the last
 `vendor` element of that directory. A generic type is keyed under its name without type
-arguments. A type in a `package main` is written twice, under `main` and under its import
-path. Reflection reports `main` in a binary built with `go build` or `go run`, and the import
-path in a test binary, so both find it. A type defined over a struct of its own package,
-`type Job Run`, gets the field entries of `Run` under `Job`, also through a chain such as
-`type Task Job`, since reflection reports those fields with `Job` as their struct. A defined
-type over a struct of another package gets no field entries.
+arguments.
+
+Reflection reports a type of a `package main` under `main` in a binary built with `go build`
+or `go run`, and under its import path in a test binary. Its entries are always written under
+its import path. They are also written under `main` when it is the only main package read that
+declares types, commented or not. With two or more, a key under `main` could describe the type
+of another command, so none is written, and the command prints one warning that names the main
+packages when one of them has an entry. It still succeeds. To describe the types of a package
+main, run the command on the directories of one command at a time, each into its own file.
+
+A type defined over a struct of its own package, `type Job Run`, gets the field entries of
+`Run` under `Job`, also through a chain such as `type Task Job`, since reflection reports those
+fields with `Job` as their struct. It gets them only when `Job`, every type along the chain and
+the struct at its end are each declared once in the package. A type declared in two files for
+different platforms may be a different type on each, so a copy could be wrong. A defined type
+over a struct of another package gets no field entries.
 
 The text follows the generator's rules (`descriptions.CommentText` and
 `descriptions.FieldText`, which the generator calls too): the `Deprecated:` paragraph and
 TODO, FIXME and nolint lines are dropped, and a field's doc comment comes before its line
 comment.
 
-Two files can describe one key differently. One type in a `cgo` file and in a `!cgo` file is
-one case, and a type of the same name in two `package main` directories is another, under
-its `main` key. Such a key is left out of the file, as no description is better than a wrong
-one, even when a third file repeats one of the texts. The command prints one warning per key
+Two files can describe one key differently, such as one type in a `cgo` file and in a `!cgo`
+file. Such a key is left out of the file, as no description is better than a wrong one, even
+when a third file repeats one of the texts. The command prints one warning per key
 on stderr, naming the two files, and still succeeds. Each key stands alone: a type can be
 left out while a field that reads the same in both files is kept. To describe the key, make
 the comments match.

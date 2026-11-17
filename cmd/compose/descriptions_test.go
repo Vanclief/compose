@@ -68,12 +68,42 @@ func TestDescriptionsConflict(t *testing.T) {
 	require.Equal(t, ""+
 		"compose descriptions: github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict/engine.Engine is described differently in "+
 		filepath.Join(descriptionsConflict, "engine", "engine_cgo.go")+" and "+filepath.Join(descriptionsConflict, "engine", "engine_nocgo.go")+
-		": left out, make the comments match to describe it\n"+
-		"compose descriptions: main.Config is described differently in "+
-		filepath.Join(descriptionsConflict, "a", "main.go")+" and "+filepath.Join(descriptionsConflict, "b", "main.go")+
 		": left out, make the comments match to describe it\n", stderr.String())
-	require.NotContains(t, stdout.String(), `"main.Config"`)
-	require.Contains(t, stdout.String(), `"main.Config.Port": "Port is where it listens."`)
+	require.NotContains(t, stdout.String(), `engine.Engine"`)
+	require.Contains(t, stdout.String(), `engine.Engine.Name": "Name names the engine."`)
+}
+
+// TestDescriptionsMainPackages checks that two main packages that declare
+// types give one warning, no main key, and a command that still succeeds.
+func TestDescriptionsMainPackages(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":        "module example.com/app\n\ngo 1.26\n",
+		"cmd/a/main.go": "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Config struct{}\n\nfunc main() {}\n",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		err := os.MkdirAll(filepath.Dir(path), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(path, []byte(content), 0o644)
+		require.NoError(t, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"descriptions", root}, &stdout, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+	require.Equal(t, "compose descriptions: 2 main packages declare types (example.com/app/cmd/a, example.com/app/cmd/b), so no type is described under main: "+
+		"run the command on the directories of one command at a time to describe the types of its package main\n", stderr.String())
+	require.Equal(t, "{\n  \"example.com/app/cmd/a.Config\": \"Config is a's.\"\n}\n", stdout.String())
+
+	// One command at a time describes its types under main too.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"descriptions", filepath.Join(root, "cmd", "a")}, &stdout, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+	require.Empty(t, stderr.String())
+	require.Contains(t, stdout.String(), `"main.Config": "Config is a's."`)
 }
 
 func TestDescriptionsErrors(t *testing.T) {

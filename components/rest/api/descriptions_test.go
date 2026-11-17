@@ -30,10 +30,11 @@ const describedPkg = "github.com/vanclief/compose/components/rest/api/internal/d
 // keys the reader writes cannot drift apart.
 func describedFile(t *testing.T) []byte {
 	t.Helper()
-	comments, conflicts, err := descriptions.Read("internal/described")
+	result, err := descriptions.Read("internal/described")
 	require.NoError(t, err)
-	require.Empty(t, conflicts)
-	data, err := descriptions.Marshal(comments)
+	require.Empty(t, result.Conflicts)
+	require.Empty(t, result.MainPackages)
+	data, err := descriptions.Marshal(result.Descriptions)
 	require.NoError(t, err)
 	return data
 }

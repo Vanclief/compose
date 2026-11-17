@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -21,13 +22,33 @@ const tree = "testdata/tree"
 // so its packages are in compose's module.
 const treePath = "github.com/vanclief/compose/components/rest/api/descriptions/testdata/tree"
 
-// read is Read for a tree without conflicts.
+// mod is the go.mod of the trees the tests write.
+const mod = "module example.com/app\n\ngo 1.26\n"
+
+// read is Read for a tree without conflicts or several main packages.
 func read(t *testing.T, dirs ...string) map[string]string {
 	t.Helper()
-	got, conflicts, err := descriptions.Read(dirs...)
+	result, err := descriptions.Read(dirs...)
 	require.NoError(t, err)
-	require.Empty(t, conflicts)
-	return got
+	require.Empty(t, result.Conflicts)
+	require.Empty(t, result.MainPackages)
+	return result.Descriptions
+}
+
+// writeTree writes files, keyed by their slash-separated path, under a new
+// directory and returns it with its symbolic links resolved.
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		err = os.MkdirAll(filepath.Dir(path), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(path, []byte(content), 0o644)
+		require.NoError(t, err)
+	}
+	return root
 }
 
 // TestRead lists every entry of the tree, so it also proves what is left
@@ -36,11 +57,13 @@ func read(t *testing.T, dirs ...string) map[string]string {
 // comment, Left and Right under a comment that heads both, Noted with only a
 // maintainer note, Local declared in a function, Task's own comment, which it
 // has none of, Fake in a _test.go file, Old and Dotted in files whose name
-// starts with _ or ., and the directories testdata, _skipped and .hidden.
+// starts with _ or ., Gen in a //go:build ignore file of package main, and
+// the directories testdata, _skipped and .hidden.
 func TestRead(t *testing.T) {
 	got := read(t, tree)
 
 	const models = treePath + "/models"
+	const cmd = treePath + "/cmd/a"
 	runFields := map[string]string{
 		// A doc comment, then the line comment.
 		".Name": "Name is what the user calls the run.\n\nIt is unique.",
@@ -75,14 +98,19 @@ func TestRead(t *testing.T) {
 		// A field whose type is an anonymous struct, whose own fields have
 		// no key.
 		models + ".Extra.Meta": "Meta is a nested struct without a name.",
-		// A package main is keyed under main and under its import path, and
-		// the same text in two of them is fine.
-		"main.Config":                   "Config is the configuration of a command.",
-		"main.Config.Port":              "Port is where it listens.",
-		treePath + "/cmd/a.Config":      "Config is the configuration of a command.",
-		treePath + "/cmd/a.Config.Port": "Port is where it listens.",
-		treePath + "/cmd/b.Config":      "Config is the configuration of a command.",
-		treePath + "/cmd/b.Config.Port": "Port is where it listens.",
+		// Build constraints other than exactly ignore are not evaluated.
+		models + ".Tool":  "Tool is in a file whose constraint is more than ignore.",
+		models + ".Linux": "Linux is in a file for linux.",
+		// The only main package that declares types is written under its
+		// import path and under main, a copied field too.
+		cmd + ".Config":        "Config is the configuration of a command.",
+		cmd + ".Config.Port":   "Port is where it listens.",
+		cmd + ".Settings":      "Settings is Config under another name.",
+		cmd + ".Settings.Port": "Port is where it listens.",
+		"main.Config":          "Config is the configuration of a command.",
+		"main.Config.Port":     "Port is where it listens.",
+		"main.Settings":        "Settings is Config under another name.",
+		"main.Settings.Port":   "Port is where it listens.",
 	}
 	// Job is defined over Run, and Task over Job: both get Run's fields.
 	for _, typ := range []string{".Run", ".Job", ".Task"} {
@@ -96,51 +124,195 @@ func TestRead(t *testing.T) {
 	require.Equal(t, map[string]string{treePath + "/testdata.Data": "Data is in testdata."}, read(t, filepath.Join(tree, "testdata")))
 }
 
-// TestReadConflict reads two main packages that describe Config
-// differently, a third that repeats the first text, and one type in a cgo
-// and a !cgo file. The conflicting keys are left out and reported, and the
-// fields that read the same everywhere are kept.
+// TestReadConflict reads one type in a cgo, a !cgo and a wasm file. The type
+// comment differs, so its key is left out and reported, and stays out though
+// the wasm file repeats the cgo text. The field reads the same everywhere and
+// is kept.
 func TestReadConflict(t *testing.T) {
 	const dir = "testdata/conflict"
-	const pkg = "github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict"
+	const pkg = "github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict/engine"
 
-	got, conflicts, err := descriptions.Read(dir)
+	result, err := descriptions.Read(dir)
 	require.NoError(t, err)
+	require.Equal(t, map[string]string{pkg + ".Engine.Name": "Name names the engine."}, result.Descriptions)
+	require.Equal(t, []descriptions.Conflict{{
+		Key:    pkg + ".Engine",
+		First:  filepath.Join(dir, "engine", "engine_cgo.go"),
+		Second: filepath.Join(dir, "engine", "engine_nocgo.go"),
+	}}, result.Conflicts)
+	require.Empty(t, result.MainPackages)
+}
+
+// TestReadOnce reads a directory and its subdirectory: each file is read
+// once, so the declarations are counted once and the copy is made.
+func TestReadOnce(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":   mod,
+		"p/a.go":   "package p\n\ntype A B\n",
+		"p/b.go":   "package p\n\n// B is b.\ntype B struct {\n\tX int // X is x.\n}\n",
+		"p/q/q.go": "package q\n\n// Q is q.\ntype Q struct{}\n",
+	})
+	want := map[string]string{
+		"example.com/app/p.B":   "B is b.",
+		"example.com/app/p.B.X": "X is x.",
+		"example.com/app/p.A.X": "X is x.",
+		"example.com/app/p/q.Q": "Q is q.",
+	}
+	require.Equal(t, want, read(t, root))
+	require.Equal(t, want, read(t, root, filepath.Join(root, "p"), filepath.Join(root, "p")))
+	require.Equal(t, want, read(t, filepath.Join(root, "p"), root))
+}
+
+// TestReadMainPackages writes main keys only when exactly one main package
+// declares types.
+func TestReadMainPackages(t *testing.T) {
+	// Two main packages: a describes Config and Run, b declares the same
+	// names bare. Nothing is written under main, and both are reported.
+	root := writeTree(t, map[string]string{
+		"go.mod": mod,
+		"cmd/a/main.go": "package main\n\n// Config is the server configuration.\ntype Config struct {\n\t// Port is where the server listens.\n\tPort int\n}\n\n" +
+			"type Job Run\n\ntype Run struct {\n\tX int // X is the run x of a.\n}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Config struct {\n\tPort int\n}\n\ntype Job struct {\n\tX int\n}\n\nfunc main() {}\n",
+	})
+	a := filepath.Join(root, "cmd", "a")
+	b := filepath.Join(root, "cmd", "b")
+	want := map[string]string{
+		"example.com/app/cmd/a.Config":      "Config is the server configuration.",
+		"example.com/app/cmd/a.Config.Port": "Port is where the server listens.",
+		"example.com/app/cmd/a.Job.X":       "X is the run x of a.",
+		"example.com/app/cmd/a.Run.X":       "X is the run x of a.",
+	}
+	var first []byte
+	for _, dirs := range [][]string{{a, b}, {b, a}, {root}, {filepath.Join(root, "cmd")}} {
+		result, err := descriptions.Read(dirs...)
+		require.NoError(t, err)
+		require.Equal(t, want, result.Descriptions)
+		require.Empty(t, result.Conflicts)
+		require.Equal(t, []string{"example.com/app/cmd/a", "example.com/app/cmd/b"}, result.MainPackages)
+		for key := range result.Descriptions {
+			require.False(t, strings.HasPrefix(key, "main."), key)
+		}
+		data, err := descriptions.Marshal(result.Descriptions)
+		require.NoError(t, err)
+		if first == nil {
+			first = data
+		}
+		require.Equal(t, string(first), string(data))
+	}
+
+	// Two main packages without a comment: nothing to report.
+	root = writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\ntype Config struct{ Port int }\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Config struct{ Port int }\n\nfunc main() {}\n",
+	})
+	require.Empty(t, read(t, root))
+
+	// A main package that declares no type does not count.
+	root = writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\nfunc main() {}\n",
+	})
 	require.Equal(t, map[string]string{
-		"main.Config.Port":          "Port is where it listens.",
-		pkg + "/a.Config":           "Config is the configuration of a.",
-		pkg + "/a.Config.Port":      "Port is where it listens.",
-		pkg + "/b.Config":           "Config is the configuration of b.",
-		pkg + "/b.Config.Port":      "Port is where it listens.",
-		pkg + "/c.Config":           "Config is the configuration of a.",
-		pkg + "/c.Config.Port":      "Port is where it listens.",
-		pkg + "/engine.Engine.Name": "Name names the engine.",
-	}, got)
-	require.Equal(t, []descriptions.Conflict{
-		{
-			Key:    pkg + "/engine.Engine",
-			First:  filepath.Join(dir, "engine", "engine_cgo.go"),
-			Second: filepath.Join(dir, "engine", "engine_nocgo.go"),
-		},
-		{
-			Key:    "main.Config",
-			First:  filepath.Join(dir, "a", "main.go"),
-			Second: filepath.Join(dir, "b", "main.go"),
-		},
-	}, conflicts)
+		"example.com/app/cmd/a.Config": "Config is a's.",
+		"main.Config":                  "Config is a's.",
+	}, read(t, root))
+}
 
-	// The same source gives the same result.
-	again, againConflicts, err := descriptions.Read(dir)
-	require.NoError(t, err)
-	require.Equal(t, got, again)
-	require.Equal(t, conflicts, againConflicts)
+// TestReadDefinedTypes copies the fields of a struct to a type defined over
+// it only when every type of the chain is declared once in the package.
+func TestReadDefinedTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  map[string]string
+	}{
+		{
+			name: "a type of the chain declared twice",
+			files: map[string]string{
+				"p/b_cgo.go":   "//go:build cgo\n\npackage p\n\ntype B struct {\n\tX int // X is the cgo handle.\n}\n",
+				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n\ntype C struct {\n\tX int // X is the pure Go handle.\n}\n",
+				"p/a.go":       "package p\n\ntype A B\n",
+			},
+			want: map[string]string{
+				"example.com/app/p.B.X": "X is the cgo handle.",
+				"example.com/app/p.C.X": "X is the pure Go handle.",
+			},
+		},
+		{
+			name: "the defined type declared twice",
+			files: map[string]string{
+				"p/a_cgo.go":   "//go:build cgo\n\npackage p\n\ntype A B\n",
+				"p/a_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype A struct {\n\tX int // X of nocgo A.\n}\n",
+				"p/b.go":       "package p\n\ntype B struct {\n\tX int // X of B.\n}\n\ntype C A\n",
+			},
+			// A.X is kept from the one declaration that describes it, though
+			// with cgo A is B and its X is described otherwise.
+			want: map[string]string{
+				"example.com/app/p.A.X": "X of nocgo A.",
+				"example.com/app/p.B.X": "X of B.",
+			},
+		},
+		{
+			name: "the same definition in two files",
+			files: map[string]string{
+				"p/b_cgo.go":   "//go:build cgo\n\npackage p\n\ntype B C\n",
+				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n",
+				"p/a.go":       "package p\n\ntype A B\n\ntype C struct {\n\tX int // X is c.\n}\n",
+			},
+			want: map[string]string{"example.com/app/p.C.X": "X is c."},
+		},
+		{
+			name:  "a chain of four hops",
+			files: map[string]string{"p/p.go": "package p\n\ntype A B\n\ntype B C\n\ntype C D\n\ntype D E\n\ntype E struct {\n\tX int // X is e.\n}\n"},
+			want: map[string]string{
+				"example.com/app/p.A.X": "X is e.",
+				"example.com/app/p.B.X": "X is e.",
+				"example.com/app/p.C.X": "X is e.",
+				"example.com/app/p.D.X": "X is e.",
+				"example.com/app/p.E.X": "X is e.",
+			},
+		},
+		{
+			name:  "two defined types over one struct",
+			files: map[string]string{"p/p.go": "package p\n\ntype A S\n\ntype B S\n\ntype S struct {\n\tX int // X is s.\n}\n"},
+			want: map[string]string{
+				"example.com/app/p.A.X": "X is s.",
+				"example.com/app/p.B.X": "X is s.",
+				"example.com/app/p.S.X": "X is s.",
+			},
+		},
+		{
+			name:  "a cycle",
+			files: map[string]string{"p/p.go": "package p\n\n// A is a.\ntype A B\n\ntype B A\n\ntype C C\n"},
+			want:  map[string]string{"example.com/app/p.A": "A is a."},
+		},
+		{
+			name: "a struct of another package",
+			files: map[string]string{
+				"p/p.go":     "package p\n\ntype E struct {\n\tX int // X is e.\n}\n",
+				"other/o.go": "package other\n\nimport \"example.com/app/p\"\n\ntype R p.E\n",
+			},
+			want: map[string]string{"example.com/app/p.E.X": "X is e."},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.files["go.mod"] = mod
+			root := writeTree(t, tt.files)
+			result, err := descriptions.Read(root)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, result.Descriptions)
+		})
+	}
 }
 
 // TestReadModules builds its tree at run time, as the module zip leaves out
 // a directory with a go.mod of its own and a vendor directory.
 func TestReadModules(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"go.mod":                        "module example.com/app\n\ngo 1.26\n",
+		"go.mod":                        mod,
 		"api/api.go":                    "package api\n\n// Item is sold.\ntype Item struct{}\n",
 		"vendor/example.com/dep/dep.go": "package dep\n\n// Dep is vendored.\ntype Dep struct{}\n",
 		"tools/go.mod":                  "module example.com/tools\n\ngo 1.26\n",
@@ -154,9 +326,6 @@ func TestReadModules(t *testing.T) {
 		"example.com/app/api.Item":  "Item is sold.",
 		"example.com/tools/gen.Gen": "Gen is in a module of its own.",
 	}, read(t, root))
-
-	// Two directories, one inside the other, read the same files twice.
-	require.Len(t, read(t, filepath.Join(root, "api"), root), 2)
 
 	// A vendor directory given is keyed by the path after vendor/.
 	vendored := map[string]string{"example.com/dep.Dep": "Dep is vendored."}
@@ -175,32 +344,16 @@ func TestReadModules(t *testing.T) {
 
 	err = os.WriteFile(filepath.Join(root, "orphan", "o.go"), []byte("package orphan\n\n// O has no module path.\ntype O struct{}\n"), 0o644)
 	require.NoError(t, err)
-	_, _, err = descriptions.Read(filepath.Join(root, "orphan"))
+	_, err = descriptions.Read(filepath.Join(root, "orphan"))
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), filepath.Join(root, "orphan", "go.mod")+" declares no module path")
-}
-
-// writeTree writes files, keyed by their slash-separated path, under a new
-// directory and returns it with its symbolic links resolved.
-func writeTree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	for name, content := range files {
-		path := filepath.Join(root, filepath.FromSlash(name))
-		err = os.MkdirAll(filepath.Dir(path), 0o755)
-		require.NoError(t, err)
-		err = os.WriteFile(path, []byte(content), 0o644)
-		require.NoError(t, err)
-	}
-	return root
 }
 
 // TestReadSymlinkedFile reads a .go file that is a symbolic link to a
 // regular file, as Go compiles it, and skips a broken link.
 func TestReadSymlinkedFile(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"go.mod":            "module example.com/app\n\ngo 1.26\n",
+		"go.mod":            mod,
 		"api/api.go":        "package api\n\n// Item is sold.\ntype Item struct{}\n",
 		"shared/linked.txt": "package api\n\n// Linked is in a linked file.\ntype Linked struct{}\n",
 	})
@@ -217,88 +370,12 @@ func TestReadSymlinkedFile(t *testing.T) {
 	}, read(t, filepath.Join(root, "api")))
 }
 
-// TestReadDefinedTypes copies the fields of a struct to the types defined
-// over it within one package, never from another main package.
-func TestReadDefinedTypes(t *testing.T) {
-	const mod = "module example.com/app\n\ngo 1.26\n"
-
-	// Run 1: Wrapper in a reaches E1 through Engine. b declares another
-	// Engine, over E2, which must not reach a's Wrapper.
-	root := writeTree(t, map[string]string{
-		"go.mod":        mod,
-		"cmd/a/main.go": "package main\n\ntype Wrapper Engine\n\ntype Engine E1\n\ntype E1 struct {\n\tX int // X is e1.\n}\n\nfunc main() {}\n",
-		"cmd/b/main.go": "package main\n\ntype Engine E2\n\ntype E2 struct {\n\tX int // X is e2.\n}\n\nfunc main() {}\n",
-	})
-	a := filepath.Join(root, "cmd", "a")
-	b := filepath.Join(root, "cmd", "b")
-	want := map[string]string{
-		"main.Wrapper.X":                  "X is e1.",
-		"main.E1.X":                       "X is e1.",
-		"main.E2.X":                       "X is e2.",
-		"example.com/app/cmd/a.Wrapper.X": "X is e1.",
-		"example.com/app/cmd/a.Engine.X":  "X is e1.",
-		"example.com/app/cmd/a.E1.X":      "X is e1.",
-		"example.com/app/cmd/b.Engine.X":  "X is e2.",
-		"example.com/app/cmd/b.E2.X":      "X is e2.",
-	}
-	for _, dirs := range [][]string{{a, b}, {b, a}} {
-		got, conflicts, err := descriptions.Read(dirs...)
-		require.NoError(t, err)
-		require.Equal(t, want, got)
-		require.Len(t, conflicts, 1)
-		require.Equal(t, "main.Engine.X", conflicts[0].Key)
-	}
-
-	// Run 2: Job in a is Run of a. b declares its own Job, described
-	// otherwise, so main.Job.X conflicts as main.Run.X does.
-	root = writeTree(t, map[string]string{
-		"go.mod":        mod,
-		"cmd/a/main.go": "package main\n\ntype Job Run\n\ntype Run struct {\n\tX int // X is x of a.\n}\n\nfunc main() {}\n",
-		"cmd/b/main.go": "package main\n\ntype Run struct {\n\tX int // X is x of b.\n}\n\ntype Job struct {\n\tX int // X is the job x of b.\n}\n\nfunc main() {}\n",
-	})
-	got, conflicts, err := descriptions.Read(filepath.Join(root, "cmd"))
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{
-		"example.com/app/cmd/a.Job.X": "X is x of a.",
-		"example.com/app/cmd/a.Run.X": "X is x of a.",
-		"example.com/app/cmd/b.Run.X": "X is x of b.",
-		"example.com/app/cmd/b.Job.X": "X is the job x of b.",
-	}, got)
-	require.Equal(t, []descriptions.Conflict{
-		{Key: "main.Job.X", First: filepath.Join(root, "cmd", "b", "main.go"), Second: filepath.Join(root, "cmd", "a", "main.go")},
-		{Key: "main.Run.X", First: filepath.Join(root, "cmd", "a", "main.go"), Second: filepath.Join(root, "cmd", "b", "main.go")},
-	}, conflicts)
-
-	// A field of the struct left out as a conflict is left out under the
-	// defined type too, and a type defined over a struct of another package
-	// gets no field entries.
-	root = writeTree(t, map[string]string{
-		"go.mod":         mod,
-		"p/e_cgo.go":     "//go:build cgo\n\npackage p\n\ntype E struct {\n\tX int // X one.\n\tY int // Y is y.\n}\n",
-		"p/e_nocgo.go":   "//go:build !cgo\n\npackage p\n\ntype E struct {\n\tX int // X two.\n\tY int // Y is y.\n}\n",
-		"p/a.go":         "package p\n\ntype A E\n",
-		"other/other.go": "package other\n\nimport \"example.com/app/p\"\n\ntype R p.E\n",
-	})
-	got, conflicts, err = descriptions.Read(root)
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{
-		"example.com/app/p.E.Y": "Y is y.",
-		"example.com/app/p.A.Y": "Y is y.",
-	}, got)
-	cgo := filepath.Join(root, "p", "e_cgo.go")
-	nocgo := filepath.Join(root, "p", "e_nocgo.go")
-	require.Equal(t, []descriptions.Conflict{
-		{Key: "example.com/app/p.A.X", First: cgo, Second: nocgo},
-		{Key: "example.com/app/p.E.X", First: cgo, Second: nocgo},
-	}, conflicts)
-}
-
 func TestReadErrors(t *testing.T) {
-	_, _, err := descriptions.Read("testdata/missing")
+	_, err := descriptions.Read("testdata/missing")
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), "cannot read testdata/missing")
 
-	_, _, err = descriptions.Read(filepath.Join(tree, "models", "models.go"))
+	_, err = descriptions.Read(filepath.Join(tree, "models", "models.go"))
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), "is not a directory")
 
@@ -306,7 +383,7 @@ func TestReadErrors(t *testing.T) {
 	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(dir, "broken.go"), []byte("package broken\n\ntype {"), 0o644)
 	require.NoError(t, err)
-	_, _, err = descriptions.Read(dir)
+	_, err = descriptions.Read(dir)
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), "cannot parse "+filepath.Join(dir, "broken.go"))
 }

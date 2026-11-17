@@ -10,18 +10,23 @@
 //
 // A defined type over a struct of the same package, type A B, gets the field
 // entries of B under A, as reflection reports B's fields with A as their
-// struct. A defined type over a struct of another package gets none.
+// struct. It gets them only when A, every type along the chain and the
+// struct at its end are each declared once in the package. A defined type
+// over a struct of another package gets none.
 //
 // A directory is keyed by where it is, after symbolic links are followed: a
 // package directory that is a link to another module's package is keyed by
 // that module's import path, though a binary built from the linking module
-// reports the linking module's.
+// reports the linking module's. A type declared inside a function shares its
+// key with a package-level type of the same name, so it gets that type's
+// description.
 package descriptions
 
 import (
 	"bytes"
 	"encoding/json"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -30,7 +35,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -40,9 +44,10 @@ import (
 // Key returns the key of a named type: its package path, a dot and its name
 // without type arguments, so every instantiation of a generic type shares the
 // comment of its declaration. Key returns "" for an unnamed type and for a
-// predeclared one. A type of a package main has the package path "main" in
-// a binary built with go build or go run, and its import path in a test
-// binary, so Read writes its entries under both.
+// predeclared one. A type of a package main has the package path "main" in a
+// binary built with go build or go run, and its import path in a test binary.
+// Read writes its entries under its import path, and also under main when
+// it is the only main package read that declares types.
 func Key(t reflect.Type) string {
 	name, _, _ := strings.Cut(t.Name(), "[")
 	if name == "" || t.PkgPath() == "" {
@@ -113,54 +118,80 @@ func FieldText(field *ast.Field) string {
 // Conflict is a key two files describe differently. Read leaves it out.
 type Conflict struct {
 	Key    string
-	First  string // the file that described it first, in walk order
+	First  string // the first file that described it, in walk order
 	Second string // the first file that described it otherwise
 }
 
+// Result is what Read found.
+type Result struct {
+	// Descriptions maps each key to its text. It is what Marshal writes.
+	Descriptions map[string]string
+	// Conflicts are the keys two files describe differently, left out of
+	// Descriptions, sorted by key.
+	Conflicts []Conflict
+	// MainPackages are the import paths of the main packages that declare
+	// types, sorted, when there are two or more of them and one has an
+	// entry. No key is then written under main, so those entries are not
+	// found in a binary built with go build or go run. It is empty otherwise.
+	MainPackages []string
+}
+
 // Read walks each directory and returns the descriptions of the types
-// declared under it, keyed as Key does, and the keys it left out because two
-// files describe them differently, sorted by key.
+// declared under it, keyed as Key does.
 //
 // Below each directory given, it skips the directories named vendor or
 // testdata and those whose name starts with "." or "_". It skips the files
-// whose name starts with "." or "_" and the _test.go files. Every other file
-// is read whatever its build constraints, so the result is the same on every
-// platform, and so is a symbolic link to a file. Every package-level named
-// type with a doc comment has an entry, unexported ones too, and so does
-// every exported field of a package-level struct type with a comment, an
-// embedded one under the name of its type. Aliases and types declared inside
-// a function have none.
+// whose name starts with "." or "_", the _test.go files and the files whose
+// build constraint is exactly ignore. Every other file is read once, whatever
+// its build constraints, so the result is the same on every platform, and so
+// is a symbolic link to a file. Every package-level named type with a doc
+// comment has an entry, unexported ones too, and so does every exported field
+// of a package-level struct type with a comment, an embedded one under the
+// name of its type. Aliases have none.
 //
 // The import path of a package is the module path of the nearest go.mod above
 // it joined with its directory below that go.mod, or what follows the last
-// vendor element of that directory. The entries of a package main are written
-// under its import path and under "main". A key that two files describe
-// differently is left out, even when a third file repeats one of the texts,
-// and reported as a Conflict: no description is better than a wrong one.
-func Read(dirs ...string) (map[string]string, []Conflict, error) {
+// vendor element of that directory. When exactly one main package read
+// declares types, its entries are also written under "main". When two or more
+// do, none is, and Result.MainPackages names them. A key that two files
+// describe differently is left out, even when a third file repeats one of the
+// texts, and reported as a Conflict: no description is better than a wrong
+// one.
+func Read(dirs ...string) (Result, error) {
 	rd := &reader{
-		out:       map[string]string{},
-		from:      map[string]string{},
-		conflicts: map[string]Conflict{},
-		structs:   map[string]bool{},
+		read:      map[string]bool{},
+		out:       map[entry]string{},
+		from:      map[entry]string{},
+		conflicts: map[entry]Conflict{},
+		decls:     map[entry]int{},
+		structs:   map[entry]bool{},
+		over:      map[entry]string{},
+		mains:     map[string]bool{},
 		modules:   map[string]string{},
 	}
 	for _, dir := range dirs {
 		err := rd.walk(dir)
 		if err != nil {
-			return nil, nil, ez.Wrap(err)
+			return Result{}, ez.Wrap(err)
 		}
 	}
 	rd.copyDefinedFields()
 
-	conflicts := make([]Conflict, 0, len(rd.conflicts))
-	for _, conflict := range rd.conflicts {
-		conflicts = append(conflicts, conflict)
+	mains := slices.Sorted(maps.Keys(rd.mains))
+	result := Result{Descriptions: map[string]string{}}
+	for e, text := range rd.out {
+		result.Descriptions[e.pkg+"."+e.name] = text
+		if rd.mains[e.pkg] && len(mains) == 1 {
+			result.Descriptions["main."+e.name] = text
+		}
+		if rd.mains[e.pkg] && len(mains) > 1 {
+			result.MainPackages = mains
+		}
 	}
-	sort.Slice(conflicts, func(i, j int) bool {
-		return conflicts[i].Key < conflicts[j].Key
+	result.Conflicts = slices.SortedFunc(maps.Values(rd.conflicts), func(a, b Conflict) int {
+		return strings.Compare(a.Key, b.Key)
 	})
-	return rd.out, conflicts, nil
+	return result, nil
 }
 
 // Marshal returns descriptions as the file api.Descriptions loads: one JSON
@@ -183,22 +214,22 @@ func Marshal(descriptions map[string]string) ([]byte, error) {
 }
 
 type reader struct {
-	out       map[string]string
-	from      map[string]string   // key -> file that described it first
-	conflicts map[string]Conflict // keys left out
-	structs   map[string]bool     // import-path keys of the struct types read
-	defined   []definedType       // type A B, in walk order
-	modules   map[string]string   // directory holding a go.mod -> its module path
+	read      map[string]bool    // absolute paths of the files read
+	out       map[entry]string   // the texts
+	from      map[entry]string   // the first file that described each entry
+	conflicts map[entry]Conflict // the entries left out
+	decls     map[entry]int      // how many times its package declares each type
+	structs   map[entry]bool     // the struct types
+	over      map[entry]string   // B for each type A B, B a type of A's package
+	mains     map[string]bool    // import paths of the main packages that declare types
+	modules   map[string]string  // directory holding a go.mod -> its module path
 }
 
-// definedType is a type defined over a named type of its own package,
-// type A B.
-type definedType struct {
-	pkg    string // the import path of the package
-	isMain bool   // a package main, whose entries are also written under main
-	name   string // A
-	over   string // B
-	path   string // the file that declares A
+// entry is a key split into the import path of its package and the rest,
+// Name or Name.Field.
+type entry struct {
+	pkg  string
+	name string
 }
 
 func (rd *reader) walk(dir string) error {
@@ -260,17 +291,30 @@ func skipDir(name string) bool {
 	return name == "vendor" || name == "testdata" || ignored(name)
 }
 
+// readFile reads the file at path, once. The directories walked have their
+// links resolved, so a file reached twice has the same absolute path.
 func (rd *reader) readFile(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ez.New(ez.EINVALID, "cannot resolve "+path+": "+err.Error(), err)
+	}
+	if rd.read[abs] {
+		return nil
+	}
+	rd.read[abs] = true
+
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
 		return ez.New(ez.EINVALID, "cannot parse "+path+": "+err.Error(), err)
+	}
+	if buildIgnored(file) {
+		return nil
 	}
 
 	pkgPath, err := rd.importPath(filepath.Dir(path))
 	if err != nil {
 		return ez.Wrap(err)
 	}
-	isMain := file.Name.Name == "main"
 
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -282,27 +326,53 @@ func (rd *reader) readFile(path string) error {
 			if typeSpec.Assign.IsValid() {
 				continue
 			}
-			rd.readType(path, pkgPath, isMain, gen, typeSpec)
+			if file.Name.Name == "main" {
+				rd.mains[pkgPath] = true
+			}
+			rd.readType(path, pkgPath, gen, typeSpec)
 		}
 	}
 	return nil
 }
 
+// buildIgnored reports a file whose //go:build line is exactly ignore, a
+// script that is never part of its package.
+func buildIgnored(file *ast.File) bool {
+	for _, group := range file.Comments {
+		if group.Pos() > file.Package {
+			return false
+		}
+		for _, comment := range group.List {
+			if !constraint.IsGoBuild(comment.Text) {
+				continue
+			}
+			expr, err := constraint.Parse(comment.Text)
+			if err != nil {
+				return false
+			}
+			tag, ok := expr.(*constraint.TagExpr)
+			return ok && tag.Tag == "ignore"
+		}
+	}
+	return false
+}
+
 // readType records the comment of a type and of its fields.
-func (rd *reader) readType(path, pkgPath string, isMain bool, gen *ast.GenDecl, spec *ast.TypeSpec) {
-	name := spec.Name.Name
-	rd.addAll(path, pkgPath, isMain, name, CommentText(TypeComment(gen, spec)))
+func (rd *reader) readType(path, pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec) {
+	typ := entry{pkg: pkgPath, name: spec.Name.Name}
+	rd.decls[typ]++
+	rd.add(path, typ, CommentText(TypeComment(gen, spec)))
 
 	over := localTypeName(spec.Type)
 	if over != "" {
-		rd.defined = append(rd.defined, definedType{pkg: pkgPath, isMain: isMain, name: name, over: over, path: path})
+		rd.over[typ] = over
 	}
 
 	structType, ok := spec.Type.(*ast.StructType)
 	if !ok {
 		return
 	}
-	rd.structs[pkgPath+"."+name] = true
+	rd.structs[typ] = true
 	for _, field := range structType.Fields.List {
 		text := FieldText(field)
 		names := field.Names
@@ -315,18 +385,9 @@ func (rd *reader) readType(path, pkgPath string, isMain bool, gen *ast.GenDecl, 
 		}
 		for _, fieldName := range names {
 			if fieldName.IsExported() {
-				rd.addAll(path, pkgPath, isMain, name+"."+fieldName.Name, text)
+				rd.add(path, entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}, text)
 			}
 		}
-	}
-}
-
-// addAll adds text under the import path pkgPath and name, and for a package
-// main under main and name too.
-func (rd *reader) addAll(path, pkgPath string, isMain bool, name, text string) {
-	rd.add(path, pkgPath+"."+name, text)
-	if isMain {
-		rd.add(path, "main."+name, text)
 	}
 }
 
@@ -366,91 +427,65 @@ func embeddedName(expr ast.Expr) *ast.Ident {
 	return nil
 }
 
-// copyDefinedFields gives each type defined over a struct of its own package,
-// directly or through a chain (type C A, type A B), the field entries that
-// struct has under the package's import path, through add, so a copy that
-// disagrees with another text conflicts. A field of that struct left out as a
-// conflict is left out under the defined type too. A type of the chain that
-// two files of the package declare over different types ends it.
+// copyDefinedFields gives each type A defined over a struct of its own
+// package, directly or through a chain (type C A, type A B), the field
+// entries of that struct, when A, every type along the chain and the struct
+// are each declared once in the package. A copy cannot conflict: the
+// struct's fields come from its one declaration, and A has no fields of its
+// own.
 func (rd *reader) copyDefinedFields() {
-	over := map[string][]string{} // import-path key of A -> those of the types it is declared over
-	for _, d := range rd.defined {
-		key := d.pkg + "." + d.name
-		target := d.pkg + "." + d.over
-		if !slices.Contains(over[key], target) {
-			over[key] = append(over[key], target)
-		}
-	}
-
-	// The fields are copied as the walk read them, not as other copies
-	// changed them.
-	texts := maps.Clone(rd.out)
-	conflicts := maps.Clone(rd.conflicts)
-	sources := slices.Sorted(maps.Keys(texts))
-	sources = append(sources, slices.Sorted(maps.Keys(conflicts))...)
-
-	for _, d := range rd.defined {
-		target := d.pkg + "." + d.over
-		for range len(rd.defined) {
-			next := over[target]
-			if rd.structs[target] || len(next) != 1 {
-				break
-			}
-			target = next[0]
-		}
-		if !rd.structs[target] {
+	copies := map[entry]string{}
+	for typ, over := range rd.over {
+		target, ok := rd.structOf(entry{pkg: typ.pkg, name: over})
+		if rd.decls[typ] != 1 || !ok {
 			continue
 		}
-		for _, source := range sources {
-			field, ok := strings.CutPrefix(source, target+".")
-			if !ok || strings.Contains(field, ".") {
-				continue
-			}
-			name := d.name + "." + field
-			conflict, conflicted := conflicts[source]
-			if !conflicted {
-				rd.addAll(d.path, d.pkg, d.isMain, name, texts[source])
-				continue
-			}
-			rd.leaveOut(d.pkg+"."+name, conflict)
-			if d.isMain {
-				rd.leaveOut("main."+name, conflict)
+		for e, text := range rd.out {
+			field, ok := strings.CutPrefix(e.name, target.name+".")
+			if ok && e.pkg == typ.pkg {
+				copies[entry{pkg: typ.pkg, name: typ.name + "." + field}] = text
 			}
 		}
 	}
+	maps.Copy(rd.out, copies)
 }
 
-// leaveOut puts key in conflict with the files of the conflict it follows
-// from, unless it is in conflict already.
-func (rd *reader) leaveOut(key string, from Conflict) {
-	_, conflicted := rd.conflicts[key]
-	if conflicted {
-		return
+// structOf returns the struct the chain from typ ends at, when every type
+// along it is declared once in its package. It stops on a cycle.
+func (rd *reader) structOf(typ entry) (entry, bool) {
+	for range len(rd.over) + 1 {
+		if rd.decls[typ] != 1 {
+			return entry{}, false
+		}
+		if rd.structs[typ] {
+			return typ, true
+		}
+		over, ok := rd.over[typ]
+		if !ok {
+			return entry{}, false
+		}
+		typ.name = over
 	}
-	delete(rd.out, key)
-	rd.conflicts[key] = Conflict{Key: key, First: from.First, Second: from.Second}
+	return entry{}, false
 }
 
-// add records text under key, unless text is empty. A key described
+// add records text under e, unless text is empty. An entry described
 // differently twice is left out for good.
-func (rd *reader) add(path, key, text string) {
-	if text == "" {
+func (rd *reader) add(path string, e entry, text string) {
+	_, conflicted := rd.conflicts[e]
+	if text == "" || conflicted {
 		return
 	}
-	_, conflicted := rd.conflicts[key]
-	if conflicted {
-		return
-	}
-	previous, ok := rd.out[key]
-	if ok && previous != text {
-		rd.conflicts[key] = Conflict{Key: key, First: rd.from[key], Second: path}
-		delete(rd.out, key)
-		return
-	}
+	previous, ok := rd.out[e]
 	if !ok {
-		rd.from[key] = path
+		rd.out[e] = text
+		rd.from[e] = path
+		return
 	}
-	rd.out[key] = text
+	if previous != text {
+		rd.conflicts[e] = Conflict{Key: e.pkg + "." + e.name, First: rd.from[e], Second: path}
+		delete(rd.out, e)
+	}
 }
 
 // importPath returns the import path of the package in dir: the module path
