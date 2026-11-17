@@ -275,6 +275,52 @@ func TestReadDottedDirectory(t *testing.T) {
 	}, read(t, root))
 }
 
+// TestReadModuleMain reads a module named main, whose root package has the
+// import path main and so keys like a main package's main keys.
+func TestReadModuleMain(t *testing.T) {
+	const modMain = "module main\n\ngo 1.26\n"
+
+	// A library at the root is in no binary: it has no entries, and the
+	// command's main.T is its own every time.
+	root := writeTree(t, map[string]string{
+		"go.mod":        modMain,
+		"lib.go":        "package lib\n\n// T is the library T.\ntype T struct{}\n",
+		"cmd/a/main.go": "package main\n\n// T is the command T.\ntype T struct{}\n\nfunc main() {}\n",
+		"sub/sub.go":    "package sub\n\n// S is below the root.\ntype S struct{}\n",
+	})
+	for range 20 {
+		require.Equal(t, map[string]string{
+			"main.T":       "T is the command T.",
+			"main/cmd/a.T": "T is the command T.",
+			"main/sub.S":   "S is below the root.",
+		}, read(t, root))
+	}
+
+	// A command at the root: its import path keys are its main keys.
+	root = writeTree(t, map[string]string{
+		"go.mod":     modMain,
+		"main.go":    "package main\n\n// T is the root command T.\ntype T struct {\n\tX int // X is x.\n}\n\nfunc main() {}\n",
+		"sub/sub.go": "package sub\n\n// S is below the root.\ntype S struct{}\n",
+	})
+	require.Equal(t, map[string]string{
+		"main.T":     "T is the root command T.",
+		"main.T#X":   "X is x.",
+		"main/sub.S": "S is below the root.",
+	}, read(t, root))
+
+	// A command at the root beside another: neither is described under
+	// main, the root's import path keys included.
+	root = writeTree(t, map[string]string{
+		"go.mod":        modMain,
+		"main.go":       "package main\n\n// T is the root command T.\ntype T struct{}\n\nfunc main() {}\n",
+		"cmd/a/main.go": "package main\n\n// T is the command T.\ntype T struct{}\n\nfunc main() {}\n",
+	})
+	result, err := descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"main/cmd/a.T": "T is the command T."}, result.Descriptions)
+	require.Equal(t, []string{"main", "main/cmd/a"}, result.MainPackages)
+}
+
 // TestReadNames checks where an entry goes: an embedded field under its
 // type's name, a vendored package after the last vendor element, and a
 // //go:build ignore line after the package clause, which is no constraint.

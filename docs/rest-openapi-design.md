@@ -938,7 +938,13 @@ its import path. They are also written under `main` when it is the only main pac
 declares a type, commented or not, an alias counting. With two or more, a key under `main` could describe the type
 of another command, so none is written, and the command prints one warning that names the main
 packages when one of them has an entry. It still succeeds. To describe the types of a package
-main, run the command on the directories of one command at a time, each into its own file.
+main, run the command on the directories of one command at a time, each into its own file. In
+a module named `main`, the package at its root has the import path `main`, so its keys are
+`main.` keys too. It is described only when it is the one main package read, where its keys
+and its `main.` keys are the same. A library there is in no binary, as the go command refuses
+to import `main`. A root command beside another command would describe the types of the other
+command too, as a binary built from either reports its types under `main`. Packages below it,
+such as `main/sub`, are keyed as usual.
 
 A type defined over a struct of its own package, `type Job Run`, gets the field entries of
 `Run` under `Job`, also through a chain such as `type Task Job`, since reflection reports those

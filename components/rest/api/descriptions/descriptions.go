@@ -179,6 +179,11 @@ type Result struct {
 // files read all say package main. When exactly one main package read
 // declares a type, an alias counting, its entries are also written under
 // "main". When two or more do, none is, and Result.MainPackages names them.
+// A package whose import path is exactly main, in a module named main, has
+// entries only when it is the one main package, as its keys are then its
+// main keys. Otherwise its keys would be those of another command's types,
+// and a library there is in no binary, as main cannot be imported. A package
+// below it, such as main/sub, is keyed as usual.
 //
 // A type declared more than once in its package, of any kind and whatever its
 // comments, has no entry and its fields have none, as which declaration a
@@ -214,12 +219,16 @@ func Read(dirs ...string) (Result, error) {
 	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
 	mainEntries := false
 	for e, text := range rd.out {
-		result.Descriptions[e.pkg+"."+e.name] = text
 		isMain := slices.Contains(mains, e.pkg)
-		if isMain && len(mains) == 1 {
+		mainEntries = mainEntries || isMain
+		onlyMain := isMain && len(mains) == 1
+		if e.pkg == "main" && !onlyMain {
+			continue
+		}
+		result.Descriptions[e.pkg+"."+e.name] = text
+		if onlyMain {
 			result.Descriptions["main."+e.name] = text
 		}
-		mainEntries = mainEntries || isMain
 	}
 	if len(mains) > 1 && mainEntries {
 		result.MainPackages = mains
