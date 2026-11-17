@@ -879,7 +879,8 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
   in; register `email` and `phone` (compose's `types` checks) and `ip`, which accepts what
   `netip.ParseAddr` accepts: both families, and a zone, which `netip.Addr` keeps and
   `net.IP`'s decoder refuses with a 400 of its own: `body could not be decoded` in a JSON
-  body and `form values could not be decoded` in a multipart form, which name no field, and
+  body (`value could not be decoded` under `types.Optional`) and `form values could not be
+  decoded` in a multipart form, which name no field, and
   `query qip is invalid` or `header x-ip is invalid` for a parameter. Unknown formats (`int64`, `double`) are
   ignored, which is fine.
 - Error mapping: `kind.Required{Missing}` becomes `field is required`, `kind.Type` becomes
