@@ -118,3 +118,44 @@ func assertSchemaMatchesStruct(t *testing.T, schemas map[string]map[string]any, 
 		}
 	}
 }
+
+// The api registry documents the envelope from the tags of
+// handler.StandardError, the generator from registerErrorSchemas. This pins
+// the two to the same codes and descriptions, so a document does not say
+// less about an error when the registry builds it.
+func TestErrorSchemaMatchesStandardErrorTags(t *testing.T) {
+	schemas := map[string]map[string]any{}
+	registerErrorSchemas(schemas)
+
+	properties, ok := schemas[standardErrorSchemaName]["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: schema has no properties", standardErrorSchemaName)
+	}
+
+	structType := reflect.TypeOf(handler.StandardError{})
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+
+		property, ok := properties[name].(map[string]any)
+		if !ok {
+			// Fields: see registerErrorSchemas.
+			continue
+		}
+
+		if field.Tag.Get("doc") != property["description"] {
+			t.Errorf("%s: doc tag %q, schema description %q", name, field.Tag.Get("doc"), property["description"])
+		}
+
+		var tagEnum []any
+		for _, value := range strings.Split(field.Tag.Get("enum"), ",") {
+			if value != "" {
+				tagEnum = append(tagEnum, value)
+			}
+		}
+		schemaEnum, _ := property["enum"].([]any)
+		if !reflect.DeepEqual(tagEnum, schemaEnum) {
+			t.Errorf("%s: enum tag %v, schema enum %v", name, tagEnum, schemaEnum)
+		}
+	}
+}

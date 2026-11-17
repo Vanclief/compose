@@ -7,9 +7,13 @@ type ErrorResponse struct {
 
 // StandardError defines a error in JSON format
 type StandardError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
+	// Code is the ez code of the error. Its enum tag lists the codes of ez,
+	// in the order components/rest/generator lists them, so a document the
+	// api registry builds names them as a generated one does. An app that
+	// invents a code of its own answers one the documents do not list.
+	Code      string `json:"code" enum:"conflict,internal,invalid,not_found,not_authorized,not_authenticated,resource_exhausted,not_implemented,unavailable,timeout,canceled" doc:"Machine-readable error code, the ez code of the error."`
+	Message   string `json:"message" doc:"Human-readable message, translated when the request carries a locale."`
+	RequestID string `json:"request_id" doc:"Correlates this response with the backend logs."`
 	// Fields lists the request fields that failed validation, at most
 	// validate.MaxFields of them. Only rest.ErrorHandler sets it, when the
 	// error it answers is an ez EINVALID built by validate.NewFieldsError:

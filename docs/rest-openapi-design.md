@@ -823,7 +823,11 @@ lint, key check and variants.
   at equal values, as the boolean form can carry only one; the same for the maximum.
 - operationId `<tag>.<name>` (`runs.update`) so hey-api nests clients. Every operation gets a
   `default` response pointing at the `handler.ErrorResponse` component, under the name the
-  namer gives it. The `api.APIKeyHeader` security
+  namer gives it. Its `error.code` lists the eleven ez codes as an enum, and `code`,
+  `message` and `request_id` are described, from the tags of `handler.StandardError`, with
+  the codes and the texts the generator's document has. An app whose error carries a code
+  of its own answers one the enum does not list, which `apitest` reports. The
+  `api.APIKeyHeader` security
   scheme applies to every operation unless `api.Public()`. `api.Security` declares the schemes
   by name in its place, for an app that requires more than one header or takes a bearer
   token: every `apiKey` scheme goes in one requirement, so they are sent together, and each

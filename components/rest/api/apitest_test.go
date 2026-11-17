@@ -254,6 +254,35 @@ func TestContractHead(t *testing.T) {
 	require.Empty(t, fake.errors)
 }
 
+// TestContractErrorCode: the error envelope lists the ez codes, so the
+// contract takes an answer with one of them and reports an answer whose code
+// the app invented, which the documents do not list.
+func TestContractErrorCode(t *testing.T) {
+	e := newEcho()
+	reg := api.New(e, api.Public())
+	g := reg.Group("/probes")
+	api.GET(g, "/missing", "missing", func(ctx context.Context, req *fixture.HealthRequest) (fixture.HealthResponse, error) {
+		return fixture.HealthResponse{}, ez.New(ez.ENOTFOUND, "no probe", nil)
+	})
+	api.GET(g, "/busy", "busy", func(ctx context.Context, req *fixture.HealthRequest) (fixture.HealthResponse, error) {
+		return fixture.HealthResponse{}, ez.New("probe_busy", "the probe is busy", nil)
+	})
+	reg.Ready()
+
+	contract := apitest.New(t, reg)
+	fake := &fakeTB{TB: t}
+	rec := contract.Do(fake, e, "probes.missing", httptest.NewRequest(http.MethodGet, "/probes/missing", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Empty(t, fake.errors)
+
+	rec = contract.Do(fake, e, "probes.busy", httptest.NewRequest(http.MethodGet, "/probes/busy", nil))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Contains(t, rec.Body.String(), `"code":"probe_busy"`)
+	require.Len(t, fake.errors, 1)
+	require.Contains(t, fake.errors[0], "probes.busy 500 response does not match the contract")
+	require.Contains(t, fake.errors[0], "error.code")
+}
+
 // TestContractEmptyBody: an empty body fails where the contract expects
 // JSON, even for a Res whose schema allows null.
 func TestContractEmptyBody(t *testing.T) {

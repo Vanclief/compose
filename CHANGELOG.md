@@ -2,6 +2,12 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.41.1
+
+### Highlights
+
+- **Route registry: the documents list the codes of `error.code` and describe the error's fields.** The registry builds the `handler.StandardError` component from the struct, where `code` was a plain string and neither `code`, `message` nor `request_id` had a description. So its documents said less about an error than the generator's, which list the eleven ez codes as an enum and describe the three fields: a client generated from a registry document typed `code` as any string, and an app that moved from the generator lost the list. `handler.StandardError` now carries the codes in an `enum` tag and the generator's three descriptions in `doc` tags, so the component has them in the 3.1, the 3.0.3 and the strict document, and a test keeps the tags equal to the generator's schema. The Go type of `Code` is still `string` and no answer changes. A committed spec golden gains those lines. An app whose error carries a code of its own, such as `ez.New("probe_busy", ...)`, answers a code the enum does not list, as it did against the generator's document, and a contract test built on `apitest` now reports that answer.
+
 ## v1.41.0
 
 ### Breaking
