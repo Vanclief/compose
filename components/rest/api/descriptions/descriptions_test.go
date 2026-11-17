@@ -25,12 +25,12 @@ const treePath = "github.com/vanclief/compose/components/rest/api/descriptions/t
 // mod is the go.mod of the trees the tests write.
 const mod = "module example.com/app\n\ngo 1.26\n"
 
-// read is Read for a tree without conflicts or several main packages.
+// read is Read for a tree without duplicates or several main packages.
 func read(t *testing.T, dirs ...string) map[string]string {
 	t.Helper()
 	result, err := descriptions.Read(dirs...)
 	require.NoError(t, err)
-	require.Empty(t, result.Conflicts)
+	require.Empty(t, result.Duplicates)
 	require.Empty(t, result.MainPackages)
 	return result.Descriptions
 }
@@ -124,23 +124,81 @@ func TestRead(t *testing.T) {
 	require.Equal(t, map[string]string{treePath + "/testdata.Data": "Data is in testdata."}, read(t, filepath.Join(tree, "testdata")))
 }
 
-// TestReadConflict reads one type in a cgo, a !cgo and a wasm file. The type
-// comment differs, so its key is left out and reported, and stays out though
-// the wasm file repeats the cgo text. The field reads the same everywhere and
-// is kept.
-func TestReadConflict(t *testing.T) {
-	const dir = "testdata/conflict"
-	const pkg = "github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict/engine"
+// TestReadDuplicates reads one struct in a cgo, a !cgo and a wasm file, with
+// the same comments in all three. It is declared more than once, so neither
+// it nor its field is described, and it is reported once, with the first two
+// files.
+func TestReadDuplicates(t *testing.T) {
+	const dir = "testdata/duplicate"
+	const pkg = "github.com/vanclief/compose/components/rest/api/descriptions/testdata/duplicate/engine"
 
 	result, err := descriptions.Read(dir)
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{pkg + ".Engine.Name": "Name names the engine."}, result.Descriptions)
-	require.Equal(t, []descriptions.Conflict{{
+	require.Empty(t, result.Descriptions)
+	require.Equal(t, []descriptions.Duplicate{{
 		Key:    pkg + ".Engine",
 		First:  filepath.Join(dir, "engine", "engine_cgo.go"),
 		Second: filepath.Join(dir, "engine", "engine_nocgo.go"),
-	}}, result.Conflicts)
+	}}, result.Duplicates)
 	require.Empty(t, result.MainPackages)
+
+	// One commented and one bare declaration: left out too.
+	root := writeTree(t, map[string]string{
+		"go.mod":       mod,
+		"p/a_cgo.go":   "//go:build cgo\n\npackage p\n\n// A is a.\ntype A struct {\n\tX int // X is x.\n}\n",
+		"p/a_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype A struct {\n\tX int\n}\n",
+		"p/b.go":       "package p\n\n// B is b.\ntype B struct{}\n",
+	})
+	result, err = descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"example.com/app/p.B": "B is b."}, result.Descriptions)
+	require.Equal(t, []descriptions.Duplicate{{
+		Key:    "example.com/app/p.A",
+		First:  filepath.Join(root, "p", "a_cgo.go"),
+		Second: filepath.Join(root, "p", "a_nocgo.go"),
+	}}, result.Duplicates)
+
+	// A duplicate in the only main package has no key under main either,
+	// while the other types of that package keep theirs.
+	root = writeTree(t, map[string]string{
+		"go.mod":            mod,
+		"cmd/a/main.go":     "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n",
+		"cmd/a/engine.go":   "//go:build cgo\n\npackage main\n\n// Engine runs a job.\ntype Engine struct{}\n",
+		"cmd/a/engine_n.go": "//go:build !cgo\n\npackage main\n\n// Engine runs a job.\ntype Engine struct{}\n",
+	})
+	result, err = descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"example.com/app/cmd/a.Config": "Config is a's.",
+		"main.Config":                  "Config is a's.",
+	}, result.Descriptions)
+	require.Len(t, result.Duplicates, 1)
+	require.Equal(t, "example.com/app/cmd/a.Engine", result.Duplicates[0].Key)
+	require.Empty(t, result.MainPackages)
+
+	// One import path reached from two module roots: every type there is
+	// declared twice, so none is described, in either order.
+	one := writeTree(t, map[string]string{
+		"go.mod": mod,
+		"p/p.go": "package p\n\n// P is p.\ntype P struct {\n\tX int // X is x.\n}\n",
+	})
+	two := writeTree(t, map[string]string{
+		"go.mod": mod,
+		"p/p.go": "package p\n\n// P is p.\ntype P struct {\n\tX int // X is x.\n}\n",
+	})
+	for _, dirs := range [][]string{{one, two}, {two, one}} {
+		result, err = descriptions.Read(dirs...)
+		require.NoError(t, err)
+		require.Empty(t, result.Descriptions)
+		require.Equal(t, []descriptions.Duplicate{{
+			Key:    "example.com/app/p.P",
+			First:  filepath.Join(dirs[0], "p", "p.go"),
+			Second: filepath.Join(dirs[1], "p", "p.go"),
+		}}, result.Duplicates)
+		data, err := descriptions.Marshal(result.Descriptions)
+		require.NoError(t, err)
+		require.Equal(t, "{}\n", string(data))
+	}
 }
 
 // TestReadOnce reads a directory and its subdirectory: each file is read
@@ -187,7 +245,7 @@ func TestReadMainPackages(t *testing.T) {
 		result, err := descriptions.Read(dirs...)
 		require.NoError(t, err)
 		require.Equal(t, want, result.Descriptions)
-		require.Empty(t, result.Conflicts)
+		require.Empty(t, result.Duplicates)
 		require.Equal(t, []string{"example.com/app/cmd/a", "example.com/app/cmd/b"}, result.MainPackages)
 		for key := range result.Descriptions {
 			require.False(t, strings.HasPrefix(key, "main."), key)
@@ -224,9 +282,10 @@ func TestReadMainPackages(t *testing.T) {
 // it only when every type of the chain is declared once in the package.
 func TestReadDefinedTypes(t *testing.T) {
 	tests := []struct {
-		name  string
-		files map[string]string
-		want  map[string]string
+		name       string
+		files      map[string]string
+		want       map[string]string
+		duplicates []string
 	}{
 		{
 			name: "a type of the chain declared twice",
@@ -235,24 +294,21 @@ func TestReadDefinedTypes(t *testing.T) {
 				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n\ntype C struct {\n\tX int // X is the pure Go handle.\n}\n",
 				"p/a.go":       "package p\n\ntype A B\n",
 			},
-			want: map[string]string{
-				"example.com/app/p.B.X": "X is the cgo handle.",
-				"example.com/app/p.C.X": "X is the pure Go handle.",
-			},
+			want:       map[string]string{"example.com/app/p.C.X": "X is the pure Go handle."},
+			duplicates: []string{"example.com/app/p.B"},
 		},
 		{
 			name: "the defined type declared twice",
 			files: map[string]string{
 				"p/a_cgo.go":   "//go:build cgo\n\npackage p\n\ntype A B\n",
 				"p/a_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype A struct {\n\tX int // X of nocgo A.\n}\n",
-				"p/b.go":       "package p\n\ntype B struct {\n\tX int // X of B.\n}\n\ntype C A\n",
+				"p/b.go":       "package p\n\n// B is b.\ntype B struct {\n\tX int // X of B.\n}\n\ntype C A\n",
 			},
-			// A.X is kept from the one declaration that describes it, though
-			// with cgo A is B and its X is described otherwise.
 			want: map[string]string{
-				"example.com/app/p.A.X": "X of nocgo A.",
+				"example.com/app/p.B":   "B is b.",
 				"example.com/app/p.B.X": "X of B.",
 			},
+			duplicates: []string{"example.com/app/p.A"},
 		},
 		{
 			name: "the same definition in two files",
@@ -261,7 +317,8 @@ func TestReadDefinedTypes(t *testing.T) {
 				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n",
 				"p/a.go":       "package p\n\ntype A B\n\ntype C struct {\n\tX int // X is c.\n}\n",
 			},
-			want: map[string]string{"example.com/app/p.C.X": "X is c."},
+			want:       map[string]string{"example.com/app/p.C.X": "X is c."},
+			duplicates: []string{"example.com/app/p.B"},
 		},
 		{
 			name:  "a chain of four hops",
@@ -304,6 +361,11 @@ func TestReadDefinedTypes(t *testing.T) {
 			result, err := descriptions.Read(root)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, result.Descriptions)
+			var duplicates []string
+			for _, duplicate := range result.Duplicates {
+				duplicates = append(duplicates, duplicate.Key)
+			}
+			require.Equal(t, tt.duplicates, duplicates)
 		})
 	}
 }

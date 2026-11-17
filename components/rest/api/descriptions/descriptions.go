@@ -8,11 +8,12 @@
 // name for a field: "github.com/x/app/runs.Run" and
 // "github.com/x/app/runs.Run.Status".
 //
-// A defined type over a struct of the same package, type A B, gets the field
-// entries of B under A, as reflection reports B's fields with A as their
-// struct. It gets them only when A, every type along the chain and the
-// struct at its end are each declared once in the package. A defined type
-// over a struct of another package gets none.
+// A type declared more than once in its package, such as in a cgo and a !cgo
+// file, is not described, nor are its fields: with one declaration there is
+// one truth. A defined type over a struct of the same package, type A B, gets
+// the field entries of B under A, as reflection reports B's fields with A as
+// their struct, also through a chain such as type C A. A defined type over a
+// struct of another package gets none.
 //
 // A directory is keyed by where it is, after symbolic links are followed: a
 // package directory that is a link to another module's package is keyed by
@@ -115,20 +116,21 @@ func FieldText(field *ast.Field) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// Conflict is a key two files describe differently. Read leaves it out.
-type Conflict struct {
-	Key    string
-	First  string // the first file that described it, in walk order
-	Second string // the first file that described it otherwise
+// Duplicate is a type declared more than once in its package. Read describes
+// neither it nor its fields.
+type Duplicate struct {
+	Key    string // the key of the type
+	First  string // the first file that declares it, in walk order
+	Second string // the second file that declares it
 }
 
 // Result is what Read found.
 type Result struct {
 	// Descriptions maps each key to its text. It is what Marshal writes.
 	Descriptions map[string]string
-	// Conflicts are the keys two files describe differently, left out of
-	// Descriptions, sorted by key.
-	Conflicts []Conflict
+	// Duplicates are the types declared more than once in their package,
+	// left out of Descriptions, sorted by key.
+	Duplicates []Duplicate
 	// MainPackages are the import paths of the main packages that declare
 	// types, sorted, when there are two or more of them and one has an
 	// entry. No key is then written under main, so those entries are not
@@ -153,21 +155,21 @@ type Result struct {
 // it joined with its directory below that go.mod, or what follows the last
 // vendor element of that directory. When exactly one main package read
 // declares types, its entries are also written under "main". When two or more
-// do, none is, and Result.MainPackages names them. A key that two files
-// describe differently is left out, even when a third file repeats one of the
-// texts, and reported as a Conflict: no description is better than a wrong
-// one.
+// do, none is, and Result.MainPackages names them.
+//
+// A type declared more than once in its package, of any kind and whatever its
+// comments, has no entry and its fields have none, as which declaration a
+// binary holds depends on build constraints Read does not evaluate. It is
+// reported as a Duplicate. No description is better than a wrong one.
 func Read(dirs ...string) (Result, error) {
 	rd := &reader{
-		read:      map[string]bool{},
-		out:       map[entry]string{},
-		from:      map[entry]string{},
-		conflicts: map[entry]Conflict{},
-		decls:     map[entry]int{},
-		structs:   map[entry]bool{},
-		over:      map[entry]string{},
-		mains:     map[string]bool{},
-		modules:   map[string]string{},
+		read:    map[string]bool{},
+		out:     map[entry]string{},
+		files:   map[entry][]string{},
+		structs: map[entry]bool{},
+		over:    map[entry]string{},
+		mains:   map[string]bool{},
+		modules: map[string]string{},
 	}
 	for _, dir := range dirs {
 		err := rd.walk(dir)
@@ -175,10 +177,11 @@ func Read(dirs ...string) (Result, error) {
 			return Result{}, ez.Wrap(err)
 		}
 	}
+	duplicates := rd.dropDuplicates()
 	rd.copyDefinedFields()
 
 	mains := slices.Sorted(maps.Keys(rd.mains))
-	result := Result{Descriptions: map[string]string{}}
+	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
 	for e, text := range rd.out {
 		result.Descriptions[e.pkg+"."+e.name] = text
 		if rd.mains[e.pkg] && len(mains) == 1 {
@@ -188,9 +191,6 @@ func Read(dirs ...string) (Result, error) {
 			result.MainPackages = mains
 		}
 	}
-	result.Conflicts = slices.SortedFunc(maps.Values(rd.conflicts), func(a, b Conflict) int {
-		return strings.Compare(a.Key, b.Key)
-	})
 	return result, nil
 }
 
@@ -214,15 +214,13 @@ func Marshal(descriptions map[string]string) ([]byte, error) {
 }
 
 type reader struct {
-	read      map[string]bool    // absolute paths of the files read
-	out       map[entry]string   // the texts
-	from      map[entry]string   // the first file that described each entry
-	conflicts map[entry]Conflict // the entries left out
-	decls     map[entry]int      // how many times its package declares each type
-	structs   map[entry]bool     // the struct types
-	over      map[entry]string   // B for each type A B, B a type of A's package
-	mains     map[string]bool    // import paths of the main packages that declare types
-	modules   map[string]string  // directory holding a go.mod -> its module path
+	read    map[string]bool    // absolute paths of the files read
+	out     map[entry]string   // the texts
+	files   map[entry][]string // the files that declare each type, in walk order
+	structs map[entry]bool     // the struct types
+	over    map[entry]string   // B for each type A B, B a type of A's package
+	mains   map[string]bool    // import paths of the main packages that declare types
+	modules map[string]string  // directory holding a go.mod -> its module path
 }
 
 // entry is a key split into the import path of its package and the rest,
@@ -323,13 +321,15 @@ func (rd *reader) readFile(path string) error {
 		}
 		for _, spec := range gen.Specs {
 			typeSpec := spec.(*ast.TypeSpec)
+			typ := entry{pkg: pkgPath, name: typeSpec.Name.Name}
+			rd.files[typ] = append(rd.files[typ], path)
 			if typeSpec.Assign.IsValid() {
 				continue
 			}
 			if file.Name.Name == "main" {
 				rd.mains[pkgPath] = true
 			}
-			rd.readType(path, pkgPath, gen, typeSpec)
+			rd.readType(pkgPath, gen, typeSpec)
 		}
 	}
 	return nil
@@ -358,10 +358,9 @@ func buildIgnored(file *ast.File) bool {
 }
 
 // readType records the comment of a type and of its fields.
-func (rd *reader) readType(path, pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec) {
+func (rd *reader) readType(pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec) {
 	typ := entry{pkg: pkgPath, name: spec.Name.Name}
-	rd.decls[typ]++
-	rd.add(path, typ, CommentText(TypeComment(gen, spec)))
+	rd.add(typ, CommentText(TypeComment(gen, spec)))
 
 	over := localTypeName(spec.Type)
 	if over != "" {
@@ -385,7 +384,7 @@ func (rd *reader) readType(path, pkgPath string, gen *ast.GenDecl, spec *ast.Typ
 		}
 		for _, fieldName := range names {
 			if fieldName.IsExported() {
-				rd.add(path, entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}, text)
+				rd.add(entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}, text)
 			}
 		}
 	}
@@ -430,14 +429,12 @@ func embeddedName(expr ast.Expr) *ast.Ident {
 // copyDefinedFields gives each type A defined over a struct of its own
 // package, directly or through a chain (type C A, type A B), the field
 // entries of that struct, when A, every type along the chain and the struct
-// are each declared once in the package. A copy cannot conflict: the
-// struct's fields come from its one declaration, and A has no fields of its
-// own.
+// are each declared once in the package.
 func (rd *reader) copyDefinedFields() {
 	copies := map[entry]string{}
 	for typ, over := range rd.over {
 		target, ok := rd.structOf(entry{pkg: typ.pkg, name: over})
-		if rd.decls[typ] != 1 || !ok {
+		if len(rd.files[typ]) != 1 || !ok {
 			continue
 		}
 		for e, text := range rd.out {
@@ -454,7 +451,7 @@ func (rd *reader) copyDefinedFields() {
 // along it is declared once in its package. It stops on a cycle.
 func (rd *reader) structOf(typ entry) (entry, bool) {
 	for range len(rd.over) + 1 {
-		if rd.decls[typ] != 1 {
+		if len(rd.files[typ]) != 1 {
 			return entry{}, false
 		}
 		if rd.structs[typ] {
@@ -469,22 +466,32 @@ func (rd *reader) structOf(typ entry) (entry, bool) {
 	return entry{}, false
 }
 
-// add records text under e, unless text is empty. An entry described
-// differently twice is left out for good.
-func (rd *reader) add(path string, e entry, text string) {
-	_, conflicted := rd.conflicts[e]
-	if text == "" || conflicted {
-		return
+// dropDuplicates removes the entries of every type declared more than once in
+// its package, and returns those types.
+func (rd *reader) dropDuplicates() []Duplicate {
+	for e := range rd.out {
+		typeName, _, _ := strings.Cut(e.name, ".")
+		if len(rd.files[entry{pkg: e.pkg, name: typeName}]) > 1 {
+			delete(rd.out, e)
+		}
 	}
-	previous, ok := rd.out[e]
-	if !ok {
+
+	var duplicates []Duplicate
+	for typ, files := range rd.files {
+		if len(files) > 1 {
+			duplicates = append(duplicates, Duplicate{Key: typ.pkg + "." + typ.name, First: files[0], Second: files[1]})
+		}
+	}
+	slices.SortFunc(duplicates, func(a, b Duplicate) int {
+		return strings.Compare(a.Key, b.Key)
+	})
+	return duplicates
+}
+
+// add records text under e, unless text is empty.
+func (rd *reader) add(e entry, text string) {
+	if text != "" {
 		rd.out[e] = text
-		rd.from[e] = path
-		return
-	}
-	if previous != text {
-		rd.conflicts[e] = Conflict{Key: e.pkg + "." + e.name, First: rd.from[e], Second: path}
-		delete(rd.out, e)
 	}
 }
 

@@ -195,7 +195,7 @@ compose descriptions -out descriptions.json .
 
 The first serves the reference page of `openapi.yaml` with what changed since `previous.yaml`, rendered again on every reload. Use `-out page.html` instead of `-serve` to write a standalone file.
 
-The second writes the doc comments of the types under the current directory, and of their fields, to `descriptions.json`. The registry loads that file with `api.Descriptions`, so its documents describe what the comments describe. A type or field that two files describe differently, such as one type in a `cgo` and a `!cgo` file, is left out with a warning, so the file is the same on every platform. The types of a `package main` are also written under `main` only when it is the only main package read that declares types. With two or more, a warning names them, so run the command on one command's directories at a time.
+The second writes the doc comments of the types under the current directory, and of their fields, to `descriptions.json`. The registry loads that file with `api.Descriptions`, so its documents describe what the comments describe. A type declared more than once in a package, such as in a `cgo` and a `!cgo` file, is left out with its fields and named in a warning, so the file is the same on every platform and never describes the wrong declaration. The types of a `package main` are also written under `main` only when it is the only main package read that declares types. With two or more, a warning names them, so run the command on one command's directories at a time.
 
 ## Contributing
 

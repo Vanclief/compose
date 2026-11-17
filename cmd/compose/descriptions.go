@@ -24,9 +24,9 @@ are skipped, and so are files starting with . or _, _test.go files and files
 whose build constraint is exactly ignore. A directory given is always read.
 Every other file is read once, whatever its build constraints.
 
-A key that two files describe differently, such as one type in two files for
-different platforms, is left out with a warning on stderr. Make the comments
-match to describe it.
+A type declared more than once in a package, such as in two files for
+different platforms, is not described, nor are its fields, whatever the
+comments say. A warning on stderr names it and two of its files.
 
 A type of a package main is written under its import path, and also under
 main when it is the only main package read that declares types. With two or
@@ -74,9 +74,9 @@ func runDescriptions(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	for _, conflict := range result.Conflicts {
-		fmt.Fprintf(stderr, "compose descriptions: %s is described differently in %s and %s: left out, make the comments match to describe it\n",
-			conflict.Key, conflict.First, conflict.Second)
+	for _, duplicate := range result.Duplicates {
+		fmt.Fprintf(stderr, "compose descriptions: %s is declared in %s and %s: left out, a type declared more than once in a package is not described\n",
+			duplicate.Key, duplicate.First, duplicate.Second)
 	}
 	if len(result.MainPackages) > 0 {
 		fmt.Fprintf(stderr, "compose descriptions: %d main packages declare types (%s), so no type is described under main: run the command on the directories of one command at a time to describe the types of its package main\n",

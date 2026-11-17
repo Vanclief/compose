@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	descriptionsTree     = "../../components/rest/api/descriptions/testdata/tree"
-	descriptionsConflict = "../../components/rest/api/descriptions/testdata/conflict"
+	descriptionsTree      = "../../components/rest/api/descriptions/testdata/tree"
+	descriptionsDuplicate = "../../components/rest/api/descriptions/testdata/duplicate"
 	// runKey is a key of descriptionsTree.
 	runKey = `"github.com/vanclief/compose/components/rest/api/descriptions/testdata/tree/models.Run": "Run is one execution of a job."`
 )
@@ -59,18 +59,23 @@ func TestDescriptionsDefaultDir(t *testing.T) {
 	require.Equal(t, want.String(), stdout.String())
 }
 
-// TestDescriptionsConflict checks that a key two files describe differently
-// is left out with one warning per key, and the command still succeeds.
-func TestDescriptionsConflict(t *testing.T) {
+// TestDescriptionsDuplicate checks that a type declared more than once is
+// left out with one warning, and the command still succeeds and writes the
+// file.
+func TestDescriptionsDuplicate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "descriptions.json")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"descriptions", descriptionsConflict}, &stdout, &stderr)
+	code := run([]string{"descriptions", "-out", out, descriptionsDuplicate}, &stdout, &stderr)
 	require.Equal(t, 0, code, stderr.String())
 	require.Equal(t, ""+
-		"compose descriptions: github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict/engine.Engine is described differently in "+
-		filepath.Join(descriptionsConflict, "engine", "engine_cgo.go")+" and "+filepath.Join(descriptionsConflict, "engine", "engine_nocgo.go")+
-		": left out, make the comments match to describe it\n", stderr.String())
-	require.NotContains(t, stdout.String(), `engine.Engine"`)
-	require.Contains(t, stdout.String(), `engine.Engine.Name": "Name names the engine."`)
+		"compose descriptions: github.com/vanclief/compose/components/rest/api/descriptions/testdata/duplicate/engine.Engine is declared in "+
+		filepath.Join(descriptionsDuplicate, "engine", "engine_cgo.go")+" and "+filepath.Join(descriptionsDuplicate, "engine", "engine_nocgo.go")+
+		": left out, a type declared more than once in a package is not described\n", stderr.String())
+	require.Empty(t, stdout.String())
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+	require.Equal(t, "{}\n", string(data))
 }
 
 // TestDescriptionsMainPackages checks that two main packages that declare

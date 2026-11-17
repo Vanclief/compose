@@ -1,8 +1,8 @@
-//go:build cgo
+//go:build wasm
 
 package engine
 
-// Engine runs with cgo.
+// Engine runs a job.
 type Engine struct {
 	// Name names the engine.
 	Name string

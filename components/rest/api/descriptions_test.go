@@ -32,7 +32,7 @@ func describedFile(t *testing.T) []byte {
 	t.Helper()
 	result, err := descriptions.Read("internal/described")
 	require.NoError(t, err)
-	require.Empty(t, result.Conflicts)
+	require.Empty(t, result.Duplicates)
 	require.Empty(t, result.MainPackages)
 	data, err := descriptions.Marshal(result.Descriptions)
 	require.NoError(t, err)

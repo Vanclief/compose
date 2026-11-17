@@ -936,21 +936,23 @@ main, run the command on the directories of one command at a time, each into its
 A type defined over a struct of its own package, `type Job Run`, gets the field entries of
 `Run` under `Job`, also through a chain such as `type Task Job`, since reflection reports those
 fields with `Job` as their struct. It gets them only when `Job`, every type along the chain and
-the struct at its end are each declared once in the package. A type declared in two files for
-different platforms may be a different type on each, so a copy could be wrong. A defined type
-over a struct of another package gets no field entries.
+the struct at its end are each declared once in the package, as below. A defined type over a
+struct of another package gets no field entries.
 
 The text follows the generator's rules (`descriptions.CommentText` and
 `descriptions.FieldText`, which the generator calls too): the `Deprecated:` paragraph and
 TODO, FIXME and nolint lines are dropped, and a field's doc comment comes before its line
 comment.
 
-Two files can describe one key differently, such as one type in a `cgo` file and in a `!cgo`
-file. Such a key is left out of the file, as no description is better than a wrong one, even
-when a third file repeats one of the texts. The command prints one warning per key
-on stderr, naming the two files, and still succeeds. Each key stands alone: a type can be
-left out while a field that reads the same in both files is kept. To describe the key, make
-the comments match.
+A type declared more than once in its package is not described, nor are its fields. This
+holds for every kind of declaration, a struct, a defined type or an alias, and whatever the
+comments say, even when they are the same. With one declaration there is one truth. With two,
+such as one in a `cgo` file and one in a `!cgo` file, which one a binary holds depends on build
+constraints the command does not evaluate. A text the declarations share could still sit beside
+a key only one of them describes, so no description is better than a wrong one. The same holds
+for one import path reached from two module roots: every type there is declared twice. The
+command prints one warning per such type on stderr, naming the first two files that declare it,
+and still succeeds. API types are almost never declared per platform, so little is lost.
 
 The output is one JSON object with sorted keys, the same bytes for the same source. So CI
 checks that the file is fresh by regenerating it and running `git diff --exit-code`. The
