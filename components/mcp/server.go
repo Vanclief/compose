@@ -314,7 +314,7 @@ func (s *Server) buildInstructions() string {
 
 	lines := []string{"Modules (pass one to search_functions):"}
 	for _, m := range s.catalog.Modules {
-		description := firstLine(m.Description)
+		description := firstParagraph(m.Description)
 		if description == "" {
 			description = plural(len(m.Functions), "function")
 		}

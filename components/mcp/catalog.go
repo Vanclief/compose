@@ -423,17 +423,58 @@ func operationSummary(ref reference.OperationRef) string {
 	return ref.Method + " " + ref.Path
 }
 
-// firstSentence returns the first line of text, cut after its first sentence.
+// firstSentence returns the first paragraph of text as one line, cut after
+// its first sentence.
 func firstSentence(text string) string {
-	line := firstLine(text)
-	sentence, _, found := strings.Cut(line, ". ")
+	paragraph := firstParagraph(text)
+	sentence, _, found := strings.Cut(paragraph, ". ")
 	if found {
 		return sentence + "."
 	}
-	return line
+	return paragraph
 }
 
-// firstLine returns the first non-empty line of text, trimmed.
+// firstParagraph returns the first paragraph of a description as one line:
+// its first line and the lines that continue it, each trimmed and joined by
+// a space. A description is CommonMark, where a line break inside a
+// paragraph is a space, so a description that wraps reads here as it does on
+// a rendered page. The paragraph ends at a blank line and before a line
+// blockStart matches. A first line it matches is returned alone.
+func firstParagraph(text string) string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		block := blockStart.MatchString(line)
+		if block && len(lines) > 0 {
+			break
+		}
+		lines = append(lines, line)
+		if block {
+			break
+		}
+	}
+	return strings.Join(lines, " ")
+}
+
+// blockStart matches a trimmed line that ends a CommonMark paragraph without
+// a blank line above it: a heading (# to ######), a block quote, a fenced
+// code block, a list item (a bullet, or the number 1), the underline that
+// makes the lines above it a heading (= or -) and a thematic break. It also
+// matches a table row that starts with |, which the reference page renders
+// as a table.
+// grug: three lines are read otherwise than a rendered page reads them. An
+// HTML block and a table whose rows do not start with | end a paragraph and
+// are not matched, so they are joined to it, and the indentation of a line
+// is not looked at, so one indented four spaces or more, which CommonMark
+// keeps in the paragraph, ends it when it matches. Handle them when
+// descriptions that hold them are shown wrong.
+var blockStart = regexp.MustCompile("^(#{1,6}([ \t]|$)|>|```|~~~|[|]|[-+*][ \t]|0*1[.)][ \t]|=+$|-+$|(-[ \t]*){3,}$|([*][ \t]*){3,}$|(_[ \t]*){3,}$)")
+
+// firstLine returns the first non-empty line of text, trimmed. It is for the
+// text of an error; a description is read with firstParagraph.
 func firstLine(text string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
 	return strings.TrimSpace(line)
