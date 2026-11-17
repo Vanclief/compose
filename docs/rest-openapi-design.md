@@ -317,8 +317,9 @@ Rules enforced at registration (fail boot):
 - a `Produces` handler takes the operation's `Req`: a built `Option` has lost its type
   parameters, so the compiler cannot check it and registration does
 - every option is used at a scope it supports (`Info`, `Description`, `APIKeyHeader`,
-  `Security`, `Server`, `Namer` on `api.New` only; `ContentType`, `Produces` on an operation only), and
-  one options list cannot hold both `Public()` and `Authenticate()`
+  `Security`, `Server`, `Namer` on `api.New` only; `ContentType`, `Produces`,
+  `Destructive` on an operation only), and one options list cannot hold both `Public()`
+  and `Authenticate()`
 
 Dropped from the first sketch after review: `api.DefaultError` (`rest.ErrorHandler`, like
 `ManageError`, always writes `handler.ErrorResponse`, making it configurable invites drift),
@@ -745,7 +746,12 @@ lint, key check and variants.
   matches `BaseModel` by its package path and name, so the registry does not import bun.
   A hidden operation carries `x-internal: true` in the strict document, the only one that
   lists it: the reference page labels it and an MCP server built from that document
-  leaves it out.
+  leaves it out. An operation registered with `api.Destructive()` carries
+  `x-destructive: true` in each document that lists it, and an MCP server built from one treats it
+  as it treats a DELETE. The option is for an operation that destroys data without being a
+  DELETE, such as a POST that deletes the records its body names. It is accepted only by an
+  operation, and registration panics on a GET or HEAD, which an MCP server keeps read-only
+  whatever it carries.
 - **Type table** (`builtinSchemas`): `uuid.UUID` is `{type: string, format: uuid}`
   (`TextUnmarshaler` types otherwise become plain `string`), `types.Email` `format: email`,
   `types.PhoneNumber` `format: phone`, `types.Locale` and `types.Language` plain strings,

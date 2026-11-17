@@ -206,7 +206,7 @@ func Descriptions(data []byte) Option {
 // the request an operation built. Operation options such as Authenticate,
 // Timeout or MaxBodyBytes apply to every operation, before the options of its
 // groups and its own. Panics when an option is an operation option
-// (ContentType, Produces), when Security is passed twice or with
+// (ContentType, Produces, Destructive), when Security is passed twice or with
 // APIKeyHeader, and when Descriptions is passed twice.
 func New(e *echo.Echo, opts ...Option) *Registry {
 	err := checkOptions(opts, registryScope)
