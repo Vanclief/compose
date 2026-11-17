@@ -262,6 +262,20 @@
       "handler.StandardError": {
         "properties": {
           "code": {
+            "description": "Machine-readable error code, the ez code of the error.",
+            "enum": [
+              "conflict",
+              "internal",
+              "invalid",
+              "not_found",
+              "not_authorized",
+              "not_authenticated",
+              "resource_exhausted",
+              "not_implemented",
+              "unavailable",
+              "timeout",
+              "canceled"
+            ],
             "type": "string"
           },
           "fields": {
@@ -273,9 +287,11 @@
             "type": "array"
           },
           "message": {
+            "description": "Human-readable message, translated when the request carries a locale.",
             "type": "string"
           },
           "request_id": {
+            "description": "Correlates this response with the backend logs.",
             "type": "string"
           }
         },
