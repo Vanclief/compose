@@ -317,10 +317,114 @@ func TestTrimSummary(t *testing.T) {
 		{"Get unit: by id", "Get unit:"}:                                "by id",
 		{"Something else", "Get unit"}:                                  "Something else",
 		{"Get unit", ""}:                                                "Get unit",
+		// A repeat that wraps where the summary has a space.
+		{"Get the units of\na building. Archived ones too.", "Get the units of a building."}:         "Archived ones too.",
+		{"Get the units of \r\n  a building.\n\nArchived ones too.", "Get the units of a building."}: "Archived ones too.",
+		{"Get the units ofa building.", "Get the units of a building."}:                              "Get the units ofa building.",
+		{"Get the units of\na building", "Get the units of a build"}:                                 "Get the units of\na building",
+		{"Get the units of\u00a0\na building. More.", "Get the units of a building."}:                "More.",
+		{"Get the units\nof a\nbuilding. More.", "Get the units of a building."}:                     "More.",
+		// A blank line ends the paragraph the summary was taken from.
+		{"Get the units of\n\na building.", "Get the units of a building."}: "Get the units of\n\na building.",
+		// Without a line break the repeat is the summary byte for byte.
+		{"Pay within 30\u00a0days. Late fees apply.", "Pay within 30\u00a0days."}:    "Late fees apply.",
+		{"Liste des colis\u202f: récents. Plus.", "Liste des colis\u202f: récents."}: "Plus.",
+		{"Get  unit: by id", "Get unit"}:                                             "Get  unit: by id",
+		{"Get\tunit: by id", "Get unit"}:                                             "Get\tunit: by id",
+		{"Get unit \nby id. More.", "Get unit \nby id."}:                             "More.",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, trimSummary(in[0], in[1]), in)
 	}
+}
+
+func TestFirstParagraph(t *testing.T) {
+	cases := map[string]string{
+		"":                                   "",
+		"One line.":                          "One line.",
+		"Wraps over\ntwo lines.":             "Wraps over two lines.",
+		"  Wraps over  \r\n\ttwo lines.\r\n": "Wraps over two lines.",
+		"First.\n\nSecond.":                  "First.",
+		"First\nparagraph.\n \t\nSecond.":    "First paragraph.",
+		"\n\nAfter blank lines\nit wraps.":   "After blank lines it wraps.",
+		// A line that starts another block ends the paragraph.
+		"One of:\n- open\n- closed":                                           "One of:",
+		"Steps:\n1. open\n2. close":                                           "Steps:",
+		"Steps:\n01) open\n02) close":                                         "Steps:",
+		"Sort order:\n| value | meaning |\n|---|---|\n| asc | oldest first |": "Sort order:",
+		"Parcels\n=======\nLists the parcels.":                                "Parcels",
+		"Parcels\n---\nLists the parcels.":                                    "Parcels",
+		"Lists the parcels.\n# Notes\nMore.":                                  "Lists the parcels.",
+		"Lists the parcels.\n> As agreed.":                                    "Lists the parcels.",
+		"Lists the parcels.\n```\nGET /parcels":                               "Lists the parcels.",
+		"Lists the parcels.\n~~~\nGET /parcels":                               "Lists the parcels.",
+		"Lists the parcels.\n* * *\nMore.":                                    "Lists the parcels.",
+		"Lists the parcels.\n___\nMore.":                                      "Lists the parcels.",
+		"Lists the parcels.\n-- -\nMore.":                                     "Lists the parcels.",
+		"Lists the parcels.\n*\topen\n*\tclosed":                              "Lists the parcels.",
+		// A line CommonMark keeps in the paragraph.
+		"The floors are\n2. Defaults to 1.": "The floors are 2. Defaults to 1.",
+		"Costs up to\n#5 of the list.":      "Costs up to #5 of the list.",
+		"Is it\n*open* or closed.":          "Is it *open* or closed.",
+		"It is\n-1 when unknown.":           "It is -1 when unknown.",
+		"It is\n-*_ when unknown.":          "It is -*_ when unknown.",
+		// A first line that starts a block is returned alone.
+		"# Parcels\nLists the parcels.": "# Parcels",
+		"- open\n- closed":              "- open",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, firstParagraph(in), "%q", in)
+	}
+
+	assert.Equal(t, "Lists the parcels of a building.", firstSentence("Lists the parcels of\na building. Newest\nfirst.\n\nMore."))
+	assert.Equal(t, "Lists the parcels.", firstSentence("Lists the parcels.\nNewest first."))
+	assert.Equal(t, "Lists the parcels of a building", firstSentence("Lists the parcels of\na building\n\nMore."))
+}
+
+// TestWrappedDescriptions: a description is CommonMark, so one that wraps
+// inside its first paragraph is shown as that paragraph on one line where a
+// single line is shown: the summary taken from an operation's description,
+// an argument's row, a module's line and the server's instructions. The
+// repeat of the summary is still dropped from the description below it.
+func TestWrappedDescriptions(t *testing.T) {
+	const spec = `{"openapi": "3.1.0", "info": {"title": "Parcels", "version": "1"},
+		"tags": [{"name": "parcels", "description": "Parcels received at\nthe front desk.\n\nKept for 30 days."}],
+		"paths": {"/parcels": {
+			"get": {"operationId": "parcels.list", "tags": ["parcels"],
+				"description": "Lists the parcels of\na building. Newest\nfirst.\n\nArchived ones are left out.",
+				"parameters": [{"name": "status", "in": "query", "schema": {"type": "string"},
+					"description": "Only parcels in\nthis status.\n\nDefaults to all."}],
+				"responses": {}},
+			"post": {"operationId": "parcels.create", "tags": ["parcels"], "summary": "Register a parcel.",
+				"requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+					"note": {"type": "string", "description": "A note for\nthe resident."}}}}}},
+				"responses": {}}}}}`
+
+	c, err := buildCatalog(parseSpec(t, spec), nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Lists the parcels of a building.", mustFunction(t, c, "parcels.list").Summary)
+	assert.Equal(t, `parcels.list  GET /parcels
+  Lists the parcels of a building.
+  Newest
+  first.
+  Archived ones are left out.
+  args:
+    status  string  Only parcels in this status.`, c.renderDescribe([]string{"parcels.list"}))
+	assert.Equal(t, `parcels.create  POST /parcels
+  Register a parcel.
+  args:
+    note  string  A note for the resident.`, c.renderDescribe([]string{"parcels.create"}))
+
+	// A promoted tool is described with the same summary and without its repeat.
+	assert.Equal(t, "Lists the parcels of a building.\nNewest\nfirst.\n\nArchived ones are left out.", c.toolDescription(mustFunction(t, c, "parcels.list")))
+
+	assert.Equal(t, "parcels  2 functions  Parcels received at the front desk.", c.renderSearch("", ""))
+	assert.True(t, strings.HasPrefix(c.renderSearch("parcels", ""), "module parcels: Parcels received at the front desk.\n"), c.renderSearch("parcels", ""))
+
+	s, err := New(Config{Spec: []byte(spec), Handler: shopApp()})
+	require.NoError(t, err)
+	assert.Contains(t, s.Instructions(), "- parcels: Parcels received at the front desk.\n")
 }
 
 func TestRenderDescribeUnknown(t *testing.T) {

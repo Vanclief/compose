@@ -46,7 +46,7 @@ func (c *Catalog) renderSearch(module, query string) string {
 		var lines []string
 		for _, m := range c.Modules {
 			line := m.Name + "  " + plural(len(m.Functions), "function")
-			description := firstLine(m.Description)
+			description := firstParagraph(m.Description)
 			if description != "" {
 				line += "  " + description
 			}
@@ -74,7 +74,7 @@ func (c *Catalog) renderSearch(module, query string) string {
 			continue
 		}
 		header := "module " + m.Name
-		description := firstLine(m.Description)
+		description := firstParagraph(m.Description)
 		if query == "" && description != "" {
 			header += ": " + description
 		}
@@ -219,10 +219,13 @@ func summaryLine(f *Function) string {
 // but only at a word boundary: "Get units by id" does not start with the
 // summary "Get unit".
 func trimSummary(description, summary string) string {
-	if summary == "" || !strings.HasPrefix(description, summary) {
+	if summary == "" {
 		return description
 	}
-	rest := description[len(summary):]
+	rest, found := cutRepeat(description, summary)
+	if !found {
+		return description
+	}
 	if rest == "" {
 		return ""
 	}
@@ -234,6 +237,39 @@ func trimSummary(description, summary string) string {
 		}
 	}
 	return strings.TrimSpace(strings.TrimLeft(rest, " \t\n.:;,"))
+}
+
+// cutRepeat returns what follows a leading repeat of summary in description.
+// The repeat is the summary byte for byte, or the summary with a line break,
+// and any white space around it, in place of any of its spaces: a summary
+// taken from a description's first paragraph is that paragraph on one line.
+func cutRepeat(description, summary string) (string, bool) {
+	rest, found := strings.CutPrefix(description, summary)
+	if found {
+		return rest, true
+	}
+	rest = description
+	for {
+		word, after, more := strings.Cut(summary, " ")
+		rest, found = strings.CutPrefix(rest, word)
+		if !found {
+			return "", false
+		}
+		if !more {
+			return rest, true
+		}
+		summary = after
+
+		gap := rest[:len(rest)-len(strings.TrimLeftFunc(rest, unicode.IsSpace))]
+		switch {
+		case strings.Count(gap, "\n") == 1:
+			rest = rest[len(gap):]
+		case strings.HasPrefix(rest, " "):
+			rest = rest[1:]
+		default:
+			return "", false
+		}
+	}
 }
 
 // moduleNames lists the module names separated by commas.
@@ -352,9 +388,9 @@ func (c *Catalog) detailLines(f *Function) []string {
 }
 
 // argLines prints the arguments of f as aligned columns: name, type, then
-// the required flag, enum values and the first line of the description. The
-// other keys a body takes come last, as a row named "*" with the type of
-// their values.
+// the required flag, enum values and the first paragraph of the description,
+// as one line. The other keys a body takes come last, as a row named "*"
+// with the type of their values.
 func (c *Catalog) argLines(f *Function) []string {
 	args := f.Args
 	if f.otherArgs {
@@ -380,7 +416,7 @@ func (c *Catalog) argLines(f *Function) []string {
 		if enums[i] != "" {
 			notes = append(notes, enums[i])
 		}
-		description := firstLine(a.Description)
+		description := firstParagraph(a.Description)
 		if description != "" {
 			notes = append(notes, description)
 		}
