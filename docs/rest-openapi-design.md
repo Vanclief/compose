@@ -903,13 +903,17 @@ the same descriptions. They are annotations: no request validates differently, a
 
 `compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. A directory
 given is always read. It is made absolute and its symbolic links are resolved, so a file has
-one path however the arguments reach it, and a directory given inside another one given adds
-nothing. A directory given as a link is keyed by where the link points: a package directory
+one path whether the arguments reach it through relative paths, absolute paths or symbolic
+links, and then a directory given inside another one given adds nothing. A directory must be
+given in the letter case it has on disk, as its import path is built from the argument: on a
+file system that ignores case, `./Models` is keyed under `Models`, and `models` and `Models`
+together read each file twice. A directory given as a link is keyed by where the link points: a package directory
 that links to another module's package gets that module's import path, though a binary built
 from the linking module reports its own. Below each directory given it skips the directories
 named `vendor` or `testdata` or that start with `.` or `_`, and links to directories, as
-`./...` does. It skips the files that start with `.` or `_`, `_test.go` files and files with a
-`//go:build ignore` line, which are scripts outside their package. A `.go` file that is a link
+`./...` does. It skips the files that start with `.` or `_`, `_test.go` files, files with a
+`//go:build ignore` line, which are scripts outside their package, and files of package
+`documentation`, which the go command ignores. A `.go` file that is a link
 to a regular file is read, as Go compiles it. Every other `.go` file is read once, whatever its
 build constraints, so the file is the same on every platform. A file that does not parse fails
 the command, unless its name is skipped. It records every package-level named
@@ -968,7 +972,8 @@ command prints one warning per such type on stderr, naming the first two files t
 and still succeeds. API types are almost never declared per platform, so little is lost.
 
 The output is one JSON object with sorted keys, the same bytes for the same source, whatever
-the order of the directories given and however they are reached. So CI
+the order of the directories given and whether they are reached through relative paths,
+absolute paths or symbolic links. So CI
 checks that the file is fresh by regenerating it and running `git diff --exit-code`. The
 file holds the comments of every type under the directories given, and it is embedded in the
 binary. Point the command at the packages that hold the API's types if the rest should not

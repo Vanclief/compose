@@ -418,6 +418,29 @@ func TestReadMainPackages(t *testing.T) {
 	}
 	require.Equal(t, wantLibrary, read(t, writeTree(t, library)))
 
+	// The same with the script read last.
+	require.Equal(t, map[string]string{"example.com/app/p.Config": "Config is p's."}, read(t, writeTree(t, map[string]string{
+		"go.mod":      mod,
+		"p/p.go":      "package p\n\n// Config is p's.\ntype Config struct{}\n",
+		"p/zz_gen.go": "//go:build generate\n\npackage main\n\nfunc main() {}\n",
+	})))
+
+	// A file of package documentation, which the go command ignores, keeps
+	// a command a main package.
+	root = writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\n// Config is a's.\ntype Config struct {\n\t// Port is a's port.\n\tPort string\n}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Config struct{ Port string }\n\nfunc main() {}\n",
+		"cmd/b/doc.go":  "// Command b is documented here.\npackage documentation\n",
+	})
+	result, err = descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"example.com/app/cmd/a.Config":      "Config is a's.",
+		"example.com/app/cmd/a.Config#Port": "Port is a's port.",
+	}, result.Descriptions)
+	require.Equal(t, []string{"example.com/app/cmd/a", "example.com/app/cmd/b"}, result.MainPackages)
+
 	// Beside a real command, the command is the one main package.
 	library["cmd/a/main.go"] = "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n"
 	wantLibrary["example.com/app/cmd/a.Config"] = "Config is a's."
@@ -521,6 +544,16 @@ func TestReadDefinedTypes(t *testing.T) {
 			want: map[string]string{
 				"example.com/app/p.P#X": "X is s.",
 				"example.com/app/p.S#X": "X is s.",
+			},
+		},
+		{
+			name: "a struct with two type parameters",
+			files: map[string]string{"p/p.go": "package p\n\ntype Pair[K, V any] struct {\n\tKey K // Key is k.\n}\n\ntype P Pair[int, string]\n\n" +
+				"type R struct {\n\t// Pair is embedded.\n\tPair[int, string]\n}\n"},
+			want: map[string]string{
+				"example.com/app/p.Pair#Key": "Key is k.",
+				"example.com/app/p.P#Key":    "Key is k.",
+				"example.com/app/p.R#Pair":   "Pair is embedded.",
 			},
 		},
 		{

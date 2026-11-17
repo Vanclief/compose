@@ -19,11 +19,15 @@ const descriptionsUsage = `Usage:
 Writes the doc comments of the Go types under each directory (default .), and
 of their fields, as one JSON object that api.Descriptions loads, so the route
 registry's documents describe what the comments describe. A directory given
-is always read, with its symbolic links resolved. Below it, directories named
-vendor or testdata or starting with . or _ are skipped, and so are links to
-directories, files starting with . or _, _test.go files and files with a
-//go:build ignore line. Every other .go file is read once, whatever its build
-constraints. A file that does not parse fails the command.
+is always read, with its symbolic links resolved. Give it in the letter case
+it has on disk, as its import path is built from the argument. Below it,
+directories named vendor or testdata or starting with . or _ are skipped, and
+so are links to directories, files starting with . or _, _test.go files,
+files with a //go:build ignore line and files of package documentation, which
+the go command ignores. Every other .go file is read once, whatever its build
+constraints, whether the directories are reached through relative paths,
+absolute paths or symbolic links. A file that does not parse fails the
+command.
 
 A type declared more than once in a package, such as in two files for
 different platforms, is not described, nor are its fields, whatever the
@@ -32,14 +36,15 @@ comments say. A warning on stderr names it and two of its files.
 A type is keyed by its import path and name, example.com/app/runs.Run, and a
 field by that key, a # and its name, example.com/app/runs.Run#Status.
 
-A main package is a directory whose files all say package main. Its types
+A main package is an import path whose files all say package main. Its types
 are written under its import path, and also under main when it is the only
 main package read that declares a type. With two or more, nothing is written
 under main and a warning names them. Run the command on the directories of
 one command at a time to describe the types of its package main.
 
 The output is the same bytes for the same source on every platform, whatever
-the order of the directories and however they are reached, so a CI
+the order of the directories and whether they are reached through relative
+paths, absolute paths or symbolic links, so a CI
 job can regenerate it and check it with git diff --exit-code. Without -out it
 is written to stdout. Flags go before the directories.
 

@@ -57,6 +57,16 @@ func TestDescriptionsDefaultDir(t *testing.T) {
 	code = run([]string{"descriptions"}, &stdout, &stderr)
 	require.Equal(t, 0, code, stderr.String())
 	require.Equal(t, want.String(), stdout.String())
+
+	// Below the tree, no argument is "." and not its parent.
+	t.Chdir("models")
+	var dot, none bytes.Buffer
+	code = run([]string{"descriptions", "."}, &dot, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+	code = run([]string{"descriptions"}, &none, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+	require.Equal(t, dot.String(), none.String())
+	require.NotEqual(t, want.String(), none.String())
 }
 
 // TestDescriptionsDuplicate checks that a type declared more than once is

@@ -24,7 +24,9 @@
 // followed. A type declared inside a function shares its key with a
 // package-level type of the same name, so it gets that type's description.
 // The descriptions are the same for the same files, whatever the order of
-// the directories given and however they are reached.
+// the directories given and whether they are reached through relative paths,
+// absolute paths or symbolic links. A directory must be given in the letter
+// case it has on disk, as its import path is built from the argument.
 package descriptions
 
 import (
@@ -161,11 +163,14 @@ type Result struct {
 // written under main has the keys main.Run and main.Run#Status.
 //
 // Each directory given is made absolute and its symbolic links are resolved,
-// so a file is read once however the arguments reach it. Below it, Read skips
-// the directories named vendor or testdata, those whose name starts with "."
-// or "_", and symbolic links to directories, as ./... does. It skips the files
-// whose name starts with "." or "_", the _test.go files and the files with a
-// //go:build ignore line. It reads every other .go file, a symbolic link to
+// so a file is read once whether the arguments reach it through relative
+// paths, absolute paths or symbolic links. A directory must be given in the
+// letter case it has on disk, as its import path is built from the argument.
+// Below it, Read skips the directories named vendor or testdata, those whose
+// name starts with "." or "_", and symbolic links to directories, as ./...
+// does. It skips the files whose name starts with "." or "_", the _test.go
+// files, the files with a //go:build ignore line and the files of package
+// documentation, which the go command ignores. It reads every other .go file, a symbolic link to
 // a file too, whatever its build constraints, so the result is the same on
 // every platform. A file that does not parse fails Read, a skipped name
 // aside. Every package-level named type with a doc comment has an entry,
@@ -279,8 +284,11 @@ type entry struct {
 }
 
 // walk reads the directory dir. It walks dir made absolute with its links
-// resolved, so a file has one path however the argument reached it, and names
-// a file in errors and duplicates by dir joined with its path below it.
+// resolved, so a file has one path whether the argument reaches it through a
+// relative path, an absolute path or a symbolic link. Duplicates and the
+// start of a walk or parse error name a file by dir joined with its path
+// below it. The parser's own message inside a parse error, and an error about
+// a go.mod such as a directory in no module, name the resolved path.
 func (rd *reader) walk(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -368,7 +376,7 @@ func (rd *reader) readFile(path, shown string) error {
 	if err != nil {
 		return ez.New(ez.EINVALID, "cannot parse "+shown+": "+err.Error(), err)
 	}
-	if buildIgnored(file) {
+	if buildIgnored(file) || file.Name.Name == "documentation" {
 		return nil
 	}
 
@@ -492,8 +500,6 @@ func embeddedName(expr ast.Expr) *ast.Ident {
 	case *ast.IndexExpr:
 		return embeddedName(t.X)
 	case *ast.IndexListExpr:
-		return embeddedName(t.X)
-	case *ast.ParenExpr:
 		return embeddedName(t.X)
 	}
 	return nil
