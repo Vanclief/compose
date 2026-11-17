@@ -60,10 +60,10 @@ func TestDescriptionsReaderKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "Run is one execution of a job.", comments[describedPkg+".Run"])
-	require.Equal(t, "Items are the entries of the page.", comments[describedPkg+".Page.Items"])
-	require.Equal(t, "Email reaches the owner.", comments[describedPkg+".Owner.Email"])
-	require.NotContains(t, comments, describedPkg+".Run.Record")
-	require.NotContains(t, comments, describedPkg+".Run.Plain")
+	require.Equal(t, "Items are the entries of the page.", comments[describedPkg+".Page#Items"])
+	require.Equal(t, "Email reaches the owner.", comments[describedPkg+".Owner#Email"])
+	require.NotContains(t, comments, describedPkg+".Run#Record")
+	require.NotContains(t, comments, describedPkg+".Run#Plain")
 }
 
 func TestDescriptionsDocuments(t *testing.T) {
@@ -163,12 +163,12 @@ type Commented struct {
 func TestDescriptionsSameAsTag(t *testing.T) {
 	key := descriptions.Key(reflect.TypeFor[Commented]())
 	comments, err := json.Marshal(map[string]string{
-		key + ".Limit":  "Limit caps the list.",
-		key + ".Owner":  "Owner starts it.",
-		key + ".Lead":   "Lead runs it.",
-		key + ".Status": "Status filters it.",
-		key + ".Kind":   "Kind narrows it.",
-		key + ".Tags":   "Tags label it.",
+		key + "#Limit":  "Limit caps the list.",
+		key + "#Owner":  "Owner starts it.",
+		key + "#Lead":   "Lead runs it.",
+		key + "#Status": "Status filters it.",
+		key + "#Kind":   "Kind narrows it.",
+		key + "#Tags":   "Tags label it.",
 	})
 	require.NoError(t, err)
 

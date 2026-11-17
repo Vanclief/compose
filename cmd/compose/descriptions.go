@@ -27,9 +27,10 @@ constraints. A file that does not parse fails the command.
 
 A type declared more than once in a package, such as in two files for
 different platforms, is not described, nor are its fields, whatever the
-comments say. A warning on stderr names it and two of its files. A key that
-two declarations produce, which a directory name with a dot can cause, is
-left out without a warning.
+comments say. A warning on stderr names it and two of its files.
+
+A type is keyed by its import path and name, example.com/app/runs.Run, and a
+field by that key, a # and its name, example.com/app/runs.Run#Status.
 
 A main package is a directory whose files all say package main. Its types
 are written under its import path, and also under main when it is the only

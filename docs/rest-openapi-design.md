@@ -921,14 +921,14 @@ types are recorded too. A request may embed an unexported struct whose exported 
 parameters or file fields, and those are published with the comments of that struct. In a
 body the registry refuses such a struct at registration, so there the entry is never read.
 
-A key is the import path and the type name, `github.com/x/app/runs.Run`, with the Go field
-name after it for a field, `github.com/x/app/runs.Run.Status`. The import path is the module
-path of the nearest `go.mod` joined with the directory below it, or what follows the last
-`vendor` element of that directory. A generic type is keyed under its name without type
-arguments. A directory name with a dot can make two declarations produce one key: the field
-`X` of a type `T` in `example.com/p` and a type `X` in `example.com/p.T` both have the key
-`example.com/p.T.X`. The registry's lookup cannot tell them apart, so such a key is left out,
-without a warning, whether one of them is described or both are.
+A type's key is the import path, a dot and the type name, `github.com/x/app/runs.Run`. A
+field's key is its struct's key, a `#` and the Go field name, `github.com/x/app/runs.Run#Status`
+(`descriptions.Key` and `descriptions.FieldKey`). An import path can hold a dot but never a
+`#`, and a type name holds neither, so every key has one owner: the field `X` of a type `T` in
+`example.com/p` is `example.com/p.T#X`, and a type `X` in `example.com/p.T` is
+`example.com/p.T.X`. The import path is the module path of the nearest `go.mod` joined with
+the directory below it, or what follows the last `vendor` element of that directory. A generic
+type is keyed under its name without type arguments.
 
 Reflection reports a type of a `package main` under `main` in a binary built with `go build`
 or `go run`, and under its import path in a test binary. A main package here is an import path

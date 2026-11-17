@@ -66,38 +66,38 @@ func TestRead(t *testing.T) {
 	const cmd = treePath + "/cmd/a"
 	runFields := map[string]string{
 		// A doc comment, then the line comment.
-		".Name": "Name is what the user calls the run.\n\nIt is unique.",
+		"#Name": "Name is what the user calls the run.\n\nIt is unique.",
 		// Without the TODO line.
-		".Title": "Title is shown in lists.",
+		"#Title": "Title is shown in lists.",
 		// Without the Deprecated paragraph.
-		".Old": "Old is kept for old clients.",
+		"#Old": "Old is kept for old clients.",
 		// Two names, one comment.
-		".First":  "First and Second share one comment.",
-		".Second": "First and Second share one comment.",
+		"#First":  "First and Second share one comment.",
+		"#Second": "First and Second share one comment.",
 		// An embedded field, under its type's name.
-		".Extra": "Extra is what a run may carry.",
+		"#Extra": "Extra is what a run may carry.",
 	}
 	want := map[string]string{
 		// On the declaration, without the Deprecated paragraph.
 		models + ".Run": "Run is one execution of a job.",
 		// On the spec, inside parentheses.
 		models + ".Step":       "Step is one step of a run.",
-		models + ".Step.Order": "Order is where the step runs.",
+		models + ".Step#Order": "Order is where the step runs.",
 		models + ".Kind":       "Kind is a named non-struct type.",
 		// Keyed without its type parameters.
 		models + ".Page":       "Page is one page of a list.",
-		models + ".Page.Items": "Items are the entries of the page.",
+		models + ".Page#Items": "Items are the entries of the page.",
 		// A type defined over a generic struct gets its fields.
 		models + ".RunPage":       "RunPage is a page of runs.",
-		models + ".RunPage.Items": "Items are the entries of the page.",
+		models + ".RunPage#Items": "Items are the entries of the page.",
 		models + ".Job":           "Job is a run under another name.",
 		// Unexported types are recorded.
 		models + ".base":    "base is unexported, but its exported fields are promoted.",
-		models + ".base.ID": "ID identifies the record.",
+		models + ".base#ID": "ID identifies the record.",
 		models + ".Extra":   "Extra is embedded through a pointer.",
 		// A field whose type is an anonymous struct, whose own fields have
 		// no key.
-		models + ".Extra.Meta": "Meta is a nested struct without a name.",
+		models + ".Extra#Meta": "Meta is a nested struct without a name.",
 		// Build constraints other than a //go:build ignore line are not
 		// evaluated.
 		models + ".Tool":  "Tool is in a file whose constraint is more than ignore.",
@@ -105,13 +105,13 @@ func TestRead(t *testing.T) {
 		// The only main package that declares types is written under its
 		// import path and under main, a copied field too.
 		cmd + ".Config":        "Config is the configuration of a command.",
-		cmd + ".Config.Port":   "Port is where it listens.",
+		cmd + ".Config#Port":   "Port is where it listens.",
 		cmd + ".Settings":      "Settings is Config under another name.",
-		cmd + ".Settings.Port": "Port is where it listens.",
+		cmd + ".Settings#Port": "Port is where it listens.",
 		"main.Config":          "Config is the configuration of a command.",
-		"main.Config.Port":     "Port is where it listens.",
+		"main.Config#Port":     "Port is where it listens.",
 		"main.Settings":        "Settings is Config under another name.",
-		"main.Settings.Port":   "Port is where it listens.",
+		"main.Settings#Port":   "Port is where it listens.",
 	}
 	// Job is defined over Run, and Task over Job: both get Run's fields.
 	for _, typ := range []string{".Run", ".Job", ".Task"} {
@@ -227,8 +227,8 @@ func TestReadOnce(t *testing.T) {
 	})
 	want := map[string]string{
 		"example.com/app/p.B":   "B is b.",
-		"example.com/app/p.B.X": "X is x.",
-		"example.com/app/p.A.X": "X is x.",
+		"example.com/app/p.B#X": "X is x.",
+		"example.com/app/p.A#X": "X is x.",
 		"example.com/app/p/q.Q": "Q is q.",
 	}
 	require.Equal(t, want, read(t, root))
@@ -252,49 +252,27 @@ func TestReadLinkedWorkingDirectory(t *testing.T) {
 	t.Chdir(link)
 
 	want := map[string]string{
-		"example.com/app/p.A.X": "X is x.",
-		"example.com/app/p.D.X": "X is x.",
+		"example.com/app/p.A#X": "X is x.",
+		"example.com/app/p.D#X": "X is x.",
 	}
 	require.Equal(t, want, read(t, "."))
 	require.Equal(t, want, read(t, ".", filepath.Join(root, "real", "p")))
 	require.Equal(t, want, read(t, filepath.Join(link, "p"), "."))
 }
 
-// TestReadAmbiguousKeys reads a field and a type that produce one key, as a
-// directory name holds a dot. The key is left out every time, the others
-// are kept.
-func TestReadAmbiguousKeys(t *testing.T) {
+// TestReadDottedDirectory reads a field X of a type T in package p and a type
+// X in a package whose directory is p.T: the # of a field key keeps the two
+// keys apart, each with its own text.
+func TestReadDottedDirectory(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":   mod,
-		"p/p.go":   "package p\n\n// T is t.\ntype T struct {\n\tX int // X is a field.\n}\n",
-		"p.T/x.go": "package pt\n\n// X is a type.\ntype X struct {\n\tY int // Y is y.\n}\n",
-	})
-	want := map[string]string{
-		"example.com/app/p.T":     "T is t.",
-		"example.com/app/p.T.X.Y": "Y is y.",
-	}
-	for range 20 {
-		require.Equal(t, want, read(t, root))
-	}
-
-	// A field without a comment claims its key too.
-	root = writeTree(t, map[string]string{
-		"go.mod":   mod,
-		"p/p.go":   "package p\n\ntype T struct {\n\tX int\n}\n",
+		"p/p.go":   "package p\n\ntype T struct {\n\tX int // X is a field.\n}\n",
 		"p.T/x.go": "package pt\n\n// X is a type.\ntype X struct{}\n",
 	})
-	require.Empty(t, read(t, root))
-
-	// So does a field of a type declared twice.
-	root = writeTree(t, map[string]string{
-		"go.mod":       mod,
-		"p/t_cgo.go":   "//go:build cgo\n\npackage p\n\ntype T struct {\n\tX int\n}\n",
-		"p/t_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype T struct {\n\tX int\n}\n",
-		"p.T/x.go":     "package pt\n\n// X is a type.\ntype X struct{}\n",
-	})
-	result, err := descriptions.Read(root)
-	require.NoError(t, err)
-	require.Empty(t, result.Descriptions)
+	require.Equal(t, map[string]string{
+		"example.com/app/p.T#X": "X is a field.",
+		"example.com/app/p.T.X": "X is a type.",
+	}, read(t, root))
 }
 
 // TestReadNames checks where an entry goes: an embedded field under its
@@ -312,8 +290,8 @@ func TestReadNames(t *testing.T) {
 		"other/other.go":           "package other\n\ntype T struct{}\n",
 	})
 	require.Equal(t, map[string]string{
-		"example.com/app/p.R.T":    "T is embedded from another package.",
-		"example.com/app/p.R.Page": "Page is an embedded generic.",
+		"example.com/app/p.R#T":    "T is embedded from another package.",
+		"example.com/app/p.R#Page": "Page is an embedded generic.",
 		"example.com/app/p.Late":   "Late is read.",
 	}, read(t, root))
 	require.Equal(t, map[string]string{
@@ -337,9 +315,9 @@ func TestReadMainPackages(t *testing.T) {
 	b := filepath.Join(root, "cmd", "b")
 	want := map[string]string{
 		"example.com/app/cmd/a.Config":      "Config is the server configuration.",
-		"example.com/app/cmd/a.Config.Port": "Port is where the server listens.",
-		"example.com/app/cmd/a.Job.X":       "X is the run x of a.",
-		"example.com/app/cmd/a.Run.X":       "X is the run x of a.",
+		"example.com/app/cmd/a.Config#Port": "Port is where the server listens.",
+		"example.com/app/cmd/a.Job#X":       "X is the run x of a.",
+		"example.com/app/cmd/a.Run#X":       "X is the run x of a.",
 	}
 	var first []byte
 	for _, dirs := range [][]string{{a, b}, {b, a}, {root}, {filepath.Join(root, "cmd")}} {
@@ -389,7 +367,7 @@ func TestReadMainPackages(t *testing.T) {
 	}
 	wantLibrary := map[string]string{
 		"example.com/app/p.Config":      "Config is p's.",
-		"example.com/app/p.Config.Port": "Port is p's port.",
+		"example.com/app/p.Config#Port": "Port is p's port.",
 		"example.com/app/p.Gen":         "Gen writes a file.",
 	}
 	require.Equal(t, wantLibrary, read(t, writeTree(t, library)))
@@ -428,7 +406,7 @@ func TestReadDefinedTypes(t *testing.T) {
 				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n\ntype C struct {\n\tX int // X is the pure Go handle.\n}\n",
 				"p/a.go":       "package p\n\ntype A B\n",
 			},
-			want:       map[string]string{"example.com/app/p.C.X": "X is the pure Go handle."},
+			want:       map[string]string{"example.com/app/p.C#X": "X is the pure Go handle."},
 			duplicates: []string{"example.com/app/p.B"},
 		},
 		{
@@ -440,7 +418,7 @@ func TestReadDefinedTypes(t *testing.T) {
 			},
 			want: map[string]string{
 				"example.com/app/p.B":   "B is b.",
-				"example.com/app/p.B.X": "X of B.",
+				"example.com/app/p.B#X": "X of B.",
 			},
 			duplicates: []string{"example.com/app/p.A"},
 		},
@@ -451,27 +429,27 @@ func TestReadDefinedTypes(t *testing.T) {
 				"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype B C\n",
 				"p/a.go":       "package p\n\ntype A B\n\ntype C struct {\n\tX int // X is c.\n}\n",
 			},
-			want:       map[string]string{"example.com/app/p.C.X": "X is c."},
+			want:       map[string]string{"example.com/app/p.C#X": "X is c."},
 			duplicates: []string{"example.com/app/p.B"},
 		},
 		{
 			name:  "a chain of four hops",
 			files: map[string]string{"p/p.go": "package p\n\ntype A B\n\ntype B C\n\ntype C D\n\ntype D E\n\ntype E struct {\n\tX int // X is e.\n}\n"},
 			want: map[string]string{
-				"example.com/app/p.A.X": "X is e.",
-				"example.com/app/p.B.X": "X is e.",
-				"example.com/app/p.C.X": "X is e.",
-				"example.com/app/p.D.X": "X is e.",
-				"example.com/app/p.E.X": "X is e.",
+				"example.com/app/p.A#X": "X is e.",
+				"example.com/app/p.B#X": "X is e.",
+				"example.com/app/p.C#X": "X is e.",
+				"example.com/app/p.D#X": "X is e.",
+				"example.com/app/p.E#X": "X is e.",
 			},
 		},
 		{
 			name:  "two defined types over one struct",
 			files: map[string]string{"p/p.go": "package p\n\ntype A S\n\ntype B S\n\ntype S struct {\n\tX int // X is s.\n}\n"},
 			want: map[string]string{
-				"example.com/app/p.A.X": "X is s.",
-				"example.com/app/p.B.X": "X is s.",
-				"example.com/app/p.S.X": "X is s.",
+				"example.com/app/p.A#X": "X is s.",
+				"example.com/app/p.B#X": "X is s.",
+				"example.com/app/p.S#X": "X is s.",
 			},
 		},
 		{
@@ -486,17 +464,17 @@ func TestReadDefinedTypes(t *testing.T) {
 				"q/q.go": "package q\n\ntype B struct {\n\tX int // X is q's.\n}\n",
 			},
 			want: map[string]string{
-				"example.com/app/p.A.Y": "Y is p's.",
-				"example.com/app/p.B.Y": "Y is p's.",
-				"example.com/app/q.B.X": "X is q's.",
+				"example.com/app/p.A#Y": "Y is p's.",
+				"example.com/app/p.B#Y": "Y is p's.",
+				"example.com/app/q.B#X": "X is q's.",
 			},
 		},
 		{
 			name:  "a parenthesized generic struct",
 			files: map[string]string{"p/p.go": "package p\n\ntype P (S[string])\n\ntype S[T any] struct {\n\tX T // X is s.\n}\n"},
 			want: map[string]string{
-				"example.com/app/p.P.X": "X is s.",
-				"example.com/app/p.S.X": "X is s.",
+				"example.com/app/p.P#X": "X is s.",
+				"example.com/app/p.S#X": "X is s.",
 			},
 		},
 		{
@@ -514,7 +492,7 @@ func TestReadDefinedTypes(t *testing.T) {
 				"p/p.go":     "package p\n\ntype E struct {\n\tX int // X is e.\n}\n",
 				"other/o.go": "package other\n\nimport \"example.com/app/p\"\n\ntype R p.E\n",
 			},
-			want: map[string]string{"example.com/app/p.E.X": "X is e."},
+			want: map[string]string{"example.com/app/p.E#X": "X is e."},
 		},
 	}
 	for _, tt := range tests {
@@ -641,6 +619,9 @@ func TestKey(t *testing.T) {
 	require.Equal(t, "", descriptions.Key(reflect.TypeFor[struct{ A int }]()))
 	require.Equal(t, "", descriptions.Key(reflect.TypeFor[int]()))
 	require.Equal(t, "", descriptions.Key(reflect.TypeFor[*item]()))
+
+	require.Equal(t, pkg+".page#Items", descriptions.FieldKey(reflect.TypeFor[page[item]](), "Items"))
+	require.Equal(t, "", descriptions.FieldKey(reflect.TypeFor[struct{ A int }](), "A"))
 }
 
 func TestTypeComment(t *testing.T) {

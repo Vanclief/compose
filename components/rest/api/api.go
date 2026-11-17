@@ -154,8 +154,9 @@ func Namer(namer func(reflect.Type) string) Option {
 
 // Descriptions describes the types and fields the documents publish with
 // their Go comments, which reflection cannot read. data is the JSON object
-// `compose descriptions` writes, keyed by import path and type name, and by
-// field name after it. A field without a doc tag is treated exactly as if it
+// `compose descriptions` writes, keyed by import path and type name for a
+// type, github.com/x/app/runs.Run, and with a # and the field name after it
+// for a field, github.com/x/app/runs.Run#Status. A field without a doc tag is treated exactly as if it
 // carried doc:"<its comment>", the comment of the struct that declares it, so
 // a field promoted from an embedded struct finds the embedded struct's: in
 // the body, the path, query and header parameters and the multipart form

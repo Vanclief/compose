@@ -118,8 +118,8 @@ func WithNamer(namer func(t reflect.Type) string) Option {
 }
 
 // WithDescriptions describes the types and fields the Reflector publishes
-// with the comments of descriptions, keyed as descriptions.Key reads them: a
-// field without a doc tag is treated as if it carried doc:"<its comment>",
+// with the comments of descriptions, keyed by descriptions.Key for a type and
+// descriptions.FieldKey for a field: a field without a doc tag is treated as if it carried doc:"<its comment>",
 // the comment found under the key of the struct that declares it, and a
 // struct or enum component gets its type's comment as its description.
 // Descriptions are annotations: no request validates differently.
@@ -284,7 +284,7 @@ type registry struct {
 	aliases map[reflect.Type]reflect.Type
 	namer   func(reflect.Type) string
 
-	descriptions map[string]string // of WithDescriptions, keyed by descriptions.Key
+	descriptions map[string]string // of WithDescriptions, keyed by descriptions.Key and FieldKey
 }
 
 // collisionHint is appended to duplicate component name errors.
@@ -297,11 +297,11 @@ var (
 
 // FieldDescription returns the comment of the field f that parent declares.
 func (r *registry) FieldDescription(parent reflect.Type, f reflect.StructField) string {
-	key := descriptions.Key(parent)
+	key := descriptions.FieldKey(parent, f.Name)
 	if key == "" {
 		return ""
 	}
-	return r.descriptions[key+"."+f.Name]
+	return r.descriptions[key]
 }
 
 // typeDescription returns the comment of the type t.

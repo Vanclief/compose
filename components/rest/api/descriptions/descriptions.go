@@ -4,13 +4,13 @@
 //
 // A build step runs Read (through `compose descriptions`) and writes the
 // result with Marshal to a file the app embeds, and api.Descriptions loads
-// that file. The keys are Key(t) for a type and Key(t) + "." + the Go field
-// name for a field: "github.com/x/app/runs.Run" and
-// "github.com/x/app/runs.Run.Status".
+// that file. The keys are Key(t) for a type, "github.com/x/app/runs.Run", and
+// FieldKey(t, name) for a field, "github.com/x/app/runs.Run#Status". An import
+// path can hold a dot but never a #, so no field key is also a type key.
 //
 // A type declared more than once in its package, such as in a cgo and a !cgo
 // file, is not described, nor are its fields: with one declaration there is
-// one truth. A key two declarations produce is left out too. A defined type
+// one truth. A defined type
 // over a struct of the same package, type A B, gets the field entries of B
 // under A, as reflection reports B's fields with A as their struct, also
 // through a chain such as type C A, when A, every type along the chain and
@@ -59,6 +59,20 @@ func Key(t reflect.Type) string {
 		return ""
 	}
 	return t.PkgPath() + "." + name
+}
+
+// fieldSeparator separates a type key from a field name. It cannot appear in
+// an import path or an identifier.
+const fieldSeparator = "#"
+
+// FieldKey returns the key of the field named field of the struct t: Key(t),
+// a # and the Go field name. It returns "" when Key(t) does.
+func FieldKey(t reflect.Type, field string) string {
+	key := Key(t)
+	if key == "" {
+		return ""
+	}
+	return key + fieldSeparator + field
 }
 
 // CommentText is a doc comment as a description: its text without the
@@ -143,7 +157,8 @@ type Result struct {
 }
 
 // Read walks each directory and returns the descriptions of the types
-// declared under it, keyed as Key does.
+// declared under it, keyed as Key and FieldKey do. A type of a main package
+// written under main has the keys main.Run and main.Run#Status.
 //
 // Each directory given is made absolute and its symbolic links are resolved,
 // so a file is read once however the arguments reach it. Below it, Read skips
@@ -168,10 +183,7 @@ type Result struct {
 // A type declared more than once in its package, of any kind and whatever its
 // comments, has no entry and its fields have none, as which declaration a
 // binary holds depends on build constraints Read does not evaluate. It is
-// reported as a Duplicate. A key that two declarations produce, described or
-// not, is left out without a report: the field X of a type T in package
-// example.com/p and a type X in package example.com/p.T both have the key
-// example.com/p.T.X. No description is better than a wrong one.
+// reported as a Duplicate. No description is better than a wrong one.
 func Read(dirs ...string) (Result, error) {
 	rd := &reader{
 		read:    map[string]bool{},
@@ -199,35 +211,15 @@ func Read(dirs ...string) (Result, error) {
 	}
 	slices.Sort(mains)
 
-	// Every entry, described or not, claims its keys, so a key two entries
-	// produce is left out rather than given one of them by map order.
-	owners := map[string]entry{}
-	ambiguous := map[string]bool{}
-	claim := func(key string, e entry) {
-		owner, taken := owners[key]
-		if taken && owner != e {
-			ambiguous[key] = true
-		}
-		owners[key] = e
-	}
+	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
 	mainEntries := false
 	for e, text := range rd.out {
-		claim(e.pkg+"."+e.name, e)
+		result.Descriptions[e.pkg+"."+e.name] = text
 		isMain := slices.Contains(mains, e.pkg)
 		if isMain && len(mains) == 1 {
-			claim("main."+e.name, e)
+			result.Descriptions["main."+e.name] = text
 		}
-		if isMain && text != "" {
-			mainEntries = true
-		}
-	}
-
-	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
-	for key, e := range owners {
-		text := rd.out[e]
-		if text != "" && !ambiguous[key] {
-			result.Descriptions[key] = text
-		}
+		mainEntries = mainEntries || isMain
 	}
 	if len(mains) > 1 && mainEntries {
 		result.MainPackages = mains
@@ -256,7 +248,7 @@ func Marshal(descriptions map[string]string) ([]byte, error) {
 
 type reader struct {
 	read    map[string]bool     // resolved absolute paths of the files read
-	out     map[entry]string    // every type and exported field declared, its text or ""
+	out     map[entry]string    // the texts
 	files   map[entry][]string  // the files that declare each type, in walk order
 	structs map[entry]bool      // the struct types
 	over    map[entry]string    // B for each type A B, B a type of A's package
@@ -271,7 +263,7 @@ type pkgInfo struct {
 }
 
 // entry is a key split into the import path of its package and the rest,
-// Name or Name.Field.
+// Name or Name#Field.
 type entry struct {
 	pkg  string
 	name string
@@ -422,11 +414,10 @@ func buildIgnored(file *ast.File) bool {
 	return false
 }
 
-// readType records a type and its exported fields with their comments, ""
-// for none.
+// readType records the comment of a type and of its fields.
 func (rd *reader) readType(pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec) {
 	typ := entry{pkg: pkgPath, name: spec.Name.Name}
-	rd.out[typ] = CommentText(TypeComment(gen, spec))
+	rd.add(typ, CommentText(TypeComment(gen, spec)))
 
 	over := localTypeName(spec.Type)
 	if over != "" {
@@ -450,9 +441,16 @@ func (rd *reader) readType(pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec)
 		}
 		for _, fieldName := range names {
 			if fieldName.IsExported() {
-				rd.out[entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}] = text
+				rd.add(entry{pkg: pkgPath, name: typ.name + fieldSeparator + fieldName.Name}, text)
 			}
 		}
+	}
+}
+
+// add records text under e, unless text is empty.
+func (rd *reader) add(e entry, text string) {
+	if text != "" {
+		rd.out[e] = text
 	}
 }
 
@@ -504,9 +502,9 @@ func (rd *reader) copyDefinedFields() {
 			continue
 		}
 		for e, text := range rd.out {
-			field, ok := strings.CutPrefix(e.name, target.name+".")
+			field, ok := strings.CutPrefix(e.name, target.name+fieldSeparator)
 			if ok && e.pkg == typ.pkg {
-				copies[entry{pkg: typ.pkg, name: typ.name + "." + field}] = text
+				copies[entry{pkg: typ.pkg, name: typ.name + fieldSeparator + field}] = text
 			}
 		}
 	}
@@ -532,14 +530,13 @@ func (rd *reader) structOf(typ entry) (entry, bool) {
 	return entry{}, false
 }
 
-// dropDuplicates empties the texts of every type declared more than once in
-// its package and of its fields, and returns those types. The entries stay, so
-// their keys are still claimed.
+// dropDuplicates removes the entries of every type declared more than once in
+// its package, and of its fields, and returns those types.
 func (rd *reader) dropDuplicates() []Duplicate {
 	for e := range rd.out {
-		typeName, _, _ := strings.Cut(e.name, ".")
+		typeName, _, _ := strings.Cut(e.name, fieldSeparator)
 		if len(rd.files[entry{pkg: e.pkg, name: typeName}]) > 1 {
-			rd.out[e] = ""
+			delete(rd.out, e)
 		}
 	}
 
