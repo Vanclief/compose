@@ -175,10 +175,18 @@ func Namer(namer func(reflect.Type) string) Option {
 // Registry option. Panics when data is not a JSON object of strings, and New
 // panics when it is passed twice.
 func Descriptions(data []byte) Option {
-	var comments map[string]string
-	err := json.Unmarshal(data, &comments)
-	if err != nil || comments == nil {
-		panic(ez.New(ez.EINVALID, "api: Descriptions: the data is not a JSON object of strings, as compose descriptions writes it", err))
+	const message = "api: Descriptions: the data is not a JSON object of strings, as compose descriptions writes it"
+	var decoded map[string]*string
+	err := json.Unmarshal(data, &decoded)
+	if err != nil || decoded == nil {
+		panic(ez.New(ez.EINVALID, message, err))
+	}
+	comments := make(map[string]string, len(decoded))
+	for key, text := range decoded {
+		if text == nil {
+			panic(ez.New(ez.EINVALID, message+": "+key+" is null", nil))
+		}
+		comments[key] = *text
 	}
 	return Option{name: "api.Descriptions", registry: func(r *Registry) {
 		if r.descriptions != nil {

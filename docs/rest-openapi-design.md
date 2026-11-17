@@ -902,19 +902,39 @@ the same descriptions. They are annotations: no request validates differently, a
 `apitest` contract judges a response the same.
 
 `compose descriptions [-out file] [dir ...]` walks each directory, `.` by default, skipping
-`vendor`, `testdata`, directories that start with `.` or `_`, and `_test.go` files. It
-records every package-level named type with a doc comment, unexported ones too, because the
-exported fields of an unexported embedded struct are published, and every named exported
-field of a package-level struct with a comment. Aliases, types declared in a function and
-embedded fields have no entry. A key is the import path and the type name,
-`github.com/x/app/runs.Run`, with the Go field name after it for a field,
-`github.com/x/app/runs.Run.Status`. The import path is the module path of the nearest
-`go.mod` joined with the directory below it. A type in a `package main` is keyed under
-`main`, as reflection reports it, and a generic type under its name without type arguments.
+`vendor`, `testdata`, files and directories that start with `.` or `_`, and `_test.go` files.
+A symbolic link given as a directory is followed. Every other file is read whatever its build
+constraints, so the file is the same on every platform. It records every package-level named
+type with a doc comment, and every exported field of a package-level struct with a comment.
+An embedded field is recorded under the name of its type, as reflection names it. Aliases
+and types declared in a function have no entry. Unexported types are recorded too. A request
+may embed an unexported struct whose exported fields are parameters or file fields, and those
+are published with the comments of that struct. In a body the registry refuses such a struct
+at registration, so there the entry is never read.
+
+A key is the import path and the type name, `github.com/x/app/runs.Run`, with the Go field
+name after it for a field, `github.com/x/app/runs.Run.Status`. The import path is the module
+path of the nearest `go.mod` joined with the directory below it, or what follows the last
+`vendor` element of that directory. A generic type is keyed under its name without type
+arguments. A type in a `package main` is written twice, under `main` and under its import
+path. Reflection reports `main` in a binary built with `go build` or `go run`, and the import
+path in a test binary, so both find it. A type defined over a struct of its own package,
+`type Job Run`, gets the field entries of `Run` under `Job`, also through a chain such as
+`type Task Job`, since reflection reports those fields with `Job` as their struct. A defined
+type over a struct of another package gets no field entries.
+
 The text follows the generator's rules (`descriptions.CommentText` and
 `descriptions.FieldText`, which the generator calls too): the `Deprecated:` paragraph and
 TODO, FIXME and nolint lines are dropped, and a field's doc comment comes before its line
-comment. Two files that describe one key differently fail and name both.
+comment.
+
+Two files can describe one key differently. One type in a `cgo` file and in a `!cgo` file is
+one case, and a type of the same name in two `package main` directories is another, under
+its `main` key. Such a key is left out of the file, as no description is better than a wrong
+one, even when a third file repeats one of the texts. The command prints one warning per key
+on stderr, naming the two files, and still succeeds. Each key stands alone: a type can be
+left out while a field that reads the same in both files is kept. To describe the key, make
+the comments match.
 
 The output is one JSON object with sorted keys, the same bytes for the same source. So CI
 checks that the file is fresh by regenerating it and running `git diff --exit-code`. The

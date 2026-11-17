@@ -32,9 +32,23 @@ type Owner struct {
 	Email string `json:"email"` // Email reaches the owner.
 }
 
+// Stamp says when something happened.
+type Stamp struct {
+	// At is when it happened.
+	At string `json:"at,omitempty"`
+}
+
+// Audit says who wrote a record.
+type Audit struct {
+	Stamp
+	// Author wrote the record.
+	Author string `json:"author,omitempty"`
+}
+
 // Run is one execution of a job.
 type Run struct {
 	Record
+	*Audit
 	// Name is what the user calls the run.
 	Name string `json:"name"`
 	// Label has a comment its doc tag replaces.
@@ -86,8 +100,19 @@ type UploadRequest struct {
 	Scope
 	// Log is the file to attach.
 	Log *multipart.FileHeader `json:"-" form:"log" required:"true"`
+	// Extras are more files to attach.
+	Extras []*multipart.FileHeader `json:"-" form:"extras"`
 	// Comment says what the log shows.
 	Comment string `json:"comment"`
+}
+
+// ArchiveRequest archives the runs of a project. Only a hidden operation
+// takes it.
+type ArchiveRequest struct {
+	requests.NoRules
+	Scope
+	// Reason says why the runs are archived.
+	Reason string `json:"reason"`
 }
 
 // UploadResponse tells what was attached.
@@ -104,6 +129,11 @@ func Create(ctx context.Context, req *CreateRequest) (Run, error) {
 // List handles ListRequest.
 func List(ctx context.Context, req *ListRequest) (Page[Run], error) {
 	return Page[Run]{}, nil
+}
+
+// Archive handles ArchiveRequest.
+func Archive(ctx context.Context, req *ArchiveRequest) (UploadResponse, error) {
+	return UploadResponse{}, nil
 }
 
 // Upload handles UploadRequest.

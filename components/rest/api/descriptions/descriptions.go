@@ -7,12 +7,15 @@
 // that file. The keys are Key(t) for a type and Key(t) + "." + the Go field
 // name for a field: "github.com/x/app/runs.Run" and
 // "github.com/x/app/runs.Run.Status".
+//
+// A defined type over a struct of the same package, type A B, gets the field
+// entries of B under A, as reflection reports B's fields with A as their
+// struct. A defined type over a struct of another package gets none.
 package descriptions
 
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -20,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/vanclief/ez"
@@ -28,9 +32,10 @@ import (
 
 // Key returns the key of a named type: its package path, a dot and its name
 // without type arguments, so every instantiation of a generic type shares the
-// comment of its declaration. A type declared in a package main has the path
-// "main", as reflect reports it. Key returns "" for an unnamed type and for a
-// predeclared one.
+// comment of its declaration. Key returns "" for an unnamed type and for a
+// predeclared one. A type of a package main has the package path "main" in
+// a binary built with go build or go run, and its import path in a test
+// binary, so Read writes its entries under both.
 func Key(t reflect.Type) string {
 	name, _, _ := strings.Cut(t.Name(), "[")
 	if name == "" || t.PkgPath() == "" {
@@ -98,30 +103,56 @@ func FieldText(field *ast.Field) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// Conflict is a key two files describe differently. Read leaves it out.
+type Conflict struct {
+	Key    string
+	First  string // the file that described it first, in walk order
+	Second string // the first file that described it otherwise
+}
+
 // Read walks each directory and returns the descriptions of the types
-// declared under it, keyed as Key does. It skips the directories named vendor
-// or testdata and those whose name starts with "." or "_", below the
-// directory given, and the _test.go files. Every package-level named type
-// with a doc comment has an entry, unexported ones too, as an exported field
-// of an unexported embedded struct is published, and so does every named
-// exported field of a package-level struct type with a comment. Aliases,
-// types declared inside a function and embedded fields have none. The import
-// path of a package is the module path of the nearest go.mod above it joined
-// with its directory below that go.mod, or "main" for a package main. Two
-// files that describe one key differently fail, naming both.
-func Read(dirs ...string) (map[string]string, error) {
+// declared under it, keyed as Key does, and the keys it left out because two
+// files describe them differently, sorted by key.
+//
+// It skips the directories named vendor or testdata and those whose name
+// starts with "." or "_", below the directory given, the files whose name
+// starts with "." or "_", and the _test.go files. Every other file is read
+// whatever its build constraints, so the result is the same on every
+// platform. Every package-level named type with a doc comment has an entry,
+// unexported ones too, and so does every exported field of a package-level
+// struct type with a comment, an embedded one under the name of its type.
+// Aliases and types declared inside a function have none.
+//
+// The import path of a package is the module path of the nearest go.mod above
+// it joined with its directory below that go.mod, or what follows the last
+// vendor element of that directory. The entries of a package main are written
+// under its import path and under "main". A key that two files describe
+// differently is left out, even when a third file repeats one of the texts,
+// and reported as a Conflict: no description is better than a wrong one.
+func Read(dirs ...string) (map[string]string, []Conflict, error) {
 	rd := &reader{
-		out:     map[string]string{},
-		from:    map[string]string{},
-		modules: map[string]string{},
+		out:       map[string]string{},
+		from:      map[string]string{},
+		conflicts: map[string]Conflict{},
+		structs:   map[string]bool{},
+		modules:   map[string]string{},
 	}
 	for _, dir := range dirs {
 		err := rd.walk(dir)
 		if err != nil {
-			return nil, ez.Wrap(err)
+			return nil, nil, ez.Wrap(err)
 		}
 	}
-	return rd.out, nil
+	rd.copyDefinedFields()
+
+	conflicts := make([]Conflict, 0, len(rd.conflicts))
+	for _, conflict := range rd.conflicts {
+		conflicts = append(conflicts, conflict)
+	}
+	sort.Slice(conflicts, func(i, j int) bool {
+		return conflicts[i].Key < conflicts[j].Key
+	})
+	return rd.out, conflicts, nil
 }
 
 // Marshal returns descriptions as the file api.Descriptions loads: one JSON
@@ -144,18 +175,33 @@ func Marshal(descriptions map[string]string) ([]byte, error) {
 }
 
 type reader struct {
-	out     map[string]string
-	from    map[string]string // key -> file that described it
-	modules map[string]string // directory holding a go.mod -> its module path
+	out       map[string]string
+	from      map[string]string   // key -> file that described it first
+	conflicts map[string]Conflict // keys left out
+	structs   map[string]bool     // keys of the struct types read
+	defined   []definedType       // type A B, in walk order
+	modules   map[string]string   // directory holding a go.mod -> its module path
 }
 
-func (rd *reader) walk(root string) error {
+// definedType is a type defined over a named type of its own package,
+// type A B, both as keys.
+type definedType struct {
+	key  string
+	over string
+	path string
+}
+
+func (rd *reader) walk(dir string) error {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ez.New(ez.EINVALID, "cannot read "+dir+": "+err.Error(), err)
+	}
 	info, err := os.Stat(root)
 	if err != nil {
-		return ez.New(ez.EINVALID, "cannot read "+root+": "+err.Error(), err)
+		return ez.New(ez.EINVALID, "cannot read "+dir+": "+err.Error(), err)
 	}
 	if !info.IsDir() {
-		return ez.New(ez.EINVALID, root+" is not a directory", nil)
+		return ez.New(ez.EINVALID, dir+" is not a directory", nil)
 	}
 
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -169,16 +215,21 @@ func (rd *reader) walk(root string) error {
 			}
 			return nil
 		}
-		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || ignored(name) {
 			return nil
 		}
 		return rd.readFile(path)
 	})
 }
 
+// ignored reports a name the go command ignores, a file or a directory.
+func ignored(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
 // skipDir reports a directory the go command leaves out of ./...
 func skipDir(name string) bool {
-	return name == "vendor" || name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+	return name == "vendor" || name == "testdata" || ignored(name)
 }
 
 func (rd *reader) readFile(path string) error {
@@ -187,12 +238,13 @@ func (rd *reader) readFile(path string) error {
 		return ez.New(ez.EINVALID, "cannot parse "+path+": "+err.Error(), err)
 	}
 
-	pkgPath := "main"
-	if file.Name.Name != "main" {
-		pkgPath, err = rd.importPath(filepath.Dir(path))
-		if err != nil {
-			return ez.Wrap(err)
-		}
+	pkgPath, err := rd.importPath(filepath.Dir(path))
+	if err != nil {
+		return ez.Wrap(err)
+	}
+	prefixes := []string{pkgPath}
+	if file.Name.Name == "main" {
+		prefixes = append(prefixes, "main")
 	}
 
 	for _, decl := range file.Decls {
@@ -205,56 +257,145 @@ func (rd *reader) readFile(path string) error {
 			if typeSpec.Assign.IsValid() {
 				continue
 			}
-			err = rd.readType(path, pkgPath+"."+typeSpec.Name.Name, gen, typeSpec)
-			if err != nil {
-				return ez.Wrap(err)
+			for _, prefix := range prefixes {
+				rd.readType(path, prefix, gen, typeSpec)
 			}
 		}
 	}
 	return nil
 }
 
-// readType records the comment of a type and of its fields.
-func (rd *reader) readType(path, key string, gen *ast.GenDecl, spec *ast.TypeSpec) error {
-	err := rd.add(path, key, CommentText(TypeComment(gen, spec)))
-	if err != nil {
-		return ez.Wrap(err)
+// readType records the comment of a type and of its fields under the
+// package path prefix.
+func (rd *reader) readType(path, prefix string, gen *ast.GenDecl, spec *ast.TypeSpec) {
+	key := prefix + "." + spec.Name.Name
+	rd.add(path, key, CommentText(TypeComment(gen, spec)))
+
+	over := localTypeName(spec.Type)
+	if over != "" {
+		rd.defined = append(rd.defined, definedType{key: key, over: prefix + "." + over, path: path})
 	}
 
 	structType, ok := spec.Type.(*ast.StructType)
 	if !ok {
-		return nil
+		return
 	}
+	rd.structs[key] = true
 	for _, field := range structType.Fields.List {
 		text := FieldText(field)
-		for _, name := range field.Names {
-			if !name.IsExported() {
+		names := field.Names
+		if len(names) == 0 {
+			embedded := embeddedName(field.Type)
+			if embedded == nil {
 				continue
 			}
-			err = rd.add(path, key+"."+name.Name, text)
-			if err != nil {
-				return ez.Wrap(err)
+			names = []*ast.Ident{embedded}
+		}
+		for _, name := range names {
+			if name.IsExported() {
+				rd.add(path, key+"."+name.Name, text)
 			}
 		}
 	}
+}
+
+// localTypeName returns the name of the type of its own package expr names,
+// B in type A B or type A B[int], or "".
+func localTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.IndexExpr:
+		return localTypeName(t.X)
+	case *ast.IndexListExpr:
+		return localTypeName(t.X)
+	case *ast.ParenExpr:
+		return localTypeName(t.X)
+	}
+	return ""
+}
+
+// embeddedName returns the name reflection gives an embedded field: the name
+// of its type, without package, pointer or type arguments.
+func embeddedName(expr ast.Expr) *ast.Ident {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t
+	case *ast.SelectorExpr:
+		return t.Sel
+	case *ast.StarExpr:
+		return embeddedName(t.X)
+	case *ast.IndexExpr:
+		return embeddedName(t.X)
+	case *ast.IndexListExpr:
+		return embeddedName(t.X)
+	case *ast.ParenExpr:
+		return embeddedName(t.X)
+	}
 	return nil
 }
 
-func (rd *reader) add(path, key, text string) error {
+// copyDefinedFields gives each type defined over a struct of its own package,
+// directly or through a chain (type C A, type A B), the field entries of
+// that struct.
+func (rd *reader) copyDefinedFields() {
+	over := map[string]string{}
+	for _, d := range rd.defined {
+		over[d.key] = d.over
+	}
+
+	var keys []string
+	for key := range rd.out {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, d := range rd.defined {
+		target := d.over
+		for range len(rd.defined) {
+			next, ok := over[target]
+			if rd.structs[target] || !ok {
+				break
+			}
+			target = next
+		}
+		if !rd.structs[target] || target == d.key {
+			continue
+		}
+		for _, key := range keys {
+			field, ok := strings.CutPrefix(key, target+".")
+			if ok && !strings.Contains(field, ".") {
+				rd.add(d.path, d.key+"."+field, rd.out[key])
+			}
+		}
+	}
+}
+
+// add records text under key, unless text is empty. A key described
+// differently twice is left out for good.
+func (rd *reader) add(path, key, text string) {
 	if text == "" {
-		return nil
+		return
+	}
+	_, conflicted := rd.conflicts[key]
+	if conflicted {
+		return
 	}
 	previous, ok := rd.out[key]
 	if ok && previous != text {
-		return ez.New(ez.EINVALID, fmt.Sprintf("%s is described differently in %s and in %s", key, rd.from[key], path), nil)
+		rd.conflicts[key] = Conflict{Key: key, First: rd.from[key], Second: path}
+		delete(rd.out, key)
+		return
+	}
+	if !ok {
+		rd.from[key] = path
 	}
 	rd.out[key] = text
-	rd.from[key] = path
-	return nil
 }
 
 // importPath returns the import path of the package in dir: the module path
-// of the nearest go.mod at or above dir, joined with dir's path below it.
+// of the nearest go.mod at or above dir, joined with dir's path below it, or
+// what follows the last vendor element of that path.
 func (rd *reader) importPath(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -270,12 +411,18 @@ func (rd *reader) importPath(dir string) (string, error) {
 		if modulePath != "" {
 			rel, err := filepath.Rel(moduleDir, abs)
 			if err != nil {
-				return "", ez.Wrap(err)
+				return "", ez.New(ez.EINTERNAL, "cannot place "+abs+" below "+moduleDir+": "+err.Error(), err)
 			}
 			if rel == "." {
 				return modulePath, nil
 			}
-			return modulePath + "/" + filepath.ToSlash(rel), nil
+			parts := strings.Split(filepath.ToSlash(rel), "/")
+			for i := len(parts) - 2; i >= 0; i-- {
+				if parts[i] == "vendor" {
+					return strings.Join(parts[i+1:], "/"), nil
+				}
+			}
+			return modulePath + "/" + strings.Join(parts, "/"), nil
 		}
 
 		parent := filepath.Dir(moduleDir)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/vanclief/ez"
 
@@ -18,10 +19,14 @@ const descriptionsUsage = `Usage:
 Writes the doc comments of the Go types under each directory (default .), and
 of their fields, as one JSON object that api.Descriptions loads, so the route
 registry's documents describe what the comments describe. Directories named
-vendor or testdata, those starting with . or _, and _test.go files are
-skipped. The output is the same bytes for the same source, so a CI job can
-regenerate it and check it with git diff --exit-code. Without -out it is
-written to stdout.
+vendor or testdata, files and directories starting with . or _, and _test.go
+files are skipped. Every other file is read whatever its build constraints.
+A key that two files describe differently, such as one type in two files
+for different platforms or a type of the same name in two main packages, is
+left out with a warning on stderr. Make the comments match to describe it.
+The output is the same bytes for the same source on every platform, so a CI
+job can regenerate it and check it with git diff --exit-code. Without -out it
+is written to stdout. Flags go before the directories.
 
 Flags:
 `
@@ -46,13 +51,22 @@ func runDescriptions(args []string, stdout, stderr io.Writer) int {
 	}
 
 	dirs := fs.Args()
+	for _, dir := range dirs {
+		if strings.HasPrefix(dir, "-") {
+			return usageError(fs, stderr, fmt.Sprintf("unexpected argument %q: flags go before the directories", dir))
+		}
+	}
 	if len(dirs) == 0 {
 		dirs = []string{"."}
 	}
 
-	comments, err := descriptions.Read(dirs...)
+	comments, conflicts, err := descriptions.Read(dirs...)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	for _, conflict := range conflicts {
+		fmt.Fprintf(stderr, "compose descriptions: %s is described differently in %s and %s: left out, make the comments match to describe it\n",
+			conflict.Key, conflict.First, conflict.Second)
 	}
 	data, err := descriptions.Marshal(comments)
 	if err != nil {

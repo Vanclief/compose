@@ -6,6 +6,7 @@ package models
 // Deprecated: use Job.
 type Run struct {
 	Base
+	// Extra is what a run may carry.
 	*Extra
 	// Name is what the user calls the run.
 	Name string `json:"name"` // It is unique.
@@ -39,6 +40,14 @@ type (
 	Left  struct{}
 	Right struct{}
 )
+
+// Job is a run under another name.
+type Job Run
+
+type Task Job
+
+// RunPage is a page of runs.
+type RunPage Page[Run]
 
 // Alias is an alias, which has no entry.
 type Alias = Run

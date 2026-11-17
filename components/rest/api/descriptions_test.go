@@ -30,8 +30,9 @@ const describedPkg = "github.com/vanclief/compose/components/rest/api/internal/d
 // keys the reader writes cannot drift apart.
 func describedFile(t *testing.T) []byte {
 	t.Helper()
-	comments, err := descriptions.Read("internal/described")
+	comments, conflicts, err := descriptions.Read("internal/described")
 	require.NoError(t, err)
+	require.Empty(t, conflicts)
 	data, err := descriptions.Marshal(comments)
 	require.NoError(t, err)
 	return data
@@ -47,6 +48,7 @@ func describedRegistry(t *testing.T, opts ...api.Option) (*echo.Echo, *api.Regis
 	api.POST(g, "", "create", described.Create)
 	api.GET(g, "", "list", described.List)
 	api.POST(g, "/logs", "upload", described.Upload)
+	api.POST(g, "/archive", "archive", described.Archive, api.Hidden())
 	reg.Ready()
 	return e, reg
 }
@@ -92,6 +94,9 @@ func TestDescriptionsDocuments(t *testing.T) {
 			run := dig(t, schemas, "described.Run", "properties")
 			require.Equal(t, "Name is what the user calls the run.", dig(t, run, "name", "description"))
 			require.Equal(t, "ID identifies the record.", dig(t, run, "id", "description"))
+			// Promoted through an embedded pointer, and through two levels.
+			require.Equal(t, "Author wrote the record.", dig(t, run, "author", "description"))
+			require.Equal(t, "At is when it happened.", dig(t, run, "at", "description"))
 			require.Equal(t, "Label from the tag.", dig(t, run, "label", "description"))
 			require.NotContains(t, dig(t, run, "note"), "description")
 			require.NotContains(t, dig(t, run, "plain"), "description")
@@ -112,6 +117,19 @@ func TestDescriptionsDocuments(t *testing.T) {
 			form := dig(t, doc, "paths", "/projects/{project}/runs/logs", "post", "requestBody", "content", "multipart/form-data", "schema", "properties")
 			require.Equal(t, "Log is the file to attach.", dig(t, form, "log", "description"))
 			require.Equal(t, "Comment says what the log shows.", dig(t, form, "comment", "description"))
+			require.Equal(t, "Extras are more files to attach.", dig(t, form, "extras", "description"))
+			require.Equal(t, "array", dig(t, form, "extras", "type"))
+
+			// A type only a hidden operation takes is in the strict
+			// document alone, described there.
+			if name == "strict" {
+				require.Equal(t, "ArchiveRequest archives the runs of a project. Only a hidden operation\ntakes it.",
+					dig(t, schemas, "described.ArchiveRequest", "description"))
+				require.Equal(t, "Reason says why the runs are archived.",
+					dig(t, schemas, "described.ArchiveRequest", "properties", "reason", "description"))
+			} else {
+				require.NotContains(t, schemas, "described.ArchiveRequest")
+			}
 		})
 	}
 }
@@ -213,6 +231,11 @@ func TestDescriptionsPanics(t *testing.T) {
 	}
 
 	msg := panicMessage(t, func() {
+		api.Descriptions([]byte(`{"a": "b", "c": null}`))
+	})
+	require.Equal(t, "api: Descriptions: the data is not a JSON object of strings, as compose descriptions writes it: c is null", msg)
+
+	msg = panicMessage(t, func() {
 		api.New(newEcho(), api.Descriptions([]byte("{}")), api.Descriptions([]byte("{}")))
 	})
 	require.Equal(t, "api: New: api.Descriptions is passed twice: pass one file", msg)

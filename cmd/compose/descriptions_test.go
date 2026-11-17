@@ -59,6 +59,23 @@ func TestDescriptionsDefaultDir(t *testing.T) {
 	require.Equal(t, want.String(), stdout.String())
 }
 
+// TestDescriptionsConflict checks that a key two files describe differently
+// is left out with one warning per key, and the command still succeeds.
+func TestDescriptionsConflict(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"descriptions", descriptionsConflict}, &stdout, &stderr)
+	require.Equal(t, 0, code, stderr.String())
+	require.Equal(t, ""+
+		"compose descriptions: github.com/vanclief/compose/components/rest/api/descriptions/testdata/conflict/engine.Engine is described differently in "+
+		filepath.Join(descriptionsConflict, "engine", "engine_cgo.go")+" and "+filepath.Join(descriptionsConflict, "engine", "engine_nocgo.go")+
+		": left out, make the comments match to describe it\n"+
+		"compose descriptions: main.Config is described differently in "+
+		filepath.Join(descriptionsConflict, "a", "main.go")+" and "+filepath.Join(descriptionsConflict, "b", "main.go")+
+		": left out, make the comments match to describe it\n", stderr.String())
+	require.NotContains(t, stdout.String(), `"main.Config"`)
+	require.Contains(t, stdout.String(), `"main.Config.Port": "Port is where it listens."`)
+}
+
 func TestDescriptionsErrors(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -70,7 +87,7 @@ func TestDescriptionsErrors(t *testing.T) {
 		{name: "unknown flag", args: []string{"-nope"}, code: 2, stderr: "flag provided but not defined"},
 		{name: "missing directory", args: []string{"missing"}, code: 1, stderr: "compose: cannot read missing: "},
 		{name: "a file", args: []string{"main.go"}, code: 1, stderr: "compose: main.go is not a directory"},
-		{name: "conflict", args: []string{descriptionsConflict}, code: 1, stderr: "compose: main.Config is described differently in "},
+		{name: "flag after a directory", args: []string{".", "-out", "x.json"}, code: 2, stderr: `compose: unexpected argument "-out": flags go before the directories`},
 		{name: "unwritable out", args: []string{"-out", filepath.Join("missing", "x.json"), descriptionsTree}, code: 1, stderr: "compose: cannot write " + filepath.Join("missing", "x.json")},
 	}
 
