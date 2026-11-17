@@ -18,9 +18,11 @@ const descriptionsUsage = `Usage:
 
 Writes the doc comments of the Go types under each directory (default .), and
 of their fields, as one JSON object that api.Descriptions loads, so the route
-registry's documents describe what the comments describe. Directories named
-vendor or testdata, files and directories starting with . or _, and _test.go
-files are skipped. Every other file is read whatever its build constraints.
+registry's documents describe what the comments describe. Below each
+directory given, directories named vendor or testdata or starting with . or _
+are skipped, and so are files starting with . or _ and _test.go files. A
+directory given is always read. Every other file is read whatever its build
+constraints.
 A key that two files describe differently, such as one type in two files
 for different platforms or a type of the same name in two main packages, is
 left out with a warning on stderr. Make the comments match to describe it.

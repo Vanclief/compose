@@ -901,10 +901,14 @@ inlined into its fields is not described. The 3.1, the 3.0.3 and the strict docu
 the same descriptions. They are annotations: no request validates differently, and the
 `apitest` contract judges a response the same.
 
-`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default, skipping
-`vendor`, `testdata`, files and directories that start with `.` or `_`, and `_test.go` files.
-A symbolic link given as a directory is followed. Every other file is read whatever its build
-constraints, so the file is the same on every platform. It records every package-level named
+`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. Below each
+directory given it skips the directories named `vendor` or `testdata` or that start with `.`
+or `_`, the files that start with `.` or `_`, and `_test.go` files. A directory given is
+always read. A symbolic link given as a directory is followed, and the directory is keyed by
+where the link points: a package directory that links to another module's package gets that
+module's import path, though a binary built from the linking module reports its own. A `.go`
+file that is a link to a regular file is read, as Go compiles it. Every other file is read
+whatever its build constraints, so the file is the same on every platform. It records every package-level named
 type with a doc comment, and every exported field of a package-level struct with a comment.
 An embedded field is recorded under the name of its type, as reflection names it. Aliases
 and types declared in a function have no entry. Unexported types are recorded too. A request

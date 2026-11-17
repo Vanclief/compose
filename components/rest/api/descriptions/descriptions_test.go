@@ -139,23 +139,14 @@ func TestReadConflict(t *testing.T) {
 // TestReadModules builds its tree at run time, as the module zip leaves out
 // a directory with a go.mod of its own and a vendor directory.
 func TestReadModules(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	files := map[string]string{
+	root := writeTree(t, map[string]string{
 		"go.mod":                        "module example.com/app\n\ngo 1.26\n",
 		"api/api.go":                    "package api\n\n// Item is sold.\ntype Item struct{}\n",
 		"vendor/example.com/dep/dep.go": "package dep\n\n// Dep is vendored.\ntype Dep struct{}\n",
 		"tools/go.mod":                  "module example.com/tools\n\ngo 1.26\n",
 		"tools/gen/gen.go":              "package gen\n\n// Gen is in a module of its own.\ntype Gen struct{}\n",
 		"orphan/go.mod":                 "go 1.26\n",
-	}
-	for name, content := range files {
-		path := filepath.Join(root, name)
-		err = os.MkdirAll(filepath.Dir(path), 0o755)
-		require.NoError(t, err)
-		err = os.WriteFile(path, []byte(content), 0o644)
-		require.NoError(t, err)
-	}
+	})
 
 	// The vendor directory is skipped, and a directory below a go.mod of
 	// its own belongs to that module.
@@ -174,7 +165,7 @@ func TestReadModules(t *testing.T) {
 
 	// A symbolic link is followed, and the import path is the target's.
 	link := filepath.Join(t.TempDir(), "link")
-	err = os.Symlink(filepath.Join(root, "api"), link)
+	err := os.Symlink(filepath.Join(root, "api"), link)
 	if err != nil {
 		t.Logf("no symbolic link on this platform: %v", err)
 	} else {
@@ -187,6 +178,119 @@ func TestReadModules(t *testing.T) {
 	_, _, err = descriptions.Read(filepath.Join(root, "orphan"))
 	require.Error(t, err)
 	require.Contains(t, ez.ErrorMessage(err), filepath.Join(root, "orphan", "go.mod")+" declares no module path")
+}
+
+// writeTree writes files, keyed by their slash-separated path, under a new
+// directory and returns it with its symbolic links resolved.
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		err = os.MkdirAll(filepath.Dir(path), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(path, []byte(content), 0o644)
+		require.NoError(t, err)
+	}
+	return root
+}
+
+// TestReadSymlinkedFile reads a .go file that is a symbolic link to a
+// regular file, as Go compiles it, and skips a broken link.
+func TestReadSymlinkedFile(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":            "module example.com/app\n\ngo 1.26\n",
+		"api/api.go":        "package api\n\n// Item is sold.\ntype Item struct{}\n",
+		"shared/linked.txt": "package api\n\n// Linked is in a linked file.\ntype Linked struct{}\n",
+	})
+	err := os.Symlink(filepath.Join(root, "shared", "linked.txt"), filepath.Join(root, "api", "linked.go"))
+	if err != nil {
+		t.Skipf("no symbolic link on this platform: %v", err)
+	}
+	err = os.Symlink(filepath.Join(root, "missing.go"), filepath.Join(root, "api", "broken.go"))
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]string{
+		"example.com/app/api.Item":   "Item is sold.",
+		"example.com/app/api.Linked": "Linked is in a linked file.",
+	}, read(t, filepath.Join(root, "api")))
+}
+
+// TestReadDefinedTypes copies the fields of a struct to the types defined
+// over it within one package, never from another main package.
+func TestReadDefinedTypes(t *testing.T) {
+	const mod = "module example.com/app\n\ngo 1.26\n"
+
+	// Run 1: Wrapper in a reaches E1 through Engine. b declares another
+	// Engine, over E2, which must not reach a's Wrapper.
+	root := writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\ntype Wrapper Engine\n\ntype Engine E1\n\ntype E1 struct {\n\tX int // X is e1.\n}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Engine E2\n\ntype E2 struct {\n\tX int // X is e2.\n}\n\nfunc main() {}\n",
+	})
+	a := filepath.Join(root, "cmd", "a")
+	b := filepath.Join(root, "cmd", "b")
+	want := map[string]string{
+		"main.Wrapper.X":                  "X is e1.",
+		"main.E1.X":                       "X is e1.",
+		"main.E2.X":                       "X is e2.",
+		"example.com/app/cmd/a.Wrapper.X": "X is e1.",
+		"example.com/app/cmd/a.Engine.X":  "X is e1.",
+		"example.com/app/cmd/a.E1.X":      "X is e1.",
+		"example.com/app/cmd/b.Engine.X":  "X is e2.",
+		"example.com/app/cmd/b.E2.X":      "X is e2.",
+	}
+	for _, dirs := range [][]string{{a, b}, {b, a}} {
+		got, conflicts, err := descriptions.Read(dirs...)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+		require.Len(t, conflicts, 1)
+		require.Equal(t, "main.Engine.X", conflicts[0].Key)
+	}
+
+	// Run 2: Job in a is Run of a. b declares its own Job, described
+	// otherwise, so main.Job.X conflicts as main.Run.X does.
+	root = writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\ntype Job Run\n\ntype Run struct {\n\tX int // X is x of a.\n}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Run struct {\n\tX int // X is x of b.\n}\n\ntype Job struct {\n\tX int // X is the job x of b.\n}\n\nfunc main() {}\n",
+	})
+	got, conflicts, err := descriptions.Read(filepath.Join(root, "cmd"))
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"example.com/app/cmd/a.Job.X": "X is x of a.",
+		"example.com/app/cmd/a.Run.X": "X is x of a.",
+		"example.com/app/cmd/b.Run.X": "X is x of b.",
+		"example.com/app/cmd/b.Job.X": "X is the job x of b.",
+	}, got)
+	require.Equal(t, []descriptions.Conflict{
+		{Key: "main.Job.X", First: filepath.Join(root, "cmd", "b", "main.go"), Second: filepath.Join(root, "cmd", "a", "main.go")},
+		{Key: "main.Run.X", First: filepath.Join(root, "cmd", "a", "main.go"), Second: filepath.Join(root, "cmd", "b", "main.go")},
+	}, conflicts)
+
+	// A field of the struct left out as a conflict is left out under the
+	// defined type too, and a type defined over a struct of another package
+	// gets no field entries.
+	root = writeTree(t, map[string]string{
+		"go.mod":         mod,
+		"p/e_cgo.go":     "//go:build cgo\n\npackage p\n\ntype E struct {\n\tX int // X one.\n\tY int // Y is y.\n}\n",
+		"p/e_nocgo.go":   "//go:build !cgo\n\npackage p\n\ntype E struct {\n\tX int // X two.\n\tY int // Y is y.\n}\n",
+		"p/a.go":         "package p\n\ntype A E\n",
+		"other/other.go": "package other\n\nimport \"example.com/app/p\"\n\ntype R p.E\n",
+	})
+	got, conflicts, err = descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"example.com/app/p.E.Y": "Y is y.",
+		"example.com/app/p.A.Y": "Y is y.",
+	}, got)
+	cgo := filepath.Join(root, "p", "e_cgo.go")
+	nocgo := filepath.Join(root, "p", "e_nocgo.go")
+	require.Equal(t, []descriptions.Conflict{
+		{Key: "example.com/app/p.A.X", First: cgo, Second: nocgo},
+		{Key: "example.com/app/p.E.X", First: cgo, Second: nocgo},
+	}, conflicts)
 }
 
 func TestReadErrors(t *testing.T) {
