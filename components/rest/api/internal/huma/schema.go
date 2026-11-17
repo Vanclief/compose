@@ -469,18 +469,45 @@ func jsonTag(r Registry, f reflect.StructField, s *Schema, name string) any {
 	return nil
 }
 
+// FieldDescriber is implemented by a registry that describes a struct field
+// that carries no doc tag. compose: parent is the struct type that declares
+// the field, the embedded struct for a promoted one.
+type FieldDescriber interface {
+	FieldDescription(parent reflect.Type, f reflect.StructField) string
+}
+
+// FieldDoc returns the description of the field f that parent declares: its
+// doc tag when it has one, even an empty one, else what the registry
+// describes it with when it is a FieldDescriber. compose: every description
+// of a field, in a body, a parameter or a form, is read here.
+func FieldDoc(registry Registry, parent reflect.Type, f reflect.StructField) string {
+	doc, ok := f.Tag.Lookup("doc")
+	if ok {
+		return doc
+	}
+	describer, ok := registry.(FieldDescriber)
+	if !ok {
+		return ""
+	}
+	return describer.FieldDescription(parent, f)
+}
+
 // SchemaFromField generates a schema for a given struct field. If the field
 // is a struct (or slice/map of structs) then the registry is used to
 // potentially get a reference to that type.
 //
 // This is used by `huma.SchemaFromType` when it encounters a struct, and
-// is used to generate schemas for path/query/header parameters.
-func SchemaFromField(registry Registry, f reflect.StructField, hint string) *Schema {
+// is used to generate schemas for path/query/header parameters. compose:
+// parent is the struct type that declares f (see FieldDoc).
+func SchemaFromField(registry Registry, parent reflect.Type, f reflect.StructField, hint string) *Schema {
 	fs := registry.Schema(f.Type, true, hint)
 	if fs == nil {
 		return fs
 	}
-	fs.Description = stringTag(f, "doc", fs.Description)
+	doc := FieldDoc(registry, parent, f)
+	if doc != "" {
+		fs.Description = doc
+	}
 	if fs.Format == "date-time" && f.Tag.Get("header") != "" {
 		// Special case: this is a header and uses a different date/time format.
 		// Note that it can still be overridden by the `format` or `timeFormat`
@@ -812,7 +839,7 @@ func SchemaFromType(r Registry, t reflect.Type) *Schema {
 				dependentRequiredMap[name] = strings.Split(dr, ",")
 			}
 
-			fs := SchemaFromField(r, f, t.Name()+f.Name+"Struct")
+			fs := SchemaFromField(r, info.Parent, f, t.Name()+f.Name+"Struct")
 			if fs != nil {
 				props[name] = fs
 

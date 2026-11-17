@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vanclief/compose/components/rest/api/descriptions"
 	"github.com/vanclief/ez"
 )
 
@@ -137,7 +138,7 @@ func (g *generator) handlerFacts() handlerFacts {
 		imports := g.builder.importMap(source.File)
 		pkgPath := source.PackagePath
 
-		packageDoc := commentText(source.File.Doc)
+		packageDoc := descriptions.CommentText(source.File.Doc)
 		if !g.cfg.flat() && packageDoc != "" && facts.namespaceDocs[source.Namespace] == "" {
 			facts.namespaceDocs[source.Namespace] = packageDoc
 		}
@@ -155,7 +156,7 @@ func (g *generator) handlerFacts() handlerFacts {
 				continue
 			}
 
-			doc := commentText(fn.Doc)
+			doc := descriptions.CommentText(fn.Doc)
 			if doc != "" {
 				facts.docs[name] = doc
 			}

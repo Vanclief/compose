@@ -868,6 +868,119 @@ null and its `IsZero` is `!Set`, so `omitzero` drops an unset field from a respo
   through an unexported interface in `openapi`, so `types/` depends on neither the api
   packages nor huma.
 
+### Descriptions
+
+The registry builds its documents by reflection inside the running binary, where Go
+comments do not exist. Two things describe what it publishes:
+
+- **The `doc` tag** describes one field: `doc:"Where the run is."`.
+- **The comments file** carries the doc comments of the app's types and fields. A build step
+  writes it with `compose descriptions`, the app embeds it, and `api.Descriptions` loads it:
+
+  ```go
+  //go:generate go run github.com/vanclief/compose/cmd/compose descriptions -out descriptions.json .
+
+  //go:embed descriptions.json
+  var descriptions []byte
+
+  reg := api.New(e, api.Descriptions(descriptions), api.Info("Runs API", "1.0.0"))
+  ```
+
+The rule: **a field without a `doc` tag is treated exactly as if it carried
+`doc:"<its comment>"`, and a struct type published in the document gets its comment as its
+schema's `description`.** A `doc` tag wins, an empty `doc:""` too, which hides the comment.
+A field's comment is the one written in the struct that declares it, so a field promoted from
+an embedded struct finds the embedded struct's comment. The rule holds wherever the `doc` tag
+is read: body properties, path, query and header parameters, multipart form values and file
+fields. All of them go through one lookup, `huma.FieldDoc`, so the tag and the comment cannot
+behave differently. A field whose schema is a `$ref` carries the description beside it, and
+the 3.0.3 document wraps the `$ref` in `allOf`, as for a tag. An enum type published as a
+component is described like a struct. So are the request copy published as `<name>Input` and
+every instantiation of a generic type, which shares its declaration's comment. A named type
+inlined into its fields is not described. The 3.1, the 3.0.3 and the strict document carry
+the same descriptions. They are annotations: no request validates differently, and the
+`apitest` contract judges a response the same.
+
+`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. A directory
+given is always read. It is made absolute and its symbolic links are resolved, so a file has
+one path whether the arguments reach it through relative paths, absolute paths or symbolic
+links, and then a directory given inside another one given adds nothing. A directory must be
+given in the letter case it has on disk, as its import path is built from the argument: on a
+file system that ignores case, `./Models` is keyed under `Models`, and `models` and `Models`
+together read each file twice. A directory given as a link is keyed by where the link points: a package directory
+that links to another module's package gets that module's import path, though a binary built
+from the linking module reports its own. Below each directory given it skips the directories
+named `vendor` or `testdata` or that start with `.` or `_`, and links to directories, as
+`./...` does. It skips the files that start with `.` or `_`, `_test.go` files, files with a
+`//go:build ignore` line, which are scripts outside their package, and files of package
+`documentation`, which the go command ignores. A `.go` file that is a link
+to a regular file is read, as Go compiles it. Every other `.go` file is read once, whatever its
+build constraints, so the file is the same on every platform. A file that does not parse fails
+the command, unless its name is skipped. It records every package-level named
+type with a doc comment, and every exported field of a package-level struct with a comment.
+An embedded field is recorded under the name of its type, as reflection names it. Aliases
+have no entry. A type declared in a function has none of its own, but reflection gives it the
+key of a package-level type of the same name, so it gets that type's description. Unexported
+types are recorded too. A request may embed an unexported struct whose exported fields are
+parameters or file fields, and those are published with the comments of that struct. In a
+body the registry refuses such a struct at registration, so there the entry is never read.
+
+A type's key is the import path, a dot and the type name, `github.com/x/app/runs.Run`. A
+field's key is its struct's key, a `#` and the Go field name, `github.com/x/app/runs.Run#Status`
+(`descriptions.Key` and `descriptions.FieldKey`). An import path can hold a dot but never a
+`#`, and a type name holds neither, so every key has one owner: the field `X` of a type `T` in
+`example.com/p` is `example.com/p.T#X`, and a type `X` in `example.com/p.T` is
+`example.com/p.T.X`. The import path is the module path of the nearest `go.mod` joined with
+the directory below it, or what follows the last `vendor` element of that directory. A generic
+type is keyed under its name without type arguments.
+
+Reflection reports a type of a `package main` under `main` in a binary built with `go build`
+or `go run`, and under its import path in a test binary. A main package here is an import path
+whose files read all say `package main`, so a library directory that holds a `package main`
+script tagged other than `//go:build ignore` is not one. Its entries are always written under
+its import path. They are also written under `main` when it is the only main package read that
+declares a type, commented or not, an alias counting. With two or more, a key under `main` could describe the type
+of another command, so none is written, and the command prints one warning that names the main
+packages when one of them has an entry. It still succeeds. To describe the types of a package
+main, run the command on the directories of one command at a time, each into its own file. In
+a module named `main`, the package at its root has the import path `main`, so its keys are
+`main.` keys too. It is described only when it is the one main package read, where its keys
+and its `main.` keys are the same. A library there is in no binary, as the go command refuses
+to import `main`. A root command beside another command would describe the types of the other
+command too, as a binary built from either reports its types under `main`. Packages below it,
+such as `main/sub`, are keyed as usual.
+
+A type defined over a struct of its own package, `type Job Run`, gets the field entries of
+`Run` under `Job`, also through a chain such as `type Task Job`, since reflection reports those
+fields with `Job` as their struct. It gets them only when `Job`, every type along the chain and
+the struct at its end are each declared once in the package, as below. A defined type over a
+struct of another package gets no field entries.
+
+The text follows the generator's rules (`descriptions.CommentText` and
+`descriptions.FieldText`, which the generator calls too): the `Deprecated:` paragraph and
+TODO, FIXME and nolint lines are dropped, and a field's doc comment comes before its line
+comment.
+
+A type declared more than once in its package is not described, nor are its fields. This
+holds for every kind of declaration, a struct, a defined type or an alias, and whatever the
+comments say, even when they are the same. With one declaration there is one truth. With two,
+such as one in a `cgo` file and one in a `!cgo` file, which one a binary holds depends on build
+constraints the command does not evaluate. A text the declarations share could still sit beside
+a key only one of them describes, so no description is better than a wrong one. The same holds
+for one import path reached from two module roots: every type there is declared twice. The
+command prints one warning per such type on stderr, naming the first two files that declare it,
+and still succeeds. API types are almost never declared per platform, so little is lost.
+
+The output is one JSON object with sorted keys, the same bytes for the same source, whatever
+the order of the directories given and whether they are reached through relative paths,
+absolute paths or symbolic links. So CI
+checks that the file is fresh by regenerating it and running `git diff --exit-code`. The
+file holds the comments of every type under the directories given, and it is embedded in the
+binary. Point the command at the packages that hold the API's types if the rest should not
+ship. Not described yet: enum constants, package comments as tag descriptions and handler
+comments as operation descriptions, which the generator reads. `api.Doc` sets an operation's
+summary and description.
+
 ## 6. Validator glue (santhosh v6)
 
 - `compiler.AddResource("mem:///spec.json", ...)` once with a validation document holding every
@@ -1154,6 +1267,10 @@ Remaining:
   query parameters only: check the larger app's POST search bodies first in case any carry
   `limit`/`cursor` in the body. A request that embeds either does not embed
   `requests.NoRules` (section 3).
+- **Doc comments become a file.** The generator read the comments of types and fields from
+  source. The registry reads them from the file `compose descriptions` writes, loaded with
+  `api.Descriptions` (section 5, Descriptions), so add the `go:generate` and `go:embed` lines
+  and the CI freshness check in the change that moves the routes.
 - **Component names.** The larger app has about 25 duplicated package names (`finance/units` vs
   `property/units`), so it needs `api.Namer(openapi.SegmentsNamer(2))`.
 - **Compare the old spec with the registry's before switching** (the larger app): paths, methods and

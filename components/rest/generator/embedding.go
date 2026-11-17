@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/vanclief/compose/components/rest/api/descriptions"
 )
 
 // promotedField is a field encoding/json writes for a struct: one of its own, or one an
@@ -160,7 +162,7 @@ func (b *schemaBuilder) mergedStructSchema(st *ast.StructType, imports map[strin
 			schema = deprecatedSchema(schema)
 		}
 		if b.docComments {
-			schema = describedSchema(schema, fieldDoc(promoted.field))
+			schema = describedSchema(schema, descriptions.FieldText(promoted.field))
 		}
 		props[promoted.name] = schema
 

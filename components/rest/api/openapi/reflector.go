@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vanclief/ez"
 
+	"github.com/vanclief/compose/components/rest/api/descriptions"
 	"github.com/vanclief/compose/components/rest/api/internal/huma"
 	"github.com/vanclief/compose/primitives/enums"
 	"github.com/vanclief/compose/types"
@@ -113,6 +114,18 @@ func WithNamer(namer func(t reflect.Type) string) Option {
 		if namer != nil {
 			r.reg.namer = namer
 		}
+	}
+}
+
+// WithDescriptions describes the types and fields the Reflector publishes
+// with the comments of descriptions, keyed by descriptions.Key for a type and
+// descriptions.FieldKey for a field: a field without a doc tag is treated as if it carried doc:"<its comment>",
+// the comment found under the key of the struct that declares it, and a
+// struct or enum component gets its type's comment as its description.
+// Descriptions are annotations: no request validates differently.
+func WithDescriptions(comments map[string]string) Option {
+	return func(r *Reflector) {
+		r.reg.descriptions = comments
 	}
 }
 
@@ -215,6 +228,23 @@ func (r *Reflector) AddRequest(t reflect.Type) (params []Param, err error) {
 	return copyParams(params), nil
 }
 
+// FieldDoc returns the description of f, a field reflect.VisibleFields(t)
+// returns, as the body properties and the parameters of t are described: its
+// doc tag, or the comment of the struct that declares it (WithDescriptions).
+func (r *Reflector) FieldDoc(t reflect.Type, f reflect.StructField) string {
+	return huma.FieldDoc(r.reg, declaringType(t, f.Index), f)
+}
+
+// declaringType returns the struct type that declares the visible field of t
+// at index: t itself, or the embedded struct a promoted field comes from.
+func declaringType(t reflect.Type, index []int) reflect.Type {
+	t = deref(t)
+	for _, i := range index[:len(index)-1] {
+		t = deref(t.Field(i).Type)
+	}
+	return t
+}
+
 // recoverPanic turns a huma panic (duplicate names, malformed tag values)
 // into an error.
 func recoverPanic(err *error) {
@@ -253,12 +283,35 @@ type registry struct {
 	names   map[reflect.Type]string // the component of each type, see Schema
 	aliases map[reflect.Type]reflect.Type
 	namer   func(reflect.Type) string
+
+	descriptions map[string]string // of WithDescriptions, keyed by descriptions.Key and FieldKey
 }
 
 // collisionHint is appended to duplicate component name errors.
 const collisionHint = "; give one component a distinct name with openapi.WithNamer (e.g. openapi.SegmentsNamer(2)) or api.Namer"
 
-var _ huma.Registry = (*registry)(nil)
+var (
+	_ huma.Registry       = (*registry)(nil)
+	_ huma.FieldDescriber = (*registry)(nil)
+)
+
+// FieldDescription returns the comment of the field f that parent declares.
+func (r *registry) FieldDescription(parent reflect.Type, f reflect.StructField) string {
+	key := descriptions.FieldKey(parent, f.Name)
+	if key == "" {
+		return ""
+	}
+	return r.descriptions[key]
+}
+
+// typeDescription returns the comment of the type t.
+func (r *registry) typeDescription(t reflect.Type) string {
+	key := descriptions.Key(t)
+	if key == "" {
+		return ""
+	}
+	return r.descriptions[key]
+}
 
 func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Schema {
 	origType := t
@@ -341,6 +394,10 @@ func (r *registry) Schema(t reflect.Type, allowRef bool, hint string) *huma.Sche
 		return s
 	}
 
+	description := r.typeDescription(t)
+	if description != "" {
+		s.Description = description
+	}
 	r.schemas[name] = s
 	if allowRef {
 		return &huma.Schema{Ref: RefPrefix + name}
@@ -397,7 +454,7 @@ func (r *registry) registerEnum(t reflect.Type, values []string) string {
 		enum[i] = v
 	}
 
-	r.schemas[name] = &huma.Schema{Type: huma.TypeString, Enum: enum}
+	r.schemas[name] = &huma.Schema{Type: huma.TypeString, Enum: enum, Description: r.typeDescription(t)}
 	r.types[name] = t
 	r.names[t] = name
 

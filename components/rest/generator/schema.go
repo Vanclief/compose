@@ -19,6 +19,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/vanclief/compose/components/rest/api/descriptions"
 	"github.com/vanclief/ez"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -718,7 +719,7 @@ func (g *generator) buildHandlerSchemas(facts handlerFacts) (map[string]handlerS
 			Request:    reqSchema,
 			Response:   respSchema,
 			PathFields: builder.jsonFieldNames(reqType, facts.pathFields[name]),
-			ModuleDoc:  commentText(moduleDoc),
+			ModuleDoc:  descriptions.CommentText(moduleDoc),
 		}
 	}
 
@@ -1207,7 +1208,7 @@ func (b *schemaBuilder) buildSchema(ref typeRef) map[string]any {
 	}
 
 	if b.docComments {
-		doc := commentText(info.Doc)
+		doc := descriptions.CommentText(info.Doc)
 		_, isRef := schema["$ref"]
 		if doc != "" && !isRef {
 			schema["description"] = doc
@@ -2858,7 +2859,7 @@ func (b *schemaBuilder) schemaForStruct(st *ast.StructType, imports map[string]s
 				schema = deprecatedSchema(schema)
 			}
 			if b.docComments {
-				schema = describedSchema(schema, fieldDoc(field))
+				schema = describedSchema(schema, descriptions.FieldText(field))
 			}
 			props[name] = schema
 
@@ -3803,7 +3804,7 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 
 		imports := b.importMap(file)
 		if packageDoc == "" {
-			packageDoc = commentText(file.Doc)
+			packageDoc = descriptions.CommentText(file.Doc)
 		}
 
 		for _, decl := range file.Decls {
@@ -3837,10 +3838,7 @@ func (b *schemaBuilder) parsePackage(importPath string, dir string, standardLibr
 					if !ok {
 						continue
 					}
-					doc := typeSpec.Doc
-					if doc == nil && len(gen.Specs) == 1 {
-						doc = gen.Doc
-					}
+					doc := descriptions.TypeComment(gen, typeSpec)
 					_, seen := types[typeSpec.Name.Name]
 					redeclared[typeSpec.Name.Name] = redeclared[typeSpec.Name.Name] || seen
 					types[typeSpec.Name.Name] = typeSpecInfo{

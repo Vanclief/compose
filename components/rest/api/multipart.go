@@ -44,8 +44,9 @@ type fileField struct {
 // fileFields returns the form:"name" fields of a request type. They must be
 // *multipart.FileHeader or []*multipart.FileHeader, carry json:"-" and not
 // be reached through an unexported embedded pointer, which decodeForm cannot
-// allocate; a file typed field without a form tag is an error too.
-func fileFields(t reflect.Type) ([]fileField, error) {
+// allocate; a file typed field without a form tag is an error too. A file
+// field is described as a body field is (openapi.Reflector.FieldDoc).
+func fileFields(t reflect.Type, reflector *openapi.Reflector) ([]fileField, error) {
 	var files []fileField
 	var problems []string
 	for _, f := range reflect.VisibleFields(derefType(t)) {
@@ -96,7 +97,7 @@ func fileFields(t reflect.Type) ([]fileField, error) {
 				index:    f.Index,
 				multiple: f.Type == fileHeadersType,
 				required: required,
-				doc:      f.Tag.Get("doc"),
+				doc:      reflector.FieldDoc(t, f),
 			})
 		}
 	}
