@@ -41,6 +41,7 @@ type operation struct {
 	tag    string
 
 	hidden       bool
+	destructive  bool // api.Destructive: the documents mark it x-destructive
 	public       bool
 	authenticate AuthenticateFunc
 	invoke       func(context.Context, requests.Body) (any, error) // the primary handler
@@ -234,6 +235,12 @@ func (r *Registry) check(op *operation) error {
 	}
 	if !namePattern.MatchString(op.name) {
 		return ez.New(ez.EINVALID, fmt.Sprintf("operation name %q must match %s", op.name, namePattern), nil)
+	}
+	// An MCP server keeps a GET or HEAD read-only whatever it carries (see
+	// reference.Operation.Destructive), so the mark would say what nothing
+	// acts on.
+	if op.destructive && (op.method == http.MethodGet || op.method == http.MethodHead) {
+		return ez.New(ez.EINVALID, "api.Destructive on a GET or HEAD: the mark is for an operation that writes, and an MCP server keeps a GET or HEAD read-only", nil)
 	}
 	// api.Tag checks its own name, so a tag that fails here is the prefix's.
 	if op.tag != "" && !namePattern.MatchString(op.tag) {

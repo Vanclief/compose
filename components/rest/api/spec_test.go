@@ -1118,3 +1118,71 @@ func TestTableAndInternalMarks(t *testing.T) {
 	}
 	require.Equal(t, map[string]bool{"parcels.create": false, "parcels.audit": true}, internal)
 }
+
+// TestDestructiveMark: an operation registered with api.Destructive carries
+// x-destructive: true in the 3.1, the 3.0.3 and the strict document, a hidden
+// one beside its x-internal, and no other operation carries it. The
+// reference package reads the mark, which is what an MCP server acts on. The
+// option is refused on a GET or HEAD and anywhere but on an operation.
+func TestDestructiveMark(t *testing.T) {
+	reg := api.New(newEcho(), api.Public())
+	g := reg.Group("/parcels")
+	api.POST[parcelRequest, Parcel](g, "", "create", stub)
+	api.POST[parcelRequest, Parcel](g, "/batch/delete", "delete_batch", stub, api.Destructive())
+	api.POST[parcelRequest, Parcel](g, "/purge", "purge", stub, api.Destructive(), api.Hidden())
+	api.DELETE[fixture.HealthRequest, Parcel](g, "", "clear", stub, api.Destructive())
+	api.DELETE[fixture.HealthRequest, Parcel](g, "/stale", "delete_stale", stub)
+	reg.Ready()
+
+	for _, version := range []api.Version{api.V31, api.V30} {
+		raw, err := reg.Spec(version)
+		require.NoError(t, err)
+		doc := decode(t, raw)
+		require.Equal(t, true, dig(t, doc, "paths", "/parcels/batch/delete", "post", "x-destructive"))
+		require.Equal(t, true, dig(t, doc, "paths", "/parcels", "delete", "x-destructive"))
+		require.NotContains(t, dig(t, doc, "paths", "/parcels", "post"), "x-destructive")
+		require.NotContains(t, dig(t, doc, "paths", "/parcels/stale", "delete"), "x-destructive")
+		require.NotContains(t, dig(t, doc, "paths"), "/parcels/purge")
+	}
+
+	strict := decode(t, reg.StrictSpec())
+	require.Equal(t, true, dig(t, strict, "paths", "/parcels/batch/delete", "post", "x-destructive"))
+	require.Equal(t, true, dig(t, strict, "paths", "/parcels/purge", "post", "x-destructive"))
+	require.Equal(t, true, dig(t, strict, "paths", "/parcels/purge", "post", "x-internal"))
+	require.NotContains(t, dig(t, strict, "paths", "/parcels", "post"), "x-destructive")
+
+	doc, err := reference.Parse(reg.StrictSpec())
+	require.NoError(t, err)
+	destructive := map[string]bool{}
+	for _, ref := range doc.Operations() {
+		destructive[ref.Operation.OperationID] = ref.Operation.Destructive
+	}
+	want := map[string]bool{
+		"parcels.create":       false,
+		"parcels.delete_batch": true,
+		"parcels.purge":        true,
+		"parcels.clear":        true,
+		"parcels.delete_stale": false,
+	}
+	require.Equal(t, want, destructive)
+
+	newGroup := func() *api.Group {
+		return api.New(newEcho(), api.Public()).Group("/parcels")
+	}
+	const readOnly = "api.Destructive on a GET or HEAD: the mark is for an operation that writes, and an MCP server keeps a GET or HEAD read-only"
+	tests := []struct {
+		fn   func()
+		want string
+	}{
+		{func() { api.GET[fixture.HealthRequest, Parcel](newGroup(), "/audit", "audit", stub, api.Destructive()) }, "api: GET /parcels/audit (parcels.audit): " + readOnly},
+		{func() {
+			api.Handle[fixture.HealthRequest, Parcel](newGroup(), http.MethodHead, "/audit", "audit", stub, api.Destructive())
+		}, "api: HEAD /parcels/audit (parcels.audit): " + readOnly},
+		{func() { newGroup().Group("/x", api.Destructive()) }, "api.Destructive is an operation option: pass it to the operation, not to a group"},
+		{func() { api.New(echo.New(), api.Destructive()) }, "api: New: api.Destructive is an operation option: pass it to the operation, not to api.New"},
+	}
+	for _, tt := range tests {
+		msg := panicMessage(t, tt.fn)
+		require.Contains(t, msg, tt.want)
+	}
+}

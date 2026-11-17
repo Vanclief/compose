@@ -25,12 +25,12 @@ type Group struct {
 // Option configures the registry (api.New), a group or an operation. Each
 // option supports some of these scopes; using it at another one panics at
 // boot. Registry options (Info, Description, APIKeyHeader, Security, Server,
-// Namer, Descriptions) are only accepted by New. ContentType and Produces are
-// only accepted by an operation. Every other option is accepted at every
-// scope and applies to every operation below it: options of New first, then
-// the group's, then the operation's, so the nearest one wins. Middleware
-// adds up instead: the middleware of New, of the groups and of the
-// operation all run, in that order.
+// Namer, Descriptions) are only accepted by New. ContentType, Produces and
+// Destructive are only accepted by an operation. Every other option is
+// accepted at every scope and applies to every operation below it: options
+// of New first, then the group's, then the operation's, so the nearest one
+// wins. Middleware adds up instead: the middleware of New, of the groups and
+// of the operation all run, in that order.
 type Option struct {
 	name      string
 	registry  func(*Registry)
@@ -167,6 +167,20 @@ func MaxBodyValues(n int) Option {
 func Hidden() Option {
 	return Option{name: "api.Hidden", op: func(op *operation) {
 		op.hidden = true
+	}}
+}
+
+// Destructive marks an operation that destroys data without being a DELETE,
+// such as a POST that deletes the records its body names: each document
+// that lists it, the 3.1, the 3.0.3 and the strict one, carries
+// x-destructive: true on it, which components/rest/reference reads as
+// Operation.Destructive. An MCP server built from the document then treats
+// the operation as it treats a DELETE (mcp.Function.Destructive). On a
+// DELETE the mark changes nothing there. Panics at registration on a GET or
+// HEAD, which an MCP server keeps read-only whatever it carries.
+func Destructive() Option {
+	return Option{name: "api.Destructive", routeOnly: true, op: func(op *operation) {
+		op.destructive = true
 	}}
 }
 

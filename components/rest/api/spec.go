@@ -353,6 +353,12 @@ func (r *Registry) operationDoc(res *openapi.Result, op *operation) *huma.Operat
 	if op.hidden {
 		o.Extensions = map[string]any{"x-internal": true}
 	}
+	if op.destructive {
+		if o.Extensions == nil {
+			o.Extensions = map[string]any{}
+		}
+		o.Extensions["x-destructive"] = true
+	}
 
 	for _, p := range op.params {
 		o.Parameters = append(o.Parameters, &huma.Param{
