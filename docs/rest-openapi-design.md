@@ -901,16 +901,18 @@ inlined into its fields is not described. The 3.1, the 3.0.3 and the strict docu
 the same descriptions. They are annotations: no request validates differently, and the
 `apitest` contract judges a response the same.
 
-`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. Below each
-directory given it skips the directories named `vendor` or `testdata` or that start with `.`
-or `_`, the files that start with `.` or `_`, `_test.go` files and files whose build
-constraint is exactly `ignore`, which are scripts outside their package. A directory given is
-always read. A symbolic link given as a directory is followed, and the directory is keyed by
-where the link points: a package directory that links to another module's package gets that
-module's import path, though a binary built from the linking module reports its own. A `.go`
-file that is a link to a regular file is read, as Go compiles it. Every other file is read
-once, whatever its build constraints, so the file is the same on every platform, and a
-directory given inside another one given adds nothing. It records every package-level named
+`compose descriptions [-out file] [dir ...]` walks each directory, `.` by default. A directory
+given is always read. It is made absolute and its symbolic links are resolved, so a file has
+one path however the arguments reach it, and a directory given inside another one given adds
+nothing. A directory given as a link is keyed by where the link points: a package directory
+that links to another module's package gets that module's import path, though a binary built
+from the linking module reports its own. Below each directory given it skips the directories
+named `vendor` or `testdata` or that start with `.` or `_`, and links to directories, as
+`./...` does. It skips the files that start with `.` or `_`, `_test.go` files and files with a
+`//go:build ignore` line, which are scripts outside their package. A `.go` file that is a link
+to a regular file is read, as Go compiles it. Every other `.go` file is read once, whatever its
+build constraints, so the file is the same on every platform. A file that does not parse fails
+the command, unless its name is skipped. It records every package-level named
 type with a doc comment, and every exported field of a package-level struct with a comment.
 An embedded field is recorded under the name of its type, as reflection names it. Aliases
 have no entry. A type declared in a function has none of its own, but reflection gives it the
@@ -923,12 +925,17 @@ A key is the import path and the type name, `github.com/x/app/runs.Run`, with th
 name after it for a field, `github.com/x/app/runs.Run.Status`. The import path is the module
 path of the nearest `go.mod` joined with the directory below it, or what follows the last
 `vendor` element of that directory. A generic type is keyed under its name without type
-arguments.
+arguments. A directory name with a dot can make two declarations produce one key: the field
+`X` of a type `T` in `example.com/p` and a type `X` in `example.com/p.T` both have the key
+`example.com/p.T.X`. The registry's lookup cannot tell them apart, so such a key is left out,
+without a warning, whether one of them is described or both are.
 
 Reflection reports a type of a `package main` under `main` in a binary built with `go build`
-or `go run`, and under its import path in a test binary. Its entries are always written under
+or `go run`, and under its import path in a test binary. A main package here is an import path
+whose files read all say `package main`, so a library directory that holds a `package main`
+script tagged other than `//go:build ignore` is not one. Its entries are always written under
 its import path. They are also written under `main` when it is the only main package read that
-declares types, commented or not. With two or more, a key under `main` could describe the type
+declares a type, commented or not, an alias counting. With two or more, a key under `main` could describe the type
 of another command, so none is written, and the command prints one warning that names the main
 packages when one of them has an entry. It still succeeds. To describe the types of a package
 main, run the command on the directories of one command at a time, each into its own file.
@@ -954,7 +961,8 @@ for one import path reached from two module roots: every type there is declared 
 command prints one warning per such type on stderr, naming the first two files that declare it,
 and still succeeds. API types are almost never declared per platform, so little is lost.
 
-The output is one JSON object with sorted keys, the same bytes for the same source. So CI
+The output is one JSON object with sorted keys, the same bytes for the same source, whatever
+the order of the directories given and however they are reached. So CI
 checks that the file is fresh by regenerating it and running `git diff --exit-code`. The
 file holds the comments of every type under the directories given, and it is embedded in the
 binary. Point the command at the packages that hold the API's types if the rest should not

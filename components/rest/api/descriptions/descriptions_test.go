@@ -98,7 +98,8 @@ func TestRead(t *testing.T) {
 		// A field whose type is an anonymous struct, whose own fields have
 		// no key.
 		models + ".Extra.Meta": "Meta is a nested struct without a name.",
-		// Build constraints other than exactly ignore are not evaluated.
+		// Build constraints other than a //go:build ignore line are not
+		// evaluated.
 		models + ".Tool":  "Tool is in a file whose constraint is more than ignore.",
 		models + ".Linux": "Linux is in a file for linux.",
 		// The only main package that declares types is written under its
@@ -186,6 +187,20 @@ func TestReadDuplicates(t *testing.T) {
 		"go.mod": mod,
 		"p/p.go": "package p\n\n// P is p.\ntype P struct {\n\tX int // X is x.\n}\n",
 	})
+	// Several duplicates come sorted by key, whatever the walk order.
+	root = writeTree(t, map[string]string{
+		"go.mod":       mod,
+		"p/a_cgo.go":   "//go:build cgo\n\npackage p\n\ntype E struct{}\n\ntype D struct{}\n\ntype C struct{}\n\ntype B struct{}\n\ntype A struct{}\n",
+		"p/b_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype E struct{}\n\ntype D struct{}\n\ntype C struct{}\n\ntype B struct{}\n\ntype A struct{}\n",
+	})
+	result, err = descriptions.Read(root)
+	require.NoError(t, err)
+	var keys []string
+	for _, duplicate := range result.Duplicates {
+		keys = append(keys, strings.TrimPrefix(duplicate.Key, "example.com/app/p."))
+	}
+	require.Equal(t, []string{"A", "B", "C", "D", "E"}, keys)
+
 	for _, dirs := range [][]string{{one, two}, {two, one}} {
 		result, err = descriptions.Read(dirs...)
 		require.NoError(t, err)
@@ -219,6 +234,92 @@ func TestReadOnce(t *testing.T) {
 	require.Equal(t, want, read(t, root))
 	require.Equal(t, want, read(t, root, filepath.Join(root, "p"), filepath.Join(root, "p")))
 	require.Equal(t, want, read(t, filepath.Join(root, "p"), root))
+}
+
+// TestReadLinkedWorkingDirectory reads "." from a working directory reached
+// through a symbolic link together with the resolved path of a subdirectory:
+// each file is read once, so the output is that of "." alone.
+func TestReadLinkedWorkingDirectory(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"real/go.mod": mod,
+		"real/p/a.go": "package p\n\ntype A struct {\n\tX int // X is x.\n}\n\ntype D A\n",
+	})
+	link := filepath.Join(root, "link")
+	err := os.Symlink(filepath.Join(root, "real"), link)
+	if err != nil {
+		t.Skipf("no symbolic link on this platform: %v", err)
+	}
+	t.Chdir(link)
+
+	want := map[string]string{
+		"example.com/app/p.A.X": "X is x.",
+		"example.com/app/p.D.X": "X is x.",
+	}
+	require.Equal(t, want, read(t, "."))
+	require.Equal(t, want, read(t, ".", filepath.Join(root, "real", "p")))
+	require.Equal(t, want, read(t, filepath.Join(link, "p"), "."))
+}
+
+// TestReadAmbiguousKeys reads a field and a type that produce one key, as a
+// directory name holds a dot. The key is left out every time, the others
+// are kept.
+func TestReadAmbiguousKeys(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":   mod,
+		"p/p.go":   "package p\n\n// T is t.\ntype T struct {\n\tX int // X is a field.\n}\n",
+		"p.T/x.go": "package pt\n\n// X is a type.\ntype X struct {\n\tY int // Y is y.\n}\n",
+	})
+	want := map[string]string{
+		"example.com/app/p.T":     "T is t.",
+		"example.com/app/p.T.X.Y": "Y is y.",
+	}
+	for range 20 {
+		require.Equal(t, want, read(t, root))
+	}
+
+	// A field without a comment claims its key too.
+	root = writeTree(t, map[string]string{
+		"go.mod":   mod,
+		"p/p.go":   "package p\n\ntype T struct {\n\tX int\n}\n",
+		"p.T/x.go": "package pt\n\n// X is a type.\ntype X struct{}\n",
+	})
+	require.Empty(t, read(t, root))
+
+	// So does a field of a type declared twice.
+	root = writeTree(t, map[string]string{
+		"go.mod":       mod,
+		"p/t_cgo.go":   "//go:build cgo\n\npackage p\n\ntype T struct {\n\tX int\n}\n",
+		"p/t_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype T struct {\n\tX int\n}\n",
+		"p.T/x.go":     "package pt\n\n// X is a type.\ntype X struct{}\n",
+	})
+	result, err := descriptions.Read(root)
+	require.NoError(t, err)
+	require.Empty(t, result.Descriptions)
+}
+
+// TestReadNames checks where an entry goes: an embedded field under its
+// type's name, a vendored package after the last vendor element, and a
+// //go:build ignore line after the package clause, which is no constraint.
+func TestReadNames(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": mod,
+		"p/p.go": "package p\n\nimport \"example.com/app/other\"\n\ntype R struct {\n" +
+			"\t// T is embedded from another package.\n\tother.T\n" +
+			"\t// Page is an embedded generic.\n\tPage[int]\n}\n\ntype Page[V any] struct{}\n",
+		"p/late.go":                "package p\n\n//go:build ignore\n\n// Late is read.\ntype Late struct{}\n",
+		"vendor/a/vendor/b/b.go":   "package b\n\n// B is vendored twice.\ntype B struct{}\n",
+		"vendor/a/vendor/b/c/c.go": "package c\n\n// C is below it.\ntype C struct{}\n",
+		"other/other.go":           "package other\n\ntype T struct{}\n",
+	})
+	require.Equal(t, map[string]string{
+		"example.com/app/p.R.T":    "T is embedded from another package.",
+		"example.com/app/p.R.Page": "Page is an embedded generic.",
+		"example.com/app/p.Late":   "Late is read.",
+	}, read(t, root))
+	require.Equal(t, map[string]string{
+		"b.B":   "B is vendored twice.",
+		"b/c.C": "C is below it.",
+	}, read(t, filepath.Join(root, "vendor", "a", "vendor", "b")))
 }
 
 // TestReadMainPackages writes main keys only when exactly one main package
@@ -258,13 +359,46 @@ func TestReadMainPackages(t *testing.T) {
 		require.Equal(t, string(first), string(data))
 	}
 
-	// Two main packages without a comment: nothing to report.
+	// Two main packages without a comment, beside a described library:
+	// nothing to report.
 	root = writeTree(t, map[string]string{
 		"go.mod":        mod,
 		"cmd/a/main.go": "package main\n\ntype Config struct{ Port int }\n\nfunc main() {}\n",
 		"cmd/b/main.go": "package main\n\ntype Config struct{ Port int }\n\nfunc main() {}\n",
+		"lib/lib.go":    "package lib\n\n// Lib is a library type.\ntype Lib struct{}\n",
 	})
-	require.Empty(t, read(t, root))
+	require.Equal(t, map[string]string{"example.com/app/lib.Lib": "Lib is a library type."}, read(t, root))
+
+	// An alias is a type declaration: b is a second main package.
+	root = writeTree(t, map[string]string{
+		"go.mod":        mod,
+		"cmd/a/main.go": "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n",
+		"cmd/b/main.go": "package main\n\ntype Config = int\n\nfunc main() {}\n",
+	})
+	result, err := descriptions.Read(root)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"example.com/app/cmd/a.Config": "Config is a's."}, result.Descriptions)
+	require.Equal(t, []string{"example.com/app/cmd/a", "example.com/app/cmd/b"}, result.MainPackages)
+
+	// A library directory with a package main script that is not ignored
+	// is no main package: its types stay under its import path only.
+	library := map[string]string{
+		"go.mod":   mod,
+		"p/p.go":   "package p\n\n// Config is p's.\ntype Config struct {\n\t// Port is p's port.\n\tPort int\n}\n",
+		"p/gen.go": "//go:build generate\n\npackage main\n\n// Gen writes a file.\ntype Gen struct{}\n\nfunc main() {}\n",
+	}
+	wantLibrary := map[string]string{
+		"example.com/app/p.Config":      "Config is p's.",
+		"example.com/app/p.Config.Port": "Port is p's port.",
+		"example.com/app/p.Gen":         "Gen writes a file.",
+	}
+	require.Equal(t, wantLibrary, read(t, writeTree(t, library)))
+
+	// Beside a real command, the command is the one main package.
+	library["cmd/a/main.go"] = "package main\n\n// Config is a's.\ntype Config struct{}\n\nfunc main() {}\n"
+	wantLibrary["example.com/app/cmd/a.Config"] = "Config is a's."
+	wantLibrary["main.Config"] = "Config is a's."
+	require.Equal(t, wantLibrary, read(t, writeTree(t, library)))
 
 	// A main package that declares no type does not count.
 	root = writeTree(t, map[string]string{
@@ -344,6 +478,35 @@ func TestReadDefinedTypes(t *testing.T) {
 			name:  "a cycle",
 			files: map[string]string{"p/p.go": "package p\n\n// A is a.\ntype A B\n\ntype B A\n\ntype C C\n"},
 			want:  map[string]string{"example.com/app/p.A": "A is a."},
+		},
+		{
+			name: "a struct of the same name in another package",
+			files: map[string]string{
+				"p/p.go": "package p\n\ntype A B\n\ntype B struct {\n\tY int // Y is p's.\n}\n",
+				"q/q.go": "package q\n\ntype B struct {\n\tX int // X is q's.\n}\n",
+			},
+			want: map[string]string{
+				"example.com/app/p.A.Y": "Y is p's.",
+				"example.com/app/p.B.Y": "Y is p's.",
+				"example.com/app/q.B.X": "X is q's.",
+			},
+		},
+		{
+			name:  "a parenthesized generic struct",
+			files: map[string]string{"p/p.go": "package p\n\ntype P (S[string])\n\ntype S[T any] struct {\n\tX T // X is s.\n}\n"},
+			want: map[string]string{
+				"example.com/app/p.P.X": "X is s.",
+				"example.com/app/p.S.X": "X is s.",
+			},
+		},
+		{
+			name: "a struct and an alias of one name",
+			files: map[string]string{
+				"p/t_cgo.go":   "//go:build cgo\n\npackage p\n\n// T is t.\ntype T struct {\n\tX int // X is x.\n}\n",
+				"p/t_nocgo.go": "//go:build !cgo\n\npackage p\n\ntype T = int\n",
+			},
+			want:       map[string]string{},
+			duplicates: []string{"example.com/app/p.T"},
 		},
 		{
 			name: "a struct of another package",

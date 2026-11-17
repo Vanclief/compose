@@ -10,17 +10,21 @@
 //
 // A type declared more than once in its package, such as in a cgo and a !cgo
 // file, is not described, nor are its fields: with one declaration there is
-// one truth. A defined type over a struct of the same package, type A B, gets
-// the field entries of B under A, as reflection reports B's fields with A as
-// their struct, also through a chain such as type C A. A defined type over a
+// one truth. A key two declarations produce is left out too. A defined type
+// over a struct of the same package, type A B, gets the field entries of B
+// under A, as reflection reports B's fields with A as their struct, also
+// through a chain such as type C A, when A, every type along the chain and
+// the struct are each declared once in the package. A defined type over a
 // struct of another package gets none.
 //
-// A directory is keyed by where it is, after symbolic links are followed: a
-// package directory that is a link to another module's package is keyed by
-// that module's import path, though a binary built from the linking module
-// reports the linking module's. A type declared inside a function shares its
-// key with a package-level type of the same name, so it gets that type's
-// description.
+// A directory given is keyed by where it is, after symbolic links are
+// followed: given as a link to another module's package, it is keyed by that
+// module's import path, though a binary built from the linking module reports
+// the linking module's. A link to a directory below a directory given is not
+// followed. A type declared inside a function shares its key with a
+// package-level type of the same name, so it gets that type's description.
+// The descriptions are the same for the same files, whatever the order of
+// the directories given and however they are reached.
 package descriptions
 
 import (
@@ -141,26 +145,33 @@ type Result struct {
 // Read walks each directory and returns the descriptions of the types
 // declared under it, keyed as Key does.
 //
-// Below each directory given, it skips the directories named vendor or
-// testdata and those whose name starts with "." or "_". It skips the files
-// whose name starts with "." or "_", the _test.go files and the files whose
-// build constraint is exactly ignore. Every other file is read once, whatever
-// its build constraints, so the result is the same on every platform, and so
-// is a symbolic link to a file. Every package-level named type with a doc
-// comment has an entry, unexported ones too, and so does every exported field
-// of a package-level struct type with a comment, an embedded one under the
-// name of its type. Aliases have none.
+// Each directory given is made absolute and its symbolic links are resolved,
+// so a file is read once however the arguments reach it. Below it, Read skips
+// the directories named vendor or testdata, those whose name starts with "."
+// or "_", and symbolic links to directories, as ./... does. It skips the files
+// whose name starts with "." or "_", the _test.go files and the files with a
+// //go:build ignore line. It reads every other .go file, a symbolic link to
+// a file too, whatever its build constraints, so the result is the same on
+// every platform. A file that does not parse fails Read, a skipped name
+// aside. Every package-level named type with a doc comment has an entry,
+// unexported ones too, and so does every exported field of a package-level
+// struct type with a comment, an embedded one under the name of its type.
+// Aliases have none.
 //
 // The import path of a package is the module path of the nearest go.mod above
 // it joined with its directory below that go.mod, or what follows the last
-// vendor element of that directory. When exactly one main package read
-// declares types, its entries are also written under "main". When two or more
-// do, none is, and Result.MainPackages names them.
+// vendor element of that directory. A main package is an import path whose
+// files read all say package main. When exactly one main package read
+// declares a type, an alias counting, its entries are also written under
+// "main". When two or more do, none is, and Result.MainPackages names them.
 //
 // A type declared more than once in its package, of any kind and whatever its
 // comments, has no entry and its fields have none, as which declaration a
 // binary holds depends on build constraints Read does not evaluate. It is
-// reported as a Duplicate. No description is better than a wrong one.
+// reported as a Duplicate. A key that two declarations produce, described or
+// not, is left out without a report: the field X of a type T in package
+// example.com/p and a type X in package example.com/p.T both have the key
+// example.com/p.T.X. No description is better than a wrong one.
 func Read(dirs ...string) (Result, error) {
 	rd := &reader{
 		read:    map[string]bool{},
@@ -168,7 +179,7 @@ func Read(dirs ...string) (Result, error) {
 		files:   map[entry][]string{},
 		structs: map[entry]bool{},
 		over:    map[entry]string{},
-		mains:   map[string]bool{},
+		pkgs:    map[string]*pkgInfo{},
 		modules: map[string]string{},
 	}
 	for _, dir := range dirs {
@@ -180,16 +191,46 @@ func Read(dirs ...string) (Result, error) {
 	duplicates := rd.dropDuplicates()
 	rd.copyDefinedFields()
 
-	mains := slices.Sorted(maps.Keys(rd.mains))
-	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
+	var mains []string
+	for pkgPath, info := range rd.pkgs {
+		if info.allMain && info.types {
+			mains = append(mains, pkgPath)
+		}
+	}
+	slices.Sort(mains)
+
+	// Every entry, described or not, claims its keys, so a key two entries
+	// produce is left out rather than given one of them by map order.
+	owners := map[string]entry{}
+	ambiguous := map[string]bool{}
+	claim := func(key string, e entry) {
+		owner, taken := owners[key]
+		if taken && owner != e {
+			ambiguous[key] = true
+		}
+		owners[key] = e
+	}
+	mainEntries := false
 	for e, text := range rd.out {
-		result.Descriptions[e.pkg+"."+e.name] = text
-		if rd.mains[e.pkg] && len(mains) == 1 {
-			result.Descriptions["main."+e.name] = text
+		claim(e.pkg+"."+e.name, e)
+		isMain := slices.Contains(mains, e.pkg)
+		if isMain && len(mains) == 1 {
+			claim("main."+e.name, e)
 		}
-		if rd.mains[e.pkg] && len(mains) > 1 {
-			result.MainPackages = mains
+		if isMain && text != "" {
+			mainEntries = true
 		}
+	}
+
+	result := Result{Descriptions: map[string]string{}, Duplicates: duplicates}
+	for key, e := range owners {
+		text := rd.out[e]
+		if text != "" && !ambiguous[key] {
+			result.Descriptions[key] = text
+		}
+	}
+	if len(mains) > 1 && mainEntries {
+		result.MainPackages = mains
 	}
 	return result, nil
 }
@@ -214,13 +255,19 @@ func Marshal(descriptions map[string]string) ([]byte, error) {
 }
 
 type reader struct {
-	read    map[string]bool    // absolute paths of the files read
-	out     map[entry]string   // the texts
-	files   map[entry][]string // the files that declare each type, in walk order
-	structs map[entry]bool     // the struct types
-	over    map[entry]string   // B for each type A B, B a type of A's package
-	mains   map[string]bool    // import paths of the main packages that declare types
-	modules map[string]string  // directory holding a go.mod -> its module path
+	read    map[string]bool     // resolved absolute paths of the files read
+	out     map[entry]string    // every type and exported field declared, its text or ""
+	files   map[entry][]string  // the files that declare each type, in walk order
+	structs map[entry]bool      // the struct types
+	over    map[entry]string    // B for each type A B, B a type of A's package
+	pkgs    map[string]*pkgInfo // import path -> what its files declare
+	modules map[string]string   // directory holding a go.mod -> its module path
+}
+
+// pkgInfo is what the files read of one import path declare.
+type pkgInfo struct {
+	allMain bool // every file says package main
+	types   bool // a file declares a package-level type, an alias too
 }
 
 // entry is a key split into the import path of its package and the rest,
@@ -230,8 +277,15 @@ type entry struct {
 	name string
 }
 
+// walk reads the directory dir. It walks dir made absolute with its links
+// resolved, so a file has one path however the argument reached it, and names
+// a file in errors and duplicates by dir joined with its path below it.
 func (rd *reader) walk(dir string) error {
-	root, err := filepath.EvalSymlinks(dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ez.New(ez.EINVALID, "cannot resolve "+dir+": "+err.Error(), err)
+	}
+	root, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return ez.New(ez.EINVALID, "cannot read "+dir+": "+err.Error(), err)
 	}
@@ -243,21 +297,22 @@ func (rd *reader) walk(dir string) error {
 		return ez.New(ez.EINVALID, dir+" is not a directory", nil)
 	}
 
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, dirEntry fs.DirEntry, err error) error {
+		shown := shownPath(dir, root, path)
 		if err != nil {
-			return ez.New(ez.EINVALID, "cannot read "+path+": "+err.Error(), err)
+			return ez.New(ez.EINVALID, "cannot read "+shown+": "+err.Error(), err)
 		}
-		name := entry.Name()
-		if entry.IsDir() {
+		name := dirEntry.Name()
+		if dirEntry.IsDir() {
 			if path != root && skipDir(name) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || ignored(name) || !regularFile(path, entry) {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || ignored(name) || !regularFile(path, dirEntry) {
 			return nil
 		}
-		err = rd.readFile(path)
+		err = rd.readFile(path, shown)
 		if err != nil {
 			return ez.Wrap(err)
 		}
@@ -267,6 +322,16 @@ func (rd *reader) walk(dir string) error {
 		return ez.Wrap(err)
 	}
 	return nil
+}
+
+// shownPath returns path, a path below root, as below dir, the argument root
+// was resolved from.
+func shownPath(dir, root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return filepath.Join(dir, rel)
 }
 
 // regularFile reports a regular file, or a symbolic link to one, which Go
@@ -289,21 +354,18 @@ func skipDir(name string) bool {
 	return name == "vendor" || name == "testdata" || ignored(name)
 }
 
-// readFile reads the file at path, once. The directories walked have their
-// links resolved, so a file reached twice has the same absolute path.
-func (rd *reader) readFile(path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return ez.New(ez.EINVALID, "cannot resolve "+path+": "+err.Error(), err)
-	}
-	if rd.read[abs] {
+// readFile reads the file at path, once, and names it shown. path is
+// absolute with the links of its directories resolved, so a file reached
+// twice has the same path.
+func (rd *reader) readFile(path, shown string) error {
+	if rd.read[path] {
 		return nil
 	}
-	rd.read[abs] = true
+	rd.read[path] = true
 
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return ez.New(ez.EINVALID, "cannot parse "+path+": "+err.Error(), err)
+		return ez.New(ez.EINVALID, "cannot parse "+shown+": "+err.Error(), err)
 	}
 	if buildIgnored(file) {
 		return nil
@@ -313,6 +375,12 @@ func (rd *reader) readFile(path string) error {
 	if err != nil {
 		return ez.Wrap(err)
 	}
+	info := rd.pkgs[pkgPath]
+	if info == nil {
+		info = &pkgInfo{allMain: true}
+		rd.pkgs[pkgPath] = info
+	}
+	info.allMain = info.allMain && file.Name.Name == "main"
 
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -322,20 +390,17 @@ func (rd *reader) readFile(path string) error {
 		for _, spec := range gen.Specs {
 			typeSpec := spec.(*ast.TypeSpec)
 			typ := entry{pkg: pkgPath, name: typeSpec.Name.Name}
-			rd.files[typ] = append(rd.files[typ], path)
-			if typeSpec.Assign.IsValid() {
-				continue
+			rd.files[typ] = append(rd.files[typ], shown)
+			info.types = true
+			if !typeSpec.Assign.IsValid() {
+				rd.readType(pkgPath, gen, typeSpec)
 			}
-			if file.Name.Name == "main" {
-				rd.mains[pkgPath] = true
-			}
-			rd.readType(pkgPath, gen, typeSpec)
 		}
 	}
 	return nil
 }
 
-// buildIgnored reports a file whose //go:build line is exactly ignore, a
+// buildIgnored reports a file with a //go:build ignore line, a
 // script that is never part of its package.
 func buildIgnored(file *ast.File) bool {
 	for _, group := range file.Comments {
@@ -357,10 +422,11 @@ func buildIgnored(file *ast.File) bool {
 	return false
 }
 
-// readType records the comment of a type and of its fields.
+// readType records a type and its exported fields with their comments, ""
+// for none.
 func (rd *reader) readType(pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec) {
 	typ := entry{pkg: pkgPath, name: spec.Name.Name}
-	rd.add(typ, CommentText(TypeComment(gen, spec)))
+	rd.out[typ] = CommentText(TypeComment(gen, spec))
 
 	over := localTypeName(spec.Type)
 	if over != "" {
@@ -384,7 +450,7 @@ func (rd *reader) readType(pkgPath string, gen *ast.GenDecl, spec *ast.TypeSpec)
 		}
 		for _, fieldName := range names {
 			if fieldName.IsExported() {
-				rd.add(entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}, text)
+				rd.out[entry{pkg: pkgPath, name: typ.name + "." + fieldName.Name}] = text
 			}
 		}
 	}
@@ -466,13 +532,14 @@ func (rd *reader) structOf(typ entry) (entry, bool) {
 	return entry{}, false
 }
 
-// dropDuplicates removes the entries of every type declared more than once in
-// its package, and returns those types.
+// dropDuplicates empties the texts of every type declared more than once in
+// its package and of its fields, and returns those types. The entries stay, so
+// their keys are still claimed.
 func (rd *reader) dropDuplicates() []Duplicate {
 	for e := range rd.out {
 		typeName, _, _ := strings.Cut(e.name, ".")
 		if len(rd.files[entry{pkg: e.pkg, name: typeName}]) > 1 {
-			delete(rd.out, e)
+			rd.out[e] = ""
 		}
 	}
 
@@ -486,13 +553,6 @@ func (rd *reader) dropDuplicates() []Duplicate {
 		return strings.Compare(a.Key, b.Key)
 	})
 	return duplicates
-}
-
-// add records text under e, unless text is empty.
-func (rd *reader) add(e entry, text string) {
-	if text != "" {
-		rd.out[e] = text
-	}
 }
 
 // importPath returns the import path of the package in dir: the module path
