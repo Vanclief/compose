@@ -44,9 +44,9 @@ one command at a time to describe the types of its package main.
 
 The output is the same bytes for the same source on every platform, whatever
 the order of the directories and whether they are reached through relative
-paths, absolute paths or symbolic links, so a CI
-job can regenerate it and check it with git diff --exit-code. Without -out it
-is written to stdout. Flags go before the directories.
+paths, absolute paths or symbolic links, so a CI job can regenerate it and
+check it with git diff --exit-code. Without -out it is written to stdout.
+Flags go before the directories.
 
 Flags:
 `
