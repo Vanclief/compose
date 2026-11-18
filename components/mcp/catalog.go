@@ -665,15 +665,17 @@ func (b *catalogBuilder) refTerm(s *reference.Schema) string {
 }
 
 // indexSchema records in the given reverse index that function uses every
-// term s refers to directly, through array items or through oneOf and anyOf
-// members, at any depth. The properties of an inline object are not followed.
+// term s refers to directly, through array items, through the values of a
+// map (see mapValues) or through oneOf and anyOf members, at any depth. The
+// properties of an inline object are not followed.
 func (b *catalogBuilder) indexSchema(index map[string]map[string]bool, s *reference.Schema, function string) {
-	b.indexTerms(index, s, function, map[*reference.Schema]bool{})
+	b.indexTerms(index, s, function, map[*reference.Schema]bool{}, true)
 }
 
 // indexTerms is indexSchema; visited holds the schemas already walked, so a
-// cycle of inline schemas ends.
-func (b *catalogBuilder) indexTerms(index map[string]map[string]bool, s *reference.Schema, function string, visited map[*reference.Schema]bool) {
+// cycle of inline schemas ends. top is true for the schema indexSchema was
+// given and false for the ones reached from it.
+func (b *catalogBuilder) indexTerms(index map[string]map[string]bool, s *reference.Schema, function string, visited map[*reference.Schema]bool, top bool) {
 	if s == nil || visited[s] {
 		return
 	}
@@ -687,12 +689,23 @@ func (b *catalogBuilder) indexTerms(index map[string]map[string]bool, s *referen
 	if flat == nil {
 		return
 	}
-	b.indexTerms(index, flat.Items, function, visited)
+	b.indexTerms(index, flat.Items, function, visited, false)
+	// The values of a map are followed where the map is printed as one. The
+	// catalog prints the top schema flattened (see schema) and the ones
+	// below it as written, where a map built with allOf is "object".
+	printed := s
+	if top {
+		printed = flat
+	}
+	values, isMap := mapValues(printed)
+	if isMap {
+		b.indexTerms(index, values, function, visited, false)
+	}
 	for _, member := range flat.OneOf {
-		b.indexTerms(index, member, function, visited)
+		b.indexTerms(index, member, function, visited, false)
 	}
 	for _, member := range flat.AnyOf {
-		b.indexTerms(index, member, function, visited)
+		b.indexTerms(index, member, function, visited, false)
 	}
 }
 

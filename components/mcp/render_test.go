@@ -52,7 +52,7 @@ func TestRenderSearchModule(t *testing.T) {
 	// Five functions or fewer fold: each shows its route, description and
 	// arguments. A fallback summary is the route already and is not repeated.
 	assert.Equal(t, `module packages: Packages received at the front desk.
-  packages.delete_packages_by_id  DELETE /packages/{id}
+  packages.delete_packages_by_id  DELETE /packages/{id} [destructive]
     args:
       id  integer  required
 
@@ -83,7 +83,7 @@ func TestRenderSearchModule(t *testing.T) {
       body  Package  required`, c.renderSearch("packages", ""))
 
 	assert.Equal(t, `module units
-  units.set_notes  Replace the notes of a unit  -> units.Status
+  units.set_notes  Replace the notes of a unit  -> units.Status [destructive]
     PUT /units/{unit_id}/notes
     args:
       unit_id       integer   required
@@ -113,7 +113,7 @@ func TestRenderSearchQuery(t *testing.T) {
       status  packages.Status  Only packages in this status
 
 module units
-  units.set_notes  Replace the notes of a unit  -> units.Status
+  units.set_notes  Replace the notes of a unit  -> units.Status [destructive]
     PUT /units/{unit_id}/notes
     args:
       unit_id       integer   required
@@ -140,7 +140,7 @@ module units
 
 	// More than five matches keep one dense line per function.
 	assert.Equal(t, `module packages
-  packages.delete_packages_by_id  DELETE /packages/{id}
+  packages.delete_packages_by_id  DELETE /packages/{id} [destructive]
   packages.get_package  Get one package.  -> Package
   packages.list_packages  List packages  -> Package[]
   packages.register_package  Register a package at the front desk.  -> Package
@@ -199,7 +199,7 @@ func TestRenderSampleSearchFolded(t *testing.T) {
 	// summary is not repeated.
 	out := c.renderSearch("", "unpair")
 	assert.Equal(t, `module finance
-  finance.unpair_bank_account_transfer  Unpair Bank Account Transfer  -> string uuid
+  finance.unpair_bank_account_transfer  Unpair Bank Account Transfer  -> string uuid [destructive]
     DELETE /complexes/{complex_id}/bank-accounts/transfers/{id}
     args:
       complex_id  integer int64  required
@@ -271,7 +271,8 @@ packages.update_package  PATCH /packages/{id}  [deprecated]
   returns {ok boolean}
   see also: Package`, c.renderDescribe([]string{"packages.list_packages", " packages.update_package "}))
 
-	assert.Equal(t, `units.set_notes  PUT /units/{unit_id}/notes
+	// A write marked x-destructive and a DELETE carry the mark.
+	assert.Equal(t, `units.set_notes  PUT /units/{unit_id}/notes  [destructive]
   Replace the notes of a unit
   args:
     unit_id       integer   required
@@ -290,7 +291,7 @@ packages.update_package  PATCH /packages/{id}  [deprecated]
   see also: UnitSummary`, c.renderDescribe([]string{"units.summary"}))
 
 	// The fallback summary repeats the header and is not printed again.
-	assert.Equal(t, `packages.delete_packages_by_id  DELETE /packages/{id}
+	assert.Equal(t, `packages.delete_packages_by_id  DELETE /packages/{id}  [destructive]
   args:
     id  integer  required`, c.renderDescribe([]string{"packages.delete_packages_by_id"}))
 
@@ -521,7 +522,12 @@ func TestRenderExplain(t *testing.T) {
 
 	assert.Equal(t, `Package  (aliases: paquete, parcel)
   A parcel held at the front desk until the resident picks it up.
-  fields: id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit
+  fields:
+    id           integer
+    unit_id      integer
+    status       packages.Status
+    received_at  string date-time
+    unit         Unit
   accepted by: packages.update_package
   returned by: packages.get_package, packages.list_packages, packages.register_package`, c.renderExplain([]string{"paquete"}))
 
@@ -535,12 +541,26 @@ packages.Status
 
 Unit
   (no description)
-  fields: id integer, name string`, c.renderExplain([]string{"front desk", "packages.Status", "Unit"}))
+  fields:
+    id    integer
+    name  string`, c.renderExplain([]string{"front desk", "packages.Status", "Unit"}))
 
 	assert.Equal(t, `UnitSummary
   (no description)
-  fields: packages integer, status string
+  fields:
+    packages  integer
+    status    string
   returned by: units.summary`, c.renderExplain([]string{"UnitSummary"}))
+
+	// A field carries its enum and the first paragraph of its description,
+	// as an argument's row does.
+	assert.Equal(t, `RegisterPackageRequest
+  (no description)
+  fields:
+    unit_id  integer  Unit receiving the package
+    carrier  string   enum: "dhl"|"fedex"|"ups"
+    notes    string?
+  accepted by: packages.register_package`, c.renderExplain([]string{"RegisterPackageRequest"}))
 
 	assert.Equal(t, `unknown term "stat"
   did you mean: packages.Status, units.Status
@@ -572,7 +592,21 @@ func TestTypeName(t *testing.T) {
 		"format":         {&reference.Schema{Type: reference.TypeList{"string"}, Format: "date-time", Nullable: true}, "string date-time?"},
 		"enum":           {&reference.Schema{Type: reference.TypeList{"integer"}, Enum: []any{1.0, 2.0}}, "integer enum: 1|2"},
 		"inline object":  {&reference.Schema{Type: reference.TypeList{"object"}}, "object"},
-		"untyped object": {&reference.Schema{Properties: reference.Ordered[*reference.Schema]{Keys: []string{"a"}, Map: map[string]*reference.Schema{"a": {}}}}, "object"},
+		"map of terms": {&reference.Schema{Type: reference.TypeList{"object"}, Nullable: true, AdditionalProperties: &reference.AdditionalProperties{Allowed: true,
+			Schema: &reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Ref: "#/components/schemas/models_Unit"}, Nullable: true}}}, "map<string, Unit[]?>?"},
+		"map of enums": {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true,
+			Schema: &reference.Schema{Type: reference.TypeList{"string"}, Enum: []any{"a", "b"}}}}, `map<string, string enum: "a"|"b">`},
+		"map of any schema": {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true, Schema: &reference.Schema{}}}, "map<string, any>"},
+		"map of any":        {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true}}, "map<string, any>"},
+		"untyped map":       {&reference.Schema{AdditionalProperties: &reference.AdditionalProperties{Allowed: true, Schema: &reference.Schema{Type: reference.TypeList{"integer"}}}}, "map<string, integer>"},
+		"array of maps": {&reference.Schema{Type: reference.TypeList{"array"}, Items: &reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true,
+			Schema: &reference.Schema{Type: reference.TypeList{"boolean"}}}}}, "map<string, boolean>[]"},
+		"closed object":   {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{}}, "object"},
+		"refusing object": {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true, Schema: &reference.Schema{Not: &reference.Schema{}}}}, "object"},
+		"object with properties and other keys": {&reference.Schema{Type: reference.TypeList{"object"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true},
+			Properties: reference.Ordered[*reference.Schema]{Keys: []string{"a"}, Map: map[string]*reference.Schema{"a": {}}}}, "object"},
+		"string with other keys": {&reference.Schema{Type: reference.TypeList{"string"}, AdditionalProperties: &reference.AdditionalProperties{Allowed: true}}, "string"},
+		"untyped object":         {&reference.Schema{Properties: reference.Ordered[*reference.Schema]{Keys: []string{"a"}, Map: map[string]*reference.Schema{"a": {}}}}, "object"},
 		"oneOf": {&reference.Schema{OneOf: []*reference.Schema{
 			{Ref: "#/components/schemas/models_Unit"},
 			{Type: reference.TypeList{"string"}},
@@ -982,4 +1016,104 @@ func TestTypeNameOfTypedWrapperTypeLists(t *testing.T) {
 	for key, notation := range want {
 		assert.Equal(t, notation, c.typeName(thing.Properties.Map[key]), key)
 	}
+}
+
+// A map is printed with the type of its values wherever a type is: an
+// argument's row, a field's row, a return shape, the return of a search line
+// and of a promoted tool, and the type of a term that is one. A term named
+// as the values of a map is listed with the function, as one named as the
+// items of an array is.
+func TestRenderMaps(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/hours": {
+			"put": {"operationId": "hours.set", "summary": "Set the hours", "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+				"by_day": {"type": ["object", "null"], "description": "Keyed by the day's name.", "additionalProperties": {"type": "array", "items": {"$ref": "#/components/schemas/Range"}}},
+				"labels": {"$ref": "#/components/schemas/Labels"}
+			}}}}}, "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Week"}}}}}},
+			"get": {"operationId": "hours.get", "summary": "Get the hours", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema":
+				{"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Range"}}}}}}}
+		}
+	}, "components": {"schemas": {
+		"Range": {"type": "object", "properties": {"from": {"type": "string"}}},
+		"Labels": {"type": "object", "additionalProperties": {"type": "string"}},
+		"Week": {"type": "object", "properties": {
+			"by_day": {"type": "object", "description": "Keyed by the day's name.", "additionalProperties": {"type": "array", "items": {"$ref": "#/components/schemas/Range"}}},
+			"notes": {"type": "object", "additionalProperties": true}
+		}}
+	}}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, `hours.set  PUT /hours
+  Set the hours
+  args:
+    by_day  map<string, Range[]>?  Keyed by the day's name.
+    labels  Labels
+  returns Week: {by_day map<string, Range[]>, notes map<string, any>}
+  see also: Labels, Range, Week`, c.renderDescribe([]string{"hours.set"}))
+
+	assert.Equal(t, `hours.get  GET /hours
+  Get the hours
+  returns map<string, Range>
+  see also: Range`, c.renderDescribe([]string{"hours.get"}))
+
+	assert.Equal(t, `Week
+  (no description)
+  fields:
+    by_day  map<string, Range[]>  Keyed by the day's name.
+    notes   map<string, any>
+  returned by: hours.set
+
+Labels
+  (no description)
+  type: map<string, string>
+  accepted by: hours.set
+
+Range
+  (no description)
+  fields:
+    from  string
+  accepted by: hours.set
+  returned by: hours.get`, c.renderExplain([]string{"Week", "Labels", "Range"}))
+
+	get := mustFunction(t, c, "hours.get")
+	assert.Equal(t, "hours.get  Get the hours  -> map<string, Range>", c.searchLine(get))
+	assert.Equal(t, "Get the hours\nReturns map<string, Range>", c.toolDescription(get))
+}
+
+// The values of a map are listed with the function only where the map is
+// printed as one: an argument built with allOf is flattened and is a map,
+// the same schema as the items of an array is printed as written, as
+// "object", and alternatives or items beside additionalProperties are
+// printed instead of it.
+func TestRenderMapsAsPrinted(t *testing.T) {
+	doc := parseSpec(t, `{"openapi": "3.1.0", "info": {"title": "x", "version": "1"}, "paths": {
+		"/shapes": {"post": {"operationId": "shapes.send", "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+			"built": {"allOf": [{"type": "object"}, {"additionalProperties": {"$ref": "#/components/schemas/Top"}}]},
+			"nested": {"type": "array", "items": {"allOf": [{"type": "object"}, {"additionalProperties": {"$ref": "#/components/schemas/Nested"}}]}},
+			"either": {"type": "object", "oneOf": [{"$ref": "#/components/schemas/A"}, {"$ref": "#/components/schemas/B"}], "additionalProperties": {"$ref": "#/components/schemas/Beside"}},
+			"listed": {"items": {"$ref": "#/components/schemas/A"}, "additionalProperties": {"$ref": "#/components/schemas/Beside"}}
+		}}}}}, "responses": {}}}
+	}, "components": {"schemas": {
+		"Top": {"type": "object", "properties": {"x": {"type": "string"}}},
+		"Nested": {"type": "object", "properties": {"x": {"type": "string"}}},
+		"A": {"type": "object", "properties": {"x": {"type": "string"}}},
+		"B": {"type": "object", "properties": {"x": {"type": "string"}}},
+		"Beside": {"type": "object", "properties": {"x": {"type": "string"}}}
+	}}}`)
+	c, err := buildCatalog(doc, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, `shapes.send  POST /shapes
+  args:
+    built   map<string, Top>
+    nested  object[]
+    either  A|B
+    listed  A[]
+  see also: A, B, Top`, c.renderDescribe([]string{"shapes.send"}))
+
+	assert.Equal(t, []string{"shapes.send"}, mustTerm(t, c, "Top").AcceptedBy)
+	assert.Equal(t, []string{"shapes.send"}, mustTerm(t, c, "A").AcceptedBy)
+	assert.Empty(t, mustTerm(t, c, "Nested").AcceptedBy)
+	assert.Empty(t, mustTerm(t, c, "Beside").AcceptedBy)
 }

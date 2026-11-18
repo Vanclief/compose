@@ -118,7 +118,7 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <div class="block" id="fn-packages-delete_packages_by_id" data-k="packages.delete_packages_by_id delete /packages/{id}">
 <h3>packages.delete_packages_by_id <span class="op">DELETE /packages/{id}</span><span class="badge destructive">destructive</span></h3>
 <p class="subtitle">DELETE /packages/{id}</p>
-<pre>packages.delete_packages_by_id  DELETE /packages/{id}
+<pre>packages.delete_packages_by_id  DELETE /packages/{id}  [destructive]
   args:
     id  integer  required</pre>
 </div>
@@ -175,7 +175,7 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <div class="block" id="fn-units-set_notes" data-k="units.set_notes replace the notes of a unit">
 <h3>units.set_notes <span class="op">PUT /units/{unit_id}/notes</span><span class="badge destructive">destructive</span></h3>
 <p class="subtitle">Replace the notes of a unit  -&gt; units.Status</p>
-<pre>units.set_notes  PUT /units/{unit_id}/notes
+<pre>units.set_notes  PUT /units/{unit_id}/notes  [destructive]
   Replace the notes of a unit
   args:
     unit_id       integer   required
@@ -204,7 +204,8 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <h3>ErrorResponse</h3>
 <pre>ErrorResponse
   (no description)
-  fields: message string
+  fields:
+    message  string
   returned by: default.get_health</pre>
 </div>
 <div class="block" id="term-front-desk" data-k="front desk recepción">
@@ -216,7 +217,12 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <h3>Package <span class="op">aliases: paquete, parcel</span></h3>
 <pre>Package  (aliases: paquete, parcel)
   A parcel held at the front desk until the resident picks it up.
-  fields: id integer, unit_id integer, status packages.Status, received_at string date-time, unit Unit
+  fields:
+    id           integer
+    unit_id      integer
+    status       packages.Status
+    received_at  string date-time
+    unit         Unit
   accepted by: packages.update_package
   returned by: packages.get_package, packages.list_packages, packages.register_package</pre>
 </div>
@@ -224,26 +230,34 @@ Then describe_function &lt;before&gt; call_function.</pre>
 <h3>RegisterPackageRequest</h3>
 <pre>RegisterPackageRequest
   (no description)
-  fields: unit_id integer, carrier string enum: &#34;dhl&#34;|&#34;fedex&#34;|&#34;ups&#34;, notes string?
+  fields:
+    unit_id  integer  Unit receiving the package
+    carrier  string   enum: &#34;dhl&#34;|&#34;fedex&#34;|&#34;ups&#34;
+    notes    string?
   accepted by: packages.register_package</pre>
 </div>
 <div class="block" id="term-unit" data-k="unit">
 <h3>Unit</h3>
 <pre>Unit
   (no description)
-  fields: id integer, name string</pre>
+  fields:
+    id    integer
+    name  string</pre>
 </div>
 <div class="block" id="term-unitref" data-k="unitref">
 <h3>UnitRef</h3>
 <pre>UnitRef
   (no description)
-  fields: unit_id integer</pre>
+  fields:
+    unit_id  integer  Unit receiving the package</pre>
 </div>
 <div class="block" id="term-unitsummary" data-k="unitsummary">
 <h3>UnitSummary</h3>
 <pre>UnitSummary
   (no description)
-  fields: packages integer, status string
+  fields:
+    packages  integer
+    status    string
   returned by: units.summary</pre>
 </div>
 <div class="block" id="term-packages.status" data-k="packages.status">

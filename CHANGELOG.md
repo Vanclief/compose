@@ -2,6 +2,16 @@
 
 Each section names the release its changes ship in; dates are on [GitHub releases](https://github.com/Vanclief/compose/releases), which also document the earlier versions.
 
+## v1.41.2
+
+### Highlights
+
+- **MCP: `explain_term` shows what each field of a type means.** It printed the fields of a type on one line, as `name type` pairs, and dropped each field's description. So a unit a document states on a field, such as cents on an amount, never reached the agent. It now prints one row per field, as `describe_function` prints an argument: the name, the type, the enum values and the first paragraph of the field's description. The return shape of `describe_function` is still one line of names and types, and the tool's description now says that `explain_term` on a type gives what its fields mean. The text is the document's, so a description written for the app's developers now reaches the agent too.
+- **MCP: a map is shown with the type of its values.** An object that declares no property and takes other keys, `additionalProperties: true` or a schema, was printed as `object`, the same as an object whose document says nothing about it, or as `any` when it states no type. It is now printed as `map<string, T>`, where `T` is the type of its values and `any` when they are not typed, wherever a type is printed. So a function that returns a map now shows it on its line in `search_functions` and in its description as a promoted tool. A type named as the values of a map is listed under `see also` in `describe_function`, and the function under the type's `accepted by` or `returned by` in `explain_term`, as one named as the items of an array is. An object without `additionalProperties`, or with `additionalProperties: false` or `{not: {}}`, is still `object`.
+- **MCP: a function that destroys data is marked `[destructive]`.** A server kept the mark, true for a DELETE and for a write marked `x-destructive`, for the hints of a promoted tool, for `Server.Snapshot` and for the page of `Server.Reference`, and no tool printed it. So an agent that calls through `call_function` could not tell a POST that deletes records from any other. The mark now follows the function's line in `search_functions` and its header in `describe_function`.
+
+These change the text the tools return, which the page of `Server.Reference` shows too, the descriptions of `describe_function` and `explain_term`, the description of a promoted tool that returns a map, and with them what `Server.Snapshot` returns. An app that keeps a snapshot of its server in a test writes it again. The request a call sends to the API does not change.
+
 ## v1.41.1
 
 ### Highlights
