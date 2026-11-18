@@ -135,6 +135,9 @@ func (c *Catalog) searchLine(f *Function) string {
 	if f.Composite {
 		line += " [composite]"
 	}
+	if f.Destructive {
+		line += " [destructive]"
+	}
 	if f.Deprecated {
 		line += " [deprecated]"
 	}
@@ -142,7 +145,8 @@ func (c *Catalog) searchLine(f *Function) string {
 }
 
 // returnLabel names what a function returns: its term, else the type of an
-// inline array or scalar response. Inline objects have no useful short name.
+// inline array, map or scalar response. Other inline objects have no useful
+// short name.
 func (c *Catalog) returnLabel(f *Function) string {
 	if f.Returns != "" {
 		return f.Returns
@@ -322,6 +326,9 @@ func (c *Catalog) describeFunction(name string) string {
 	}
 
 	header := f.Name + "  " + route(f)
+	if f.Destructive {
+		header += "  [destructive]"
+	}
 	if f.Deprecated {
 		header += "  [deprecated]"
 	}
@@ -387,16 +394,37 @@ func (c *Catalog) detailLines(f *Function) []string {
 	return lines
 }
 
-// argLines prints the arguments of f as aligned columns: name, type, then
-// the required flag, enum values and the first paragraph of the description,
-// as one line. The other keys a body takes come last, as a row named "*"
-// with the type of their values.
+// argLines prints the arguments of f as rows. The other keys a body takes
+// come last, as a row named "*" with the type of their values.
 func (c *Catalog) argLines(f *Function) []string {
 	args := f.Args
 	if f.otherArgs {
 		other := &Arg{Name: "*", In: "body", Description: "other keys, sent in the body", Schema: f.otherSchema}
 		args = append(append([]*Arg(nil), args...), other)
 	}
+	return c.rows(args)
+}
+
+// fieldLines prints the properties of s as rows, each with the first
+// paragraph of its own description. A field is not marked required: for a
+// type a function returns, the mark would only say the field is always sent.
+func (c *Catalog) fieldLines(s *reference.Schema) []string {
+	fields := make([]*Arg, 0, s.Properties.Len())
+	for _, key := range s.Properties.Keys {
+		prop := s.Properties.Map[key]
+		field := &Arg{Name: key, Schema: prop}
+		if prop != nil {
+			field.Description = prop.Description
+		}
+		fields = append(fields, field)
+	}
+	return c.rows(fields)
+}
+
+// rows prints arguments, or the fields of a type, as aligned columns: name,
+// type, then the required flag, enum values and the first paragraph of the
+// description, as one line.
+func (c *Catalog) rows(args []*Arg) []string {
 	heads := make([]string, len(args))
 	enums := make([]string, len(args))
 	nameWidth := 0
@@ -499,8 +527,9 @@ func unknownName(kind, name string, suggestions []string) string {
 	return out
 }
 
-// renderExplain prints each term with its fields and the functions using it,
-// once per name.
+// renderExplain prints each term with its fields, one row each as
+// describe_function prints an argument, and the functions using it, once per
+// name.
 func (c *Catalog) renderExplain(terms []string) string {
 	terms = uniqueNames(terms)
 	blocks := make([]string, 0, len(terms))
@@ -531,7 +560,8 @@ func (c *Catalog) explainTerm(name string) string {
 	}
 
 	if t.Schema != nil && t.Schema.Properties.Len() > 0 {
-		lines = append(lines, "  fields: "+c.fields(t.Schema))
+		lines = append(lines, "  fields:")
+		lines = append(lines, c.fieldLines(t.Schema)...)
 	}
 	if t.Schema != nil && t.Schema.Properties.Len() == 0 {
 		lines = append(lines, "  type: "+c.inlineType(t.Schema))
@@ -577,7 +607,8 @@ func (c *Catalog) shape(s *reference.Schema) string {
 	return c.inlineType(s)
 }
 
-// fields prints the properties of s as "name type" pairs.
+// fields prints the properties of s as "name type" pairs on one line, for a
+// return shape. What a field means is in the rows explain_term prints.
 func (c *Catalog) fields(s *reference.Schema) string {
 	parts := make([]string, 0, s.Properties.Len())
 	for _, key := range s.Properties.Keys {
@@ -586,8 +617,8 @@ func (c *Catalog) fields(s *reference.Schema) string {
 	return strings.Join(parts, ", ")
 }
 
-// collectTerms adds the terms s stands for, directly, through array items or
-// through oneOf and anyOf members.
+// collectTerms adds the terms s stands for, directly, through array items,
+// through the values of a map or through oneOf and anyOf members.
 func (c *Catalog) collectTerms(s *reference.Schema, seen map[string]bool) {
 	if s == nil {
 		return
@@ -601,6 +632,10 @@ func (c *Catalog) collectTerms(s *reference.Schema, seen map[string]bool) {
 		return
 	}
 	c.collectTerms(s.Items, seen)
+	values, isMap := mapValues(s)
+	if isMap {
+		c.collectTerms(values, seen)
+	}
 	for _, member := range s.OneOf {
 		c.collectTerms(member, seen)
 	}
@@ -632,9 +667,10 @@ func (c *Catalog) argParts(a *Arg) (string, string) {
 // typeName is the compact type notation the agent reads: a term name,
 // "<items>[]", "<type> <format>", a trailing "?" when nullable, "A|B" for
 // alternatives, with an alternative that has an enum in parentheses and
-// "(A|B)" before a "?", a "[]" or an enum of its own, "object" for inline
-// objects, and ` enum: "a"|"b"` for enums, the values written as JSON, a
-// const as a one-value enum. After "<items>[]" the enum is the items'; an
+// "(A|B)" before a "?", a "[]" or an enum of its own, "map<string, <values>>"
+// for a map (see mapValues), "object" for other inline objects, and
+// ` enum: "a"|"b"` for enums, the values written as JSON, a const as a
+// one-value enum. After "<items>[]" the enum is the items'; an
 // array's own enum follows "(<items>[])".
 func (c *Catalog) typeName(s *reference.Schema) string {
 	head, enum := c.typeParts(s)
@@ -720,6 +756,12 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 	if head == "" && (s.Properties.Len() > 0 || len(s.AllOf) > 0) {
 		head = "object"
 	}
+	values, isMap := mapValues(s)
+	if isMap {
+		// The values' enum stays inside the brackets, so it is not read as
+		// the map's own.
+		head = "map<string, " + c.typeName(values) + ">"
+	}
 	if head == "" {
 		head = "any"
 	}
@@ -727,6 +769,26 @@ func (c *Catalog) inlineParts(s *reference.Schema) (string, string) {
 		head += " " + s.Format
 	}
 	return head + nullMark(s), ownEnum(s)
+}
+
+// mapValues returns the schema of the values of a map and true when s is
+// one: an object, or a schema without a type, that declares no property and
+// allows other keys (see allowsOther), with no alternatives, items or allOf,
+// which inlineParts prints instead. The schema is nil when
+// additionalProperties is true, which allows any value. An object without
+// additionalProperties is not a map: its document does not say what it holds.
+func mapValues(s *reference.Schema) (*reference.Schema, bool) {
+	primary := s.Type.Primary()
+	if primary != "" && primary != "object" {
+		return nil, false
+	}
+	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 || s.Items != nil {
+		return nil, false
+	}
+	if s.Properties.Len() > 0 || len(s.AllOf) > 0 || !allowsOther(s) {
+		return nil, false
+	}
+	return s.AdditionalProperties.Schema, true
 }
 
 // ownEnum is the enum annotation of the values s itself allows: its const,

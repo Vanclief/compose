@@ -41,7 +41,7 @@
     },
     {
       "name": "describe_function",
-      "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function whose arguments search_functions did not show, or when you need the return shape.",
+      "description": "Show how to call functions: the route, every argument with its type, location and required flag, the return shape and related terms. Pass full names, module.function, as listed by search_functions. Describe a function whose arguments search_functions did not show, or when you need the return shape. The return shape lists names and types only: explain_term on a type says what each of its fields means, such as the unit of a number. A function marked [destructive] destroys data.",
       "annotations": {
         "idempotentHint": true,
         "openWorldHint": false,
@@ -68,7 +68,7 @@
     },
     {
       "name": "explain_term",
-      "description": "Explain domain terms: the fields of a data type and the functions that accept or return it, or a concept of the application. Accepts names and aliases, case-insensitively. Use it for any unfamiliar word in a summary, field or module name.",
+      "description": "Explain domain terms: the fields of a data type, each with its type and description, and the functions that accept or return it, or a concept of the application. Accepts names and aliases, case-insensitively. Use it for any unfamiliar word in a summary, field or module name, and for what a field of an argument or of a result means.",
       "annotations": {
         "idempotentHint": true,
         "openWorldHint": false,

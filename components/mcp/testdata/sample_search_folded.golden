@@ -29,7 +29,7 @@ module access_control
       vehicular_entry       boolean?
 
 module users
-  users.delete_fingerprint  Delete Fingerprint  -> string
+  users.delete_fingerprint  Delete Fingerprint  -> string [destructive]
     DELETE /users/{user_id}/fingerprints/{id}
     args:
       user_id  integer int64  required
